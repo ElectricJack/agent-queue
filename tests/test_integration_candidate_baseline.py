@@ -35,7 +35,7 @@ from src.integration.checks import (
     RequiredChecks,
 )
 from src.integration.ci_producers import HostedCIProducer, ProducerRequest
-from src.integration.subjects import HeadIdentity
+from src.integration.runtime_contracts import HeadIdentity
 from src.integration.train import CandidateChecks, IntegrationTrain, TrainLane, TrainTarget
 
 TARGET, CANDIDATE, OTHER = "a" * 40, "b" * 40, "c" * 40
@@ -100,6 +100,9 @@ class Service:
 
 
 class Repair:
+    async def settle_green(self, batch_id, head_sha):
+        pass
+
     def __init__(self):
         self.calls = []
 

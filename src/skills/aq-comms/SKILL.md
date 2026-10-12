@@ -29,11 +29,13 @@ that ran `aq inbox --inject` was removed on 2026-08-27. Pending messages
 reach you when `aq prime` runs (start, resume, post-compact) and through
 the cascade's nudge, which types a one-line pointer into the session once it
 goes idle: ``Handle `aq message status <id> --json`.`` Run that command to
-read the body. The nudge has already marked the message delivered, so
-`aq message inbox` no longer lists it. A plain session may read the status
+read the body. The nudge records a notification attempt; the message stays
+in `aq message inbox` until its recipient reads it or inbox/prime injects
+the body. Unread notifications retry with bounded backoff, then alert the
+global supervisor once. Operator status inspections do not consume mail.
+A plain session may read the status
 only of messages addressed to its own session, held task or profile;
-anything else answers "not found". (A task comment is the exception: its
-body is typed in directly.) `aq inbox --inject` is still a supported command,
+anything else answers "not found". `aq inbox --inject` is still a supported command,
 so run it yourself when you want the queue rendered inline mid-task;
 `aq message inbox` is the same queue as data.
 
@@ -135,6 +137,35 @@ aq escalation get --escalation-id <id>                   # conversation and hist
 See `docs/guides/escalations.md` for the full model.
 
 ## Message delivery model (why messages are reliable)
+
+### Recurring prompts on every harness
+
+Use AQ's supported `aq cron` commands for recurring prompt wake-ups on Codex,
+Claude and other harnesses. No native scheduling tool or shell loop is needed.
+Register with a stable key; identical startup retries recover the same ID:
+
+```bash
+aq cron register --every 900 --offset 120 --idempotency-key patrol-v1 \
+  --prompt 'Run the authorized patrol and handle its findings.'
+aq cron register --cron '15 9 * * *' --timezone America/Los_Angeles \
+  --idempotency-key daily-v1 --prompt 'Run the authorized morning check.'
+aq cron list --json
+aq cron show SCHEDULE_ID --consume --json
+aq cron cancel SCHEDULE_ID
+```
+
+Registration never executes immediately. Intervals align to epoch multiples plus
+offset; 900/120 fires at :02/:17/:32/:47 UTC. Simple cron accepts minute 0–59,
+`*` or `*/N`, hour 0–23 or `*`, and requires `* * *` for the remaining fields.
+The IANA timezone defaults to UTC. Show/list expose next-fire and delivery diagnostics.
+Missed ticks coalesce into one pending message; busy owners defer delivery, which
+has five attempts with backoff and a one-hour expiry. A daemon restart retains
+the same session instance; ending/replacing that instance expires its schedules.
+A worker's claim ending also expires its schedules; cron grants no lease exemption.
+Global supervisors leave project unset and can register/list their own patrol.
+`--consume` consumes only the schedule's notification. Scheduling grants no extra
+authority to execute its prompt. See `docs/guides/agent-cron.md` for the lifecycle
+and installed grant/skill drift workflow.
 
 - Every message row is persisted before dispatch — daemon restarts don't
   lose them.

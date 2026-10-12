@@ -1,11 +1,152 @@
 {
   "explicit": [
     {
+      "name": "policy_export",
+      "description": "Preview allow-listed project policy; write a directory/zip only with the preview checksum.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "expected_checksum": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "policy_diff",
+      "description": "Preview every portable policy item, placement, placeholders and overwrite diff.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "builtin": {
+            "type": "string",
+            "enum": [
+              "default"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "bundle": {
+            "type": "object"
+          },
+          "archive": {
+            "type": "string"
+          },
+          "values": {
+            "type": "object"
+          },
+          "selections": {
+            "type": "object"
+          },
+          "only": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skip": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "policy_apply",
+      "description": "Copy selected policy with explicit placement/overwrite choices; playbooks await review, flows remain drafts.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "builtin": {
+            "type": "string",
+            "enum": [
+              "default"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "bundle": {
+            "type": "object"
+          },
+          "archive": {
+            "type": "string"
+          },
+          "values": {
+            "type": "object"
+          },
+          "selections": {
+            "type": "object"
+          },
+          "only": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "skip": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "no_overwrite": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
       "name": "list_projects",
       "description": "List all projects in the system.",
       "input_schema": {
         "type": "object",
         "properties": {}
+      }
+    },
+    {
+      "name": "project_doctor",
+      "description": "Check a project's repository authorization and offer an audited binding command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
       }
     },
     {
@@ -17,6 +158,27 @@
           "name": {
             "type": "string",
             "description": "Project name"
+          },
+          "create_repo": {
+            "type": "string",
+            "description": "Create GitHub OWNER/NAME and onboard"
+          },
+          "private": {
+            "type": "boolean",
+            "default": true,
+            "description": "New remote is private"
+          },
+          "root_id": {
+            "type": "string",
+            "description": "Configured project root"
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "Destination below the root"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Durable onboarding request key"
           },
           "credit_weight": {
             "type": "number",
@@ -34,8 +196,7 @@
           },
           "default_branch": {
             "type": "string",
-            "description": "Default branch name (default: main)",
-            "default": "main"
+            "description": "Default branch name (default: main)"
           }
         },
         "required": [
@@ -135,7 +296,7 @@
     },
     {
       "name": "edit_project",
-      "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
+      "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -146,6 +307,10 @@
           "name": {
             "type": "string",
             "description": "New project name (optional)"
+          },
+          "supervisor_enabled": {
+            "type": "boolean",
+            "description": "Enable a project supervisor on the next message. Default false: the global supervisor handles this project. Disabling drains the running project supervisor after its current turn."
           },
           "credit_weight": {
             "type": "number",
@@ -212,6 +377,14 @@
             ],
             "description": "LOCAL-only integration mode for new reconciler subjects."
           },
+          "promotion_flow": {
+            "type": [
+              "array",
+              "object",
+              "null"
+            ],
+            "description": "LOCAL-only promotion flow (steps list, or {promotion_flow: [...]}); validated and activated behind the integration generation CAS."
+          },
           "expected_integration_generation": {
             "type": "integer",
             "minimum": 0,
@@ -225,6 +398,38 @@
         "required": [
           "project_id"
         ]
+      }
+    },
+    {
+      "name": "bind_project_repository",
+      "description": "Authorize the first GitHub repository for an existing project with an empty repo_url. Local operator or live global supervisor only. Requires the exact expected URL and audit reason; refuses reassignment and live integration.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Existing project ID"
+          },
+          "repo_url": {
+            "type": "string",
+            "description": "GitHub repository URL to authorize"
+          },
+          "expected_repo_url": {
+            "type": "string",
+            "description": "Exact current stored URL; empty for first binding"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Nonempty operator audit reason"
+          }
+        },
+        "required": [
+          "project_id",
+          "repo_url",
+          "expected_repo_url",
+          "reason"
+        ],
+        "additionalProperties": false
       }
     },
     {
@@ -512,9 +717,10 @@
               "research",
               "plan",
               "design",
-              "art"
+              "art",
+              "operator"
             ],
-            "description": "The kind of work, a hint to the router (optional): design is code or system design, art is art-heavy design"
+            "description": "The kind of work, a hint to the router (optional): design is code or system design, art is art-heavy design, operator is scoped project setup"
           },
           "intelligence_class": {
             "type": "string",
@@ -997,6 +1203,14 @@
             "type": "string",
             "description": "Root-relative destination: the existing repository (link) or the directory to create (init, github_clone)"
           },
+          "credit_weight": {
+            "type": "number",
+            "description": "Scheduling weight (default 1)"
+          },
+          "max_concurrent_agents": {
+            "type": "integer",
+            "description": "Project agent limit (default 2)"
+          },
           "project_name": {
             "type": "string",
             "description": "Display name"
@@ -1008,6 +1222,10 @@
           "default_branch": {
             "type": "string",
             "description": "Default branch; detected for link/github_clone and `main` for init when omitted"
+          },
+          "repo_url": {
+            "type": "string",
+            "description": "init only: adopt an existing empty GitHub remote"
           },
           "create_readme": {
             "type": "boolean",
@@ -1350,6 +1568,23 @@
       }
     },
     {
+      "name": "session_cleanup",
+      "description": "Stop and prune taskless sleeping named sessions, including those with live terminals. Dry-run lists eligible sessions without changing them.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Optional project filter"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "List only; do not stop or prune"
+          }
+        }
+      }
+    },
+    {
       "name": "session_input",
       "description": "Type directly into a live terminal. Send exactly one literal text chunk or named key; text is not automatically submitted. Requires global admin.",
       "input_schema": {
@@ -1471,6 +1706,7 @@
               "plan",
               "design",
               "art",
+              "operator",
               null
             ],
             "description": "New task type (optional, set to null to clear)"
@@ -1698,18 +1934,21 @@
       }
     },
     {
-      "name": "delete_task",
-      "description": "Delete a task. Cannot delete a task that is currently in progress.",
+      "name": "remove_task",
+      "description": "Deprecated alias for delete_task; use delete instead.",
       "input_schema": {
         "type": "object",
         "properties": {
           "task_id": {
-            "type": "string",
-            "description": "Task ID to delete"
+            "type": "string"
+          },
+          "recursive": {
+            "type": "boolean",
+            "default": false
           },
           "cascade": {
             "type": "boolean",
-            "default": false
+            "description": "Deprecated alias for recursive"
           },
           "branches": {
             "type": "string",
@@ -1717,7 +1956,65 @@
               "keep",
               "delete"
             ],
-            "description": "What to do with any branch the subtree already put on the remote. Omitted, a subtree that has one is refused with hierarchy.branch_discard_required rather than guessed at."
+            "default": "keep"
+          },
+          "stop_running": {
+            "type": "boolean",
+            "default": false
+          },
+          "confirmed": {
+            "type": "boolean",
+            "default": false
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ]
+      }
+    },
+    {
+      "name": "delete_task",
+      "description": "Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope and keep/delete branches. Selected running work always stops. State holds become warnings; history survives in the audit. Cleanup failures are reported individually. Reasons are optional.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "description": "Task ID to delete"
+          },
+          "recursive": {
+            "type": "boolean",
+            "default": false
+          },
+          "cascade": {
+            "type": "boolean",
+            "description": "Deprecated alias for recursive"
+          },
+          "branches": {
+            "type": "string",
+            "enum": [
+              "keep",
+              "delete"
+            ],
+            "default": "keep",
+            "description": "Keep branches or delete their local/remote refs and worktrees"
+          },
+          "stop_running": {
+            "type": "boolean",
+            "default": false,
+            "description": "Acknowledge stopping running work; selected writers always stop"
+          },
+          "confirmed": {
+            "type": "boolean",
+            "default": false,
+            "description": "False previews; true executes the deletion"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional audit reason"
           }
         },
         "required": [
@@ -1733,7 +2030,7 @@
         "properties": {
           "task_id": {
             "type": "string",
-            "description": "Archive a single task by ID (must be COMPLETED, FAILED, or BLOCKED)"
+            "description": "Archive a single task by ID; PAUSED, DEFINED and READY require reason"
           },
           "project_id": {
             "type": "string",
@@ -1746,11 +2043,20 @@
           "abandon_undelivered": {
             "type": "boolean",
             "default": false,
-            "description": "Single-task archive only: explicitly abandon completed work that has not reached the default branch. Requires reason and an elevated/operator caller."
+            "description": "Single-task archive only: explicitly abandon completed work that has not reached the default branch. Requires disposition, reason and an elevated/operator caller."
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "deliver",
+              "obsolete",
+              "retire"
+            ],
+            "description": "Single-task only: what happens to completed work that has not reached the default branch. deliver keeps the task for the train and reports what its delivery waits on; obsolete (reason is the note) and retire archive it, retiring its branches after a backup bundle."
           },
           "reason": {
             "type": "string",
-            "description": "Required reason when abandon_undelivered is true."
+            "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
           }
         }
       }
@@ -2026,7 +2332,7 @@
     },
     {
       "name": "get_stuck_tasks",
-      "description": "Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold.  Detection and time arithmetic run in the database \u2014 the caller passes thresholds and a reference ``now`` timestamp and receives a structured list back.  Defaults match the system-health-check playbook's stuck definition: ASSIGNED > 30 minutes, IN_PROGRESS > 2 hours.  Each entry carries ``id``, ``project_id``, ``status``, ``assigned_agent``, ``updated_at``, and ``seconds_in_state`` so remediation (``restart_task`` vs ``set_task_status(..., status=\"READY\")``) can branch on the agent state.",
+      "description": "Read stuck tasks in active projects, excluding containers and human holds. Includes ASSIGNED >30m and IN_PROGRESS >2h (configurable), orphaned workers >20m, and READY tasks with no claimable route >30m. Returns stuck rows with state, age, reason and suggested diagnostic command, plus a one-line-per-task summary. Does not mutate tasks or send messages.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -2612,7 +2918,7 @@
     },
     {
       "name": "preview_portable_config",
-      "description": "Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain. Project data, history, paths, credentials, and secrets are excluded.",
+      "description": "Preview portable configuration, global profiles, intelligence classes, configured pools, projects, repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime history are excluded.",
       "input_schema": {
         "type": "object",
         "properties": {}
@@ -2620,7 +2926,7 @@
     },
     {
       "name": "export_portable_config",
-      "description": "Write a versioned, validated .aqbundle containing only portable tuning and global profile definitions. Run preview_portable_config first to curate the exported defaults.",
+      "description": "Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes, pool settings, projects and policy sources. Preview exclusions with preview_portable_config.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -2636,7 +2942,7 @@
     },
     {
       "name": "import_portable_config",
-      "description": "Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default; use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.",
+      "description": "Validate and import portable configuration, profiles, classes, pools and projects. Existing customization is kept by default; conflict=replace merges portable settings while preserving destination credentials and paths, and conflict=error reports collisions. Imported policy sources still require normal review and setup.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -2809,7 +3115,7 @@
     },
     {
       "name": "update_and_restart",
-      "description": "Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks finish before restarting. Excluded from MCP by default for safety.",
+      "description": "Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when already current. With a release selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -3792,13 +4098,30 @@
     },
     {
       "name": "task_show",
-      "description": "Full detail for one task in a single round trip: the task's fields, its dependency view and subtasks, its attached context rows, and its labels. Backs `aq task show|details`.",
+      "description": "Detail for one task (bounded preview for workers): the task's fields, its dependency view and subtasks, its attached context rows, and its labels. Backs `aq task show|details`.",
       "input_schema": {
         "type": "object",
         "properties": {
           "task_id": {
             "type": "string",
             "description": "Task id to show."
+          },
+          "field": {
+            "type": "string",
+            "description": "Read one complete field in bounded pages; structured fields are serialized JSON."
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Character offset for a field page."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096,
+            "default": 4096,
+            "description": "Maximum characters in a field page."
           }
         },
         "required": [
@@ -4605,7 +4928,7 @@
     },
     {
       "name": "message_inbox",
-      "description": "List the pending (undelivered) messages for one recipient.  With inject=true it also marks them delivered and archives any rows flagged archive_after_inject.",
+      "description": "List the pending (undelivered) messages for one recipient.  With inject=true it also marks them delivered and archives any rows flagged archive_after_inject.  include_consumed additionally returns rows already delivered to this recipient, read-only, so a worker whose inject consumed delivery before it could render the bodies can still read them.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -4626,6 +4949,11 @@
           "inject": {
             "type": "boolean",
             "description": "Mark the returned messages delivered",
+            "default": false
+          },
+          "include_consumed": {
+            "type": "boolean",
+            "description": "Also return already-consumed messages (read-only; never changes delivery state)",
             "default": false
           },
           "limit": {
@@ -5346,12 +5674,12 @@
           "method": {
             "type": "string",
             "enum": [
-              "squash",
               "merge",
+              "squash",
               "rebase"
             ],
-            "description": "Merge strategy (default: squash).",
-            "default": "squash"
+            "description": "Merge strategy (default: merge).",
+            "default": "merge"
           },
           "force": {
             "type": "boolean",
@@ -5387,7 +5715,7 @@
     },
     {
       "name": "task_batch_propose",
-      "description": "Propose a batch of tasks and their dependency edges as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard.",
+      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path needs no approval step: that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit is an idempotent replay. Those batches require epics with children and leaf dependency edges.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -5399,15 +5727,136 @@
             "type": "string",
             "description": "Where the proposal came from (e.g. a spec path or playbook id). Recorded as provenance on every task the commit creates."
           },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Validate and return the diff without storing a proposal."
+          },
+          "edits": {
+            "type": "array",
+            "description": "Existing task edits and controls. Live control changes are refused.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "integer"
+                },
+                "intelligence_class": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "task_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "parent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "pause",
+                    "resume",
+                    "block",
+                    "archive"
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "A valid state transition; use action for pause/resume/archive."
+                }
+              },
+              "required": [
+                "task_id"
+              ]
+            }
+          },
+          "remove_edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "dep_type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "from",
+                "to"
+              ]
+            },
+            "description": "Typed edges to remove: from, to, dep_type (default blocks)."
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "task_id": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "note",
+                    "progress"
+                  ]
+                }
+              },
+              "required": [
+                "task_id",
+                "body"
+              ]
+            },
+            "description": "Append comments to existing ids or tempIds. Author comes from the caller."
+          },
           "tasks": {
             "type": "array",
-            "description": "The tasks to create. Must be non-empty.",
+            "description": "Tasks to create with temporary ids; optional for edit-only change sets.",
             "items": {
               "type": "object",
               "properties": {
                 "tempId": {
                   "type": "string",
                   "description": "Caller-chosen id, unique within this batch, that edges reference."
+                },
+                "parent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Parent tempId or existing id; null for root."
+                },
+                "task_type": {
+                  "type": "string",
+                  "description": "Task kind hint for routing."
                 },
                 "title": {
                   "type": "string",
@@ -5491,14 +5940,13 @@
           }
         },
         "required": [
-          "source",
-          "tasks"
+          "source"
         ]
       }
     },
     {
       "name": "task_batch_update",
-      "description": "Replace a pending proposal's tasks and edges, re-running the same shape, reference and cycle checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+      "description": "Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -5508,7 +5956,7 @@
           },
           "payload": {
             "type": "object",
-            "description": "The replacement graph: ``{\"tasks\": [...], \"edges\": [...]}`` in the same shape task_batch_propose takes."
+            "description": "The complete replacement change set (tasks, edits, edges, remove_edges, comments), in the same shape task_batch_propose takes."
           }
         },
         "required": [
@@ -5519,7 +5967,7 @@
     },
     {
       "name": "task_batch_commit",
-      "description": "Atomically materialise an approved proposal into the live work graph: creates every task, then every dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``). The ready\u2192committed flip is a single conditional update, so two concurrent commits cannot both win. Any failure unwinds every task and edge already created and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns its original task ids with ``already_committed: true``. Returns the created task ids.",
+      "description": "Atomically materialise an approved proposal into the live work graph: creates and edits tasks, changes edges and appends comments, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``), or the server stamped approved-document authority from a live spec-ingest role. Later task changes never invalidate approval; approved fields overwrite later values, leaving other fields alone. Missing task references skip only affected operations and are reported as missing_task_ids and skipped_operations in the durable receipt. Routing/hierarchy/write locks serialize commits. A transaction failure rolls back all changes, the audit and receipt in PostgreSQL, leaving the proposal and approval in ``ready`` for a retry. Committing an already committed proposal returns its original task ids with ``already_committed: true``, including the original skipped operations. Subsequent changes belong in a subsequent batch. Returns the created task ids.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -5543,7 +5991,7 @@
     },
     {
       "name": "task_batch_discard",
-      "description": "Discard a pending proposal without creating anything. Refused if it was already committed or discarded.",
+      "description": "Discard a pending proposal without creating anything. Refused if it has a human approval gate or was already committed or discarded.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -5707,6 +6155,29 @@
             "description": "View filter on the per-project breakdown (optional \u2014 defaults to all). Pool bounds and totals stay fleet-wide."
           }
         }
+      }
+    },
+    {
+      "name": "pool_rename",
+      "description": "Rename a global pool's display name while keeping its profile ID, routing, bounds and task assignments unchanged. Saves the name to the profile source with a backup and emits pool.renamed. Backs `aq pool rename`.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "description": "Stable pool profile ID."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name: 1\u2013120 characters, without control characters.",
+            "minLength": 1,
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "profile_id",
+          "name"
+        ]
       }
     },
     {
@@ -6042,6 +6513,27 @@
             "type": "string"
           }
         },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "review_reopen",
+      "description": "Reopen a withdrawn review as a new revision of its last content, retaining its review ID, gate and dependent links. Does not grant approval.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "review_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "review_id",
+          "revision"
+        ],
         "additionalProperties": false
       }
     },
@@ -7533,6 +8025,165 @@
             "type": "string"
           }
         }
+      }
+    },
+    {
+      "name": "cron_register",
+      "description": "Register a session-owned recurring prompt; first fire is strictly future.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "every": {
+            "type": "number",
+            "minimum": 60,
+            "maximum": 604800
+          },
+          "offset": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0
+          },
+          "cron": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "MINUTE HOUR * * *: minute 0\u201359, * or */N; hour 0\u201323 or *."
+          },
+          "timezone": {
+            "type": "string",
+            "default": "UTC",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "prompt",
+          "idempotency_key"
+        ]
+      }
+    },
+    {
+      "name": "cron_get",
+      "description": "Read prompt and next-fire/delivery diagnostics; optionally consume its wake.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "schedule_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "consume": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "schedule_id"
+        ]
+      }
+    },
+    {
+      "name": "cron_list",
+      "description": "List this session instance's recurring prompts, including global scope.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "cron_cancel",
+      "description": "Cancel future ticks and pending delivery for this owner instance.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "schedule_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "schedule_id"
+        ]
       }
     },
     {
@@ -9793,6 +10444,230 @@
         "title": "DecisionListArgs",
         "type": "object"
       }
+    },
+    {
+      "name": "operator_execute",
+      "description": "Run an audited project setup action from a live operator claim, retaining session identity.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Decision Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "preflight_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preflight Id"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "OperatorExecuteArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "operator_preflight",
+      "description": "Check all planned operator inputs and report every blocker together before mutations.",
+      "input_schema": {
+        "$defs": {
+          "OperatorAction": {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "title": "Command",
+                "type": "string"
+              },
+              "arguments": {
+                "additionalProperties": true,
+                "title": "Arguments",
+                "type": "object"
+              },
+              "decision_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Decision Id"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "title": "OperatorAction",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/$defs/OperatorAction"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Actions",
+            "type": "array"
+          },
+          "branches": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Branches",
+            "type": "array"
+          },
+          "runner_labels": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Runner Labels",
+            "type": "array"
+          },
+          "app_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 10,
+            "title": "App Ids",
+            "type": "array"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Policy"
+          },
+          "repository_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Repository Id"
+          }
+        },
+        "required": [
+          "actions"
+        ],
+        "title": "OperatorPreflightArgs",
+        "type": "object"
+      }
     }
   ],
   "fallback": {
@@ -9859,90 +10734,46 @@
         ]
       }
     },
-    "delivery_promote": {
-      "name": "delivery_promote",
-      "description": "Prepare and lease-push one reviewed squash to its immediate parent.",
+    "cron_delivery_begin": {
+      "name": "cron_delivery_begin",
+      "description": "Execute the cron_delivery_begin command.",
       "input_schema": {
-        "$defs": {
-          "BranchKey": {
-            "additionalProperties": false,
-            "properties": {
-              "repository_id": {
-                "title": "Repository Id",
-                "type": "string"
-              },
-              "branch": {
-                "title": "Branch",
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository_id",
-              "branch"
-            ],
-            "title": "BranchKey",
-            "type": "object"
-          },
-          "Fence": {
-            "additionalProperties": false,
-            "properties": {
-              "target": {
-                "$ref": "#/$defs/BranchKey"
-              },
-              "owner_id": {
-                "title": "Owner Id",
-                "type": "string"
-              },
-              "token": {
-                "title": "Token",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "target",
-              "owner_id",
-              "token"
-            ],
-            "title": "Fence",
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
+        "type": "object",
         "properties": {
-          "operation_key": {
-            "title": "Operation Key",
+          "message_id": {
             "type": "string"
-          },
-          "source_task_id": {
-            "title": "Source Task Id",
-            "type": "string"
-          },
-          "source_head": {
-            "title": "Source Head",
-            "type": "string"
-          },
-          "source_base": {
-            "title": "Source Base",
-            "type": "string"
-          },
-          "expected_target": {
-            "title": "Expected Target",
-            "type": "string"
-          },
-          "fence": {
-            "$ref": "#/$defs/Fence"
           }
         },
         "required": [
-          "operation_key",
-          "source_task_id",
-          "source_head",
-          "source_base",
-          "expected_target",
-          "fence"
+          "message_id"
         ],
-        "title": "DeliveryPromoteArgs",
-        "type": "object"
+        "additionalProperties": false
+      }
+    },
+    "cron_delivery_finish": {
+      "name": "cron_delivery_finish",
+      "description": "Execute the cron_delivery_finish command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          },
+          "delivered": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message_id",
+          "delivered"
+        ],
+        "additionalProperties": false
       }
     },
     "delivery_receipts": {
@@ -10087,7 +10918,8 @@
             "enum": [
               "open",
               "resolved",
-              "expired"
+              "expired",
+              "cancelled"
             ],
             "description": "Filter by gate status"
           },
@@ -10241,6 +11073,11 @@
             "default": null,
             "title": "Repository Id"
           },
+          "repository_access_only": {
+            "default": false,
+            "title": "Repository Access Only",
+            "type": "boolean"
+          },
           "policy_path": {
             "anyOf": [
               {
@@ -10313,34 +11150,21 @@
         "type": "object"
       }
     },
-    "integration_build_candidate": {
-      "name": "integration_build_candidate",
-      "description": "Build exact root candidate",
+    "integration_backmerge_source": {
+      "name": "integration_backmerge_source",
+      "description": "Author gated back-merge sources and fast-forward intents down the chain.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "batch_id": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
             "minLength": 1,
-            "title": "Batch Id",
+            "title": "Project Id",
             "type": "string"
           },
-          "expected_revision": {
+          "task_id": {
             "anyOf": [
               {
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
-          },
-          "expected_base_sha": {
-            "anyOf": [
-              {
-                "minLength": 1,
                 "type": "string"
               },
               {
@@ -10348,13 +11172,31 @@
               }
             ],
             "default": null,
-            "title": "Expected Base Sha"
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
           }
         },
         "required": [
-          "batch_id"
+          "project_id",
+          "step_id"
         ],
-        "title": "IntegrationBuildCandidateArgs",
+        "title": "BackmergeSourceArgs",
         "type": "object"
       }
     },
@@ -10514,6 +11356,134 @@
         "type": "object"
       }
     },
+    "integration_cutover": {
+      "name": "integration_cutover",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "flow": {
+            "default": null,
+            "title": "Flow"
+          },
+          "allow_epics": {
+            "default": false,
+            "title": "Allow Epics",
+            "type": "boolean"
+          },
+          "reverse": {
+            "default": false,
+            "title": "Reverse",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Baseline"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationCutoverArgs",
+        "type": "object"
+      }
+    },
+    "integration_cutover_plan": {
+      "name": "integration_cutover_plan",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "flow": {
+            "default": null,
+            "title": "Flow"
+          },
+          "allow_epics": {
+            "default": false,
+            "title": "Allow Epics",
+            "type": "boolean"
+          },
+          "reverse": {
+            "default": false,
+            "title": "Reverse",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Baseline"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationCutoverArgs",
+        "type": "object"
+      }
+    },
     "integration_delivery_readiness": {
       "name": "integration_delivery_readiness",
       "description": "Read whether every child of one parent has delivered, changing nothing.",
@@ -10600,15 +11570,19 @@
             "type": "string"
           },
           "reason": {
-            "minLength": 1,
+            "default": "",
             "title": "Reason",
             "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
           }
         },
         "required": [
           "batch_id",
-          "task_id",
-          "reason"
+          "task_id"
         ],
         "title": "IntegrationEjectArgs",
         "type": "object"
@@ -10709,6 +11683,49 @@
         "type": "object"
       }
     },
+    "integration_migrate_provenance_refs": {
+      "name": "integration_migrate_provenance_refs",
+      "description": "Local operator copies and verifies immutable provenance refs before deleting legacy heads.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "checkout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Checkout"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationMigrateProvenanceRefsArgs",
+        "type": "object"
+      }
+    },
     "integration_mutate_hierarchy": {
       "name": "integration_mutate_hierarchy",
       "description": "Apply a guarded hierarchy change and invalidate affected parent generations.",
@@ -10743,55 +11760,7 @@
       "description": "Internal visit dispatch: process-bound engine scope is the authority.",
       "input_schema": {
         "type": "object",
-        "properties": {
-          "subject_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expected_version": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "request": {
-            "type": "object",
-            "properties": {
-              "primitive": {
-                "type": "string",
-                "enum": [
-                  "integration_observe_subject",
-                  "integration_seal",
-                  "git_materialize_ref",
-                  "git_merge_members",
-                  "git_preserve",
-                  "git_publish",
-                  "git_ancestry",
-                  "ci_request",
-                  "ci_observe",
-                  "ci_attest",
-                  "writer_file",
-                  "writer_lease",
-                  "writer_stop_proof",
-                  "record_receipt",
-                  "record_attempt",
-                  "record_decision",
-                  "wait",
-                  "gate",
-                  "eject",
-                  "cleanup"
-                ]
-              }
-            },
-            "required": [
-              "primitive"
-            ]
-          }
-        },
-        "required": [
-          "subject_id",
-          "expected_version",
-          "request"
-        ],
-        "additionalProperties": false
+        "properties": {}
       }
     },
     "integration_parent_verify": {
@@ -10830,9 +11799,9 @@
         "type": "object"
       }
     },
-    "integration_promote_main": {
-      "name": "integration_promote_main",
-      "description": "Reconcile and fast-forward main to the exact trusted green candidate.",
+    "integration_pause_batch": {
+      "name": "integration_pause_batch",
+      "description": "Authenticated hierarchical integration operational control.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -10841,116 +11810,37 @@
             "title": "Batch Id",
             "type": "string"
           },
-          "revision": {
-            "minimum": 0,
-            "title": "Revision",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "batch_id",
-          "revision"
-        ],
-        "title": "IntegrationPromoteMainArgs",
-        "type": "object"
-      }
-    },
-    "integration_push_conflict_resolution": {
-      "name": "integration_push_conflict_resolution",
-      "description": "Push a frozen conflict resolution under the current repair writer fence.",
-      "input_schema": {
-        "$defs": {
-          "BranchKey": {
-            "additionalProperties": false,
-            "properties": {
-              "repository_id": {
-                "title": "Repository Id",
-                "type": "string"
-              },
-              "branch": {
-                "title": "Branch",
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository_id",
-              "branch"
-            ],
-            "title": "BranchKey",
-            "type": "object"
-          },
-          "Fence": {
-            "additionalProperties": false,
-            "properties": {
-              "target": {
-                "$ref": "#/$defs/BranchKey"
-              },
-              "owner_id": {
-                "title": "Owner Id",
-                "type": "string"
-              },
-              "token": {
-                "title": "Token",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "target",
-              "owner_id",
-              "token"
-            ],
-            "title": "Fence",
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "intent_id": {
-            "title": "Intent Id",
-            "type": "string"
-          },
-          "fence": {
-            "$ref": "#/$defs/Fence"
-          }
-        },
-        "required": [
-          "intent_id",
-          "fence"
-        ],
-        "title": "IntegrationPushConflictResolutionArgs",
-        "type": "object"
-      }
-    },
-    "integration_rebind_detached_repair": {
-      "name": "integration_rebind_detached_repair",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "operation_id": {
-            "minLength": 1,
-            "title": "Operation Id",
+          "reason": {
+            "default": "",
+            "title": "Reason",
             "type": "string"
           },
           "dry_run": {
             "default": true,
             "title": "Dry Run",
             "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationAbortBatchArgs",
+        "type": "object"
+      }
+    },
+    "integration_promotion_notes_input": {
+      "name": "integration_promotion_notes_input",
+      "description": "Assemble immutable promotion notes from full Git history.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
           },
-          "expected_stage": {
-            "anyOf": [
-              {
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Stage"
-          },
-          "expected_remote_head_sha": {
+          "task_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -10960,9 +11850,102 @@
               }
             ],
             "default": null,
-            "title": "Expected Remote Head Sha"
+            "title": "Task Id"
           },
-          "reason": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Sha"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "PromotionNotesInputArgs",
+        "type": "object"
+      }
+    },
+    "integration_promotion_policy_input": {
+      "name": "integration_promotion_policy_input",
+      "description": "Read pinned source and outstanding promotion facts for reviewed policy.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "description": "Configured promotion step id.",
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Exact commit to pin; defaults to the source branch tip.",
+            "title": "Source Sha"
+          },
+          "version": {
             "anyOf": [
               {
                 "minLength": 1,
@@ -10973,19 +11956,191 @@
               }
             ],
             "default": null,
-            "title": "Reason"
+            "description": "Version at the pinned source; required for custom tags.",
+            "title": "Version"
+          },
+          "notes_reviewed": {
+            "default": false,
+            "description": "Acknowledge reading the notes at the pinned source.",
+            "title": "Notes Reviewed",
+            "type": "boolean"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Completed hotfix task to promote.",
+            "title": "From Task"
           }
         },
         "required": [
-          "operation_id"
+          "project_id",
+          "step_id"
         ],
-        "title": "IntegrationRebindDetachedRepairArgs",
+        "title": "PromotionPolicyInputArgs",
         "type": "object"
       }
     },
-    "integration_rebind_repair": {
-      "name": "integration_rebind_repair",
+    "integration_promotion_publish": {
+      "name": "integration_promotion_publish",
       "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "batch_id"
+        ],
+        "title": "IntegrationPromotionPublishArgs",
+        "type": "object"
+      }
+    },
+    "integration_quiesce": {
+      "name": "integration_quiesce",
+      "description": "Local operator closes an unfrozen root and releases explicitly fenced idle reservations.",
+      "input_schema": {
+        "$defs": {
+          "IntegrationQuiesceOwner": {
+            "additionalProperties": false,
+            "properties": {
+              "owner_row_id": {
+                "minLength": 1,
+                "title": "Owner Row Id",
+                "type": "string"
+              },
+              "fence_token": {
+                "minimum": 0,
+                "title": "Fence Token",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "owner_row_id",
+              "fence_token"
+            ],
+            "title": "IntegrationQuiesceOwner",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "expected_generation": {
+            "minimum": 0,
+            "title": "Expected Generation",
+            "type": "integer"
+          },
+          "subject_id": {
+            "minLength": 1,
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "owners": {
+            "items": {
+              "$ref": "#/$defs/IntegrationQuiesceOwner"
+            },
+            "title": "Owners",
+            "type": "array"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "expected_generation",
+          "subject_id",
+          "expected_version",
+          "reason"
+        ],
+        "title": "IntegrationQuiesceArgs",
+        "type": "object"
+      }
+    },
+    "integration_reconcile_expired_mutation": {
+      "name": "integration_reconcile_expired_mutation",
+      "description": "Local operator verifies nonce, fences, stopped authority and actual remote target.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "mutation_id": {
+            "minLength": 1,
+            "title": "Mutation Id",
+            "type": "string"
+          },
+          "expected_nonce": {
+            "minLength": 1,
+            "title": "Expected Nonce",
+            "type": "string"
+          },
+          "expected_branch_fence": {
+            "minimum": 0,
+            "title": "Expected Branch Fence",
+            "type": "integer"
+          },
+          "expected_lease_fence": {
+            "minimum": 0,
+            "title": "Expected Lease Fence",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "mutation_id",
+          "expected_nonce",
+          "expected_branch_fence",
+          "expected_lease_fence",
+          "reason"
+        ],
+        "title": "IntegrationReconcileExpiredMutationArgs",
+        "type": "object"
+      }
+    },
+    "integration_record_delivered": {
+      "name": "integration_record_delivered",
+      "description": "Local operator verifies exact source on the designated default and records shipped work.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -10994,102 +12149,52 @@
             "title": "Task Id",
             "type": "string"
           },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "title": "Source Sha",
+            "type": "string"
+          },
+          "base_sha": {
+            "title": "Base Sha",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "tests": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tests",
+            "type": "array"
+          },
+          "commands": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
           "dry_run": {
             "default": true,
             "title": "Dry Run",
             "type": "boolean"
-          },
-          "expected_head_sha": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Head Sha"
           }
         },
         "required": [
-          "task_id"
+          "task_id",
+          "project_id",
+          "source_sha",
+          "base_sha",
+          "reason"
         ],
-        "title": "IntegrationRebindRepairArgs",
-        "type": "object"
-      }
-    },
-    "integration_reconcile_promotion": {
-      "name": "integration_reconcile_promotion",
-      "description": "Compare a durable prepared intent with the remote and finalize its receipt.",
-      "input_schema": {
-        "$defs": {
-          "BranchKey": {
-            "additionalProperties": false,
-            "properties": {
-              "repository_id": {
-                "title": "Repository Id",
-                "type": "string"
-              },
-              "branch": {
-                "title": "Branch",
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository_id",
-              "branch"
-            ],
-            "title": "BranchKey",
-            "type": "object"
-          },
-          "Fence": {
-            "additionalProperties": false,
-            "properties": {
-              "target": {
-                "$ref": "#/$defs/BranchKey"
-              },
-              "owner_id": {
-                "title": "Owner Id",
-                "type": "string"
-              },
-              "token": {
-                "title": "Token",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "target",
-              "owner_id",
-              "token"
-            ],
-            "title": "Fence",
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "intent_id": {
-            "title": "Intent Id",
-            "type": "string"
-          },
-          "fence": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/Fence"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Current reserved collector fence; enables recovery of unapplied child intents."
-          }
-        },
-        "required": [
-          "intent_id"
-        ],
-        "title": "IntegrationReconcilePromotionArgs",
+        "title": "IntegrationRecordDeliveredArgs",
         "type": "object"
       }
     },
@@ -11142,38 +12247,15 @@
         "type": "object"
       }
     },
-    "integration_recover_candidate_member": {
-      "name": "integration_recover_candidate_member",
-      "description": "Accept one valid frozen repair or retain its failed invariant for a fresh recovery.",
+    "integration_record_root_noop": {
+      "name": "integration_record_root_noop",
+      "description": "Preview or complete an unheld root with exact no-artifact Git provenance.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "reservation_id": {
+          "task_id": {
             "minLength": 1,
-            "title": "Reservation Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "reservation_id"
-        ],
-        "title": "IntegrationRecoverCandidateMemberArgs",
-        "type": "object"
-      }
-    },
-    "integration_recover_parent_head": {
-      "name": "integration_recover_parent_head",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "operation_id": {
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "head_sha": {
-            "title": "Head Sha",
+            "title": "Task Id",
             "type": "string"
           },
           "dry_run": {
@@ -11181,7 +12263,7 @@
             "title": "Dry Run",
             "type": "boolean"
           },
-          "expected_episode_id": {
+          "expected_head_sha": {
             "anyOf": [
               {
                 "type": "string"
@@ -11191,158 +12273,18 @@
               }
             ],
             "default": null,
-            "title": "Expected Episode Id"
-          },
-          "expected_generation": {
-            "anyOf": [
-              {
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Generation"
-          },
-          "expected_stage": {
-            "anyOf": [
-              {
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Stage"
-          },
-          "expected_fence_token": {
-            "anyOf": [
-              {
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Fence Token"
+            "title": "Expected Head Sha"
           },
           "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "operation_id",
-          "head_sha"
-        ],
-        "title": "IntegrationRecoverParentHeadArgs",
-        "type": "object"
-      }
-    },
-    "integration_recover_preserved_repair": {
-      "name": "integration_recover_preserved_repair",
-      "description": "Authenticated hierarchical integration operational control.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "operation_id": {
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "intent_id": {
-            "minLength": 1,
-            "title": "Intent Id",
-            "type": "string"
-          },
-          "candidate_sha": {
-            "title": "Candidate Sha",
-            "type": "string"
-          },
-          "dry_run": {
-            "default": true,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "expected_stage": {
-            "anyOf": [
-              {
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Stage"
-          },
-          "expected_released_fence": {
-            "anyOf": [
-              {
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Released Fence"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "operation_id",
-          "intent_id",
-          "candidate_sha"
-        ],
-        "title": "IntegrationRecoverPreservedRepairArgs",
-        "type": "object"
-      }
-    },
-    "integration_recover_unwritten_resolution": {
-      "name": "integration_recover_unwritten_resolution",
-      "description": "Supersede a malformed reservation only after an operator proves no remote write occurred.",
-      "input_schema": {
-        "additionalProperties": false,
-        "description": "Operator recovery of a malformed reservation which never wrote remotely.",
-        "properties": {
-          "intent_id": {
-            "minLength": 1,
-            "title": "Intent Id",
+            "default": "",
+            "title": "Reason",
             "type": "string"
           }
         },
         "required": [
-          "intent_id"
+          "task_id"
         ],
-        "title": "IntegrationRecoverUnwrittenResolutionArgs",
+        "title": "IntegrationRecordRootNoopArgs",
         "type": "object"
       }
     },
@@ -11555,6 +12497,30 @@
           "operation_id"
         ],
         "title": "IntegrationReevaluateRepairArgs",
+        "type": "object"
+      }
+    },
+    "integration_refresh_epic": {
+      "name": "integration_refresh_epic",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "IntegrationRefreshEpicArgs",
         "type": "object"
       }
     },
@@ -11953,178 +12919,103 @@
         "type": "object"
       }
     },
-    "integration_resolve_candidate_member": {
-      "name": "integration_resolve_candidate_member",
-      "description": "Reserve, publish, accept, and continue the exact conflicted candidate member owned by the authenticated repair session.",
+    "integration_resume_batch": {
+      "name": "integration_resume_batch",
+      "description": "Authenticated hierarchical integration operational control.",
       "input_schema": {
         "additionalProperties": false,
-        "description": "Publish the exact repair produced by this session's candidate-member assignment.",
         "properties": {
-          "resolved_head_sha": {
-            "title": "Resolved Head Sha",
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
             "type": "string"
           },
-          "resolved_tree_sha": {
-            "title": "Resolved Tree Sha",
+          "reason": {
+            "default": "",
+            "title": "Reason",
             "type": "string"
           },
-          "repair_commit_shas": {
-            "items": {
-              "type": "string"
-            },
-            "minItems": 1,
-            "title": "Repair Commit Shas",
-            "type": "array"
-          },
-          "claim_epoch": {
-            "anyOf": [
-              {
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Claim Epoch"
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Task Id"
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Session Id"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Project Id"
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
           }
         },
         "required": [
-          "resolved_head_sha",
-          "resolved_tree_sha",
-          "repair_commit_shas"
+          "batch_id"
         ],
-        "title": "IntegrationResolveCandidateMemberArgs",
+        "title": "IntegrationAbortBatchArgs",
         "type": "object"
       }
     },
-    "integration_resolve_conflict": {
-      "name": "integration_resolve_conflict",
-      "description": "Freeze an active repair session's exact conflict resolution before push.",
+    "integration_retire_legacy_park": {
+      "name": "integration_retire_legacy_park",
+      "description": "Local operator abandons every explicitly selected source under an exact journal fence.",
       "input_schema": {
-        "$defs": {
-          "BranchKey": {
-            "additionalProperties": false,
-            "properties": {
-              "repository_id": {
-                "title": "Repository Id",
-                "type": "string"
-              },
-              "branch": {
-                "title": "Branch",
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository_id",
-              "branch"
-            ],
-            "title": "BranchKey",
-            "type": "object"
-          },
-          "Fence": {
-            "additionalProperties": false,
-            "properties": {
-              "target": {
-                "$ref": "#/$defs/BranchKey"
-              },
-              "owner_id": {
-                "title": "Owner Id",
-                "type": "string"
-              },
-              "token": {
-                "title": "Token",
-                "type": "integer"
-              }
-            },
-            "required": [
-              "target",
-              "owner_id",
-              "token"
-            ],
-            "title": "Fence",
-            "type": "object"
-          }
-        },
         "additionalProperties": false,
         "properties": {
-          "intent_id": {
-            "title": "Intent Id",
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
             "type": "string"
           },
           "operation_id": {
+            "minLength": 1,
             "title": "Operation Id",
             "type": "string"
           },
-          "resolved_head_sha": {
-            "title": "Resolved Head Sha",
-            "type": "string"
-          },
-          "resolved_tree_sha": {
-            "title": "Resolved Tree Sha",
-            "type": "string"
-          },
-          "repair_commit_shas": {
+          "task_ids": {
             "items": {
               "type": "string"
             },
             "minItems": 1,
-            "title": "Repair Commit Shas",
+            "title": "Task Ids",
             "type": "array"
           },
-          "fence": {
-            "$ref": "#/$defs/Fence"
+          "expected_event_id": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Event Id"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Sha256"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
           }
         },
         "required": [
-          "intent_id",
+          "project_id",
           "operation_id",
-          "resolved_head_sha",
-          "resolved_tree_sha",
-          "repair_commit_shas",
-          "fence"
+          "task_ids",
+          "reason"
         ],
-        "title": "IntegrationResolveConflictArgs",
+        "title": "IntegrationRetireLegacyParkArgs",
         "type": "object"
       }
     },
@@ -12170,9 +13061,9 @@
         "type": "object"
       }
     },
-    "integration_schedule_due": {
-      "name": "integration_schedule_due",
-      "description": "Coalesce a periodic or manual trigger into one durable sweep request.",
+    "integration_seal_now": {
+      "name": "integration_seal_now",
+      "description": "Authenticated hierarchical integration operational control.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -12181,62 +13072,16 @@
             "title": "Project Id",
             "type": "string"
           },
-          "now": {
-            "title": "Now",
-            "type": "number"
-          },
-          "trigger": {
-            "enum": [
-              "periodic",
-              "manual"
-            ],
-            "title": "Trigger",
-            "type": "string"
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
           }
         },
         "required": [
-          "project_id",
-          "now",
-          "trigger"
+          "project_id"
         ],
-        "title": "IntegrationScheduleDueArgs",
-        "type": "object"
-      }
-    },
-    "integration_seal": {
-      "name": "integration_seal",
-      "description": "Atomically snapshot the full eligible integration frontier.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "request_id": {
-            "minLength": 1,
-            "title": "Request Id",
-            "type": "string"
-          },
-          "now": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Now"
-          }
-        },
-        "required": [
-          "project_id",
-          "request_id"
-        ],
-        "title": "IntegrationSealArgs",
+        "title": "IntegrationSealNowArgs",
         "type": "object"
       }
     },
@@ -12335,8 +13180,51 @@
     },
     "integration_trust_manifest": {
       "name": "integration_trust_manifest",
-      "description": "Render the App-mode trust manifest from the policy, the authenticated binding and the daemon's App, and compare the default-branch copy.",
+      "description": "Render the App-mode trust manifest from a full or hosted-check policy, the authenticated binding and the daemon's App, and compare the default-branch copy.",
       "input_schema": {
+        "$defs": {
+          "HostedCheckPolicy": {
+            "additionalProperties": false,
+            "description": "CI inputs for trust bootstrap, independent of hierarchical routing.",
+            "properties": {
+              "version": {
+                "minLength": 1,
+                "title": "Version",
+                "type": "string"
+              },
+              "names": {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "title": "Names",
+                "type": "array"
+              },
+              "producer_id": {
+                "pattern": "^[1-9][0-9]*$",
+                "title": "Producer Id",
+                "type": "string"
+              },
+              "check_sets": {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "title": "Check Sets",
+                "type": "object"
+              }
+            },
+            "required": [
+              "version",
+              "names",
+              "producer_id"
+            ],
+            "title": "HostedCheckPolicy",
+            "type": "object"
+          }
+        },
         "additionalProperties": false,
         "properties": {
           "project_id": {
@@ -12369,6 +13257,17 @@
             ],
             "default": null,
             "title": "Repository Id"
+          },
+          "hosted_check_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HostedCheckPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -13841,6 +14740,694 @@
         }
       }
     },
+    "promote_approve": {
+      "name": "promote_approve",
+      "description": "Post a pinned GitHub approval using the authenticated human gh login.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "request_id": {
+            "description": "Promotion request identity returned by request.",
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "request_id"
+        ],
+        "title": "PromoteIntentArgs",
+        "type": "object"
+      }
+    },
+    "promote_cancel": {
+      "name": "promote_cancel",
+      "description": "Close an unpublished promotion PR and abort its intent.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "request_id": {
+            "description": "Promotion request identity returned by request.",
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "request_id"
+        ],
+        "title": "PromoteIntentArgs",
+        "type": "object"
+      }
+    },
+    "promote_hotfix": {
+      "name": "promote_hotfix",
+      "description": "File a hotfix based on a promotion target, through ordinary task routing.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "From Task"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id",
+          "title"
+        ],
+        "title": "PromoteHotfixArgs",
+        "type": "object"
+      }
+    },
+    "promote_list": {
+      "name": "promote_list",
+      "description": "List promotion history using the local evidence cache.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict cached results to this step.",
+            "title": "Step Id"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum cached intents to return.",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "PromoteReadArgs",
+        "type": "object"
+      }
+    },
+    "promote_prepare": {
+      "name": "promote_prepare",
+      "description": "File ordinary release preparation on the repository default branch.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Version"
+          },
+          "bump": {
+            "anyOf": [
+              {
+                "enum": [
+                  "minor",
+                  "patch"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bump"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "From Task"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "PromotePrepareArgs",
+        "type": "object"
+      }
+    },
+    "promote_repair": {
+      "name": "promote_repair",
+      "description": "Back up and restore a stranded promotion task the train refuses.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "request_id": {
+            "description": "Promotion request identity returned by request.",
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "request_id"
+        ],
+        "title": "PromoteIntentArgs",
+        "type": "object"
+      }
+    },
+    "promote_request": {
+      "name": "promote_request",
+      "description": "Open an idempotent promotion intent and a PR pinned to its source commit.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "description": "Configured promotion step id.",
+            "minLength": 1,
+            "title": "Step Id",
+            "type": "string"
+          },
+          "source_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Exact commit to pin; defaults to the source branch tip.",
+            "title": "Source Sha"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Version at the pinned source; required for custom tags.",
+            "title": "Version"
+          },
+          "notes_reviewed": {
+            "default": false,
+            "description": "Acknowledge reading the notes at the pinned source.",
+            "title": "Notes Reviewed",
+            "type": "boolean"
+          },
+          "from_task": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Completed hotfix task to promote.",
+            "title": "From Task"
+          }
+        },
+        "required": [
+          "project_id",
+          "step_id"
+        ],
+        "title": "PromoteRequestArgs",
+        "type": "object"
+      }
+    },
+    "promote_rulesets": {
+      "name": "promote_rulesets",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "flow": {
+            "default": null,
+            "title": "Flow"
+          },
+          "use_stored": {
+            "default": true,
+            "title": "Use Stored",
+            "type": "boolean"
+          },
+          "remote": {
+            "default": false,
+            "title": "Remote",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "PromoteValidateArgs",
+        "type": "object"
+      }
+    },
+    "promote_schema": {
+      "name": "promote_schema",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "PromoteSchemaArgs",
+        "type": "object"
+      }
+    },
+    "promote_status": {
+      "name": "promote_status",
+      "description": "Read promotion intents and cached check and PR review evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "description": "Project owning the configured promotion flow.",
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Restrict cached results to this step.",
+            "title": "Step Id"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Maximum cached intents to return.",
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "PromoteReadArgs",
+        "type": "object"
+      }
+    },
+    "promote_validate": {
+      "name": "promote_validate",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "flow": {
+            "default": null,
+            "title": "Flow"
+          },
+          "use_stored": {
+            "default": true,
+            "title": "Use Stored",
+            "type": "boolean"
+          },
+          "remote": {
+            "default": false,
+            "title": "Remote",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "PromoteValidateArgs",
+        "type": "object"
+      }
+    },
     "provider_availability_notify": {
       "name": "provider_availability_notify",
       "description": "Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing.",
@@ -13870,6 +15457,22 @@
         ],
         "title": "ProviderAvailabilityNotifyArgs",
         "type": "object"
+      }
+    },
+    "reconcile_agent_cron": {
+      "name": "reconcile_agent_cron",
+      "description": "Execute the reconcile_agent_cron command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "now": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
       }
     },
     "reconcile_agent_waits": {
@@ -14400,6 +16003,9 @@
     }
   },
   "categories": {
+    "operator": "Scoped operator setup and preflight",
+    "policy": "Portable project policy profiles: export, diff and selective import",
+    "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
     "project": "Project CRUD, workspace management, project metadata (repo URL, GitHub URL, workspace path)",
     "agent": "Agent management, agent profiles, profile import/export",
@@ -14435,6 +16041,11 @@
     "graph": "Server-side spatial task-graph layout \u2014 synchronous rebuild and tidy jobs"
   },
   "tool_categories": {
+    "operator_execute": "operator",
+    "operator_preflight": "operator",
+    "policy_export": "policy",
+    "policy_diff": "policy",
+    "policy_apply": "policy",
     "decision_record": "decision",
     "decision_list": "decision",
     "object_loop_start": "task",
@@ -14453,11 +16064,13 @@
     "discord_purge_channel": "discord",
     "list_projects": "project",
     "create_project": "project",
+    "project_doctor": "project",
     "pause_project": "project",
     "resume_project": "project",
     "set_project_constraint": "project",
     "release_project_constraint": "project",
     "edit_project": "project",
+    "bind_project_repository": "project",
     "set_default_branch": "project",
     "get_project": "project",
     "delete_project": "project",
@@ -14536,6 +16149,7 @@
     "review_show": "review",
     "review_list": "review",
     "review_withdraw": "review",
+    "review_reopen": "review",
     "review_decide": "review",
     "approve_pull_request": "review",
     "review_comment": "review",
@@ -14559,6 +16173,10 @@
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "cron_register": "cron",
+    "cron_get": "cron",
+    "cron_list": "cron",
+    "cron_cancel": "cron",
     "collaboration_create": "collaboration",
     "collaboration_accept": "collaboration",
     "collaboration_get": "collaboration",
@@ -14584,6 +16202,7 @@
     "task_recover": "task",
     "reopen_with_feedback": "task",
     "delete_task": "task",
+    "remove_task": "task",
     "skip_task": "task",
     "set_task_status": "task",
     "archive_task": "task",
@@ -14729,6 +16348,7 @@
     "session_logs": "system",
     "session_kill": "system",
     "session_prune": "system",
+    "session_cleanup": "system",
     "session_sleep": "system",
     "session_wake": "system",
     "supervisor_restart": "supervisor",
@@ -14762,6 +16382,7 @@
     "provider_allocation_preview": "provider",
     "provider_allocation_apply": "provider",
     "pool_status": "pool",
+    "pool_rename": "pool",
     "pool_scale": "pool",
     "pool_set_lifecycle": "pool",
     "pool_set_enabled": "pool",

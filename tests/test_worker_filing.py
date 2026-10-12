@@ -550,6 +550,20 @@ async def test_local_task_creation_does_not_accept_spoofed_session_provenance(ha
     assert created.created_by_kind is None and created.created_by_id is None
 
 
+async def test_worker_ensure_task_cannot_claim_an_internal_origin(handler, db):
+    # ``ensure_task`` forwards an internal filer's origin (source-CI repair) to
+    # ``create_task``, whose worker guard still owns provenance.
+    sid = await holding_session(db)
+    result = await scoped(handler, sid)._cmd_ensure_task({
+        "project_id": PROJECT_ID, "dedup_key": "claimed-origin", "title": "Claimed",
+        "reason": "found it",
+        "_created_by_kind": "source_ci_repair", "_created_by_id": "source-ci:x",
+    })
+    assert result["success"] is True, result
+    created = await db.get_task(result["task_id"])
+    assert (created.created_by_kind, created.created_by_id) == ("session", sid)
+
+
 class TestWorkerGraphContainer:
     """A worker graph's ``parent:`` block creates its container (bold-flare-35).
 

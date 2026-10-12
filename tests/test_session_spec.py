@@ -759,6 +759,9 @@ class TestPromptDelivery:
         assert "FIX what it finds" in prompt
         assert "no scheduler" in prompt and "start of every turn" in prompt
         assert "re-establish it after any restart" in prompt
+        assert "SWEEP-AUTH" in prompt
+        assert "remaining checks and report that single error with its recovery command" in prompt
+        assert "aq session token <session-id> --json" in prompt
         assert "Do not run background inbox polls or shell sleep loops" in prompt
         assert "Do not run `aq prime`" in prompt
         if project_id is None:
@@ -1073,6 +1076,16 @@ class TestWorkerToolEnv:
         # Alongside, not instead of, the pool's own markers.
         assert spec.env["AQ_SESSION_KIND"] == "pool"
         assert spec.env["AQ_AGENT_ID"] == "agent-1"
+
+    def test_pool_prompt_stops_repeated_blocker_polling(self, builder):
+        prompt = self._pool(builder).prompt
+        assert "three identical preparation refusals" in prompt
+        assert "respect `retry_after`" in prompt
+        assert "report the blocker ONCE" in prompt
+        assert "ONE durable message wait" in prompt
+        assert "drain-ack" in prompt
+        assert "Do not poll claims" in prompt
+        assert "daemon_unreachable / exit code 3, keep retrying" in prompt
 
     def test_a_named_session_does_not(self, builder):
         spec = builder.build_named_spec(

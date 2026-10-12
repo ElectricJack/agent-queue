@@ -1,34 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_by": "scripts/generate-cli-command-inventory.py",
-  "counts": {
-    "leaf_commands": 507,
-    "registration": {
-      "generated": 345,
-      "handwritten": 162
-    },
-    "ownership": {
-      "core": 468,
-      "external-plugin": 2,
-      "internal-plugin": 37
-    },
-    "support": {
-      "deprecated": 1,
-      "supported": 506
-    },
-    "evidence_level": {
-      "behavioral": 14,
-      "dispatch": 345,
-      "registration": 148
-    },
-    "acceptance_status": {
-      "working": 59,
-      "broken": 0,
-      "obsolete": 1,
-      "unsupported": 0,
-      "untested": 447
-    }
-  },
   "commands": [
     {
       "path": "aq agent check-profile",
@@ -1164,6 +1136,143 @@
       }
     },
     {
+      "path": "aq cron cancel",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.cron.cron_cancel",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "schedule_id"
+        ],
+        "optional": [
+          "--session-id",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq cron list",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.cron.cron_list",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--session-id",
+          "--limit",
+          "--offset",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq cron register",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.cron.cron_register",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--prompt",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--every",
+          "--offset",
+          "--cron",
+          "--timezone",
+          "--session-id",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq cron show",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.cron.cron_show",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "schedule_id"
+        ],
+        "optional": [
+          "--consume",
+          "--session-id",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq dashboard link",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -1489,6 +1598,36 @@
       }
     },
     {
+      "path": "aq db backup",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.db.db_backup",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "destination",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq db current",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -1540,6 +1679,39 @@
         ],
         "optional": [
           "--yes",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq db restore",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.db.db_restore",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "dump"
+        ],
+        "optional": [
+          "--accept-data-loss",
+          "--force",
           "--json",
           "--brief",
           "--save-output",
@@ -3859,6 +4031,7 @@
           "--to-kind",
           "--to-id",
           "--inject",
+          "--include-consumed",
           "--limit",
           "--json",
           "--brief",
@@ -4005,6 +4178,7 @@
         "optional": [
           "--policy",
           "--repository-id",
+          "--repository-access-only",
           "--json",
           "--brief",
           "--save-output",
@@ -4084,6 +4258,77 @@
       }
     },
     {
+      "path": "aq integration cutover",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_cutover",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project"
+        ],
+        "optional": [
+          "--flow",
+          "--reverse",
+          "--allow-epics",
+          "--apply",
+          "--expected-generation",
+          "--plan",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration cutover-plan",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_cutover_plan",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project"
+        ],
+        "optional": [
+          "--flow",
+          "--reverse",
+          "--allow-epics",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration development-engine-transfer",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -4109,6 +4354,40 @@
           "--expected-subject",
           "--reason",
           "--evidence",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration eject",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_eject",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch",
+          "--task"
+        ],
+        "optional": [
+          "--reason",
           "--apply",
           "--json",
           "--brief",
@@ -4157,12 +4436,12 @@
       }
     },
     {
-      "path": "aq integration rebind-detached-repair",
+      "path": "aq integration migrate-provenance-refs",
       "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": null,
-      "callback": "src.cli.integration.integration_rebind_detached_repair",
+      "callback": "src.cli.integration.integration_migrate_provenance_refs",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
@@ -4175,13 +4454,12 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "operation_id"
+          "project_id"
         ],
         "optional": [
-          "--dry-run",
-          "--stage",
-          "--remote-head",
-          "--reason",
+          "--apply",
+          "--limit",
+          "--checkout",
           "--json",
           "--brief",
           "--save-output",
@@ -4192,12 +4470,12 @@
       }
     },
     {
-      "path": "aq integration rebind-repair",
+      "path": "aq integration pause-batch",
       "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": null,
-      "callback": "src.cli.integration.integration_rebind_repair",
+      "callback": "src.cli.integration.integration_pause_batch",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
@@ -4210,11 +4488,11 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--task-id"
+          "batch_id"
         ],
         "optional": [
-          "--dry-run",
-          "--head",
+          "--reason",
+          "--apply",
           "--json",
           "--brief",
           "--save-output",
@@ -4257,12 +4535,12 @@
       }
     },
     {
-      "path": "aq integration recover-candidate-member",
+      "path": "aq integration record-root-noop",
       "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": null,
-      "callback": "src.cli.integration.integration_recover_candidate_member",
+      "callback": "src.cli.integration.integration_record_root_noop",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
@@ -4275,83 +4553,11 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "reservation_id"
+          "task_id"
         ],
         "optional": [
-          "--json",
-          "--brief",
-          "--save-output",
-          "--api-url"
-        ],
-        "structured": [],
-        "nullable": []
-      }
-    },
-    {
-      "path": "aq integration recover-parent-head",
-      "registration": "handwritten",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": null,
-      "callback": "src.cli.integration.integration_recover_parent_head",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "registration",
-      "evidence": [
-        "click-registration"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "operation_id",
-          "--head"
-        ],
-        "optional": [
-          "--dry-run",
-          "--episode",
-          "--generation",
-          "--stage",
-          "--fence",
-          "--reason",
-          "--json",
-          "--brief",
-          "--save-output",
-          "--api-url"
-        ],
-        "structured": [],
-        "nullable": []
-      }
-    },
-    {
-      "path": "aq integration recover-preserved-repair",
-      "registration": "handwritten",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": null,
-      "callback": "src.cli.integration.integration_recover_preserved_repair",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "registration",
-      "evidence": [
-        "click-registration"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "operation_id",
-          "--intent",
-          "--candidate"
-        ],
-        "optional": [
-          "--dry-run",
-          "--stage",
-          "--released-fence",
+          "--apply",
+          "--head",
           "--reason",
           "--json",
           "--brief",
@@ -4460,6 +4666,38 @@
           "--fence",
           "--snapshot",
           "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration refresh-epic",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_refresh_epic",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task"
+        ],
+        "optional": [
+          "--apply",
           "--json",
           "--brief",
           "--save-output",
@@ -4635,12 +4873,12 @@
       }
     },
     {
-      "path": "aq integration resolve-candidate-member",
+      "path": "aq integration resume-batch",
       "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": null,
-      "callback": "src.cli.integration.integration_resolve_candidate_member",
+      "callback": "src.cli.integration.integration_resume_batch",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
@@ -4653,12 +4891,11 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--resolved-head-sha",
-          "--resolved-tree-sha",
-          "--repair-commit-sha"
+          "batch_id"
         ],
         "optional": [
-          "--claim-epoch",
+          "--reason",
+          "--apply",
           "--json",
           "--brief",
           "--save-output",
@@ -4692,6 +4929,38 @@
         "optional": [
           "--origin-id",
           "--reason",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration seal-now",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_seal_now",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project"
+        ],
+        "optional": [
           "--apply",
           "--json",
           "--brief",
@@ -4758,6 +5027,7 @@
         ],
         "optional": [
           "--policy",
+          "--hosted-check-policy",
           "--repository-id",
           "--write",
           "--check",
@@ -6456,6 +6726,7 @@
           "--to-kind",
           "--to-id",
           "--inject",
+          "--include-consumed",
           "--limit",
           "--json",
           "--brief",
@@ -6910,6 +7181,107 @@
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq operator execute",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "operator_execute",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--command"
+        ],
+        "optional": [
+          "--arguments",
+          "--decision-id",
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--preflight-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--arguments"
+        ],
+        "nullable": [
+          "--decision-id",
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--preflight-id"
+        ]
+      }
+    },
+    {
+      "path": "aq operator preflight",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "operator_preflight",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--actions"
+        ],
+        "optional": [
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--branches",
+          "--runner-labels",
+          "--app-ids",
+          "--policy",
+          "--repository-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--actions",
+          "--branches",
+          "--runner-labels",
+          "--app-ids",
+          "--policy"
+        ],
+        "nullable": [
+          "--project-id",
+          "--task-id",
+          "--session-id",
+          "--repository-id"
+        ]
       }
     },
     {
@@ -8352,6 +8724,115 @@
       }
     },
     {
+      "path": "aq policy apply",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.policy.policy_apply",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "path"
+        ],
+        "optional": [
+          "--no-overwrite",
+          "--set",
+          "--scope",
+          "--skip",
+          "--only",
+          "--yes",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq policy diff",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.policy.policy_diff",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "path"
+        ],
+        "optional": [
+          "--no-overwrite",
+          "--set",
+          "--scope",
+          "--skip",
+          "--only",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq policy export",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.policy.policy_export",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "--out"
+        ],
+        "optional": [
+          "--name",
+          "--yes",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq pool provider apply",
       "registration": "generated",
       "owner_kind": "core",
@@ -8454,6 +8935,41 @@
         "optional": [
           "--project-id",
           "--provider",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq pool rename",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "pool_rename",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--profile-id",
+          "--name"
+        ],
+        "optional": [
           "--json",
           "--brief",
           "--save-output",
@@ -8686,6 +9202,41 @@
       }
     },
     {
+      "path": "aq project bind-repository",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "bind_project_repository",
+      "callback": "src.cli.projects.project_bind_repository",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id",
+          "--repo-url",
+          "--expected-repo-url",
+          "--reason"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq project browse-root",
       "registration": "generated",
       "owner_kind": "core",
@@ -8722,20 +9273,18 @@
     },
     {
       "path": "aq project create",
-      "registration": "generated",
+      "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": "create_project",
-      "callback": "src.cli.auto_commands.callback",
+      "callback": "src.cli.projects.project_create",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
       "unsupported_reason": null,
-      "evidence_level": "dispatch",
+      "evidence_level": "registration",
       "evidence": [
         "click-registration",
-        "json-schema",
-        "mock-dispatch",
         "core-handler"
       ],
       "acceptance_status": "working",
@@ -8747,10 +9296,16 @@
           "--name"
         ],
         "optional": [
-          "--credit-weight",
-          "--max-concurrent-agents",
+          "--from-policy",
           "--repo-url",
           "--default-branch",
+          "--create-repo",
+          "--private",
+          "--root-id",
+          "--relative-path",
+          "--request-id",
+          "--credit-weight",
+          "--max-concurrent-agents",
           "--json",
           "--brief",
           "--save-output",
@@ -8823,6 +9378,96 @@
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq project doctor",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "project_doctor",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq project edit",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "edit_project",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--name",
+          "--supervisor-enabled",
+          "--credit-weight",
+          "--max-concurrent-agents",
+          "--budget-limit",
+          "--assignment-playbook-id",
+          "--repo-default-branch",
+          "--review-delegate-to",
+          "--git-identity-name",
+          "--git-identity-email",
+          "--integration-repository-id",
+          "--hierarchical-integration-policy",
+          "--hierarchical-integration-mode",
+          "--promotion-flow",
+          "--expected-integration-generation",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--hierarchical-integration-policy",
+          "--promotion-flow"
+        ],
+        "nullable": [
+          "--budget-limit",
+          "--integration-repository-id"
+        ]
       }
     },
     {
@@ -9193,6 +9838,7 @@
           "--project-id"
         ],
         "optional": [
+          "--from-policy",
           "--request-id",
           "--source-mode",
           "--default-branch",
@@ -9203,6 +9849,9 @@
           "--github-visibility",
           "--github-repository",
           "--github-url",
+          "--repo-url",
+          "--create-repo",
+          "--private",
           "--json",
           "--brief",
           "--save-output",
@@ -9630,6 +10279,371 @@
           "--workspace-id",
           "--all-retired",
           "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote approve",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_approve",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "request_id",
+          "--project"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote cancel",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_cancel",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "request_id",
+          "--project"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote hotfix",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_hotfix",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "--step",
+          "--title"
+        ],
+        "optional": [
+          "--description",
+          "--from-task",
+          "--version",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote list",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_list",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project"
+        ],
+        "optional": [
+          "--step",
+          "--limit",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote prepare",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_prepare",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "--step"
+        ],
+        "optional": [
+          "--bump",
+          "--version",
+          "--from-task",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote repair",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_repair",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "request_id",
+          "--project"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote request",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_request",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "--step"
+        ],
+        "optional": [
+          "--from",
+          "--version",
+          "--notes-reviewed",
+          "--from-task",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote rulesets",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "promote_rulesets",
+      "callback": "src.cli.promote_rulesets.promote_rulesets",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project"
+        ],
+        "optional": [
+          "--file",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote schema",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "promote_schema",
+      "callback": "src.cli.promote.promote_schema",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote status",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.promote.promote_status",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project"
+        ],
+        "optional": [
+          "--step",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq promote validate",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "promote_validate",
+      "callback": "src.cli.promote.promote_validate",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project"
+        ],
+        "optional": [
+          "--file",
+          "--remote",
           "--json",
           "--brief",
           "--save-output",
@@ -11104,6 +12118,41 @@
       }
     },
     {
+      "path": "aq review reopen",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "review_reopen",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--review-id",
+          "--revision"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq review show",
       "registration": "generated",
       "owner_kind": "core",
@@ -11457,6 +12506,37 @@
         "required": [],
         "optional": [
           "session_id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq session cleanup",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.sessions.session_cleanup",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
@@ -12594,47 +13674,6 @@
       }
     },
     {
-      "path": "aq system delivery-promote",
-      "registration": "generated",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": "delivery_promote",
-      "callback": "src.cli.auto_commands.callback",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "dispatch",
-      "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "--operation-key",
-          "--source-task-id",
-          "--source-head",
-          "--source-base",
-          "--expected-target",
-          "--fence"
-        ],
-        "optional": [
-          "--json",
-          "--brief",
-          "--save-output",
-          "--api-url"
-        ],
-        "structured": [
-          "--fence"
-        ],
-        "nullable": []
-      }
-    },
-    {
       "path": "aq system delivery-receipts",
       "registration": "generated",
       "owner_kind": "core",
@@ -13265,11 +14304,11 @@
       }
     },
     {
-      "path": "aq system integration-build-candidate",
+      "path": "aq system integration-backmerge-source",
       "registration": "generated",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "integration_build_candidate",
+      "backend_command": "integration_backmerge_source",
       "callback": "src.cli.auto_commands.callback",
       "support": "supported",
       "alias_for": null,
@@ -13286,11 +14325,12 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--batch-id"
+          "--project-id",
+          "--step-id"
         ],
         "optional": [
-          "--expected-revision",
-          "--expected-base-sha",
+          "--task-id",
+          "--session-id",
           "--json",
           "--brief",
           "--save-output",
@@ -13298,8 +14338,8 @@
         ],
         "structured": [],
         "nullable": [
-          "--expected-revision",
-          "--expected-base-sha"
+          "--task-id",
+          "--session-id"
         ]
       }
     },
@@ -13445,6 +14485,94 @@
       }
     },
     {
+      "path": "aq system integration-cutover",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_cutover",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--flow",
+          "--allow-epics",
+          "--reverse",
+          "--dry-run",
+          "--expected-generation",
+          "--baseline",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--baseline"
+        ],
+        "nullable": [
+          "--expected-generation"
+        ]
+      }
+    },
+    {
+      "path": "aq system integration-cutover-plan",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_cutover_plan",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--flow",
+          "--allow-epics",
+          "--reverse",
+          "--dry-run",
+          "--expected-generation",
+          "--baseline",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--baseline"
+        ],
+        "nullable": [
+          "--expected-generation"
+        ]
+      }
+    },
+    {
       "path": "aq system integration-delivery-readiness",
       "registration": "generated",
       "owner_kind": "core",
@@ -13543,10 +14671,11 @@
       "parameters": {
         "required": [
           "--batch-id",
-          "--task-id",
-          "--reason"
+          "--task-id"
         ],
         "optional": [
+          "--reason",
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
@@ -13640,6 +14769,45 @@
       }
     },
     {
+      "path": "aq system integration-migrate-provenance-refs",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_migrate_provenance_refs",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--dry-run",
+          "--limit",
+          "--checkout",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--checkout"
+        ]
+      }
+    },
+    {
       "path": "aq system integration-mutate-hierarchy",
       "registration": "generated",
       "owner_kind": "core",
@@ -13698,20 +14866,14 @@
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [
-          "--subject-id",
-          "--expected-version",
-          "--request"
-        ],
+        "required": [],
         "optional": [
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
-        "structured": [
-          "--request"
-        ],
+        "structured": [],
         "nullable": []
       }
     },
@@ -13755,11 +14917,11 @@
       }
     },
     {
-      "path": "aq system integration-promote-main",
+      "path": "aq system integration-pause-batch",
       "registration": "generated",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "integration_promote_main",
+      "backend_command": "integration_pause_batch",
       "callback": "src.cli.auto_commands.callback",
       "support": "supported",
       "alias_for": null,
@@ -13776,8 +14938,132 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--batch-id",
-          "--revision"
+          "--batch-id"
+        ],
+        "optional": [
+          "--reason",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-promotion-notes-input",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_promotion_notes_input",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--step-id"
+        ],
+        "optional": [
+          "--task-id",
+          "--session-id",
+          "--source-sha",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--task-id",
+          "--session-id",
+          "--source-sha"
+        ]
+      }
+    },
+    {
+      "path": "aq system integration-promotion-policy-input",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_promotion_policy_input",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--step-id"
+        ],
+        "optional": [
+          "--task-id",
+          "--session-id",
+          "--source-sha",
+          "--version",
+          "--notes-reviewed",
+          "--from-task",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--task-id",
+          "--session-id",
+          "--source-sha",
+          "--version",
+          "--from-task"
+        ]
+      }
+    },
+    {
+      "path": "aq system integration-promotion-publish",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_promotion_publish",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id"
         ],
         "optional": [
           "--json",
@@ -13790,11 +15076,11 @@
       }
     },
     {
-      "path": "aq system integration-push-conflict-resolution",
+      "path": "aq system integration-quiesce",
       "registration": "generated",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "integration_push_conflict_resolution",
+      "backend_command": "integration_quiesce",
       "callback": "src.cli.auto_commands.callback",
       "support": "supported",
       "alias_for": null,
@@ -13811,27 +15097,32 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--intent-id",
-          "--fence"
+          "--project-id",
+          "--expected-generation",
+          "--subject-id",
+          "--expected-version",
+          "--reason"
         ],
         "optional": [
+          "--owners",
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [
-          "--fence"
+          "--owners"
         ],
         "nullable": []
       }
     },
     {
-      "path": "aq system integration-reconcile-promotion",
+      "path": "aq system integration-reconcile-expired-mutation",
       "registration": "generated",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "integration_reconcile_promotion",
+      "backend_command": "integration_reconcile_expired_mutation",
       "callback": "src.cli.auto_commands.callback",
       "support": "supported",
       "alias_for": null,
@@ -13848,17 +15139,64 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--intent-id"
+          "--project-id",
+          "--mutation-id",
+          "--expected-nonce",
+          "--expected-branch-fence",
+          "--expected-lease-fence",
+          "--reason"
         ],
         "optional": [
-          "--fence",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-record-delivered",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_record_delivered",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--project-id",
+          "--source-sha",
+          "--base-sha",
+          "--reason"
+        ],
+        "optional": [
+          "--tests",
+          "--commands",
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [
-          "--fence"
+          "--tests",
+          "--commands"
         ],
         "nullable": []
       }
@@ -13934,11 +15272,11 @@
       }
     },
     {
-      "path": "aq system integration-recover-unwritten-resolution",
+      "path": "aq system integration-refresh-epic",
       "registration": "generated",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "integration_recover_unwritten_resolution",
+      "backend_command": "integration_refresh_epic",
       "callback": "src.cli.auto_commands.callback",
       "support": "supported",
       "alias_for": null,
@@ -13955,9 +15293,10 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--intent-id"
+          "--task-id"
         ],
         "optional": [
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
@@ -14156,11 +15495,11 @@
       }
     },
     {
-      "path": "aq system integration-resolve-conflict",
+      "path": "aq system integration-resume-batch",
       "registration": "generated",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "integration_resolve_conflict",
+      "backend_command": "integration_resume_batch",
       "callback": "src.cli.auto_commands.callback",
       "support": "supported",
       "alias_for": null,
@@ -14177,24 +15516,63 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--intent-id",
-          "--operation-id",
-          "--resolved-head-sha",
-          "--resolved-tree-sha",
-          "--repair-commit-shas",
-          "--fence"
+          "--batch-id"
         ],
         "optional": [
+          "--reason",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-retire-legacy-park",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_retire_legacy_park",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--operation-id",
+          "--task-ids",
+          "--reason"
+        ],
+        "optional": [
+          "--expected-event-id",
+          "--expected-sha256",
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [
-          "--repair-commit-shas",
-          "--fence"
+          "--task-ids"
         ],
-        "nullable": []
+        "nullable": [
+          "--expected-event-id",
+          "--expected-sha256"
+        ]
       }
     },
     {
@@ -14237,11 +15615,11 @@
       }
     },
     {
-      "path": "aq system integration-schedule-due",
+      "path": "aq system integration-seal-now",
       "registration": "generated",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "integration_schedule_due",
+      "backend_command": "integration_seal_now",
       "callback": "src.cli.auto_commands.callback",
       "support": "supported",
       "alias_for": null,
@@ -14258,11 +15636,10 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--project-id",
-          "--now",
-          "--trigger"
+          "--project-id"
         ],
         "optional": [
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
@@ -14270,44 +15647,6 @@
         ],
         "structured": [],
         "nullable": []
-      }
-    },
-    {
-      "path": "aq system integration-seal",
-      "registration": "generated",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": "integration_seal",
-      "callback": "src.cli.auto_commands.callback",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "dispatch",
-      "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "--project-id",
-          "--request-id"
-        ],
-        "optional": [
-          "--now",
-          "--json",
-          "--brief",
-          "--save-output",
-          "--api-url"
-        ],
-        "structured": [],
-        "nullable": [
-          "--now"
-        ]
       }
     },
     {
@@ -14619,6 +15958,52 @@
       }
     },
     {
+      "path": "aq system promote-prepare",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "promote_prepare",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--step-id"
+        ],
+        "optional": [
+          "--task-id",
+          "--session-id",
+          "--version",
+          "--bump",
+          "--from-task",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--task-id",
+          "--session-id",
+          "--version",
+          "--bump",
+          "--from-task"
+        ]
+      }
+    },
+    {
       "path": "aq system provide-input",
       "registration": "generated",
       "owner_kind": "core",
@@ -14925,6 +16310,40 @@
         "required": [],
         "optional": [
           "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system session-cleanup",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "session_cleanup",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--dry-run",
           "--json",
           "--brief",
           "--save-output",
@@ -15323,6 +16742,7 @@
           "--project-id",
           "--include-failed",
           "--abandon-undelivered",
+          "--disposition",
           "--reason",
           "--json",
           "--brief",
@@ -15437,32 +16857,34 @@
     },
     {
       "path": "aq task batch-propose",
-      "registration": "generated",
+      "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
       "backend_command": "task_batch_propose",
-      "callback": "src.cli.auto_commands.callback",
+      "callback": "src.cli.tasks.task_batch_propose",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
       "unsupported_reason": null,
-      "evidence_level": "dispatch",
+      "evidence_level": "registration",
       "evidence": [
         "click-registration",
-        "json-schema",
-        "mock-dispatch",
         "core-handler"
       ],
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [
-          "--source",
-          "--tasks"
-        ],
+        "required": [],
         "optional": [
+          "--file",
           "--project-id",
+          "--source",
+          "--dry-run",
+          "--tasks",
           "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments",
           "--json",
           "--brief",
           "--save-output",
@@ -15470,7 +16892,10 @@
         ],
         "structured": [
           "--tasks",
-          "--edges"
+          "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments"
         ],
         "nullable": []
       }
@@ -15868,33 +17293,35 @@
     },
     {
       "path": "aq task delete",
-      "registration": "generated",
+      "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "delete_task",
-      "callback": "src.cli.auto_commands.callback",
+      "backend_command": null,
+      "callback": "src.cli.tasks.delete_task",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
       "unsupported_reason": null,
-      "evidence_level": "dispatch",
+      "evidence_level": "registration",
       "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
+        "click-registration"
       ],
       "acceptance_status": "working",
       "acceptance_evidence": [
         "disposable-daemon:S3/S9"
       ],
       "parameters": {
-        "required": [
-          "--task-id"
-        ],
+        "required": [],
         "optional": [
+          "task_id",
+          "--task-id",
+          "--recursive",
           "--cascade",
           "--branches",
+          "--stop-running",
+          "--reason",
+          "--yes",
+          "--preview",
           "--json",
           "--brief",
           "--save-output",
@@ -17058,6 +18485,44 @@
       }
     },
     {
+      "path": "aq task remove",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.tasks.remove_task",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "task_id",
+          "--task-id",
+          "--recursive",
+          "--cascade",
+          "--branches",
+          "--stop-running",
+          "--reason",
+          "--yes",
+          "--preview",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq task remove-dependency",
       "registration": "generated",
       "owner_kind": "core",
@@ -17475,6 +18940,9 @@
           "task_id"
         ],
         "optional": [
+          "--field",
+          "--offset",
+          "--limit",
           "--json",
           "--brief",
           "--save-output",
@@ -18075,6 +19543,8 @@
         "optional": [
           "--check",
           "--yes",
+          "--ref",
+          "--allow-rollback",
           "--no-backup",
           "--json",
           "--brief",

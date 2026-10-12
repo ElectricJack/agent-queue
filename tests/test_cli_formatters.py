@@ -70,6 +70,14 @@ def test_sparse_workspace_pool_and_profile_rows_render_without_keyerror():
     assert "Workspaces" in out
 
 
+def test_pool_status_shows_display_name_and_stable_id_as_literal_text():
+    out = _render("pool_status", {"pools": [{
+        "profile_id": "rung", "name": "Space Bunny [bold]",
+    }]})
+    assert "Space Bunny [bold]" in out
+    assert "rung" in out
+
+
 def test_task_progress_renders_a_raw_response_dict():
     """`aq task progress` crashed with AttributeError: the ``task_progress``
     spec had no proxy, so ``_render_progress`` got the raw response dict and
@@ -210,6 +218,25 @@ def test_pool_table_renders_a_reasonless_quarantine():
         ]},
     ]})
     assert "quarantined until" in out
+
+
+def test_review_show_renders_withdrawal_audit_dependents_and_recovery():
+    out = _render("review_show", {
+        "review": {
+            "id": "rev-1", "state": "withdrawn", "current_revision": 2,
+            "withdrawn_by": "human:local-operator", "withdrawn_via": "dashboard",
+            "withdrawn_at": 1790000000.0, "withdrawal_reason": "accidental",
+        },
+        "revision": {"revision": 2, "content": "# Recover"},
+        "gate": {"id": "gate-1", "status": "cancelled"},
+        "dependent_task_ids": ["impl-1", "impl-2"],
+    })
+    assert "human:local-operator" in out and "dashboard" in out
+    assert "Withdrawn at" in out and "accidental" in out
+    assert "gate-1" in out and "cancelled" in out
+    assert "impl-1, impl-2" in out
+    assert "aq review reopen --review-id rev-1 --revision 2" in out
+    assert "still requires approval" in out
 
 
 def test_review_show_renders_markdown_header_and_comments():

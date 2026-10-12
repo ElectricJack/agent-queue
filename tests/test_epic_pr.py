@@ -17,6 +17,7 @@ from src.database.tables import (
 )
 from src.integration.root_pull_requests import EpicPullRequestService, render_body
 from src.integration.records import ParentEpisodeRecords
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from tests.db_fixtures import lease_dsn
 
@@ -142,6 +143,10 @@ async def test_open_creates_one_pr_and_records_the_url(db):
 
 async def test_open_is_idempotent(db):
     git = AsyncMock()
+    git.bind_github_repository.return_value = GitHubRepositoryBinding(7, "o/r")
+    client = AsyncMock()
+    client.pull_request.return_value = {"state": "open"}
+    git._github_client = lambda binding: client
     git.acreate_pr.return_value = "https://github.com/o/r/pull/7"
     service = EpicPullRequestService(db, git_manager=git)
 
@@ -154,6 +159,7 @@ async def test_open_is_idempotent(db):
         "pr_url": "https://github.com/o/r/pull/7",
     }
     git.acreate_pr.assert_awaited_once()
+    client.pull_request.assert_awaited_once_with("https://github.com/o/r/pull/7")
 
 
 async def test_open_refuses_while_a_child_is_incomplete(db):
@@ -211,6 +217,10 @@ async def test_open_refuses_non_train_or_nested_parent(db):
 
 async def test_parent_completion_retries_pr_after_github_failure(db):
     git = AsyncMock()
+    git.bind_github_repository.return_value = GitHubRepositoryBinding(7, "o/r")
+    client = AsyncMock()
+    client.pull_request.return_value = {"state": "open"}
+    git._github_client = lambda binding: client
     git.acreate_pr.side_effect = [RuntimeError("temporary GitHub failure"), "https://github.com/o/r/pull/7"]
     completion = ParentEpisodeRecords(db, git_manager=git)
     completion._complete_parent_transition = AsyncMock(
@@ -232,6 +242,24 @@ async def test_parent_completion_retries_pr_after_github_failure(db):
     }
     assert second == third == {"outcome": "already_completed", "task_id": "e1"}
     assert git.acreate_pr.await_count == 2
+    client.pull_request.assert_not_awaited()
+
+
+@pytest.mark.parametrize("category", ["transport_unavailable", "rate_limited", "permission"])
+async def test_repeat_parent_completion_with_recorded_pr_does_not_need_github(db, category):
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "e1").values(
+            pr_url="https://github.com/o/r/pull/7"))
+    git = AsyncMock()
+    git.bind_github_repository.side_effect = GitHubAccessError(category, "GitHub unavailable")
+    completion = ParentEpisodeRecords(db, git_manager=git)
+    completion._complete_parent_transition = AsyncMock(return_value={
+        "outcome": "already_completed", "task_id": "e1"})
+
+    assert await completion.complete_parent("e1", 1, "a" * 40) == {
+        "outcome": "already_completed", "task_id": "e1"}
+    git.bind_github_repository.assert_not_awaited()
+    git.acreate_pr.assert_not_awaited()
 
 
 BASE = "b" * 40

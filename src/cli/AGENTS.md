@@ -18,6 +18,7 @@ claim_epoch.py     Shared --claim-epoch resolution for pool-session mutators
                    (reads <work_dir>/.aq/claim.json, falls back to $AQ_CLAIM_EPOCH)
 client.py          CLIClient — async REST client for CLI operations (see Transport below)
 collaboration.py   `aq collaboration {create,accept,show,list,close}` — bounded task threads
+cron.py            `aq cron {register,show,list,cancel}` — session-owned recurring prompts
 daemon.py          `aq start` / `stop` / `restart` — the daemon, plus the dashboard server when a
                    bundle is installed (`--no-dashboard` only skips the Vite prompt;
                    `--no-dashboard-server` leaves the server alone)
@@ -26,7 +27,7 @@ dashboard.py       Hand-written `aq dashboard` group (the generated `state-*` co
                    via src/dashboard_server/process.py), plus the read-only `link` (the origin
                    Discord links name, via src/remote_links.py); also the helpers `aq start|
                    stop|restart|status` call, so the PID/log/config paths come from daemon.py
-db.py              `aq db` — the operator's migration door (`current`, `upgrade`)
+db.py              `aq db` — operator schema, custom backup and disaster-recovery restore
 doctor.py          `aq doctor`, `aq costs`, and `aq benchmark` evidence commands
 envelope.py        Versioned JSON envelope: envelope(), error_envelope(), emit(),
                    BRIEF_PROJECTIONS — see docs/specs/design/aq-surface.md §4
@@ -52,6 +53,10 @@ playbook.py        `aq playbook` — compile, run, HITL, health
 pool_provider.py   `aq pool provider` — generated status/apply and structured preview flags
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar
+policy.py          `aq policy export|diff|apply` and the shared per-item import selection
+promote.py         `aq promote {schema,validate,prepare,request,hotfix,approve,cancel,repair,status,list}` — flow
+                   validation, pinned step PRs, and cached promotion history
+promote_rulesets.py `aq promote rulesets` — print chain/tag rulesets and workflow triggers
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions
 reports.py         `aq report {morning,request,brief,submit}` — evidence preview, durable reads and file submission
 reviews.py         `aq review` — document-review queue, decisions, revisions, and comments
@@ -63,7 +68,8 @@ streams.py         `aq stream start|tail|kill`
 styles.py          Theme, status icons, color maps
 system_config.py   `aq system config` — YAML config editing
 tasks.py           Hand-crafted `aq task` commands needing interactive features
-                   (create wizard, select, close, claim, comment)
+                   or file input (create wizard, graph files, batch-propose,
+                   select, close, claim, comment)
 test_runner.py     `aq test` — pytest behind the box-wide test semaphore
 uninstall.py       `aq uninstall` — plans and removes installer-owned resources from the
                    resume record; destructive scopes are opt-in and confirmed one by one

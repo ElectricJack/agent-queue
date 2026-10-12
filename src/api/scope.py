@@ -15,6 +15,9 @@ from src.api.auth import RequestScope
 AGENT_COMMAND_SET: frozenset[str] = frozenset(
     {
         "prime",
+        "operator_execute",
+        "operator_preflight",
+        "dry_run_playbook",
         "get_schema",
         "task_show",
         "task_set",
@@ -53,6 +56,10 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "wait_get",
         "wait_list",
         "wait_cancel",
+        "cron_register",
+        "cron_get",
+        "cron_list",
+        "cron_cancel",
         # Collaboration reads and joins derive the held task and fence joins
         # and closes by claim epoch; creation stays operator/supervisor-only.
         "collaboration_accept",
@@ -135,10 +142,11 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # only for a task that session filed.
         "task_route",
         "integration_status",
-        # The command derives the candidate/member/fence from this session's
-        # live repair assignment and separately fences pool calls by claim
-        # epoch.  No caller-selected integration identity reaches the service.
-        "integration_resolve_candidate_member",
+        "promote_schema",
+        "promote_validate",
+        "promote_rulesets",
+        "promote_status",
+        "promote_list",
         # A worker's comment write is checked again against the dispatch
         # ledger and its live held task by ReviewCommandsMixin.
         "review_submit",
@@ -147,6 +155,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "review_attachment_list",
         "review_list",
         "review_withdraw",
+        "review_reopen",
         "review_comment",
         "report_get",
         "report_list",
@@ -187,11 +196,15 @@ PROJECT_ONBOARDING_COMMANDS: frozenset[str] = frozenset(
 PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires global admin"
 OPERATOR_INTEGRATION_CONTROLS = frozenset(
     {
+        "integration_record_root_noop",
         "integration_abort_batch",
+        "integration_pause_batch",
+        "integration_resume_batch",
+        "integration_seal_now",
+        "integration_eject",
+        "integration_refresh_epic",
         "integration_retire_origin",
         "integration_reevaluate_repair",
-        "integration_recover_candidate_member",
-        "integration_recover_unwritten_resolution",
         "integration_release_owner",
         "integration_release_stale_owners",
         "integration_redrive_root",
@@ -203,8 +216,10 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
     }
 )
 LOCAL_TEST_SELECTION_CONTROLS = frozenset({"test_selection_promote", "test_selection_revoke"})
+#: ``promote_approve`` posts its review with the daemon host's own gh login,
+#: so only the human at that host may run it.
 LOCAL_REVIEW_CONTROLS = frozenset({
-    "review_delegate", "review_import_edits", "approve_pull_request",
+    "review_delegate", "review_import_edits", "approve_pull_request", "promote_approve",
 })
 #: ``edit_project`` fields that bind or change a project's integration
 #: configuration.  An elevated supervisor session reaches the handler, which
@@ -219,6 +234,7 @@ INTEGRATION_ROLLOUT_FIELDS = frozenset(
         "hierarchical_integration_policy",
         "hierarchical_integration_mode",
         "hierarchical_integration_desired_mode",
+        "promotion_flow",
         "hierarchical_integration_draining",
         "hierarchical_integration_generation",
         "expected_integration_generation",
@@ -315,6 +331,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         scope.elevated and scope.project_id is None
     ):
         return PROJECT_ONBOARDING_SCOPE_ERROR
+    if command == "bind_project_repository" and not (
+        scope.elevated and scope.project_id is None
+    ):
+        return "out of scope: repository binding requires global admin"
     # Projectless messages are system records, not an omitted project filter.
     # Null project scope alone must never grant access to the global supervisor.
     system_message = args.get("system_only") or (
@@ -392,7 +412,7 @@ _WORKER_GIT_READ_COMMANDS = frozenset({
 })
 #: ``push_branch`` is ``git_push``'s alias; it names its head ``branch_name``.
 _WORKER_GIT_WRITE_COMMANDS = frozenset({"git_push", "push_branch", "git_create_pr"})
-_WORKER_GIT_COMMANDS = _WORKER_GIT_READ_COMMANDS | _WORKER_GIT_WRITE_COMMANDS
+_WORKER_GIT_COMMANDS = _WORKER_GIT_READ_COMMANDS | _WORKER_GIT_WRITE_COMMANDS | {"git_pull"}
 
 
 async def held_task_for_session(db, scope: RequestScope):
@@ -517,6 +537,24 @@ _PLAYBOOK_COMPILER_COMMANDS = frozenset(
         "playbook_v2_propose",
     }
 )
+
+_SPEC_INGEST_COMMANDS = frozenset({
+    "list_tasks", "get_downstream_tasks", "task_batch_propose", "task_batch_commit",
+})
+
+
+async def spec_ingest_task_for_session(db, scope: RequestScope):
+    """A live, server-assigned ingestion role; client hints grant no authority."""
+    if db is None or not scope.session_id or not scope.project_id:
+        return None
+    session = await db.get_session(scope.session_id)
+    if session is None or session.profile_id != "spec-ingest":
+        return None
+    task = await held_task_for_session(db, scope)
+    if (task is None or task.profile_id != "spec-ingest" or task.route_source != "role"
+            or not (task.dedup_key or "").startswith("spec-ingest:")):
+        return None
+    return task
 
 # A reviewer task's whole job is a verdict on *another* task: read it, and
 # either approve (close its own review task) or reject.  Rejection is
@@ -812,21 +850,29 @@ async def check_request_scope(
     """
     if (error := _canonicalise_reroute_args(command, args, scope)) is not None:
         return error
-    if (scope.kind == "session" and not scope.elevated and command in {
-        "integration_resolve_conflict", "integration_push_conflict_resolution",
-    }):
-        if await worker_branches_for_session(db, scope) is None:
-            return "out of scope: conflict resolution requires a live repair assignment"
-        session = await db.get_session(scope.session_id)
-        repair = await db.get_repair_filing_scope(session.task_id, session_id=scope.session_id)
-        if (repair is None or not repair["active"]
-                or repair["writer_kind"] != "repair_delegate"
-                or repair["target_kind"] != "parent"):
-            return "out of scope: conflict resolution requires a live parent repair delegate"
-        # The promotion service validates the exact intent, operation, workspace,
-        # instance and fence against this authenticated session before any write.
-        # Do not inject task/project fields into these strict command models.
-        return None
+    if scope.kind == "session" and not scope.elevated and command in _SPEC_INGEST_COMMANDS:
+        held = await spec_ingest_task_for_session(db, scope)
+        if held is not None:
+            if args.get("session_id") not in (None, scope.session_id):
+                return "out of scope: session_id mismatch"
+            if args.get("project_id") not in (None, scope.project_id):
+                return "out of scope: project_id mismatch"
+            args["project_id"] = scope.project_id
+            if command == "task_batch_commit":
+                from src.database.queries.proposal_queries import get_proposal
+
+                proposal = await get_proposal(db, args.get("proposal_id"))
+                if proposal is None or proposal["project_id"] != scope.project_id:
+                    return "out of scope: proposal mismatch"
+                if (proposal["payload"].get("spec_ingest") or {}).get("task_id") != held.id:
+                    return "out of scope: proposal does not belong to held ingestion task"
+            if command == "get_downstream_tasks":
+                task = await db.get_task(args.get("task_id"))
+                if task is None or task.project_id != scope.project_id:
+                    return "out of scope: task_id mismatch"
+            return None
+        # ``list_tasks`` is also a triage capability. A session without an
+        # ingestion assignment must still reach that independently checked grant.
     if (
         scope.kind == "session"
         and not scope.elevated

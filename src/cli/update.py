@@ -35,12 +35,16 @@ def _host():
 @cli.command("update")
 @click.option("--check", is_flag=True, help="Only report whether an update is available.")
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="Update without asking first.")
+@click.option("--ref", help="Deploy an annotated release tag or an unreleased branch.")
+@click.option("--allow-rollback", is_flag=True, help="Allow an older release; keeps the database.")
 @click.option(
     "--no-backup",
     is_flag=True,
     help="Skip the database backup an update with migrations otherwise takes first.",
 )
-def update(check: bool, assume_yes: bool, no_backup: bool) -> None:
+def update(
+    check: bool, assume_yes: bool, no_backup: bool, ref: str | None, allow_rollback: bool
+) -> None:
     """Update AQ to the latest code and restart what needs restarting.
 
     Fetches the branch this installation follows, and if it is behind: backs up
@@ -48,6 +52,9 @@ def update(check: bool, assume_yes: bool, no_backup: bool) -> None:
     agents keep running), fast-forwards the code, and then lets the new code
     finish in a fresh process: reinstall dependencies and rebuild the dashboard
     when they changed, and start the daemon again.
+
+    --ref or deploy.tag_glob selects an annotated release tag instead. Release
+    checkouts detach at the tag's commit and are tracked in deploy.json.
 
     If any of that fails, AQ is rolled back to the version it was on and
     started again — except after the new daemon has started with database
@@ -86,7 +93,24 @@ def update(check: bool, assume_yes: bool, no_backup: bool) -> None:
     host = _host()
     try:
         console.print(f"Checking {checkout} for updates...")
-        plan = plan_update(checkout)
+        from src.config import DeployConfig
+        from src.config_editor import read_raw_config
+
+        config_path = host.state_dir / "config.yaml"
+        try:
+            raw = read_raw_config(str(config_path)) if config_path.exists() else {}
+            settings = DeployConfig(**(raw.get("deploy") or {}))
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            raise UpdateRefused(
+                f"could not read deploy configuration: {error}", "Fix config.yaml before updating."
+            ) from error
+        errors = settings.validate()
+        if errors:
+            raise UpdateRefused(str(errors[0]), "Fix the deploy section in config.yaml.")
+        plan = plan_update(
+            checkout, state_dir=host.state_dir, ref=ref, tag_glob=settings.tag_glob,
+            promotion_target=settings.target, allow_rollback=allow_rollback,
+        )
     except UpdateRefused as refused:
         _refused(refused)
         raise SystemExit(EXIT_REFUSED) from None

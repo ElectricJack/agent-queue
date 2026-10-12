@@ -452,6 +452,34 @@ explicit eject from a human-held operation rearms a bounded deadline while retai
 attempts. A later delegate receives a revision-specific identity. Ejecting the final
 member aborts the batch and releases its sweep request. Reviews are never revoked.
 
+On the Git-first train, ejection instead aborts the old immutable batch and
+freezes the remaining inputs in a replacement batch. The authorized eject
+command writes the original batch's durable release instruction, bound to its
+project, frozen member, operator and reason. The daemon supersedes an open batch
+whose stacked source was refreshed using the same batch-owned record, bound to
+the refreshed frozen member, service identity and supersede reason. Its inputs
+return to pending for a new exact candidate; an explicit pause still holds.
+If the refreshed member has no task row, appears in both active and archived
+tasks, or belongs to another project, supersede leaves the old batch and its
+inputs unchanged. The target visit reports `stack_member_missing`,
+`stack_member_ambiguous` or `stack_member_foreign_project` with the task and batch
+IDs and the existing abort-batch command, and other targets continue. A later
+visit rechecks the member's identity. Explicit eject refusals remain unchanged.
+Task archival or deletion cannot erase that instruction; worker task metadata
+and legacy ejection markers cannot
+authorize release. An ordinary supervisor abort continues withholding its inputs.
+Pause requires open intent and resume requires paused intent; repeated or invalid
+transitions refuse. Pause, resume, eject and seal-now default to preview and remain
+operator/supervisor controls scoped to the owning project. Eject returns
+`not_a_member` or `unknown_batch` for those refusals. Seal-now returns
+`existing_batch` when a frozen batch already owns the target.
+Eject checks caller authority before reading batches and rejects an empty batch
+ID with `invalid_state`. A project supervisor receives the same `unauthorized`
+refusal for foreign and missing batch IDs; an unknown ID has no project binding
+to authorize. Only the local operator or global supervisor may observe
+`unknown_batch`. The exact active root-policy ejection retains its existing
+transactional authority checks.
+
 Persist reviewed-file guard failures against the exact current revision in the
 repair dossier. Both `integration.reviewed_file_guard` and `stall.sweep` report the
 batch, blocked invariant and safe eject/rechain recovery path. Old revision failures
@@ -501,7 +529,9 @@ moves before promotion, the expected-base update fails. The playbook input `on_m
 invalidates prior CI evidence, and requires full CI again. `wait` preserves the branch and asks a
 human to reconcile the external movement. Membership never changes automatically.
 
-Each rebuild creates a new numbered candidate revision within the same batch. Replay the sealed
+Each rebuild creates a new numbered candidate revision within the same batch. Reserving that
+revision atomically moves the batch to `building`, including when the prior revision was in
+CI or had a green/red result, so a new member conflict can move it to `repairing`. Replay the sealed
 sources and previously accepted repair changes on the new base, resolving new conflicts forward.
 Keep prior revision SHAs and evidence for audit; only the current revision can be promoted. Rebuilds
 do not reset repair stages, consumed attempts, or deadlines.
@@ -716,6 +746,23 @@ close-time release only because a verifier that is still `attached` to a *live* 
 ASSIGNED/IN_PROGRESS task may be rebound as a repair stage's existing writer. A re-queued verifier
 is none of those things. `collector` remains excluded everywhere: its owner is an operation, not a
 task, so it has no claim for the proof to read.
+
+Ownership attaches before pool slot preparation. If preparation fails before activation,
+the checkout can still be detached at the published default-branch tip, rather than at the
+task tip. That checkout can release only under the exact current `preparing` claim: its
+epoch, task, agent, session and workspace bindings must agree. Git must freshly prove the
+checkout clean, the task's local tip equal to its published origin tip, and the detached HEAD
+equal to the published default tip. The release CAS revalidates the preparation phase and
+epoch. This saves no new work, changes no resume point, and never admits an active claim,
+dirty checkout or unpublished detached HEAD. A failed preparation releases to READY;
+an external task stop uses the same proof and returns that unactivated task to READY too.
+
+When the ordinary stop proof is unavailable, stop retains every binding and names the exact
+writer session and the supervisor recovery commands. `aq session kill` requests termination;
+`aq integration release-owner --task-id TASK_ID --dry-run` previews the provider-backed,
+work-preserving release, and applying it releases only the proved attachment. This control
+does not require a task recovery incident. A still-IN_PROGRESS task can then be stopped,
+and `aq task restart` intentionally retries the preserved task.
 
 Qualified candidate conflict repairs have one additional publication proof, evaluated only by
 `integration_resolve_candidate_member` during acceptance of its server-owned pushed reservation.

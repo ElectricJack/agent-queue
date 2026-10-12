@@ -65,11 +65,13 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: PreviewPortableConfigRequest,
 ) -> Response[PortableConfigResponse | PreviewPortableConfigResponse422]:
-    """Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain.
-    Project data, history, paths, credentials, and secrets are excluded.
+    """Preview portable configuration, global profiles, intelligence classes, configured pools, projects,
+    repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime
+    history are excluded.
 
-     Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain.
-    Project data, history, paths, credentials, and secrets are excluded.
+     Preview portable configuration, global profiles, intelligence classes, configured pools, projects,
+    repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime
+    history are excluded.
 
     Args:
         body (PreviewPortableConfigRequest):
@@ -98,11 +100,13 @@ def sync(
     client: AuthenticatedClient | Client,
     body: PreviewPortableConfigRequest,
 ) -> PortableConfigResponse | PreviewPortableConfigResponse422 | None:
-    """Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain.
-    Project data, history, paths, credentials, and secrets are excluded.
+    """Preview portable configuration, global profiles, intelligence classes, configured pools, projects,
+    repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime
+    history are excluded.
 
-     Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain.
-    Project data, history, paths, credentials, and secrets are excluded.
+     Preview portable configuration, global profiles, intelligence classes, configured pools, projects,
+    repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime
+    history are excluded.
 
     Args:
         body (PreviewPortableConfigRequest):
@@ -126,11 +130,13 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: PreviewPortableConfigRequest,
 ) -> Response[PortableConfigResponse | PreviewPortableConfigResponse422]:
-    """Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain.
-    Project data, history, paths, credentials, and secrets are excluded.
+    """Preview portable configuration, global profiles, intelligence classes, configured pools, projects,
+    repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime
+    history are excluded.
 
-     Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain.
-    Project data, history, paths, credentials, and secrets are excluded.
+     Preview portable configuration, global profiles, intelligence classes, configured pools, projects,
+    repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime
+    history are excluded.
 
     Args:
         body (PreviewPortableConfigRequest):
@@ -157,11 +163,13 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: PreviewPortableConfigRequest,
 ) -> PortableConfigResponse | PreviewPortableConfigResponse422 | None:
-    """Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain.
-    Project data, history, paths, credentials, and secrets are excluded.
+    """Preview portable configuration, global profiles, intelligence classes, configured pools, projects,
+    repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime
+    history are excluded.
 
-     Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain.
-    Project data, history, paths, credentials, and secrets are excluded.
+     Preview portable configuration, global profiles, intelligence classes, configured pools, projects,
+    repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime
+    history are excluded.
 
     Args:
         body (PreviewPortableConfigRequest):

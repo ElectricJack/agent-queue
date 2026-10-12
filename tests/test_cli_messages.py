@@ -238,6 +238,33 @@ class TestInboxAndList:
         )
         assert client.execute.await_args.args[1]["inject"] is True
 
+    def test_include_consumed_flag_is_forwarded(self, runner):
+        """fair-impact-65: the re-read a worker needs after its inject crashed."""
+        client = _mock_client(
+            {
+                "message_inbox": {
+                    "to_kind": "session", "to_id": "s", "count": 0, "messages": [],
+                    "consumed": 1,
+                    "consumed_messages": [
+                        {"id": "msg-9", "from": "system:review", "body": "revise section 3"}
+                    ],
+                }
+            }
+        )
+        result = _invoke(
+            runner,
+            ["message", "inbox", "--to", "session:s", "--include-consumed"],
+            client,
+        )
+        assert result.exit_code == 0, result.output
+        assert client.execute.await_args.args[1]["include_consumed"] is True
+        assert "revise section 3" in result.output
+
+    def test_include_consumed_defaults_off(self, runner):
+        client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
+        _invoke(runner, ["message", "inbox", "--to", "session:s"], client)
+        assert client.execute.await_args.args[1]["include_consumed"] is False
+
     def test_list_filters_are_forwarded(self, runner):
         client = _mock_client({"message_list": {"count": 0, "messages": []}})
         _invoke(

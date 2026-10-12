@@ -56,6 +56,7 @@ class DependencyQueryMixin:
         dep_type: str = DepType.BLOCKS.value,
         *,
         description: str | None = None,
+        reject_container_target: bool = False,
         conn=None,
     ) -> set[str] | None:
         """Add a typed dependency edge between two tasks.
@@ -69,6 +70,10 @@ class DependencyQueryMixin:
         ``parent-child`` edges are delegated to :meth:`HierarchyQueryMixin.set_parent`,
         the single writer that keeps the edge and the ``tasks.parent_task_id``
         cache in sync (spec Part I §5).
+
+        Worker commands set ``reject_container_target`` for scheduling edges.
+        The hierarchy lock keeps the target's classification stable through
+        the insert; operator fan-in and membership writes remain available.
 
         Pass ``conn`` to run inside a caller-owned transaction (e.g. worker
         filing's ``immediate()`` block). The blocked-state projection is
@@ -97,6 +102,8 @@ class DependencyQueryMixin:
 
         _insert = pg_insert
         if conn is not None:
+            if reject_container_target:
+                await self._guard_dependency_target(conn, depends_on, dep_type)
             await conn.execute(
                 _insert(task_dependencies)
                 .values(
@@ -111,6 +118,8 @@ class DependencyQueryMixin:
             return await self.recompute_blocked({task_id, depends_on}, conn=conn)
 
         async with self._engine.begin() as owned_conn:
+            if reject_container_target:
+                await self._guard_dependency_target(owned_conn, depends_on, dep_type)
             await owned_conn.execute(
                 _insert(task_dependencies)
                 .values(
@@ -128,6 +137,29 @@ class DependencyQueryMixin:
             )
         await self.log_blocked_flips(flipped)
         await self._notify_ready([(tid, "unblocked") for tid in ready_ids])
+
+    async def _guard_dependency_target(self, conn, depends_on: str, dep_type: str) -> None:
+        """Reject worker scheduling edges to containers before any edge is written."""
+        from src.database.queries.hierarchy_queries import HierarchyError, never_leaseable_container
+
+        if dep_type not in BLOCKING_DEP_TYPES or dep_type == DepType.PARENT_CHILD.value:
+            return
+        project_id = (await conn.execute(
+            select(tasks.c.project_id).where(tasks.c.id == depends_on)
+        )).scalar_one_or_none()
+        if project_id is None:
+            raise HierarchyError("not_found", depends_on)
+        await self.lock_hierarchy_project(conn, project_id)
+        container = (await conn.execute(
+            select(tasks.c.id).where(tasks.c.id == depends_on, never_leaseable_container())
+        )).scalar_one_or_none()
+        if container is not None:
+            raise HierarchyError(
+                "dependency_on_container",
+                f"'{depends_on}' is a container; worker '{dep_type}' dependencies must name "
+                "the concrete leaf task that supplies the prerequisite. Ask the supervisor "
+                "to choose the leaf or confirm intentional container fan-in",
+            )
 
     async def get_dependencies(
         self,

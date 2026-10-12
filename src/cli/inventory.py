@@ -16,7 +16,7 @@ from typing import Any
 
 import click
 
-INVENTORY_SCHEMA_VERSION = 1
+INVENTORY_SCHEMA_VERSION = 2
 
 # Compatibility spellings are explicit API surface, not coincidences inferred
 # from callback identity.  ``inbox`` intentionally has hook-safe error
@@ -248,6 +248,19 @@ def _acceptance_counter(values) -> dict[str, int]:
     return {status: counts[status] for status in ACCEPTANCE_STATUSES}
 
 
+def inventory_counts(inventory: dict[str, Any]) -> dict[str, Any]:
+    """Compute totals on demand; committed records have no shared count lines."""
+    records = inventory["commands"]
+    return {
+        "leaf_commands": len(records),
+        "registration": _counter(row["registration"] for row in records),
+        "ownership": _counter(row["owner_kind"] for row in records),
+        "support": _counter(row["support"] for row in records),
+        "evidence_level": _counter(row["evidence_level"] for row in records),
+        "acceptance_status": _acceptance_counter(row["acceptance_status"] for row in records),
+    }
+
+
 def build_cli_inventory(
     cli_group: click.Group,
     *,
@@ -345,14 +358,6 @@ def build_cli_inventory(
     return {
         "schema_version": INVENTORY_SCHEMA_VERSION,
         "generated_by": "scripts/generate-cli-command-inventory.py",
-        "counts": {
-            "leaf_commands": len(records),
-            "registration": _counter(row["registration"] for row in records),
-            "ownership": _counter(row["owner_kind"] for row in records),
-            "support": _counter(row["support"] for row in records),
-            "evidence_level": _counter(row["evidence_level"] for row in records),
-            "acceptance_status": _acceptance_counter(row["acceptance_status"] for row in records),
-        },
         "commands": records,
         "historical_commands": list(HISTORICAL_COMMANDS),
     }

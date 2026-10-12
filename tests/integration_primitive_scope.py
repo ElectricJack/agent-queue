@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from src.database import tables as t
 from src.integration.engine import RootEngineOwnership
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     PolicyArtifactPin,
     Subject,
     SubjectKind,
@@ -107,21 +107,15 @@ def authorize_root_primitives(monkeypatch):
     from src.integration import (
         attestation,
         candidate_ci,
-        candidates,
         cleanup,
-        main_promotion,
         repair,
-        scheduler,
     )
 
     modules = (
         attestation,
         candidate_ci,
-        candidates,
         cleanup,
-        main_promotion,
         repair,
-        scheduler,
     )
     for module in modules:
         for cls in vars(module).values():

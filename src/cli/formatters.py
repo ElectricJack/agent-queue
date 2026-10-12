@@ -598,12 +598,30 @@ def format_review_detail(data: Any) -> Group:
     )
     response_route = _review_value(data, "response_route", {})
     header.add_row("Response", _review_text(response_route, "summary"), "", "")
+    gate = _review_value(data, "gate")
+    if gate:
+        header.add_row("Gate", _review_text(gate, "id"), "Gate state", _review_text(gate, "status"))
+    waiters = _review_value(data, "dependent_task_ids", []) or []
+    if waiters:
+        header.add_row("Dependents", ", ".join(waiters), "", "")
+    if _review_value(review, "withdrawn_by"):
+        header.add_row("Withdrawn by", _review_text(review, "withdrawn_by"),
+                       "Surface", _review_text(review, "withdrawn_via", "unknown"))
+        withdrawn_at = _review_value(review, "withdrawn_at")
+        stamp = (datetime.fromtimestamp(withdrawn_at).astimezone().isoformat(timespec="seconds")
+                 if withdrawn_at is not None else "—")
+        header.add_row("Withdrawn at", stamp, "Reason", Text(_review_text(review, "withdrawal_reason")))
 
     content = _review_text(revision, "content", "")
     renderables: list[Any] = [
         Panel(header, title="[bold bright_white]Document review[/]", border_style="bright_blue"),
         Markdown(content),
     ]
+    if _review_value(review, "state") == "withdrawn":
+        renderables.insert(1, Text(
+            "Dependent work still requires approval. Reopen with: aq review reopen "
+            f"--review-id {_review_text(review, 'id')} --revision {current_revision}"
+        ))
     dispatches = _review_value(data, "dispatches", []) or []
     if dispatches:
         activity = Table(title="Adversarial review dispatches", border_style="bright_black")
@@ -1583,7 +1601,9 @@ def format_pool_table(pools: list[dict]):
 
     for row in pools:
         table.add_row(
-            row.get("profile_id", ""),
+            Text(row.get("name") or row.get("profile_id", ""))
+            if not row.get("name") or row["name"] == row.get("profile_id")
+            else Text(f"{row['name']}\n{row.get('profile_id', '')}"),
             row.get("service_tier") or "—",
             str(row.get("min_active", 0)),
             "∞" if row.get("max_active") is None else str(row.get("max_active")),

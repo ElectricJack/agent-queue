@@ -37,7 +37,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.task_session_queries import live_attempt_predicate
@@ -46,6 +46,7 @@ from src.database.tables import (
     archived_tasks,
     digest_windows,
     doc_reviews,
+    escalation_messages,
     escalations,
     projects,
     provider_availability_transitions,
@@ -676,6 +677,12 @@ class DigestSupervisorQueriesMixin:
                     # inbox, and answered escalations await supervisor action.
                     # Neither asks Jack to do anything in the digest.
                     escalations.c.source_kind != "supervisor_delivery",
+                    # Even a later terminal/stale state cannot make an
+                    # accepted human answer become a pending human question.
+                    ~exists().where(
+                        escalation_messages.c.escalation_id == escalations.c.id,
+                        escalation_messages.c.direction == "inbound",
+                    ),
                 ),
                 escalations.c.updated_at.desc(),
             )

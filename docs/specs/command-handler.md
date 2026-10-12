@@ -253,6 +253,38 @@ choices are refused with `routing.choice_forbidden`: a project has no default pr
 
 ---
 
+#### `bind_project_repository`
+
+Authorizes the first GitHub repository for an existing project whose `repo_url`
+is empty. Available to the local operator or a live named global supervisor with
+the command capability; workers, project supervisors, services and playbooks are
+refused, including through direct command dispatch.
+
+Required parameters are `project_id`, `repo_url`, `expected_repo_url` (the exact
+stored string, including `""`), and a nonempty audit `reason`. The daemon validates
+the URL using the onboarding GitHub parser, checks repository access with its
+configured credentials, and stores canonical HTTPS. Credentials in URLs, local
+paths, other hosts, query strings and fragments are refused without echoing them.
+
+The project row CAS and `project.repository_bound` audit event commit in one
+transaction. The event records the operator identity, reason, old/new URL and
+project ID. A matching nonempty binding is an unchanged success only when the
+expected value matches; a different nonempty binding cannot be reassigned or
+cleared. Stale expectations and missing projects write nothing.
+
+Binding is refused while a project Git push holds the publication fence, or
+when integration is enabled, draining, designated, or has durable publication
+state. Concurrent project pushes share a PostgreSQL advisory fence; first
+binding takes its exclusive counterpart without waiting. The push resolves the
+project again inside the fence. Pending task implementations and approval gates
+are preserved. This operation changes only the project URL: it never pushes,
+changes a checkout remote, creates a repository, or releases a gate.
+
+CLI: `aq project bind-repository <project> --repo-url <url>
+--expected-repo-url '' --reason '<authorization and repair reason>'`.
+
+---
+
 #### `delete_project`
 
 Deletes a project and all associated database records (cascade).
@@ -1669,22 +1701,39 @@ When `wait_for_tasks` is true and there are running tasks, the orchestrator is p
 
 #### `update_and_restart`
 
-Pulls the latest source from git and restarts the daemon. Determines the repo root from the source file location. Runs `git pull --ff-only` followed by `pip install -e .` to pick up dependency changes. Both commands are run in a thread via `asyncio.to_thread(subprocess.run, ...)` to avoid blocking the event loop. On success, logs a notification and triggers a restart via `SIGTERM`.
+Updates and restarts the daemon. With no `deploy.tag_glob`, the existing path
+runs `git pull --ff-only`, reinstalls Python dependencies, regenerates the
+TypeScript client and restarts even if git is already current. Local commits
+that permit a fast-forward pull remain supported.
 
-When `wait_for_tasks` is true and there are running tasks, the orchestrator is paused (no new tasks scheduled) and the command waits up to 5 minutes for running tasks to complete before sending the restart signal. The git pull and pip install happen first, so the code is already updated by the time the wait begins.
+With `deploy.tag_glob` configured, shared release preflight selects a deployment.
+A refusal returns an error and remediation; an already active deployment returns
+`status: up_to_date` without restarting. Otherwise the command launches a detached
+operator `aq update --yes` process which owns backup, stop, install and restart.
+`status: updating` acknowledges launch; the returned log carries the final outcome.
+
+When `wait_for_tasks` is true, the orchestrator waits up to five minutes for
+running tasks before restarting or launching the updater. Every prelaunch error
+and every updater exit that leaves this daemon running restores its prior pause
+state, including refusals and races that become up to date.
 
 **Parameters:**
-- `reason` (optional, default `"No reason provided"`): Human-readable reason for the update.
-- `wait_for_tasks` (optional, default `false`): If true, pause the orchestrator and wait for all running tasks to complete before restarting.
+- `reason` (optional, default `"No reason provided"`): Human-readable reason.
+- `wait_for_tasks` (optional, default `false`): Wait for running tasks to finish.
 
 **Returns on success:**
 ```python
-{"status": "updating", "message": "Update pulled and daemon restart initiated", "pull_output": <str>, "reason": <str>, "waited_for_tasks": <bool>}
+# Legacy path:
+{"status": "updating", "pull_output": <str>, "message": <str>, "reason": <str>, "waited_for_tasks": <bool>}
+# Release updater launch:
+{"success": True, "status": "updating", "pid": <int>, "log": <str>, "selector": <str>, "commit": <str>, "message": <str>, "reason": <str>, "waited_for_tasks": <bool>}
+# Selected deployment already active:
+{"success": True, "status": "up_to_date", "commit": <str>}
 ```
 
-**Errors:**
-- `git pull` failed (non-zero exit code).
-- `pip install` failed (non-zero exit code).
+**Errors:** Legacy pull/install/client generation failures, release preflight
+refusals, and failure to launch the updater. A later updater refusal/failure is
+recorded in the returned log.
 
 ---
 
@@ -2064,3 +2113,23 @@ vault watcher pick the change up.
 
 ### Deprecated Analyzer Commands (return error stubs)
 - `analyzer_status`, `analyzer_toggle`, `analyzer_history`
+
+### Authorized project creation
+
+`create_project` with `repo_url` or `create_repo` delegates to the same durable
+onboarding saga as the dashboard. `root_id` selects a configured project root
+(required when more than one exists); `relative_path` defaults to the project
+slug, and `request_id` identifies retries. The two remote choices are exclusive.
+Existing repositories are cloned; new repositories are created through the
+configured GitHub access provider. App mode never falls back to personal credentials.
+Onboarding init also accepts `repo_url` for an existing empty remote.
+
+Before publishing the initial commit, verify repository access with the configured
+provider and record the audited first binding using `bind_project_repository`.
+Register with an empty authorization first, then bind; never overwrite an existing
+authorization. On failure roll back request-owned local resources and registration;
+retain external repositories and return an exact clone/adoption command with a new
+request ID. Completed requests replay without repeated side effects.
+`integration_app_verify(repository_access_only=true)` verifies access without
+requiring an integration policy or enabling integration. `project_doctor` reports
+a primary local repository missing authorization and offers `bind-repository`.

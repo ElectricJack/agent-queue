@@ -1,23 +1,21 @@
 /**
- * session-peek pane view — live tmux pane snapshot stream for one session.
+ * session-peek pane view — one session's terminal inside the shell's
+ * <ShellPane> right surface.
  *
- * Same data hook as dashboard/src/pages/SessionDetail.tsx's pane-view
- * toggle, rehosted inside the shell's <ShellPane> right surface. A `screen`
- * frame is a full `capture-pane` snapshot that supersedes the last one, so
- * there is no scrollback and no follow-tail state to track here.
+ * It is the host shell page's terminal, the same component every agent
+ * terminal renders (`components/InteractiveTerminal`), so a pane that opens an
+ * agent's tmux is not a second kind of terminal. It used to replay
+ * `capture-pane` snapshots through `LivePaneConsole` — a `<pre>` of ANSI spans
+ * in a green-on-black console with no palette, no scrollback and no touch
+ * scrolling.
  *
  * See docs/superpowers/specs/2026-08-22-pane-session-peek-design.md.
  */
 import { useEffect, useState } from "react";
-import {
-  ClipboardIcon,
-  ArrowTopRightOnSquareIcon,
-  XCircleIcon,
-} from "@heroicons/react/24/outline";
+import { ArrowTopRightOnSquareIcon, XCircleIcon } from "@heroicons/react/24/outline";
 import { useLocation, useNavigate } from "react-router-dom";
-import { usePaneStream } from "../../ws/usePaneStream";
 import { useSession, useSessionKill } from "../../api/hooks";
-import LivePaneConsole from "../../components/LivePaneConsole";
+import InteractiveTerminal from "../../components/InteractiveTerminal";
 import type { PaneViewProps } from "../types";
 import type { SessionPeekArgs } from "./manifest";
 
@@ -34,18 +32,18 @@ export default function SessionPeekPane({
 
   const { data: session } = useSession(sessionId);
   const kill = useSessionKill();
-  const { screen, status, error, attempt, reconnect } = usePaneStream(sessionId, { enabled: true });
 
   const exited = session?.lifecycle === "exited" || session?.lifecycle === "terminated";
+  const live = session?.state === "running" || session?.state === "draining";
 
   const [confirmingKill, setConfirmingKill] = useState(false);
 
-  const copyScrollback = () => navigator.clipboard.writeText(screen ?? "");
   const openFullSession = () => {
     close();
     navigate(`/sessions/${encodeURIComponent(sessionId)}`, { state: { from } });
   };
   const doKill = () => {
+    if (exited) return;
     if (!confirmingKill) {
       setConfirmingKill(true);
       return;
@@ -56,13 +54,6 @@ export default function SessionPeekPane({
 
   useEffect(() => {
     setToolbar([
-      {
-        id: "copy-scrollback",
-        label: "Copy scrollback",
-        icon: ClipboardIcon,
-        onClick: copyScrollback,
-        disabled: !screen,
-      },
       {
         id: "open-full",
         label: "Open full session detail",
@@ -79,26 +70,34 @@ export default function SessionPeekPane({
     ]);
     return () => setToolbar([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screen, confirmingKill, exited]);
+  }, [exited, confirmingKill]);
 
   useEffect(() => {
     setShortcuts([
-      { key: "k", label: "Kill session", onFire: doKill },
       { key: "o", label: "Open full session detail", onFire: openFullSession },
-      { key: "c", label: "Copy scrollback", onFire: copyScrollback },
+      { key: "k", label: "Kill session", onFire: doKill },
     ]);
     return () => setShortcuts([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [confirmingKill, exited]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       {exited && (
         <div className="border-b border-amber-900/60 bg-amber-950/40 px-3 py-1.5 text-xs text-amber-300">
-          Session exited — showing last scrollback.
+          Session exited — open full session detail for its transcript.
         </div>
       )}
-      <LivePaneConsole screen={screen} status={status} error={error} attempt={attempt} reconnect={reconnect} className="flex-1" />
+      {!live && !exited && (
+        <div className="border-b border-gray-800 px-3 py-1.5 text-xs text-gray-400">
+          This session is {session?.state ?? "unknown"}; its terminal is not attached.
+        </div>
+      )}
+      {live && (
+        <div className="min-h-0 flex-1">
+          <InteractiveTerminal sessionId={sessionId} name={session?.name ?? sessionId} />
+        </div>
+      )}
     </div>
   );
 }

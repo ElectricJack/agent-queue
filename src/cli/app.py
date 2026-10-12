@@ -443,6 +443,7 @@ from . import update as _update_cli  # noqa: E402, F401
 from . import logs  # noqa: E402, F401
 from . import tasks  # noqa: E402, F401
 from . import projects  # noqa: E402, F401
+from . import policy  # noqa: E402, F401
 from . import plugins  # noqa: E402, F401
 from . import vault  # noqa: E402, F401
 from . import agent_surface  # noqa: E402, F401
@@ -458,11 +459,14 @@ from . import reports as _reports_cli  # noqa: E402, F401
 from . import jobs as _jobs_cli  # noqa: E402, F401
 from . import artifacts as _artifacts_cli  # noqa: E402, F401
 from . import waits as _waits_cli  # noqa: E402, F401
+from . import cron as _cron_cli  # noqa: E402, F401
 from . import collaboration as _collaboration_cli  # noqa: E402, F401
 from . import streams as _streams_cli  # noqa: E402, F401
 from . import playbook as _playbook_cli  # noqa: E402, F401
 from . import test_runner as _test_runner_cli  # noqa: E402, F401
 from . import integration as _integration_cli  # noqa: E402, F401
+from . import promote as _promote_cli  # noqa: E402, F401
+from . import promote_rulesets as _promote_rulesets_cli  # noqa: E402, F401
 # Before register_auto_commands(): the generated dashboard_state_* commands
 # merge into this hand-written group instead of creating their own.
 from . import dashboard as _dashboard_cli  # noqa: E402, F401

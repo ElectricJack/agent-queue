@@ -336,6 +336,8 @@ describe("Terminal recovery", () => {
     expect(api.terminalAccess).toHaveBeenCalledOnce();
     expect(TerminalSocketMock.instances).toHaveLength(1);
     expect(states.slice(-1)[0]?.status).toBe(code === 4409 ? "exited" : "error");
+    // Only a refused viewer is marked: an exited session is not a permission problem.
+    expect(states.slice(-1)[0]?.refused).toBe(code === 4409 ? undefined : true);
   });
 
   it("stops on HTTP auth denial and retries an unreachable daemon", async () => {
@@ -410,76 +412,54 @@ it("does not reconnect an invisible terminal view until its layout returns", () 
   expect(TerminalSocketMock.instances).toHaveLength(2);
 });
 
-describe("Input-only terminal transport (phones)", () => {
-  function connectInput(sessionId = "session-b") {
+describe("Phone attach (mobile terminal)", () => {
+  function connectPhone(options: { history?: number; restoreSize?: boolean } = {}) {
     const states: TerminalConnectionState[] = [];
-    const writes: Uint8Array[] = [];
     const connection = connectTerminal({
-      sessionId, mode: "input", onState: (state) => states.push(state),
-      write: (bytes) => writes.push(bytes),
+      sessionId: "session-b", cols: 44, rows: 20, ...options,
+      onState: (state) => states.push(state), write: () => {},
     });
     vi.advanceTimersByTime(0);
     connections.push(connection);
-    const socket = TerminalSocketMock.instances.slice(-1)[0]!;
-    const ready = (frame: object = { type: "ready", session_id: sessionId, mode: "input" }) => {
-      socket.open();
-      socket.message(JSON.stringify(frame));
-    };
-    return { connection, socket, states, writes, ready };
+    return { connection, socket: TerminalSocketMock.instances.slice(-1)[0]!, states };
   }
 
-  it("opens the /input route with no dimensions, so nothing can size the agent's window", () => {
-    vi.stubEnv("VITE_TERMINAL_WS_URL", "wss://daemon.example/base");
-    const { socket } = connectInput("session/one");
-    expect(socket.url).toBe("wss://daemon.example/base/ws/terminal/session%2Fone/input");
-    expect(socket.protocols).toEqual(["aq-terminal-v1"]);
+  it("asks for scrollback and a size restore only when the caller does, so a desktop attach is unchanged", () => {
+    expect(connect().socket.url).toMatch(/\?cols=100&rows=30$/);
+    const { socket } = connectPhone({ history: 2000, restoreSize: true });
+    expect(new URL(socket.url).searchParams.get("history")).toBe("2000");
+    expect(new URL(socket.url).searchParams.get("restore_size")).toBe("1");
+    expect(new URL(connectPhone({ history: 50_000.7 }).socket.url).searchParams.get("history")).toBe("10000");
+    expect(new URL(connectPhone({ history: 0 }).socket.url).searchParams.has("history")).toBe(false);
   });
 
-  it("sends input after an input-mode ready and never a resize", () => {
-    const { connection, socket, states, ready } = connectInput();
-    connection.sendInput(encoder.encode("before ready"));
-    ready();
-    expect(states.slice(-1)[0]).toEqual({ status: "connected" });
-    connection.resize(40, 20);
-    connection.sendInput(encoder.encode("1"));
-    expect(socket.inputs().map((data) => new TextDecoder().decode(data))).toEqual(["1"]);
-    expect(socket.controls()).toEqual([]);
+  it("asks again on every reconnect, at the current size", async () => {
+    const { connection, socket } = connectPhone({ history: 2000, restoreSize: true });
+    socket.ready();
+    connection.resize(50, 22);
+    socket.serverClose(1006);
+    await vi.advanceTimersByTimeAsync(1_000); // the access probe, then the backoff
+    const next = new URL(TerminalSocketMock.instances.slice(-1)[0]!.url);
+    expect(TerminalSocketMock.instances).toHaveLength(2);
+    expect(Object.fromEntries(next.searchParams)).toEqual({ cols: "50", rows: "22", history: "2000", restore_size: "1" });
   });
 
-  it("refuses a ready that is not input-only: that server would have attached at phone size", () => {
-    const { socket, states, ready } = connectInput();
-    ready({ type: "ready", session_id: "session-b", cols: 80, rows: 24 });
-    expect(states.slice(-1)[0]).toMatchObject({ status: "error", message: expect.stringMatching(/terminal mode/) });
-    expect(socket.closed).toBe(true);
+  it.each([4401, 4403, 1008])("marks a close with %s as a refused viewer, without retrying", (code) => {
+    const { socket, states } = connectPhone();
+    socket.serverClose(code);
+    vi.advanceTimersByTime(60_000);
+    expect(states.slice(-1)[0]).toMatchObject({ status: "error", refused: true });
+    expect(TerminalSocketMock.instances).toHaveLength(1);
   });
 
-  it("an attach never accepts an input-only ready", () => {
-    const { socket, states } = connect();
-    socket.open();
-    socket.message(JSON.stringify({ type: "ready", session_id: "session-b", mode: "input" }));
-    expect(states.slice(-1)[0]).toMatchObject({ status: "error" });
-  });
-
-  it("treats output on an input-only socket as a protocol error, never renders it", () => {
-    const { socket, states, writes, ready } = connectInput();
-    ready();
-    socket.message(encoder.encode("unexpected"));
-    expect(writes).toEqual([]);
-    expect(states.slice(-1)[0]).toMatchObject({ status: "error", message: expect.stringMatching(/invalid output/) });
-  });
-
-  it("keeps the keepalive and the shared reconnect loop, without a screen reset", () => {
-    const { socket, writes, ready } = connectInput();
-    ready();
-    vi.advanceTimersByTime(15_000);
-    expect(socket.controls()).toEqual([{ type: "ping" }]);
-    socket.serverClose(1001);
-    vi.advanceTimersByTime(5_000);
-    const next = TerminalSocketMock.instances.slice(-1)[0]!;
-    expect(next).not.toBe(socket);
-    expect(next.url).toMatch(/\/ws\/terminal\/session-b\/input$/);
-    next.open();
-    next.message(JSON.stringify({ type: "ready", session_id: "session-b", mode: "input" }));
-    expect(writes).toEqual([]); // no RIS: there is no screen on an input-only socket
+  it("marks a refusal error frame, but not a retryable transport error", () => {
+    const { socket, states } = connectPhone();
+    socket.ready();
+    socket.message(JSON.stringify({ type: "error", code: 4408, retryable: true, message: "ack timeout" }));
+    expect(states.slice(-1)[0]).toMatchObject({ status: "reconnecting" });
+    expect(states.slice(-1)[0]?.refused).toBeUndefined();
+    vi.advanceTimersByTime(500);
+    TerminalSocketMock.instances.slice(-1)[0]!.message(JSON.stringify({ type: "error", code: 4403, retryable: false, message: "origin not allowed" }));
+    expect(states.slice(-1)[0]).toMatchObject({ status: "error", refused: true, message: "origin not allowed" });
   });
 });

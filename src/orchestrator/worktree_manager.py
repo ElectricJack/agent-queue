@@ -643,7 +643,18 @@ class WorktreeSlotManager:
                 ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
             )
 
-            branch = target_branch or resume_branch or task_branch_name(task.id)
+            branch = (
+                target_branch or resume_branch or getattr(task, "branch_name", None)
+                or task_branch_name(task.id)
+            )
+            branch = branch.removeprefix("refs/heads/")
+            if target_branch is None and getattr(task, "repo_id", None):
+                from src.integration.owner_recovery import resume_recovery_snapshots
+
+                await resume_recovery_snapshots(
+                    self.db, self.git, str(slot_dir), task.repo_id, branch,
+                    repository_url=await self._repository_url(slot_ws.project_id), lock_held=True,
+                )
             if target_branch is not None:
                 await self._detach_stale_branch_holders(slot_dir, branch)
             if preserve_branch:
@@ -708,6 +719,7 @@ class WorktreeSlotManager:
         slot_ws: Workspace,
         *,
         task_id: str | None = None,
+        detach_pushed_branch: bool = True,
     ) -> bool:
         """Return a slot to a clean tree after a task ends badly.
 
@@ -732,6 +744,10 @@ class WorktreeSlotManager:
         ``origin/<default>`` so a pool-owned slot cannot pin a retry branch.
         Unpushed or salvaged work remains checked out for forensics (§3.4).
 
+        Integration close passes ``detach_pushed_branch=False`` because its
+        subsequent handoff must prove and detach the exact task tip. Moving
+        HEAD to the default branch here would invalidate that proof.
+
         Returns True when uncommitted work was archived to a task context.
         """
         slot_dir = Path(slot_ws.workspace_path)
@@ -752,7 +768,7 @@ class WorktreeSlotManager:
                     ["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir)
                 )
                 branch = await self.git.aget_current_branch(str(slot_dir))
-                if not salvaged and branch.startswith(BRANCH_PREFIX):
+                if detach_pushed_branch and not salvaged and branch.startswith(BRANCH_PREFIX):
                     await self._detach_if_branch_is_pushed(
                         slot_dir, base_path, branch, project_id=slot_ws.project_id
                     )
@@ -1104,28 +1120,15 @@ class WorktreeSlotManager:
         """Create or resume *branch* in the slot.
 
         Retry of a task reuses its existing branch (design §3.2 step 4); a
-        continuation resumes its predecessor's branch and its tip is left
-        exactly where it was.
+        continuation resumes its predecessor's branch. Existing progress is
+        merged with the proved filing base without resetting either side.
         """
         await self._detach_stale_branch_holders(slot_dir, branch)
-        exists = await self._ref_exists(str(slot_dir), branch)
-        if exists:
-            await self.git._arun_unlocked(["switch", branch], cwd=str(slot_dir))
-            if not resume:
-                # Retry: re-point the branch at the fresh start point — or at
-                # what the last attempt published, if that is further along.
-                # A continuation deliberately keeps its accumulated commits.
-                reset_ref = await self._retry_reset_ref(slot_dir, branch, start_ref)
-                try:
-                    await self.git._arun_unlocked(
-                        ["reset", "--hard", reset_ref], cwd=str(slot_dir)
-                    )
-                except GitError as e:
-                    logger.warning("Could not re-base %s onto %s: %s", branch, reset_ref, e)
-            return
-        await self.git._arun_unlocked(
-            ["switch", "-c", branch, start_ref], cwd=str(slot_dir)
-        )
+        # Preserve local and published progress across retry, reopen and reroute.
+        start_sha = await self.git.arev_parse(str(slot_dir), start_ref)
+        if start_sha is None:
+            raise GitError("task branch start commit is unavailable")
+        await self.git.aprepare_child_branch(str(slot_dir), branch, start_sha, lock_held=True)
 
     async def _detach_stale_branch_holders(self, slot_dir: Path, branch: str) -> None:
         """Free *branch* when its other holder is an abandoned worker slot.
@@ -1167,43 +1170,6 @@ class WorktreeSlotManager:
             if ws.is_slot and _norm_path(ws.workspace_path) == target:
                 return await self._base_of(ws)
         return None
-
-    async def _retry_reset_ref(
-        self,
-        slot_dir: Path,
-        branch: str,
-        start_ref: str,
-    ) -> str:
-        """Where a retried branch should be re-pointed.
-
-        Design §3.2 starts a retry from the fresh start point, which is right
-        while the previous attempt's commits were only ever local.  Once they
-        are on ``origin/<branch>`` — very often with a PR open on them —
-        discarding them locally unpublishes nothing: the retrying agent finds
-        an empty branch with none of its own work, and its next push is a
-        non-fast-forward.  So keep the published tip whenever the start point
-        does not already contain it (i.e. it has not been merged), and fall
-        back to the start point in every other case, including when there is
-        no remote branch at all.
-        """
-        remote_ref = f"origin/{branch}"
-        if not await self._ref_exists(str(slot_dir), remote_ref):
-            return start_ref
-        try:
-            await self.git._arun_unlocked(
-                ["merge-base", "--is-ancestor", remote_ref, start_ref],
-                cwd=str(slot_dir),
-            )
-        except GitError:
-            # Not an ancestor: the push carries commits the start point lacks.
-            logger.info(
-                "Retry of %s resumes from published %s (not contained in %s)",
-                branch,
-                remote_ref,
-                start_ref,
-            )
-            return remote_ref
-        return start_ref
 
     async def _run_setup(self, slot_dir: Path, commands: list[str] | None) -> None:
         """Run the kind's ``worktree_setup`` commands inside the slot.
@@ -1402,21 +1368,11 @@ class WorktreeSlotManager:
     ) -> list[str]:
         """Delete stale local ``aq/*`` branches beneath *base_ws*.
 
-        Two categories are pruned (design §6.5):
-
-        * **Merged** local ``aq/*`` branches — always safe (spec §5).
-        * **Failed & old** local ``aq/*`` branches — the branch name
-          encodes the task id (``aq/<task_id>``); if that task exists and
-          is in a terminal-FAILED state and the branch's last commit is
-          older than ``retain_failed_days``, delete it with ``-D``
-          (force, because it's unmerged).  Branches whose task can not
-          be looked up, or whose task is not FAILED, are kept — the
-          reaper never destroys unmerged work speculatively.
-
-        Returns the combined list of deleted branch names.
+        Only local ``aq/*`` branches already merged into *default_branch* are
+        pruned. A failed task's unique commits remain recoverable regardless
+        of age; terminal status and commit date are not proof that a ref is
+        disposable.
         """
-        from src.models import TaskStatus
-
         base_path = base_ws.workspace_path
         _validate_ref(default_branch, field="default branch")
         if not Path(base_path).is_dir():
@@ -1424,6 +1380,19 @@ class WorktreeSlotManager:
             return []
 
         async with self._git_mutex(base_path):
+            from src.integration.delivery_branches import live_branch_references
+
+            try:
+                async with self.db._engine.connect() as conn:
+                    holds = await live_branch_references(conn)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping branch cleanup; live-ref inventory failed in %s: %s",
+                    base_path,
+                    exc,
+                )
+                return []
+
             # A merged or failed branch may still belong to a worktree. Never
             # delete it or detach that worktree as part of routine cleanup.
             try:
@@ -1472,7 +1441,7 @@ class WorktreeSlotManager:
 
             deleted: list[str] = []
             for br in merged:
-                if br in attached:
+                if br in attached or br in holds:
                     continue
                 if not await remote_cleanup_ready(br):
                     continue
@@ -1481,61 +1450,6 @@ class WorktreeSlotManager:
                     deleted.append(br)
                 except GitError as e:
                     logger.warning("delete branch %s failed: %s", br, e)
-
-            # Failed-and-old pruning.
-            retain_days = int(getattr(self.config, "retain_failed_days", 0) or 0)
-            if retain_days > 0:
-                cutoff = time.time() - (retain_days * 86400.0)
-                # List all local aq/* branches with their last-commit unix time.
-                try:
-                    out = await self.git._arun(
-                        [
-                            "for-each-ref",
-                            "--format=%(refname:short) %(committerdate:unix)",
-                            f"refs/heads/{BRANCH_PREFIX}",
-                        ],
-                        cwd=base_path,
-                    )
-                except GitError as e:
-                    logger.warning("for-each-ref failed in %s: %s", base_path, e)
-                    out = ""
-                for line in out.splitlines():
-                    parts = line.strip().split()
-                    if len(parts) != 2:
-                        continue
-                    br, ts_raw = parts
-                    if br in deleted or br in attached:
-                        continue
-                    try:
-                        ts = float(ts_raw)
-                    except ValueError:
-                        continue
-                    if ts >= cutoff:
-                        continue  # still within retention window
-                    # Derive task id from branch name (aq/<task_id>).
-                    if not br.startswith(BRANCH_PREFIX):
-                        continue
-                    task_id = br[len(BRANCH_PREFIX):]
-                    if not task_id:
-                        continue
-                    try:
-                        task = await self.db.get_task(task_id)
-                    except Exception as e:
-                        logger.debug("get_task(%s) failed during prune: %s", task_id, e)
-                        continue
-                    if task is None:
-                        continue  # unknown → keep
-                    status = getattr(task, "status", None)
-                    status_val = getattr(status, "value", status)
-                    if status_val != TaskStatus.FAILED.value:
-                        continue
-                    if not await remote_cleanup_ready(br):
-                        continue
-                    try:
-                        await self.git.adelete_local_branch(base_path, br, force=True)
-                        deleted.append(br)
-                    except GitError as e:
-                        logger.warning("force-delete branch %s failed: %s", br, e)
 
         return deleted
 

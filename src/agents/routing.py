@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 
 from src.intelligence_classes import resolve_class
+from src.routing.sources import ROLE, ROLE_PROFILE_IDS
 from src.sessions.spec import _infer_provider_from_harness, _is_codex_cli
 
 
@@ -51,6 +52,10 @@ def resolve_agent_profile(agent, profiles: Mapping):
 
 
 def _generic_worker_profile(profile) -> bool:
+    from src.commands.operator_authority import is_operator_profile
+
+    if is_operator_profile(profile):
+        return False
     # The live worker ladder is operator-owned, so IDs are not a contract.
     # A class-backed Claude worker profile (pool or task lifecycle) is the
     # generic worker route: the original Claude task-worker templates keep
@@ -123,8 +128,32 @@ def task_agent_mismatch(
     None for intelligence_classes means a legacy caller has no class snapshot;
     an explicit empty snapshot instead reports missing requested classes.
     """
+    from src.commands.operator_authority import OPERATOR_CLASSES, OPERATOR_HARNESSES, is_operator_profile
+
+    # Role routes name a durable role definition, not just a capability bundle.
+    # Apply the same identity rule in scheduler matching and fresh admission.
+    if _value(task, "route_source") == ROLE and _value(agent, "profile_id") != _value(
+        task, "profile_id"
+    ):
+        return (
+            f"requires role agent with profile '{task.profile_id}'; "
+            f"worker '{agent.id}' uses '{agent.profile_id}'"
+        )
+    if _value(agent, "profile_id") in ROLE_PROFILE_IDS and _value(task, "route_source") != ROLE:
+        return f"worker '{agent.id}' is reserved for role profile '{agent.profile_id}'"
+
+    task_kind = getattr(getattr(task, "task_type", None), "value", getattr(task, "task_type", None))
+    operator = task_kind == "operator"
+    if operator != is_operator_profile(task_profile) or operator != is_operator_profile(agent_profile):
+        return "task and worker must have the same operator role"
     required_class = _value(task, "intelligence_class")
     worker_class = _value(agent, "intelligence_class") or _value(agent_profile, "default_class")
+    if operator:
+        required_class = required_class or _value(task_profile, "default_class")
+        harness = _value(agent, "harness") or _value(agent_profile, "harness")
+        if (required_class not in OPERATOR_CLASSES or worker_class != required_class
+                or harness not in OPERATOR_HARNESSES):
+            return "operator work requires an exact frontier standard-high/deep-high worker"
     if required_class and worker_class and required_class != worker_class:
         return (
             f"requires intelligence class '{required_class}'; worker '{agent.id}' "

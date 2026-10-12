@@ -477,6 +477,7 @@ async def test_needs_you_excludes_delivery_incidents_and_answered_escalations(db
             incident_key=f"question:{state}",
             supervisor_owner="supervisor-p",
             summary="Choose a branch",
+            task_title="Choose a release branch",
             investigation="Two branches contain the fix",
             decision_requested="Which branch should ship?",
             severity="medium",
@@ -489,6 +490,28 @@ async def test_needs_you_excludes_delivery_incidents_and_answered_escalations(db
             await conn.execute(
                 update(escalations).where(escalations.c.id == row["id"]).values(values)
             )
+    await db.create_escalation(
+        id="esc-answered-stale",
+        project_id="p",
+        source_kind="question",
+        source_identity="answered-stale",
+        incident_key="question:answered-stale",
+        supervisor_owner="supervisor-p",
+        summary="Choose a branch",
+        task_title="Choose a release branch",
+        investigation="Two branches contain the fix",
+        decision_requested="Which branch should ship?",
+        severity="medium",
+        now=live_anchor() + 30,
+    )
+    await db.accept_escalation_reply(
+        "esc-answered-stale", transport="dashboard", external_message_id="answer",
+        verified_actor="human:jack", text="Authorization granted", received_at=live_anchor() + 40,
+    )
+    await db.transition_escalation(
+        "esc-answered-stale", expected_revision=1, new_state="stale", now=live_anchor() + 60,
+        terminal_outcome="No activity after the recorded answer",
+    )
     await db.create_escalation(
         id="esc-delivery",
         project_id="p",

@@ -63,6 +63,8 @@ def create_database(config: AppConfig) -> DatabaseBackend:
     The returned object is not yet initialized — callers must
     ``await db.initialize()`` before use.
     """
+    from src.database.migration_guard import SchemaAheadPolicy
+
     db_url = config.database.url
     if not is_postgres_url(db_url):
         raise ValueError(
@@ -77,6 +79,10 @@ def create_database(config: AppConfig) -> DatabaseBackend:
         config.database.pool_max_size,
         pre_ping=config.database.pre_ping,
         pool_recycle=config.database.pool_recycle_seconds,
+        schema_ahead_policy=SchemaAheadPolicy(
+            config.database.schema_ahead_migrations,
+            config.database.schema_ahead_max_revisions,
+        ),
     )
 
 

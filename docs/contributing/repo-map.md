@@ -5,11 +5,9 @@ explains each area.
 
 ## Why this page exists
 
-The repository has about 3,700 tracked files. Roughly 800 of them are tests,
-another 1,400 are generated API-client code that nobody edits, and 400 are
-prose. What is left — the ~790 modules that actually ship in the running system
-— is spread across `src/`, `dashboard/` and `migrations/`. This page is the
-index that turns "I want to change how tasks get claimed" into a directory.
+This page maps behavior to the package that owns it. The coverage manifest
+records file counts for its source revision; use the generator below for
+current counts.
 
 For a module-by-module catalog rather than a directory-level map, use the
 [module catalog](../reference/modules/README.md); every tracked path in the
@@ -85,6 +83,31 @@ The remaining subpackages (`agents/`, `digest/`, `editor/`, `git/`,
 [`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json),
 which is machine-checked and never guessed.
 
+## Train fidelity and release modules
+
+These are the modules introduced or retained by the train and release changes.
+The [policy entry](../specs/design/promotion-flow.md) maps fidelity §§2.2 and 4
+to the guides; this table is orientation, not a second module ownership manifest.
+
+| Phase | Modules or resource family | Responsibility and delivery |
+|---|---|---|
+| A: restored train | [train_sources.py](../../src/integration/train_sources.py), [root_pull_requests.py](../../src/integration/root_pull_requests.py), [reviews.py](../../src/integration/reviews.py), [models.py](../../src/integration/models.py) | Epic PR opening, exact-head root gate and cadence; shipped. |
+| A: cleanup and controls | [cleanup.py](../../src/integration/cleanup.py), [train_controls.py](../../src/integration/train_controls.py), [stacked_branches.py](../../src/integration/stacked_branches.py), [CLI integration](../../src/cli/integration.py) | Per-batch cleanup, pause/resume/eject/seal-now and epic refresh; shipped. |
+| B: deploy and recovery | [install/deploy.py](../../src/install/deploy.py), [install/update.py](../../src/install/update.py), [database/backup.py](../../src/database/backup.py), [database/additive_migrations.py](../../src/database/additive_migrations.py), [CLI db](../../src/cli/db.py) | Annotated-tag selection, deployment record, additive-migration tooling and custom-archive backup/restore; shipped. |
+| C: legacy removal | [parent_runtime.py](../../src/integration/parent_runtime.py), [promotion.py](../../src/integration/promotion.py), [root_adapters.py](../../src/integration/root_adapters.py), [subjects.py](../../src/integration/subjects.py) | Still present as legacy compatibility code. **pending vivid-stone-39.5:** reconcile the later C1–C2 deletion tasks and observation-window evidence before removing these rows; this docs task performs no deletion. |
+| D: flow and promotion lane | [promotion_steps.py](../../src/integration/promotion_steps.py), [promotion_routing.py](../../src/integration/promotion_routing.py), [commands/promote_commands.py](../../src/commands/promote_commands.py), [CLI promote](../../src/cli/promote.py) | Schema, activation helpers, promotion target, pinned-PR lane and request/approve/cancel/status/list; shipped. Generated [schema](../reference/promotion-flow-schema.json) is regenerated, never edited. |
+| E1: remote configuration | [CLI promote_rulesets](../../src/cli/promote_rulesets.py), [promotion_steps.py](../../src/integration/promotion_steps.py), [protection.py](../../src/integration/protection.py), [.github/workflows/](../../.github/workflows/) | Ruleset output, chain/tag protection, remote diagnostics and workflow requirements. |
+| E2: prepare and notes | [promotion_notes.py](../../src/integration/promotion_notes.py), [promote_commands.py](../../src/commands/promote_commands.py) | Prepare filing, immutable notes input, both notes formats and exact-source request checks. |
+| E3: hotfix and back-merge | [promotion routing](../../src/integration/promotion_routing.py), [promotion_steps.py](../../src/integration/promotion_steps.py), [promote_commands.py](../../src/commands/promote_commands.py) | Hotfix filing, `BackmergeAdmission`, default sources, intermediate intents and cached back-merge ledger. |
+| E4: policy bundles | [reviewed playbooks](../../src/prompts/reviewed_playbooks/), [fixture bundles](../../tests/fixtures/playbooks/v2/) | `promotion-request` and `promotion-continuous`, reviewed artifacts and step-type binding; inactive until activated per project. |
+| E5: documentation | [Promotion flows](../guides/promotion-flow.md), [releases](../guides/releases.md), [factory policy](../concepts/factory-policy.md), this map | Mechanism and operator guidance; live rollout evidence belongs to the project cutover record. |
+
+`epic_pr.py` was moved to `root_pull_requests.py`; `parent_completion.py` and
+`delivered_parent_adoption.py` were already removed. Fidelity restores their
+process through the train, rather than restoring the removed database record
+machinery. Do not confuse the existing `integration/release.py` train-release
+service or legacy `integration/promotion.py` with `promotion_steps.py`.
+
 ## Root files a contributor meets
 
 | File | Purpose |
@@ -126,7 +149,7 @@ frontend and the CLI, each with its own one-line `CLAUDE.md` shim.
 | `/.aq/` | Per-checkout agent state: worktree slots, claim files, hook settings. Gitignored, generated by the session runtime, never shared. |
 | `node_modules/`, `dashboard/dist/`, `packages/aq-ts-client/src/` | Build inputs and outputs. Gitignored. |
 | `.pytest_cache/`, `.ruff_cache/`, `__pycache__/` | Tool caches. |
-| `docs/specs/`, `docs/superpowers/`, `docs/reports/`, `docs/reviews/`, `docs/analysis/`, `docs/plans/` | Preserved historical material — the audit trail of how AQ got here. Read as background, with the date it describes, never as instructions. |
+| `docs/specs/`, `docs/superpowers/`, `docs/reports/`, `docs/reviews/`, `docs/analysis/`, `docs/plans/` | Active design specs remain normative. Dated plans, superseded specs and reports preserve historical decisions; check each document’s status and scope. |
 
 ## Finding the code for a behaviour
 

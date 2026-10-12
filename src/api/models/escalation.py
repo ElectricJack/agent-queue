@@ -19,6 +19,7 @@ class EscalationRecord(BaseModel):
     supervisor_owner: str
     task_title: str | None = None
     task_status: str | None = None
+    deep_link: str | None = None
     summary: str
     investigation: str
     decision_requested: str
@@ -33,6 +34,7 @@ class EscalationRecord(BaseModel):
     terminal_at: float | None = None
     delivery_statuses: list[str] | None = None
     pending_delivery: bool | None = None
+    held_while_paused: bool = False
 
 
 class EscalationMessage(BaseModel):

@@ -142,9 +142,12 @@ def test_registry_has_categories(registry):
         "test_selection",
         "report",
         "wait",
+        "cron",
         "collaboration",
         "job",
         "artifact",
+        "policy",
+        "operator",
     }
 
     for cat in categories:

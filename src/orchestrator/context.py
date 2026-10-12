@@ -236,7 +236,15 @@ class ContextMixin:
                 task.id, project.integration_repository_id
             )
             if origin is not None and origin.get("parent_ref"):
-                default_branch = origin["parent_ref"]
+                from sqlalchemy import select
+                from src.database.tables import projects
+                from src.integration.promotion_routing import resolve_origin_parent
+
+                async with self.db._engine.connect() as conn:
+                    cutover = await conn.scalar(select(projects.c.default_branch_cutover).where(
+                        projects.c.id == project.id))
+                default_branch = resolve_origin_parent(
+                    default_branch, origin, project.integration_repository_id, cutover)
         if workspace and await self.git.avalidate_checkout(workspace):
             has_remote = await self.git.ahas_remote(workspace)
         else:

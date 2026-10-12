@@ -506,6 +506,25 @@ from reaching the agent. On any failure it prints nothing and exits 0.
   backstop (default 72 h) plus a cascade sweep that revokes tokens of dead sessions covers
   crashes. Tokens are persisted in the DB because sessions survive daemon restarts (A.5
   adoption) — an in-memory store would orphan live sessions on restart.
+- **Renew live supervisor credentials:** the periodic token sweep extends an
+  unexpired, unrevoked elevated token when it is within one hour of expiry
+  (half the configured TTL if shorter). Renewal requires a named `supervisor`
+  session that is starting/running, desired running, not ended, and matches the
+  token's session id, launch instance and project (including global `None`).
+  Extend to the configured TTL from now, without changing the bearer or scope;
+  invalidate its cached expiry. Workers and other named sessions keep the fixed
+  TTL. Expired/revoked credentials are never revived, even after daemon downtime.
+- **Operator recovery:** `aq session token <session-id> --json` preserves a live
+  named supervisor's elevation and project/global scope, as well as its launch
+  instance. Existing project fences still apply; a project supervisor cannot
+  mint a global credential. Replace the affected session's `AQ_API_TOKEN` with
+  `.data.token`; the command does not mutate a running process's environment.
+  `sessions.authentication` and `stall.sweep` report recent rejected credentials
+  associated with a running launch, and named supervisors with no valid credential
+  for their current instance. Auth diagnostics never include bearer tokens or hashes.
+  A stall sweep that encounters failed authentication exits with one `SWEEP-AUTH`
+  error and the recovery command. Patrol stops further checks for that tick and
+  reports that single error, never interpreting failed reads as an empty queue.
 
 ### 7.2 Scope model
 

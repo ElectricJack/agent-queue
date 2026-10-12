@@ -2,7 +2,18 @@
 
 The Reviews tab projects task-linked GitHub pull requests into a single
 PostgreSQL snapshot. The API reads that row and reports its age; it does no
-GitHub I/O on GET. A daemon background task refreshes every 60 seconds. It
+GitHub I/O on GET. Since 2026-10-11 the Reviews page uses
+`GET /api/reviews/pull-requests/summary`: PostgreSQL counts distinct task-linked
+open PR URLs per active project from the existing snapshot, returning project
+names, counts and canonical GitHub repository `/pulls` links. Active projects
+with a configured GitHub repository remain visible with zero open PRs; projects
+without a valid GitHub repository are omitted. Before the first snapshot,
+counts display as unknown, and snapshot age remains visible after refreshes.
+The page renders one row per project, above document reviews. It fetches no
+individual PR details and offers no PR approval controls. The detail and
+approval APIs remain available with their existing authorization requirements.
+
+A daemon background task refreshes every 60 seconds. It
 groups task PR links by repository, binds each repository once, pages its open
 PR list, and matches those open PRs to canonical task URLs. A successful pass
 atomically replaces the snapshot. A failed pass leaves the previous snapshot
@@ -27,7 +38,7 @@ train project.
 
 The dashboard proxy distinguishes its real peer before relaying requests.
 Loopback viewers and configured trusted origins reached over a Tailscale
-address may see and use Approve. Other viewers receive no button, and their
+address may use the approval API. Other viewers' approval
 POST is refused at the edge. The proxy replaces any inbound viewer assertion;
 the Vite development proxy replaces it too and grants only loopback peers.
 The daemon also requires local operator scope, a loopback proxy peer, and a

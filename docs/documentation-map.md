@@ -116,6 +116,7 @@ machine-readable form of this table is
 | `sessions` | `docs/concepts/sessions.md` | `docs/reference/modules/sessions.md` |
 | `workspaces` | `docs/concepts/projects-and-workspaces.md`, `docs/guides/project-onboarding.md` | `docs/reference/modules/workspaces.md` |
 | `integration` | `docs/concepts/integration.md`, `docs/guides/development-integration.md` | `docs/reference/modules/integration.md` |
+| `vivid-stone-39.6` → `vivid-stone-39.5` | Draft then finalize `docs/guides/promotion-flow.md`, `docs/guides/releases.md`, `docs/specs/design/promotion-flow.md`; update factory policy, train controls and repository map in place | Existing integration/contributing shards; no new manifest |
 | `playbooks` | `docs/concepts/playbooks.md` | `docs/reference/modules/playbooks.md` |
 | `cli` | `docs/reference/cli/**` | `docs/reference/modules/cli.md` |
 | `api` | `docs/reference/api/**` | `docs/reference/modules/api.md` |

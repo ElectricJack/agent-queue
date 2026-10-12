@@ -44,18 +44,23 @@ from src.commands.object_loop_commands import ObjectLoopCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
+from src.commands.cron_commands import CronCommandsMixin
 from src.commands.knowledge_commands import KnowledgeCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
 from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.git_identity_commands import GitIdentityCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
+from src.commands.policy_commands import PolicyCommandsMixin
+from src.commands.operator_commands import OperatorCommandsMixin
+from src.commands.operator_authority import bind_operator_dispatch, operator_grant_var
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
 from src.commands.routing_commands import RoutingCommandsMixin
 from src.commands.task_comment_commands import TaskCommentCommandsMixin
 from src.commands.task_subtask_commands import TaskSubtaskCommandsMixin
 from src.commands.phase_commands import PhaseCommandsMixin
+from src.commands.promote_commands import PromoteCommandsMixin
 from src.commands.agent_commands import AgentCommandsMixin
 from src.commands.profile_commands import ProfileCommandsMixin
 from src.commands.mcp_commands import McpCommandsMixin
@@ -347,6 +352,7 @@ def _is_memory_command(name: str) -> bool:
 
 
 class CommandHandler(
+    OperatorCommandsMixin,
     JobCommandsMixin,
     ObjectLoopCommandsMixin,
     ClaimCommandsMixin,
@@ -354,12 +360,14 @@ class CommandHandler(
     SystemCommandsMixin,
     GitIdentityCommandsMixin,
     ProjectCommandsMixin,
+    PolicyCommandsMixin,
     ProjectOnboardingCommandsMixin,
     TaskCommandsMixin,
     RoutingCommandsMixin,
     TaskCommentCommandsMixin,
     TaskSubtaskCommandsMixin,
     PhaseCommandsMixin,
+    PromoteCommandsMixin,
     AgentCommandsMixin,
     ProfileCommandsMixin,
     McpCommandsMixin,
@@ -393,6 +401,7 @@ class CommandHandler(
     TestSelectionCommandsMixin,
     ReportCommandsMixin,
     WaitCommandsMixin,
+    CronCommandsMixin,
     KnowledgeCommandsMixin,
     CollaborationCommandsMixin,
     CollaborationLifecycleMixin,
@@ -649,6 +658,11 @@ class CommandHandler(
         and any registered workspace path.
         """
         real = os.path.realpath(path)
+        from src.task_templates import editable_task_template_path
+
+        template_path = editable_task_template_path(path, self.config.data_dir)
+        if template_path is not None:
+            return template_path
         workspace_real = os.path.realpath(self.config.workspace_dir)
         if real.startswith(workspace_real + os.sep) or real == workspace_real:
             return real
@@ -686,7 +700,9 @@ class CommandHandler(
 
     @staticmethod
     def _is_mutating(name: str) -> bool:
-        return any(name.startswith(p) for p in CommandHandler._MUTATING_CMD_PREFIXES)
+        return name.startswith("operator_") or any(
+            name.startswith(p) for p in CommandHandler._MUTATING_CMD_PREFIXES
+        )
 
     @staticmethod
     def _preview(obj: object, limit: int = 600) -> str:
@@ -913,7 +929,11 @@ class CommandHandler(
         This is the single code path for all operational commands in the system.
         Both Discord slash commands and chat agent LLM tools call this method.
         """
-        with CorrelationContext(command=name, component="command_handler"):
+        from src.task_templates import task_template_scope
+
+        with task_template_scope(self.config.data_dir), CorrelationContext(
+            command=name, component="command_handler"
+        ):
             # aq-surface Phase S2: pop the server-injected ``_scope`` off
             # BEFORE dispatch so no ``_cmd_*`` handler sees it in its
             # ``args`` unless it explicitly reads ``self._current_scope``.
@@ -946,6 +966,8 @@ class CommandHandler(
             if principal is None:
                 principal = await self._principal_from_scope(scope)
             _principal_token = _principal_var.set(principal)
+            operator_session, _operator_token, operator_refusal = bind_operator_dispatch(
+                principal, name, args)
             mutating = self._is_mutating(name)
             # Terminal keystrokes may be secrets. They belong only to the
             # terminal, never to general command logs or the activity feed.
@@ -967,6 +989,15 @@ class CommandHandler(
                 if name == "review_attachment_add"
                 else args
             )
+            if name in {"bind_project_repository", "create_project", "onboard_project"}:
+                log_args = {
+                    key: "<redacted repository URL>"
+                    if key in {"repo_url", "expected_repo_url", "github_url", "create_repo"}
+                    else value
+                    for key, value in args.items()
+                }
+            if name.startswith("operator_"):
+                log_args = {"command": args.get("command"), "arguments": "<operator inputs>"}
             if mutating:
                 logger.info("cmd %s args=%s", name, self._preview(log_args))
             else:
@@ -977,9 +1008,13 @@ class CommandHandler(
             # never appear on the bus regardless.
             _emit_started_at = time.monotonic()
             _emit_args_snapshot = dict(args) if isinstance(args, dict) else {}
+            if name in {"bind_project_repository", "create_project", "onboard_project"}:
+                _emit_args_snapshot = dict(log_args)
             _emit_ok: bool = False
             _emit_error: str | None = None
             try:
+                if operator_refusal:
+                    return {"success": False, "error": operator_refusal}
                 # Normalise project_id in args before dispatching.
                 # LLMs frequently guess wrong (channel names, underscores,
                 # prefixes).  This resolves to the correct ID centrally.
@@ -1008,7 +1043,8 @@ class CommandHandler(
                     name,
                     principal,
                     resolver=self._command_resolver,
-                    mode=getattr(self.config.security, "capability_enforcement", "audit"),
+                    mode=("enforce" if operator_session else
+                          getattr(self.config.security, "capability_enforcement", "audit")),
                 )
                 if decision.shadow:
                     logger.warning(
@@ -1149,6 +1185,7 @@ class CommandHandler(
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)
                 _principal_var.reset(_principal_token)
+                operator_grant_var.reset(_operator_token)
                 # Emit ``command.invoked`` for dashboard live-activity chips
                 # and future observability surfaces. Gated on the config flag;
                 # any failure is swallowed so a broken bus never breaks

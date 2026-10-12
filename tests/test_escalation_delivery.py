@@ -27,7 +27,7 @@ from src.escalations import (
     sanitise,
 )
 from src.escalations.plan import root_dedup_key
-from src.models import Project
+from src.models import Project, ProjectStatus
 from tests.db_fixtures import lease_dsn
 
 BASE_URL = "https://queue.example.test"
@@ -103,8 +103,308 @@ def make_service(db, transport, config=None, *, clock=None, owner="daemon-a", **
     )
 
 
+async def test_old_incident_is_delivered_even_outside_the_newest_hundred_scan(db):
+    await make_incident(db)
+    async with db.immediate() as conn:
+        for index in range(101):
+            await db.create_escalation(
+                conn=conn, id=f"new-{index}", project_id="p", source_kind="gate",
+                source_identity=f"gate-{index}", incident_key=f"gate:{index}",
+                supervisor_owner="supervisor-p", task_title=f"Approve proposal {index}",
+                summary="Project work is waiting for a proposal decision",
+                investigation="The supervisor reviewed the proposed task batch",
+                decision_requested="Approve the proposed tasks?", severity="medium",
+                now=20.0 + index,
+            )
+    assert "esc-1" not in {row["id"] for row in await db.list_escalations(limit=100)}
+    service = make_service(db, SinkTransport())
+    await service.tick(limit=1)
+    [root] = await db.list_escalation_deliveries("esc-1")
+    assert root["status"] == "sent"
+
+
 def facts_for(row) -> EscalationFacts:
     return EscalationFacts.from_row(row)
+
+
+@pytest.mark.parametrize("stateful", [False, True])
+@pytest.mark.parametrize("state", ["reply_received", "resolving"])
+async def test_answer_overtakes_queued_initial_post_and_never_reposts_a_question(db, stateful, state):
+    await make_incident(db)
+    sink = SinkTransport()
+    config = make_config()
+    config.escalations.stateful = stateful
+    service = make_service(db, sink, config)
+    await service.reconcile("esc-1")
+    reply = await db.accept_escalation_reply(
+        "esc-1", transport="dashboard", external_message_id="answer-before-post",
+        verified_actor="human:jack", text="Authorization granted", received_at=100,
+    )
+    if state == "resolving":
+        await db.transition_escalation("esc-1", expected_revision=1, new_state=state, now=110)
+    await service.pump()
+    assert sink.calls == []
+    assert (await db.list_escalation_deliveries("esc-1"))[0]["status"] == "sent"
+    facts = facts_for(await db.get_escalation("esc-1"))
+    assert not plan_deliveries(facts, deliveries=[], messages=[reply["reply"]]).deliveries
+    assert plan_replacement(facts, []) is None
+    assert await service.reconcile("esc-1") == []
+    rendered = render_root(
+        facts, mentions=MentionPolicy(user_ids=(MENTION_USER,)), base_url=BASE_URL,
+        dedup_key="test",
+    )
+    assert "Answered" in rendered and "needs a decision" not in rendered
+    assert f"<@{MENTION_USER}>" not in rendered
+
+
+async def test_reply_at_root_write_boundary_suppresses_the_pending_human_notification(db):
+    await make_incident(db)
+    sink = SinkTransport()
+    service = make_service(db, sink)
+    before_write = service._before_write
+
+    async def answer_at_boundary(row):
+        await before_write(row)
+        await db.accept_escalation_reply(
+            "esc-1", transport="dashboard", external_message_id="racing-answer",
+            verified_actor="human:jack", text="Authorization granted", received_at=100,
+        )
+
+    service._before_write = answer_at_boundary
+    await service.tick()
+    assert sink.calls == []
+
+
+@pytest.mark.parametrize("boundary", ["opener", "state_edit"])
+async def test_reply_at_later_write_boundaries_suppresses_the_old_question(db, boundary):
+    await make_incident(db)
+    sink = SinkTransport()
+    # Begin before the reminder deadline so the later tick produces the
+    # state edit where the reply is injected, rather than an earlier tick.
+    clock = Clock(now=10.0)
+    config = make_config()
+    config.escalations.stateful = True
+    config.escalation.reminder_minutes = 5
+    service = make_service(db, sink, config, clock=clock)
+    if boundary == "state_edit":
+        await service.tick()
+        clock.advance(360)
+    before_write = service._before_write
+
+    async def answer_at_boundary(row):
+        await before_write(row)
+        ready = row["kind"] == "state" if boundary == "state_edit" else (
+            row["kind"] == "root" and "ensure_thread" in sink.calls
+        )
+        if ready:
+            await db.accept_escalation_reply(
+                "esc-1", transport="dashboard", external_message_id="late-answer",
+                verified_actor="human:jack", text="Authorization granted", received_at=clock(),
+            )
+
+    service._before_write = answer_at_boundary
+    await service.tick()
+    service._before_write = before_write
+    if boundary == "opener":
+        clock.advance(60)
+        await service.tick()
+        thread_text = [item.content for item in sink.messages.values() if item.thread_id]
+        assert len(thread_text) == 1
+        assert "Options:" not in thread_text[0] and "Decision needed" not in thread_text[0]
+    else:
+        root = next(item for item in sink.messages.values() if not item.thread_id)
+        assert "Answered" in root.content
+        assert "Still open" not in root.content
+
+
+async def test_answered_incident_repairs_partial_thread_without_repeating_the_question(db):
+    await make_incident(db)
+    sink = SinkTransport()
+    sink.faults.append(("ensure_thread", TransportRetryable("thread temporarily unavailable")))
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.tick()
+    await db.accept_escalation_reply(
+        "esc-1", transport="dashboard", external_message_id="answer-after-root",
+        verified_actor="human:jack", text="Authorization granted", received_at=clock(),
+    )
+    clock.advance(60)
+    await make_service(db, sink, clock=clock, owner="restarted").tick()
+    assert sink.calls.count("post_root") == 1
+    thread_text = [item.content for item in sink.messages.values() if item.thread_id]
+    assert len(thread_text) == 1
+    assert all("Decision needed" not in text and "Options:" not in text for text in thread_text)
+
+
+async def test_terminal_incident_with_an_unattempted_atomic_root_stays_silent(db):
+    incident = await make_incident(db)
+    await db.transition_escalation(
+        incident["id"], expected_revision=incident["revision"], new_state="cancelled",
+        terminal_outcome="Handled in the dashboard", now=20,
+    )
+    sink = SinkTransport()
+    service = make_service(db, sink)
+    await service.tick()
+    await service.tick()
+    assert sink.calls == []
+    [root] = [row for row in await db.list_escalation_deliveries(incident["id"])
+              if row["kind"] == "root"]
+    assert root["status"] == "unknown"
+    assert root["receipt_confirmed_at"] is None
+    assert "never posted" in root["last_error"]
+
+
+@pytest.mark.parametrize("source_kind", ["task_attempt", "gate"])
+async def test_paused_project_holds_escalations_and_gate_pings_until_resume(db, source_kind):
+    await make_incident(db, source_kind=source_kind)
+    await db.update_project("p", status=ProjectStatus.PAUSED)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.tick()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == "pending" and row["attempt_count"] == 0
+    assert sink.calls == []
+    assert await db.count_due_escalation_deliveries(clock()) == 0
+    assert (await db.get_escalation("esc-1"))["held_while_paused"] is True
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    restarted = make_service(db, sink, clock=clock, owner="daemon-b")
+    await restarted.tick()
+    await restarted.tick()
+    assert sink.calls.count("post_root") == 1
+    assert (await db.list_escalation_deliveries("esc-1"))[0]["status"] == "sent"
+
+
+async def test_held_backlog_does_not_starve_another_project(db):
+    await make_incident(db)
+    await db.update_project("p", status=ProjectStatus.PAUSED)
+    await db.create_project(Project(id="active", name="Active"))
+    await make_incident(db, id="esc-active", project_id="active")
+    sink = SinkTransport()
+    service = make_service(db, sink)
+    await service.tick(limit=1)
+    assert (await db.list_escalation_deliveries("esc-1"))[0]["attempt_count"] == 0
+    assert (await db.list_escalation_deliveries("esc-active"))[0]["status"] == "sent"
+    assert sink.calls.count("post_root") == 1
+
+
+async def test_pause_between_root_and_thread_preserves_binding_for_resume(db):
+    await make_incident(db)
+    sink = SinkTransport()
+    post = sink.post_root
+
+    async def pause_after_post(**kwargs):
+        result = await post(**kwargs)
+        await db.update_project("p", status=ProjectStatus.PAUSED)
+        return result
+
+    sink.post_root = pause_after_post
+    service = make_service(db, sink)
+    report = await service.tick()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert report.held == 1 and row["status"] == "retry"
+    assert row["root_message_id"] and not row["thread_id"]
+    assert sink.calls == ["post_root"]
+    sink.post_root = post
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    await service.tick()
+    assert sink.calls.count("post_root") == 1
+    assert sink.calls.count("ensure_thread") == 1
+    assert (await db.list_escalation_deliveries("esc-1"))[0]["status"] == "sent"
+
+
+@pytest.mark.parametrize("reclaimed", [False, True])
+async def test_pause_after_claim_preserves_budget_and_prior_ambiguity(db, reclaimed):
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.reconcile("esc-1")
+    if reclaimed:
+        await db.claim_escalation_deliveries(lease_owner="old", now=clock(), lease_seconds=1)
+        clock.advance(2)
+    claim = db.claim_escalation_deliveries
+
+    async def pause_after_claim(**kwargs):
+        rows = await claim(**kwargs)
+        await db.update_project("p", status=ProjectStatus.PAUSED)
+        return rows
+
+    db.claim_escalation_deliveries = pause_after_claim
+    report = await service.pump()
+    held = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert report.held == 1
+    assert held["status"] == "retry" and held["lease_owner"] is None
+    assert held["attempt_count"] == int(reclaimed)
+    assert sink.calls == []
+    db.claim_escalation_deliveries = claim
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    await make_service(db, sink, clock=clock, owner="restarted").pump()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == ("unknown" if reclaimed else "sent")
+    assert sink.calls.count("post_root") == int(not reclaimed)
+
+
+async def test_pause_after_resolution_post_does_not_repeat_the_outcome(db):
+    incident = await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.tick()
+    await db.transition_escalation(
+        "esc-1", expected_revision=incident["revision"], new_state="cancelled",
+        now=clock.advance(30), terminal_outcome="Rehearsal withdrawn",
+    )
+    post = sink.post_thread_message
+
+    async def pause_after_post(**kwargs):
+        result = await post(**kwargs)
+        await db.update_project("p", status=ProjectStatus.PAUSED)
+        return result
+
+    sink.post_thread_message = pause_after_post
+    clock.advance(60)
+    before = sink.calls.count("post_thread_message")
+    report = await service.tick()
+    resolution = next(
+        row for row in await db.list_escalation_deliveries("esc-1")
+        if row["kind"] == "resolution"
+    )
+    assert report.held == 1 and resolution["attempt_count"] == 1
+    assert sink.calls.count("post_thread_message") == before + 1
+    assert "edit_root" not in sink.calls
+    sink.post_thread_message = post
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    await make_service(db, sink, clock=clock, owner="restarted").tick()
+    assert sink.calls.count("post_thread_message") == before + 1
+    assert sink.calls.count("edit_root") == 1
+    assert sink.calls.count("archive_thread") == 1
+
+
+@pytest.mark.parametrize("expired", [False, True])
+async def test_pause_does_not_spend_retries_or_reclaim_expired_leases(db, expired):
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.reconcile("esc-1")
+    if expired:
+        await db.claim_escalation_deliveries(lease_owner="old", now=clock(), lease_seconds=1)
+    else:
+        sink.faults.append(("post_root", TransportRetryable("offline")))
+        await service.pump()
+    before = (await db.list_escalation_deliveries("esc-1"))[0]
+    await db.update_project("p", status=ProjectStatus.PAUSED)
+    clock.advance(300)
+    sink.calls.clear()
+    await make_service(db, sink, clock=clock, owner="restarted").tick()
+    after = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert before == after
+    assert sink.calls == []
+    await db.update_project("p", status=ProjectStatus.ACTIVE)
+    await service.tick()
+    row = (await db.list_escalation_deliveries("esc-1"))[0]
+    assert row["status"] == ("unknown" if expired else "sent")
 
 
 @pytest.mark.parametrize("state", ["needs_human", "reply_received", "resolved", "stale"])
@@ -678,7 +978,8 @@ async def test_disabling_the_external_surface_sends_nothing_and_says_so(db):
 
     assert report.skipped == "discord.escalation.enabled is false"
     assert sink.calls == []
-    assert await db.list_escalation_deliveries("esc-1") == []
+    [root] = await db.list_escalation_deliveries("esc-1")
+    assert root["status"] == "pending" and root["attempt_count"] == 0
 
 
 async def test_a_persisted_reply_is_acknowledged_once_in_the_thread(db):
@@ -766,7 +1067,7 @@ async def test_resolution_posts_the_outcome_then_edits_the_root_then_archives(db
     assert sink.calls == calls
 
 
-async def test_a_deleted_root_earns_exactly_one_replacement_generation(db):
+async def test_an_unanswered_deleted_root_earns_exactly_one_replacement_generation(db):
     await make_incident(db)
     sink = SinkTransport()
     clock = Clock()
@@ -777,12 +1078,12 @@ async def test_a_deleted_root_earns_exactly_one_replacement_generation(db):
     # Somebody deleted the post; a follow-up now has nowhere to go.
     sink.delete(str(first["root_message_id"]))
     sink.delete_thread(str(first["thread_id"]))
-    await db.accept_escalation_reply(
+    await db.append_escalation_message(
         "esc-1",
-        transport="discord",
-        external_message_id="discord-msg-1",
-        verified_actor="human:discord:1",
-        text="please repost",
+        direction="outbound",
+        transport="core",
+        verified_actor="session:supervisor-p",
+        text="The decision is still needed",
         received_at=clock.now,
     )
     clock.advance(60.0)
@@ -797,6 +1098,27 @@ async def test_a_deleted_root_earns_exactly_one_replacement_generation(db):
     roots = [row for row in await db.list_escalation_deliveries("esc-1") if row["kind"] == "root"]
     assert len(roots) == 2
     assert sink.calls.count("post_root") == 2  # exactly one repost
+
+
+async def test_an_answered_deleted_root_never_earns_a_replacement_generation(db):
+    await make_incident(db)
+    sink = SinkTransport()
+    clock = Clock()
+    service = make_service(db, sink, clock=clock)
+    await service.tick()
+    first = (await db.list_escalation_deliveries("esc-1"))[0]
+    sink.delete(str(first["root_message_id"]))
+    sink.delete_thread(str(first["thread_id"]))
+    await db.accept_escalation_reply(
+        "esc-1", transport="dashboard", external_message_id="answered-deleted",
+        verified_actor="human:jack", text="Authorization granted", received_at=clock(),
+    )
+    for _ in range(3):
+        clock.advance(120)
+        await make_service(db, sink, clock=clock, owner="restarted").tick()
+    roots = [row for row in await db.list_escalation_deliveries("esc-1") if row["kind"] == "root"]
+    assert len(roots) == 1
+    assert sink.calls.count("post_root") == 1
 
 
 async def test_a_resolved_incident_is_never_reposted_when_its_thread_disappears(db):

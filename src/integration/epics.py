@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import Literal
 
 from sqlalchemy import literal, select
 
@@ -212,30 +212,6 @@ class EpicGraphReader:
                          () if project["status"] == "ACTIVE" else ("project_paused",))
 
 
-def exact_head_checks(
-    exact_for: Callable[[str, EpicPolicy], Any],
-) -> Callable[[str, str, EpicPolicy], Awaitable[HeadChecks]]:
-    """Adapt the shared exact-commit cache (``src.integration.checks``) to epics.
-
-    *exact_for* returns the ``ExactChecks`` reader for a repository and policy.
-    The cached verdict is read without contacting a provider, so the reported
-    names and trust are those the cache holds; a mismatch with the policy is
-    reported by the evaluator as ``checks_scope_changed``.
-    """
-    from src.integration.subjects import HeadIdentity
-
-    async def read(repository_id: str, head_sha: str, policy: EpicPolicy) -> HeadChecks:
-        exact = exact_for(repository_id, policy)
-        result = await exact.read(HeadIdentity(
-            repository_id=repository_id, ref="refs/heads/epic-readiness",
-            sha=head_sha, generation=0,
-        ))
-        return HeadChecks(repository_id, head_sha, tuple(result.required.names),
-                          result.required.producer_id, result.state.value)
-
-    return read
-
-
 class EpicReadinessEvaluator:
     """One fetched snapshot; nested targets use the same checks and batch path."""
 
@@ -279,7 +255,9 @@ class EpicReadinessEvaluator:
             proof = await target.is_delivered(replace(child.request, target_ref=node.branch_ref),
                                               source_base=child.source_base)
             sources.append(proof)
-            if proof.state not in {DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT}:
+            if proof.state not in {
+                DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+            }:
                 blockers.append((child.task_id, proof.reason))
                 unknown |= proof.state == DeliveryState.UNKNOWN
             if nested and nested[-1].task_id == child.task_id and nested[-1].ready:
@@ -403,7 +381,9 @@ class EpicReadinessEvaluator:
             return {"success": False, "outcome": "unknown", "reason": proof.reason}
         if not await target.observation.is_fresh():
             return {"success": False, "outcome": "changed"}
-        if proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT}:
+        if proof.state in {
+            DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+        }:
             return {"success": True, "outcome": "delivered"}
         if proof.source_oid != readiness.head_sha:
             return {"success": False, "outcome": "changed"}

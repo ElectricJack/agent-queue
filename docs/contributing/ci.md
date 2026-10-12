@@ -6,7 +6,7 @@ important — what it does not run.
 ## Why this page exists
 
 AQ's CI runs the full suite **before** a change reaches `main`, never after.
-The test workflow runs on pull requests into `main` and on pushes to the
+The test workflow runs on pull requests into `dev`, `staging` and `main`, and on pushes to the
 integration branches AQ itself creates. A push to `main` does not start it, so
 `main`'s own commits carry only the checks of the candidate or PR run that
 tested them. Knowing that saves you from waiting for a run that is never going
@@ -38,8 +38,8 @@ build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services, plus dashboard typechecking and a production build. |
-| [`main-attestation.yml`](../../.github/workflows/main-attestation.yml) | Push to `main` | Verifies the pushed SHA's integration attestation; only an unattested push in App mode calls `tests.yml`. See [below](#main-attestationyml). |
+| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `dev`, `staging` or `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**`, `aq/batches/**` and `aq/parent/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services, plus dashboard typechecking and a production build. |
+| [`main-attestation.yml`](../../.github/workflows/main-attestation.yml) | Push to `dev`, `staging` or `main` | Verifies the pushed SHA's branch attestation; only an unattested push in App mode calls `tests.yml`. See [below](#main-attestationyml). |
 | [`venv-cache.yml`](../../.github/workflows/venv-cache.yml) | After each `Main attestation` run (`workflow_run`); hourly `schedule`; `workflow_dispatch` | Saves `tests.yml`'s `.venv` cache entry on `main`. Installs dependencies and runs no tests. See [dependency cache](#dependency-cache). |
 | [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
 
@@ -347,7 +347,14 @@ remaining integration tests.
 ### Environment
 
 * Each job starts a disposable `postgres:18` container with `docker run`, with
-  `POSTGRES_TEST_DSN` pointed at its localhost port. GitHub Actions service
+  `POSTGRES_TEST_DSN` pointed at its localhost port. The image, like the
+  `E2E CLI` jobs' service image, is pulled from Google's Docker Hub mirror,
+  `mirror.gcr.io/library/postgres:18`: anonymous Docker Hub pulls are rate
+  limited per runner IP, and a login secret would not reach pull requests from
+  forks. The test matrix explicitly pulls the image before starting the
+  container, retrying up to three times with five seconds between attempts to
+  recover from transient mirror errors such as `unknown blob`. Exhausted pulls
+  fail the job; container-start errors are not retried. GitHub Actions service
   containers do not accept PostgreSQL server arguments. The server runs with
   `max_connections=300` so concurrent xdist workers can lease databases without
   exhausting the default 100 connections. It also uses `fsync=off`,
@@ -410,6 +417,13 @@ in `AQ_INTEGRATION_ATTESTATION_APP_ID`, requires canonical payload text and a
 matching `external_id`, checks the payload's repository, head and
 `AQ_INTEGRATION_REQUIRED_CHECK_VERSION`, and reads every attested check run back
 from GitHub. It writes `attested`, `configured` and `reason` as step outputs.
+
+On `dev` it checks the integration attestation. On `staging` and `main` it
+requires the promotion attestations for steps `staging` and `release`, respectively,
+and binds each proof to its exact target ref. The repository trust manifest names
+both promotion attestations. The
+[activation plan](../config/dev-staging-main-github-plan.md) records the matching
+branch rules and Actions variables.
 
 * **Variables unset** (development mode, before the cutover):
   `configured=false`, and nothing else runs.

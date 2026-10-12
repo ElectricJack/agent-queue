@@ -89,6 +89,14 @@ Source conflicts, failed generators and writes outside the marked paths retain
 the existing repair path. The resulting commit still requires the boundary's
 normal publication authority and verification.
 
+Isolated train regeneration uses a fixed tool lookup order: the daemon's
+interpreter directory, the daemon user's `~/.local/bin`, then `/usr/local/bin`,
+`/usr/bin` and `/bin`. A system-Python daemon can therefore find user-installed
+`openapi-python-client` and `ruff`. It does not inherit the daemon's PATH or
+credentials, and retains worker database refusal sentinels. The scripts still
+refuse missing tools and an incorrect generator version; regeneration never
+installs or relocates the toolchain.
+
 To merge the way the development publisher does locally, define the driver
 once per clone:
 
@@ -101,6 +109,14 @@ is stale until you regenerate. Without it Git falls back to its ordinary text
 merge. [`tests/selection_areas.yaml`](../../tests/selection_areas.yaml) is
 hand-written, but branches almost only append to it, so it is `merge=union`:
 both sides' lines are kept.
+
+GitHub does not use custom merge drivers. Generated files therefore omit
+changing aggregate metadata: the selection catalogue stores integrity hashes
+on individual module records and computes its overall digest when loaded;
+the CLI inventory computes totals with `src.cli.inventory.inventory_counts`;
+the playbook-command index stores command rows without a global count.
+Unrelated edits in separate text positions can merge normally. Regeneration
+and every drift guard still apply, including after a clean text merge.
 
 ## The API surface
 

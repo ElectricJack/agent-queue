@@ -33,6 +33,19 @@ a held batch, or an unconfirmed target prevents reacquisition. Reacquisition
 of a lost/expired lease advances its fence, fencing the old writer; an intact
 lease and transient preparation retries preserve the existing fence.
 
+Reservation recovery runs on each eligible train visit with a confirmed
+published candidate, including pending checks and unknown observations; it
+does not depend on reaching red/conflict allocation. This pass may only
+restore an existing detached filing, never allocate a successor. A READY task
+whose session still holds its claim is not detached and cannot receive a new
+fence.
+
+An ordinary pool repair restores its slot before accepting close and releasing
+the managed lease. If a managed job pins the slot (`jobs.workspace_busy`),
+close is deferred with the same task status, claim epoch, retry count and lease.
+The worker waits for verified job cleanup and retries close; an accepted close
+skips the second slot restore.
+
 Acceptance covers raw and SQLAlchemy-wrapped PostgreSQL failures, bounded
 retry exhaustion/resumption, non-transient diagnostics, real transaction
 rollback, preparation concurrent with session/task-before-ref recovery,

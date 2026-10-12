@@ -332,6 +332,12 @@ def reply(
     default=False,
     help="Mark the returned messages delivered (prompt-boundary injection)",
 )
+@click.option(
+    "--include-consumed",
+    is_flag=True,
+    default=False,
+    help="Also show messages already delivered to this recipient (read-only)",
+)
 @click.option("--limit", default=None, type=int, help="Max rows")
 @click.pass_context
 @_handle_errors
@@ -341,6 +347,7 @@ def message_inbox(
     to_kind: str | None,
     to_id: str | None,
     inject: bool,
+    include_consumed: bool,
     limit: int | None,
 ) -> None:
     """Show a recipient's pending (undelivered) messages."""
@@ -349,7 +356,10 @@ def message_inbox(
     kind, ident = resolved
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
-    params: dict[str, Any] = {"to_kind": kind, "to_id": ident, "inject": inject}
+    params: dict[str, Any] = {
+        "to_kind": kind, "to_id": ident, "inject": inject,
+        "include_consumed": include_consumed,
+    }
     if limit is not None:
         params["limit"] = limit
 
@@ -359,12 +369,18 @@ def message_inbox(
 
     result = _run(_inbox())
     items = result.get("messages", [])
+    consumed = result.get("consumed_messages") or []
 
     def _render(render_items: list[dict]) -> None:
-        if not render_items:
+        if not render_items and not consumed:
             console.print(f"[dim]No pending messages for {kind}:{ident}.[/]")
             return
-        _render_message_table(render_items, f"Inbox — {kind}:{ident}")
+        if render_items:
+            _render_message_table(render_items, f"Inbox — {kind}:{ident}")
+        if consumed:
+            _render_message_table(
+                consumed, f"Already consumed — {kind}:{ident} (read-only)"
+            )
 
     emit(
         ctx,
@@ -407,6 +423,12 @@ def message_status(ctx: click.Context, message_id: str) -> None:
     default=False,
     help="Mark the returned messages delivered (prompt-boundary injection)",
 )
+@click.option(
+    "--include-consumed",
+    is_flag=True,
+    default=False,
+    help="Also show messages already delivered to this recipient (read-only)",
+)
 @click.option("--limit", default=None, type=int, help="Max rows")
 @click.pass_context
 def inbox(
@@ -415,6 +437,7 @@ def inbox(
     to_kind: str | None,
     to_id: str | None,
     inject: bool,
+    include_consumed: bool,
     limit: int | None,
 ) -> None:
     """Show pending messages (alias for ``aq message inbox``).
@@ -426,6 +449,13 @@ def inbox(
     all exit 0 with no stdout — so the hook never blocks the agent's next
     prompt and never leaks tracebacks into the prompt window.  Use
     ``aq message inbox`` for the interactive form that surfaces errors.
+
+    ``--include-consumed`` re-reads bodies this recipient already consumed.
+    It exists for the crashed-inject case: ``--inject`` marks rows delivered
+    before the agent ever sees them, so when the agent's own output dies the
+    bodies are otherwise gone with nothing pending left to ask for. It is
+    opt-in and never runs on the bare hook, which would re-print consumed
+    mail on every prompt.
     """
     from .exceptions import CommandError, DaemonNotRunningError
 
@@ -446,7 +476,10 @@ def inbox(
             return
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
-    params: dict[str, Any] = {"to_kind": kind, "to_id": ident, "inject": inject}
+    params: dict[str, Any] = {
+        "to_kind": kind, "to_id": ident, "inject": inject,
+        "include_consumed": include_consumed,
+    }
     if limit is not None:
         params["limit"] = limit
 
@@ -467,7 +500,11 @@ def inbox(
         return
     if result.get("error"):
         return
-    items = result.get("messages") or []
+    # A consumed re-read is opt-in, so its rows render only when asked for and
+    # never displace a pending body: pending mail is what the next turn acts on.
+    items = list(result.get("messages") or [])
+    if include_consumed:
+        items.extend(result.get("consumed_messages") or [])
     if not items:
         return
 

@@ -137,6 +137,25 @@ profile: the profile is shown but disabled, and a submit is refused, because
 such a worker becomes a pool instance the flock files under its pool entry —
 which reads as a creation that silently failed.
 
+### Renaming a pool and opening its settings
+
+The Pools directory on the Agents page opens a pool's settings when you click
+its row or its **Settings** link. **Back to pools** returns to the directory.
+The settings URL can be bookmarked or shared, and the Display name field
+changes the name shown in the directory, flock rail and pool window.
+
+The same operation is available from the CLI:
+
+```bash
+aq pool rename --profile-id <id-from-aq-agent-list-profiles> --name 'Space Bunny'
+```
+
+Names contain 1–120 characters. The profile ID stays fixed, so routes, pool
+bounds, workers and task assignments keep their existing identities. The
+command saves only the vault frontmatter name with an exact backup and records
+`pool.renamed` in the audit log. Database-only profiles get a row backup.
+Persistence failures are reported and leave the original name in place.
+
 ### The pool-only config keys
 
 These live in the (system) profile's own `## Config` block, not in
@@ -299,6 +318,23 @@ usage-limit screen ends with reason `usage_limit_screen` instead and records a
 rate-limit exit against the provider, so two such workers trip it and pool
 sizing stops relaunching into the limit (provider-failover D13).
 
+### Repeated claim preparation refusals
+
+The session cooldown guard (§4) drains idle workers on their second identical
+blocker and leaves their workspace enabled. This path does not reach the
+three-failure workspace quarantine. Retained preparations have a separate limit:
+three identical failures in one session return `drain_requested`. The count is persisted across
+daemon restarts; empty-frontier polls do not clear it, and activation does.
+The worker runs `aq session drain-ack` and exits. For retained preparations, the
+daemon also enforces the stop if the worker continues retrying and disables the workspace to
+keep replacement workers off it. Its checkout and any attached branch bindings
+are retained for recovery. Repair the workspace and prove its work safe before
+re-enabling it; do not delete Git locks or discard a retained branch.
+`aq session list` exposes `claims` and the `claim_failure_*` diagnostics.
+`aq doctor --check stall.sweep` and the supervisor's stall sweep flag workers
+that have activated no claim after 15 minutes despite matching READY work or
+preparation refusals, even if their claim loop keeps reporting activity.
+
 ### Interactive prompts on idle workers
 
 `aq doctor --check pools.session_awaiting_input` distinguishes a silent claim
@@ -431,6 +467,13 @@ instance list, never pool identity: the bounds and the aggregate counters stay
 fleet-wide whether or not you pass one, because filtering them would misreport
 the pool the sizer actually acts on. A profile with no standing in the named
 project drops out of the listing entirely.
+
+`pool status` and `task explain` use cached delivery observations without network
+Git calls. A cold or expired observation withholds delivery-dependent demand
+until a background consumer refreshes it; task explanations report unknown
+delivery evidence. Claiming still obtains and validates its own fresh evidence.
+Displaying a retired intelligence class leaves its model settings unresolved
+without repeating launch warnings; launch validation continues to report it.
 
 Over the API the shape matches: `PoolStatusRow` carries `projects[]`
 (`PoolProjectStatus`: `ready`, the four counters, `max_concurrent_agents`,
@@ -657,6 +700,26 @@ claim loop. AQ sessions never receive an interactive offer to start the daemon.
 An ambiguous response failure is not automatically replayed: after a lost close
 response, inspect the current claim and task status before attempting another close.
 
+Persistent preparation/admission blockers use a separate, durable session cooldown.
+`prepare_failed` and `not_admissible` return `retry_after` seconds, `refusal_count`
+and actionable instructions. The first refusal waits 60 seconds; actual identical
+failures after the deadline back off to 300/600/1200/1800 seconds. Calls during that
+cooldown prepare nothing, replay the remaining delay without advancing the streak,
+and park for the requested `--wait` window. Successful activation or a changed
+admission reason resets the streak. On a second identical failure an idle session
+is marked for drain and receives `drain_requested`, stopping even older workers'
+claim loops. A retained preparation is never released by this guard.
+
+Workers report a repeated blocker once to the project supervisor. Idle workers
+drain-ack and exit; workers with retained preparation end their turn awaiting the
+supervisor's inbox delivery (durable waits require an active claim). Workers with
+active claims can register one durable message wait for the reply. They do not poll
+claims or inboxes, reread unchanged context, or repeat reports. Installed skills are
+write-if-absent: after
+deploying this change, operators use `aq doctor --check skills.installed_drift`
+to reconcile the installed `aq-tasks` skill. New launches receive the updated
+bootstrap and prime instructions directly.
+
 Busy workers receive queued feedback before completing their task: a session's
 close returns `messages.pending_before_close` if its task or session inbox has
 undelivered messages. The response gives the exact `aq message inbox --inject`
@@ -666,6 +729,22 @@ claim, and messages intact; operator closes and disabled messaging are unaffecte
 This check prevents a worker from draining before it reads a correction sent
 while it was busy. Messages arriving after the check can still race completion;
 the check is not an atomic delivery guarantee.
+
+`--inject` consumes delivery before the agent has seen anything, so a worker
+whose own output dies mid-turn — a crashed parser, a truncated pane, a killed
+turn — is left with an empty pending queue and no copy of the bodies it burned.
+Add `--include-consumed` to re-read what this recipient already consumed:
+
+```bash
+aq message inbox --to task:<id> --include-consumed --json
+```
+
+It is read-only and never re-claims or re-archives a row, so it is safe to run
+after any read; it is fenced to the caller's own mailboxes exactly like a plain
+inbox read. Rows are returned newest-last in delivery order, so a recovered body
+reads in the order the worker would have seen it. The bare `aq inbox` hook form
+never asks for it — consumed mail would otherwise re-enter the context on every
+later prompt — so a worker that consumed a body it never read has to ask for it.
 
 Zero measured workspace capacity prevents placement without a backoff. If
 capacity was advertised but acquisition fails, the key backs off for 60 seconds

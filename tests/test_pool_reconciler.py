@@ -19,6 +19,7 @@ from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
+    Agent,
     AgentProfile,
     AgentState,
     Project,
@@ -54,6 +55,11 @@ async def git_first_frontier(orch, db, tmp_path):
     base = git(origin.clone, "rev-parse", "HEAD")
     git(origin.clone, "push", "origin", "main:aq/epic")
     source = origin.work("first")
+    # Claim preparation imports the observed stack base into the assigned
+    # checkout. These Git-backed frontier tests need actual clone slots even
+    # though reset_slot_for_task remains a spy for its argument assertions.
+    for workspace in await db.list_workspaces(PROJECT_ID):
+        git(tmp_path, "clone", "--quiet", origin.url, workspace.workspace_path)
     transport = LocalGit(tmp_path / "origin.git")
     orch.git = transport
     await db.update_profile("worker", default_class="standard-medium")
@@ -145,7 +151,10 @@ async def _deliver_first_by_train(db, env):
         batches=SimpleNamespace(open_batch=AsyncMock(return_value=BatchSelection(batch, members)),
                                 settle=AsyncMock()),
         lane_for=AsyncMock(return_value=TrainLane(snapshot, service, checks)),
-        repair=SimpleNamespace(allocate=AsyncMock(side_effect=AssertionError("unexpected repair"))),
+        repair=SimpleNamespace(
+            allocate=AsyncMock(side_effect=AssertionError("unexpected repair")),
+            settle_green=AsyncMock(),
+        ),
     )
     await train.tick()
     await train.drain()
@@ -165,6 +174,55 @@ def frontier_clock(monkeypatch):
     return clock
 
 
+@pytest.mark.parametrize("cache_state", ["cold", "warm", "expired"])
+@pytest.mark.parametrize("stacked", [False, True])
+async def test_pool_diagnostics_never_fetch_hierarchy_or_stack_prerequisites(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch, cache_state, stacked,
+):
+    from types import SimpleNamespace
+
+    from src.commands.handler import CommandHandler
+    from src.integration import stacked_branches
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    env = git_first_frontier
+    monkeypatch.setattr(stacked_branches, "time", SimpleNamespace(monotonic=frontier_clock))
+    if stacked:
+        await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+            "prerequisite_branches": "stacked",
+        })
+    if cache_state != "cold":
+        await hierarchy_frontier_modes(db)
+    if cache_state == "expired":
+        env.observer._recent = {
+            target: (stamp - env.observer.READ_MAX_AGE - 1, snapshot)
+            for target, (stamp, snapshot) in env.observer._recent.items()
+        }
+        env.observer._stack_ref_cache.clear()
+    forbidden = {}
+    for name in ("afetch_origin", "acreate_checkout", "als_remote_ref", "als_remote_refs"):
+        forbidden[name] = AsyncMock(side_effect=AssertionError(f"diagnostic called {name}"))
+        monkeypatch.setattr(env.observer.git, name, forbidden[name])
+    handler = CommandHandler(orch, orch.config)
+    explained = await handler._cmd_explain_task({"task_id": "second"})
+    # A retained sibling may be stacked when its current refs are already observed.
+    stackable = stacked and cache_state == "warm"
+    unavailable = cache_state != "warm"
+    assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
+        not stackable and not unavailable
+    )
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is unavailable
+    if unavailable:
+        reason = next(reason for reason in explained["reasons"]
+                      if reason["code"] == "delivery_evidence_unavailable")
+        assert "has not loaded yet" in reason["detail"]
+    status = await handler._cmd_pool_status({})
+    row = next(row for row in status["pools"] if row["profile_id"] == "worker")
+    assert row["ready"] == int(stackable)
+    for call in forbidden.values():
+        call.assert_not_awaited()
+
+
 async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     orch, db, git_first_frontier, frontier_clock,
 ):
@@ -180,7 +238,7 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     env = git_first_frontier
     handler = CommandHandler(orch, orch.config)
 
-    async def frontier(expected):
+    async def frontier(expected, *, evidence_unavailable=False):
         # These are the real scheduler/reconciler and pool consumers of one tick's view.
         modes = await hierarchy_frontier_modes(db)
         env.observer.prerequisite_view = AsyncMock(wraps=env.observer.prerequisite_view)
@@ -192,7 +250,8 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
         assert await db.is_hierarchy_task_runnable("second") is expected
         explained = await handler._cmd_explain_task({"task_id": "second"})
         assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
-                   for r in explained["reasons"]) is not expected
+                   for r in explained["reasons"]) is (not expected and not evidence_unavailable)
+        assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is evidence_unavailable
         diagnosis = await _check_ready_frontier_exclusions(DoctorContext(config=orch.config, db=db))
         assert any(
             row["task_id"] == "second" and "sibling_prerequisite_not_delivered" in row["reasons"]
@@ -207,7 +266,7 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
 
     await _deliver_first_by_train(db, env)
     # The old advisory observation may withhold newly delivered work until expiry.
-    await frontier(False)
+    await frontier(False, evidence_unavailable=True)
     frontier_clock.return_value += env.observer.READ_MAX_AGE + 0.01
     modes = await frontier(True)
     async with db._engine.connect() as conn:
@@ -221,6 +280,54 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     result = await handler._cmd_task_claim({"next": True})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
+
+
+async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
+    orch, db, git_first_frontier, frontier_clock, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from src.commands.handler import CommandHandler
+    from src.integration import stacked_branches
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    # Explain reads cached stack refs only; a busy runner must not age them out.
+    monkeypatch.setattr(stacked_branches, "time", SimpleNamespace(monotonic=frontier_clock))
+    handler = CommandHandler(orch, orch.config)
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+        "prerequisite_branches": "stacked",
+    })
+    modes = await hierarchy_frontier_modes(db)
+    assert modes[PROJECT_ID].stackable_prerequisite_ids == {"first"}
+    assert not modes[PROJECT_ID].delivered_prerequisite_ids
+    await orch._schedule(hierarchy_modes=modes)
+    assert "second" in orch._last_scheduler_state.hierarchy_runnable_task_ids
+    assert (await orch._measure_pools(hierarchy_modes=modes)).demand[PoolKey("worker")] == 1
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    assert await db.is_hierarchy_task_runnable("second")
+    explained = await handler._cmd_explain_task({"task_id": "second"})
+    assert not any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
+                   for r in explained["reasons"])
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+        "prerequisite_branches": "wait-for-parent",
+    })
+    assert not await db.is_hierarchy_task_runnable("second")
+    await db.update_project(PROJECT_ID, hierarchical_integration_policy={
+        "prerequisite_branches": "stacked",
+    })
+    await orch._reconcile_pools(hierarchy_modes=modes)
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    handler._current_scope = {"kind": "session", "session_id": session.id,
+                              "project_id": PROJECT_ID, "task_id": None, "elevated": False}
+    result = await handler._cmd_task_claim({"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "second"
+    prepare = orch._worktree_slots().reset_slot_for_task
+    assert prepare.await_args.kwargs["base_branch"] == env.source
+    assert env.git(env.origin.clone, "rev-parse", "origin/aq/epic") == env.base
 
 
 async def test_git_first_advisory_cycles_reuse_fetch_until_bound(
@@ -329,9 +436,9 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
     result = await handler._cmd_task_claim({"next": True})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
-    # Admission refetches once, then workspace preparation independently proves
-    # the current parent tip before preserving the child's existing branch.
-    assert fetch.await_count == 5
+    # Admission refetches once; workspace preparation separately observes the
+    # current parent tip and retained prerequisite stack before activation.
+    assert fetch.await_count == 6
     delivery_head.assert_awaited_once_with("second")
     prepare.assert_awaited_once()
     assert prepare.await_args.args[1].id == "second"
@@ -389,8 +496,15 @@ async def test_git_first_frontier_withholds_invalid_or_shadow_proof(
     assert "second" not in orch._last_scheduler_state.hierarchy_runnable_task_ids
     assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
     explained = await CommandHandler(orch, orch.config)._cmd_explain_task({"task_id": "second"})
-    assert any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
-               for r in explained["reasons"])
+    assert ("frontier_sibling_prerequisite_not_delivered" in explained["reason_codes"]) is (
+        movement not in {"rewind", "unstable"}
+    )
+    assert ("delivery_evidence_unavailable" in explained["reason_codes"]) is (movement == "rewind")
+    if movement == "unstable":
+        # The mocked freshness failure checks no refs, so it must not poison
+        # otherwise valid cached display evidence. Decisions above still withhold.
+        assert all(snapshot._freshness.get(snapshot.target_ref, True)
+                   for _, snapshot in env.observer._recent.values())
 
 
 class _FakeSlotManager:
@@ -787,8 +901,9 @@ class TestReconcilePools:
         assert not os.path.exists(claim_path)
 
     @pytest.mark.parametrize("stop_confirmed", [False, True])
+    @pytest.mark.parametrize("refusal_drain", [False, True])
     async def test_terminate_pool_session_retains_attached_integration_owner(
-        self, orch, db, monkeypatch, stop_confirmed
+        self, orch, db, monkeypatch, stop_confirmed, refusal_drain
     ):
         await ready(db, "t1")
         await orch._reconcile_pools()
@@ -811,13 +926,27 @@ class TestReconcilePools:
                 )
             )
 
+        if refusal_drain:
+            await db.update_session(
+                session.id, claim_phase="preparing", last_claim_epoch=0,
+                claim_failure_count=2, claim_failure_reason="index.lock",
+            )
+            session = await db.record_pool_claim_failure(
+                session.id, instance_token=session.instance_token,
+                claim_epoch=0, reason="index.lock", now=time.time(),
+            )
+            assert session.desired_state == "stopped"
+            assert not (await db.get_workspace(workspace.id)).enabled
+
         if not stop_confirmed:
             # The fake confirms a stop from its registry; a provider that
             # cannot prove the exit must leave the session unstopped.
             provider = orch.session_providers.create(session.provider, orch.config)
             monkeypatch.setattr(provider, "confirm_stopped", AsyncMock(return_value=False))
 
-        await orch._terminate_pool_session(session, reason="integration_owner")
+        await orch._terminate_pool_session(
+            session, reason="claim_refusals" if refusal_drain else "integration_owner",
+        )
 
         updated = await db.get_session(session.id)
         agent = await db.get_agent(session.agent_id)
@@ -827,6 +956,7 @@ class TestReconcilePools:
         assert updated.task_id == "t1"
         assert agent.state is not AgentState.IDLE
         assert (await db.get_workspace(workspace.id)).locked_by_agent_id == session.agent_id
+        assert (await db.get_workspace(workspace.id)).enabled is not refusal_drain
         assert os.path.exists(claim_path)
 
     async def test_startup_warns_when_pool_profiles_but_swarm_disabled(self, orch, caplog):
@@ -923,12 +1053,36 @@ async def test_stopped_pool_worker_can_take_push_task_without_reprofile(orch, db
     await orch.wait_for_pool_launches()
     row = (await db.list_sessions(lifecycle="pool"))[0]
     await orch._terminate_pool_session(row, reason="rotate")
-    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    # Ordinary task capabilities still reuse idle definitions; role routes
+    # have their own durable identity contract, exercised below.
+    await db.create_profile(AgentProfile(id="specialist", name="Specialist", harness="claude"))
     await ready(
-        db, "push", profile_id="reviewer", intelligence_class="standard-medium"
+        db, "push", profile_id="specialist", intelligence_class="standard-medium"
     )
     actions = await orch._schedule()
     assert [(a.task_id, a.agent_id) for a in actions] == [("push", row.agent_id)]
+    assert (await db.get_agent(row.agent_id)).profile_id == "worker"
+
+
+@pytest.mark.parametrize("existing_role", [False, True])
+async def test_stopped_pool_worker_cannot_take_role_assignment(orch, db, existing_role):
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    row = (await db.list_sessions(lifecycle="pool"))[0]
+    await orch._terminate_pool_session(row, reason="rotate")
+    await db.create_profile(AgentProfile(id="reviewer", name="Review", harness="claude"))
+    if existing_role:
+        await db.create_agent(Agent(id="role-agent", name="Review Work", profile_id="reviewer"))
+    await ready(db, "push", profile_id="reviewer", intelligence_class="standard-medium")
+    actions = await orch._schedule()
+    assert len(actions) == 1 and actions[0].task_id == "push"
+    assert actions[0].agent_id != row.agent_id
+    role = await db.get_agent(actions[0].agent_id)
+    assert role.profile_id == "reviewer"
+    if existing_role:
+        assert role.id == "role-agent" and role.name == "Review Work"
+    assert len([agent for agent in await db.list_agents() if agent.profile_id == "reviewer"]) == 1
     assert (await db.get_agent(row.agent_id)).profile_id == "worker"
 
 

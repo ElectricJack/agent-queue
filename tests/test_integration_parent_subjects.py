@@ -10,7 +10,6 @@ import pytest
 from sqlalchemy import event, insert, update
 
 from src.database import tables as t
-from src.integration.failed_verification_recovery import FailedVerificationRecovery
 from src.integration.parent_subjects import (
     ParentDatabaseObservationReader,
     ParentIntegrationObserver,
@@ -18,19 +17,16 @@ from src.integration.parent_subjects import (
     ParentSubjectFacts,
     parent_subject_from_rows,
 )
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIState,
     ObserveSubjectArgs,
     PolicyArtifactPin,
     Primitive,
     PrimitivePorts,
-    Subject,
 )
-from src.models import Project, Task, TaskStatus
+from src.models import Project
 from tests.test_integration_cancelled_collection import (  # noqa: F401
-    _failed_aggregate,
     _policy,
-    _promote_next,
     _rows,
     case,
 )
@@ -257,105 +253,6 @@ async def test_parent_verification_and_ci_bind_exact_episode_head_generation(db,
     )
 
 
-async def test_failed_verification_recovery_keeps_receipts_and_observes_new_fix(case):  # noqa: F811
-    red_head, old_verifier = await _failed_aggregate(case)
-    # Keep the recovery scenario at eight children too: a failed child and
-    # four still waiting, alongside the two receipts and the completed fix.
-    [origin] = await _rows(
-        case.db, t.task_branch_origins, t.task_branch_origins.c.task_id == "epic.3"
-    )
-    [child_checkpoint] = await _rows(
-        case.db,
-        t.task_integration_checkpoints,
-        t.task_integration_checkpoints.c.task_id == "epic.3",
-    )
-    for index in range(4, 9):
-        task_id = f"epic.{index}"
-        branch = f"aq/epic.{index}"
-        await case.db.create_task(
-            Task(
-                id=task_id,
-                project_id="p",
-                parent_task_id="epic",
-                repo_id="repo",
-                branch_name=branch,
-                title="additional child",
-                description="fixture",
-                status=TaskStatus.FAILED if index == 4 else TaskStatus.READY,
-            )
-        )
-        async with case.db.immediate() as conn:
-            await conn.execute(
-                insert(t.task_branch_origins).values(
-                    **{**origin, "id": f"origin-{index}", "task_id": task_id, "branch_name": branch}
-                )
-            )
-            await conn.execute(
-                insert(t.task_integration_checkpoints).values(
-                    **{
-                        **child_checkpoint,
-                        "task_id": task_id,
-                        "branch": branch,
-                        "checkpoint_sha": case.base,
-                    }
-                )
-            )
-    _, artifact = _policy()
-    pin = PolicyArtifactPin(
-        playbook_id=artifact.playbook_id, artifact_sha256=artifact.artifact_sha256
-    )
-    subject, _ = await bridge(case.db, "epic", pin)
-    old = await observer(case.db).observe(subject)
-    assert len(old.children) == 8 and old.binding()["failed_child_count"] == 1
-    assert old.verification.status == "failed" and old.verification.head_sha == red_head
-    assert old.writer.task_id == old_verifier
-    old_receipts = await _rows(case.db, t.task_delivery_receipts)
-    from src.integration.parent_engine import ParentEngineOwnership
-
-    async with ParentEngineOwnership(case.db).operation("epic", subject=subject):
-        applied = await FailedVerificationRecovery(case.db, case.promotion).run(
-            "epic",
-            dry_run=False,
-            expected_head_sha=red_head,
-            reason="collect completed fix",
-            operator_id="fixture",
-        )
-    assert applied["outcome"] == "reopened"
-    checkpoint = await case.db.get_integration_checkpoint("epic")
-    # The reconciler owns this versioned head refresh; the observation never writes it.
-    subject = subject.model_copy(update={"generation": checkpoint["generation"]})
-    async with case.db.immediate() as conn:
-        await case.db.update_integration_subject_on(
-            conn,
-            subject_id=subject.id,
-            expected_version=0,
-            values={"generation": subject.generation},
-            now=1001,
-        )
-    reopened = await observer(case.db).observe_subject(subject.id)
-    assert reopened.collection_reopened and reopened.failed_aggregate_unchanged
-    assert reopened.failed_aggregate_head_sha == red_head
-    assert reopened.verification is None
-    assert reopened.verification_history[-1].verifier_task_id == old_verifier
-    assert reopened.verification_history[-1].completion_id == "failed-completion"
-    assert next(
-        child for child in reopened.children if child.task_id == "epic.3"
-    ).pending_collection
-    assert await _rows(case.db, t.task_delivery_receipts) == old_receipts
-    subject = Subject.from_row(await case.db.get_integration_subject(subject.id))
-    async with ParentEngineOwnership(case.db).operation("epic", subject=subject):
-        assert await _promote_next(case, 30) is not None
-    facts = await observer(case.db).observe_subject(subject.id)
-    assert "parent_collection_head_moved" in facts.unknown
-    assert facts.failed_aggregate_head_sha == red_head
-    assert not facts.failed_aggregate_unchanged
-    assert [
-        (r.receipt_id, r.episode_id, r.source_head_sha, r.target_head_sha)
-        for r in facts.receipts[:2]
-    ] == [
-        (r.receipt_id, r.episode_id, r.source_head_sha, r.target_head_sha)
-        for r in reopened.receipts
-    ]
 
 
 @pytest.mark.parametrize("changed", ["repository", "episode", "generation", "branch", "operation"])

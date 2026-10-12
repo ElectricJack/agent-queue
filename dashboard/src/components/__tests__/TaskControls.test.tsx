@@ -142,3 +142,16 @@ it("does not carry a metadata draft into another task on navigation", () => {
   expect(screen.getByRole("button", { name: "Edit" })).toBeEnabled();
   expect(api.editTask).not.toHaveBeenCalled();
 });
+
+describe("epic activity in the detail header", () => {
+  it.each(["full", "drawer"] as const)("heads an idle IN_PROGRESS epic with its rolled-up state in %s", async (surface) => {
+    Object.assign(data.task, {
+      status: "IN_PROGRESS", display_state: "waiting", display_reason: "Waiting on t.1",
+      child_state_counts: { completed: 1, waiting: 2 },
+    });
+    mount(surface);
+    expect(await screen.findByText("1 completed · 2 waiting")).toBeInTheDocument();
+    expect(screen.getByText("Waiting on t.1")).toBeInTheDocument();
+    expect(screen.getByText("Waiting")).toBeInTheDocument();
+  });
+});

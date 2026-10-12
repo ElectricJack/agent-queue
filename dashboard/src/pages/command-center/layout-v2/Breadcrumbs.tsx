@@ -13,20 +13,20 @@ export default function Breadcrumbs({ projectName, ancestors, current, onSelect 
   const crumbs: (Crumb | null)[] = [null, ...ancestors];
   const parent = ancestors.length > 0 ? ancestors[ancestors.length - 1]!.id : null;
   return (
-    <nav aria-label="Focus path" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-gray-800 px-4 py-1 text-xs text-gray-300">
+    <nav aria-label="Focus path" className="flex shrink-0 flex-wrap items-center gap-1 border-b border-g-border px-4 py-1 text-xs text-g-muted">
       <button type="button" aria-label="Up one level"
         title={`Up one level: ${ancestors.length > 0 ? ancestors[ancestors.length - 1]!.title : projectName}`}
-        className="mr-1 flex items-center gap-1 rounded border border-gray-700 px-1.5 py-0.5 hover:bg-white/10"
+        className="mr-1 flex items-center gap-1 rounded border border-g-border px-1.5 py-0.5 text-g-text hover:bg-g-card-hover"
         onClick={() => onSelect(parent)}>
         <ArrowUturnUpIcon aria-hidden className="h-3.5 w-3.5" />Up
       </button>
       {crumbs.map((c, i) => (
         <span key={c?.id ?? "root"} className="flex items-center gap-1">
-          {i > 0 && <span aria-hidden className="text-gray-600">›</span>}
-          <button type="button" className="rounded px-1 hover:bg-white/10 hover:underline" onClick={() => onSelect(c?.id ?? null)}>{c ? c.title : projectName}</button>
+          {i > 0 && <span aria-hidden className="text-g-dim">›</span>}
+          <button type="button" className="rounded px-1 hover:bg-g-card-hover hover:text-g-text hover:underline" onClick={() => onSelect(c?.id ?? null)}>{c ? c.title : projectName}</button>
         </span>
       ))}
-      {current && <span className="flex items-center gap-1"><span aria-hidden className="text-gray-600">›</span><span aria-current="page" className="px-1 font-medium text-white">{current.title}</span></span>}
+      {current && <span className="flex items-center gap-1"><span aria-hidden className="text-g-dim">›</span><span aria-current="page" className="px-1 font-medium text-g-text">{current.title}</span></span>}
     </nav>
   );
 }

@@ -1,8 +1,8 @@
-"""Hand-crafted task CLI commands that require interactive features.
+"""Hand-crafted task CLI commands with interactive features or file input.
 
 Simple list/detail commands are auto-generated with Rich formatters via
 the formatter registry.  This file only contains commands that need
-interactive prompts (wizard, confirmation dialogs, fuzzy search).
+interactive prompts (wizard, confirmation dialogs, fuzzy search) or graph files.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from src.routing.planner import PREFER_MODES
 
 from .app import cli, console, _run, _get_client, _handle_errors
 from .claim_epoch import claim_epoch_option, resolve_claim_epoch
+from .auto_commands import StructuredParam
 from .envelope import emit
 from .styles import TASK_TYPES
 
@@ -80,6 +81,44 @@ def _parse_requires_kinds(values: tuple[str, ...]) -> list[Any]:
 def task() -> None:
     """Task management commands."""
     pass
+
+
+@task.command("batch-propose")
+@click.option("--file", "change_file", default=None, help="YAML/JSON change set; '-' reads stdin.")
+@click.option("--project", "--project-id", "project_id", default=None)
+@click.option("--source", default=None, help="Provenance (defaults to the file path).")
+@click.option("--dry-run", is_flag=True, help="Validate and show the diff without saving a proposal.")
+@click.option("--tasks", type=StructuredParam("array"), default=None)
+@click.option("--edges", type=StructuredParam("array"), default=None)
+@click.option("--edits", type=StructuredParam("array"), default=None)
+@click.option("--remove-edges", type=StructuredParam("array"), default=None)
+@click.option("--comments", type=StructuredParam("array"), default=None)
+@click.pass_context
+def task_batch_propose(ctx, change_file, project_id, source, dry_run, **operations):
+    """Stage creates, edits, edge additions/removals and comments for atomic approval."""
+    inline = {key: value for key, value in operations.items() if value is not None}
+    if change_file and inline:
+        raise click.UsageError("use either --file or inline operation options")
+    if not change_file and not inline:
+        raise click.UsageError("supply --file or inline change set operations")
+    document = _load_graph_document(change_file) if change_file else inline
+    allowed = {"project_id", "source", "tasks", "edits", "edges", "remove_edges", "comments"}
+    if unknown := set(document) - allowed:
+        raise click.UsageError(f"unknown change set fields: {sorted(unknown)}")
+    provenance = source or document.get("source") or change_file
+    if not provenance:
+        raise click.UsageError("--source is required for inline operations")
+    args = dict(document, source=provenance, dry_run=dry_run)
+    if project_id:
+        args["project_id"] = project_id
+
+    async def run():
+        async with _get_client(ctx.obj.get("api_url") if ctx.obj else None) as client:
+            return await client.execute("task_batch_propose", args)
+
+    result = _run(run())
+    _handle_errors(result)
+    emit(ctx, result)
 
 
 def _load_graph_document(graph_file: str) -> dict:
@@ -752,10 +791,13 @@ def task_list(
 
 @task.command("show")
 @click.argument("task_id")
+@click.option("--field", default=None, help="Read one canonical field in bounded pages.")
+@click.option("--offset", type=click.IntRange(min=0), default=0, help="Character offset.")
+@click.option("--limit", type=click.IntRange(1, 4096), default=4096, help="Page characters.")
 @click.pass_context
 @_handle_errors
-def task_show(ctx: click.Context, task_id: str) -> None:
-    """Show full task detail: fields, dependencies, context, labels."""
+def task_show(ctx: click.Context, task_id: str, field: str | None, offset: int, limit: int) -> None:
+    """Show task detail, with bounded previews for workers."""
     from .adapters import task_proxy
     from .formatters import format_task_detail
 
@@ -763,11 +805,22 @@ def task_show(ctx: click.Context, task_id: str) -> None:
 
     async def _show():
         async with _get_client(api_url) as client:
-            return await client.execute("task_show", {"task_id": task_id})
+            args = {"task_id": task_id}
+            if field is not None:
+                args.update(field=field, offset=offset, limit=limit)
+            return await client.execute("task_show", args)
 
     result = _run(_show())
 
     def _render(data: dict) -> None:
+        if "field" in data and "content" in data:
+            console.print(data["content"], markup=False)
+            if data.get("next_offset") is not None:
+                console.print(
+                    f"Next page: aq task show {task_id} --field {data['field']} "
+                    f"--offset {data['next_offset']} --limit {limit}", markup=False,
+                )
+            return
         t = task_proxy(data)
         deps_raw = _getval(data, "depends_on", [])
         blocks_raw = _getval(data, "blocks", [])
@@ -808,6 +861,11 @@ def task_show(ctx: click.Context, task_id: str) -> None:
         context = _getval(data, "context", [])
         if context:
             console.print(f"[dim]Context entries:[/] {len(context)}")
+        if data.get("preview"):
+            console.print(data["preview"]["instruction"], markup=False)
+            console.print(data["preview"]["read"], markup=False)
+            console.print("Omitted fields: " + ", ".join(data["preview"]["omitted_fields"]),
+                          markup=False)
 
     emit(ctx, result, entity="task", render=_render)
 
@@ -1173,3 +1231,146 @@ def _subtask_update_command(name: str, status: str | None, *, note_required: boo
 task_subtask_done = _subtask_update_command("subtask-done", "done")
 task_subtask_start = _subtask_update_command("subtask-start", "in_progress")
 task_subtask_skip = _subtask_update_command("subtask-skip", "skipped", note_required=True)
+
+
+def _render_delete_preview(data: dict) -> None:
+    console.print("Tasks to delete:", markup=False)
+    for row in data.get("tasks", []):
+        console.print(f"  {row['id']} — {row['title']} ({row['status']})", markup=False)
+    if data.get("reparented_tasks"):
+        console.print("Children kept: " + ", ".join(data["reparented_tasks"]), markup=False)
+    for entry in data.get("branch_details", []):
+        console.print(
+            f"  {entry['action'].upper()} branch {entry['branch']} "
+            f"(remote: {entry.get('remote_sha') or entry['remote_state']})",
+            markup=False,
+        )
+        for local in entry.get("local_refs", []):
+            console.print(
+                f"    {local['path']}: {local.get('sha') or 'tracking ref only'}", markup=False
+            )
+        for checkout in entry.get("worktrees", []):
+            console.print(f"    worktree: {checkout['path']}", markup=False)
+    for session in data.get("sessions", []):
+        console.print(
+            f"  STOP session {session['session_id']} ({session['task_id']})", markup=False
+        )
+    for notice in data.get("warnings", []):
+        console.print(f"Warning: {notice['message']}", markup=False)
+
+
+def _delete_cli(
+    ctx,
+    task_id,
+    recursive,
+    cascade,
+    branches,
+    stop_running,
+    reason,
+    confirmed,
+    preview,
+    legacy_task_id=None,
+):
+    if task_id and legacy_task_id and task_id != legacy_task_id:
+        raise click.UsageError("Choose one task id.")
+    task_id = task_id or legacy_task_id
+    if not task_id:
+        raise click.UsageError("A task id is required.")
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if cascade:
+        recursive = True
+    if not confirmed and not preview:
+        if recursive is None:
+            recursive = (
+                click.prompt("Scope", type=click.Choice(["task", "recursive"]), default="task")
+                == "recursive"
+            )
+        if branches is None:
+            branches = click.prompt(
+                "Branches", type=click.Choice(["keep", "delete"]), default="keep"
+            )
+        if reason is None:
+            reason = click.prompt("Reason (optional)", default="", show_default=False)
+    args = {
+        "task_id": task_id,
+        "recursive": bool(recursive),
+        "branches": branches or "keep",
+        "stop_running": stop_running,
+        "reason": reason or "",
+    }
+
+    async def _inner():
+        async with _get_client(api_url) as client:
+            plan = await client.execute("delete_task", {**args, "confirmed": False})
+            if preview:
+                emit(ctx, plan, entity="delete_task", render=_render_delete_preview)
+                return
+            if not confirmed:
+                _render_delete_preview(plan)
+                click.confirm(
+                    "Delete these tasks? Running work will stop. Audit history will remain",
+                    abort=True,
+                )
+            result = await client.execute("delete_task", {**args, "confirmed": True})
+
+            def render(data):
+                console.print(
+                    f"Deleted {', '.join(data.get('task_ids', [task_id]))}. "
+                    f"Audit: {data.get('audit_id')}",
+                    markup=False,
+                )
+                for notice in data.get("warnings", []):
+                    console.print(f"Warning: {notice['message']}", markup=False)
+
+            emit(ctx, result, entity="delete_task", render=render)
+
+    _run(_inner())
+
+
+def _delete_options(fn):
+    for decorator in reversed(
+        [
+            click.argument("task_id", required=False),
+            click.option(
+                "--task-id", "legacy_task_id", help="Compatibility spelling for the task id."
+            ),
+            click.option(
+                "--recursive/--task-only", default=None, help="Delete descendants or keep them."
+            ),
+            click.option("--cascade", is_flag=True, help="Deprecated alias for --recursive."),
+            click.option(
+                "--branches",
+                type=click.Choice(["keep", "delete"]),
+                default=None,
+                help="Keep branches or delete local/remote branches and associated worktrees.",
+            ),
+            click.option(
+                "--stop-running",
+                is_flag=True,
+                help="Acknowledge stopping selected sessions and claims.",
+            ),
+            click.option("--reason", help="Optional reason retained in the audit."),
+            click.option(
+                "--yes", "confirmed", is_flag=True, help="Confirm without interactive prompts."
+            ),
+            click.option("--preview", is_flag=True, help="Show the read-only deletion preview."),
+            click.pass_context,
+            _handle_errors,
+        ]
+    ):
+        fn = decorator(fn)
+    return fn
+
+
+@task.command("delete")
+@_delete_options
+def delete_task(ctx, **kwargs):
+    """Delete a task after choosing scope and branch cleanup in one confirmation."""
+    _delete_cli(ctx, **kwargs)
+
+
+@task.command("remove", deprecated=True)
+@_delete_options
+def remove_task(ctx, **kwargs):
+    """Deprecated alias for delete, with identical choices and cleanup."""
+    _delete_cli(ctx, **kwargs)

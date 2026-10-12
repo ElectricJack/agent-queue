@@ -19,7 +19,10 @@ export type DeliveryState = EpicDeliveryStatus["state"];
 
 interface StateStyle {
   Icon: ComponentType<SVGProps<SVGSVGElement>>;
-  /** Badge colours: decoration only, the text carries the meaning. */
+  /** Badge colours: decoration only, the text carries the meaning. The badge
+   *  lives in the detail views, which stay dark, so these are not graph tokens
+   *  (those switch with the graph's theme); the graph's pill takes its tone
+   *  from `cardStatus` instead. */
   tone: string;
   /** The card tone (a TaskNode status key) an epic in this state reads as. */
   cardStatus: string | null;

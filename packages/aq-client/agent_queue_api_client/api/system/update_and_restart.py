@@ -65,11 +65,17 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: UpdateAndRestartRequest,
 ) -> Response[UpdateAndRestartResponse | UpdateAndRestartResponse422]:
-    """Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
-    finish before restarting. Excluded from MCP by default for safety.
+    """Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when
+    already current. With a release selector, run shared preflight and launch the operator updater;
+    returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final
+    outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes
+    if the updater exits without restarting. Excluded from MCP by default for safety.
 
-     Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
-    finish before restarting. Excluded from MCP by default for safety.
+     Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when
+    already current. With a release selector, run shared preflight and launch the operator updater;
+    returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final
+    outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes
+    if the updater exits without restarting. Excluded from MCP by default for safety.
 
     Args:
         body (UpdateAndRestartRequest):
@@ -98,11 +104,17 @@ def sync(
     client: AuthenticatedClient | Client,
     body: UpdateAndRestartRequest,
 ) -> UpdateAndRestartResponse | UpdateAndRestartResponse422 | None:
-    """Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
-    finish before restarting. Excluded from MCP by default for safety.
+    """Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when
+    already current. With a release selector, run shared preflight and launch the operator updater;
+    returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final
+    outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes
+    if the updater exits without restarting. Excluded from MCP by default for safety.
 
-     Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
-    finish before restarting. Excluded from MCP by default for safety.
+     Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when
+    already current. With a release selector, run shared preflight and launch the operator updater;
+    returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final
+    outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes
+    if the updater exits without restarting. Excluded from MCP by default for safety.
 
     Args:
         body (UpdateAndRestartRequest):
@@ -126,11 +138,17 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: UpdateAndRestartRequest,
 ) -> Response[UpdateAndRestartResponse | UpdateAndRestartResponse422]:
-    """Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
-    finish before restarting. Excluded from MCP by default for safety.
+    """Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when
+    already current. With a release selector, run shared preflight and launch the operator updater;
+    returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final
+    outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes
+    if the updater exits without restarting. Excluded from MCP by default for safety.
 
-     Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
-    finish before restarting. Excluded from MCP by default for safety.
+     Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when
+    already current. With a release selector, run shared preflight and launch the operator updater;
+    returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final
+    outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes
+    if the updater exits without restarting. Excluded from MCP by default for safety.
 
     Args:
         body (UpdateAndRestartRequest):
@@ -157,11 +175,17 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: UpdateAndRestartRequest,
 ) -> UpdateAndRestartResponse | UpdateAndRestartResponse422 | None:
-    """Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
-    finish before restarting. Excluded from MCP by default for safety.
+    """Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when
+    already current. With a release selector, run shared preflight and launch the operator updater;
+    returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final
+    outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes
+    if the updater exits without restarting. Excluded from MCP by default for safety.
 
-     Pull the latest source from git and restart the daemon. Use wait_for_tasks=true to let running tasks
-    finish before restarting. Excluded from MCP by default for safety.
+     Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when
+    already current. With a release selector, run shared preflight and launch the operator updater;
+    returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final
+    outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes
+    if the updater exits without restarting. Excluded from MCP by default for safety.
 
     Args:
         body (UpdateAndRestartRequest):

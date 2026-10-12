@@ -6,10 +6,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager
 from src.integration.delivery_truth import DeliveryRequest, DeliveryState
-from src.integration.git_truth import GitTruth, commits_added, epic_complete, repair_progress
+from src.integration.git_truth import (
+    GitTruth,
+    SharedFetchCancelled,
+    commits_added,
+    epic_complete,
+    repair_progress,
+)
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
 
 
 @dataclass
@@ -414,6 +422,71 @@ async def test_explicit_retained_no_artifact_is_distinct_from_missing_source(rep
     assert (await (await repo.snapshot()).is_delivered(request)).state == DeliveryState.NO_ARTIFACT
 
 
+async def test_passing_empty_completion_at_its_contained_base_is_no_change(repository):
+    repo = repository
+    request = replace(await repo.retain(repo.base), completion_outcome="pass", completion_commits=())
+    # The proof binds the retained generation, even after its branch moves and
+    # the default branch advances beyond the recorded base.
+    await repo.commit("later-source-work")
+    await repo.run("checkout", "main")
+    await repo.commit("later-default-work")
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert (proof.state, proof.reason, proof.source_oid) == (
+        DeliveryState.NO_CHANGE, "git_no_change", repo.base,
+    )
+    assert proof.satisfied
+    assert await snapshot.usable(proof, request, current_source_base=repo.base)
+    assert not await snapshot.usable(proof, replace(request, completion_outcome="fail"),
+                                     current_source_base=repo.base)
+    assert await epic_complete(snapshot, [request], green_oid=snapshot.target_oid,
+                               source_bases={"task": repo.base})
+
+
+@pytest.mark.parametrize("scenario", ["missing", "failed", "changed", "missing_base", "off_default"])
+async def test_empty_completion_requires_unambiguous_head_base_and_pass(repository, scenario):
+    repo = repository
+    source = repo.base
+    if scenario in {"changed", "off_default"}:
+        source = await repo.commit("undelivered")
+    request = replace(await repo.retain(source), completion_outcome="pass", completion_commits=())
+    base = source if scenario == "off_default" else repo.base
+    if scenario == "missing":
+        request = replace(request, completion_id="unretained")
+    elif scenario == "failed":
+        request = replace(request, completion_outcome="fail")
+    elif scenario == "missing_base":
+        base = None
+    proof = await (await repo.snapshot()).is_delivered(request, source_base=base)
+    assert proof.state != DeliveryState.NO_CHANGE
+    assert (proof.state, proof.reason) == (
+        (DeliveryState.PENDING, "no_change_base_not_delivered") if scenario == "off_default" else
+        (DeliveryState.UNKNOWN, "missing_git_provenance") if scenario == "missing" else
+        (DeliveryState.PENDING, "source_not_delivered") if scenario == "changed" else
+        (DeliveryState.CONTAINED, "ancestor")
+    )
+    assert proof.satisfied is (scenario in {"failed", "missing_base"})
+
+
+@pytest.mark.parametrize("contained", [False, True])
+async def test_empty_commit_list_preserves_exact_source_containment(repository, contained):
+    repo = repository
+    head = await repo.commit("real-work")
+    request = replace(await repo.retain(head), completion_outcome="pass", completion_commits=())
+    if contained:
+        await repo.publish()
+    snapshot = await repo.snapshot()
+    proof = await snapshot.is_delivered(request, source_base=repo.base)
+    assert (proof.state, proof.reason) == (
+        (DeliveryState.CONTAINED, "ancestor") if contained else
+        (DeliveryState.PENDING, "source_not_delivered")
+    )
+    assert proof.satisfied is contained
+    assert await epic_complete(snapshot, [request], green_oid=snapshot.target_oid,
+                               source_bases={"task": repo.base}) is contained
+
+
 @pytest.mark.parametrize("operation,step,exception", [
     ("read_completion", "completion_provenance", KeyError("private provenance content")),
     ("ancestor", "source_ancestry", GitError("fatal: bad object private content")),
@@ -572,7 +645,8 @@ async def test_identical_oid_pairs_in_different_repositories_are_separate(reposi
     snapshot = await repo.snapshot()
     assert (await snapshot.is_delivered(request)).satisfied
     other_remote = tmp_path / "other.git"
-    await repo.git._arun(["clone", "--bare", str(repo.remote), str(other_remote)], cwd=str(tmp_path))
+    # Mirror all evidence, including provenance outside the head namespace.
+    await repo.git._arun(["clone", "--mirror", str(repo.remote), str(other_remote)], cwd=str(tmp_path))
     await repo.run("remote", "set-url", "origin", str(other_remote))
     other_snapshot = await repo.truth.snapshot(
         str(repo.path), project_id="p", repository_id="r", repository_url=str(other_remote),
@@ -609,6 +683,98 @@ async def test_cached_facts_skip_repeat_ancestry_and_cache_is_bounded(repository
     assert list(truth._cache) == [("r", str(repo.remote), head, repo.base)]
 
 
+async def test_warm_completion_proofs_do_not_launch_git_processes(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    assert (await snapshot.is_delivered(request)).satisfied
+    run = AsyncMock(side_effect=AssertionError("warm proof launched Git"))
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    # A new request/cycle still uses immutable Git facts; ordinary metadata
+    # edits must recheck the completion binding without repeating validation.
+    for index in range(137):
+        current = replace(request, task_version=index, branch_name=f"renamed-{index}")
+        assert (await snapshot.is_delivered(current)).satisfied
+    run.assert_not_awaited()
+
+
+async def test_cache_metrics_report_warm_hits_and_changed_completion_misses(repository):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    observed = await repo.snapshot()
+    metrics = SelectionMetrics()
+    with selection_metrics_scope(metrics):
+        assert (await observed.is_delivered(request)).satisfied
+        assert (await observed.is_delivered(request)).satisfied
+        assert (await observed.is_delivered(replace(request, task_version=2))).satisfied
+        assert not (await observed.is_delivered(replace(request, completion_id="missing"))).satisfied
+    assert metrics.counts["completion_cache_hits"] == 1
+    assert metrics.counts["completion_cache_misses"] == 2
+    assert metrics.counts["delivery_cache_hits"] == 1
+    assert metrics.counts["delivery_cache_misses"] == 3
+
+
+async def test_cached_only_proofs_withhold_cold_changed_and_evicted_inputs(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    await repo.publish()
+    truth = GitTruth(repo.git, cache_limit=1)
+    snapshot = await repo.snapshot(truth=truth)
+    display = replace(snapshot, cached_only=True)
+    run = AsyncMock(wraps=repo.git.arun_git_result)
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    assert (await display.is_delivered(request)).reason == "proof_unavailable"
+    run.assert_not_awaited()
+    proof = await snapshot.is_delivered(request)
+    run.reset_mock()
+    assert await display.is_delivered(request) == proof
+    for changed in (replace(request, completion_id="close-2"),
+                    replace(request, task_version=2), replace(request, task_status="READY")):
+        assert not (await display.is_delivered(changed)).satisfied
+    assert not (await display.is_delivered(request, source_base=repo.base)).satisfied
+    moved_target = replace(display, observation=replace(display.observation, target_oid=repo.base))
+    assert not (await moved_target.is_delivered(request)).satisfied
+    # Ref retargeting invalidates the proof even when task, source and target
+    # are unchanged. Only the newly pinned marker may bind this generation.
+    refs = dict(display.observation.source_heads)
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    refs[identity.ref] = repo.base
+    moved_marker = replace(display, observation=replace(display.observation, source_heads=refs))
+    assert not (await moved_marker.is_delivered(request)).satisfied
+    other_store = replace(display, observation=replace(display.observation,
+                                                       store=str(repo.path / "missing")))
+    assert not (await other_store.is_delivered(request)).satisfied
+    other_url = replace(display, observation=replace(display.observation, repository_url="other"))
+    assert not (await other_url.is_delivered(request)).satisfied
+    run.assert_not_awaited()
+    # Eviction is a miss, never a request to revalidate in an interactive read.
+    assert (await snapshot.is_delivered(replace(request, task_version=2))).satisfied
+    assert (await display.is_delivered(request)).reason == "proof_unavailable"
+    assert all(len(cache) <= 1 for cache in (truth._proofs, truth._completions, truth._objects))
+
+
+async def test_cached_completion_records_cannot_be_mutated_by_consumers(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    await repo.retain(head)
+    snapshot = await repo.snapshot()
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    record = await snapshot.read_completion(identity)
+    record["source_oid"] = repo.base
+    record["identity"]["generation"] = "other"
+    run = AsyncMock(side_effect=AssertionError("cached record launched Git"))
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    cached = await snapshot.read_completion(identity)
+    assert cached["source_oid"] == head
+    assert cached["identity"]["generation"] == "close-1"
+    run.assert_not_awaited()
+
+
 async def test_pinned_completion_ref_and_two_targets_share_one_fetch(repository, monkeypatch):
     repo = repository
     head = await repo.commit("one")
@@ -619,7 +785,7 @@ async def test_pinned_completion_ref_and_two_targets_share_one_fetch(repository,
     monkeypatch.setattr(repo.git, "afetch_origin", fetch)
     snapshot = await repo.snapshot()
     identity = CompletionIdentity("p", "r", "task", "close-1")
-    marker_ref = "refs/remotes/origin/" + identity.branch
+    marker_ref = identity.ref
     await repo.run("update-ref", "-d", marker_ref)
     # The marker was captured by OID and is still readable after local ref deletion.
     assert (await snapshot.is_delivered(request)).satisfied
@@ -627,6 +793,80 @@ async def test_pinned_completion_ref_and_two_targets_share_one_fetch(repository,
         replace(request, target_ref="refs/heads/epic"),
     )).satisfied
     assert fetch.await_count == 1
+
+
+async def test_completion_cache_pins_marker_and_revalidates_new_fetch(repository, monkeypatch):
+    repo = repository
+    head = await repo.commit("one")
+    request = await repo.retain(head)
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    read = GitProvenance.read_completion
+    probe = AsyncMock()
+
+    async def inspect(self, requested, **kwargs):
+        await probe(requested)
+        return await read(self, requested, **kwargs)
+
+    monkeypatch.setattr(GitProvenance, "read_completion", inspect)
+    snapshot = await repo.snapshot()
+    record = await snapshot.read_completion(identity)
+    record["artifact"] = False  # Callers cannot mutate the validated cache.
+    assert (await snapshot.read_completion(identity))["artifact"]
+    assert (await (await repo.snapshot()).read_completion(identity))["artifact"]
+    assert probe.await_count == 1
+    # A changed fetched marker is a new immutable object, not the old answer.
+    provenance = GitProvenance(repo.git, str(repo.path), repository_url=str(repo.remote))
+    record["source_oid"] = head
+    marker = await provenance._stage(record)
+    await repo.run("push", "--force", "origin", f"{marker}:{identity.ref}")
+    assert (await (await repo.snapshot()).is_delivered(request)).state == DeliveryState.NO_ARTIFACT
+    assert probe.await_count == 2
+    await repo.run("push", "origin", "--delete", identity.ref)
+    # The old observation retains its pinned object; the new one sees absence.
+    assert (await snapshot.read_completion(identity))["artifact"]
+    assert await (await repo.snapshot()).read_completion(identity) is None
+    assert probe.await_count == 3  # The shared cache never retains absent provenance.
+
+
+async def test_completion_cache_is_store_scoped_bounded_and_does_not_cache_failures(
+    repository, monkeypatch, tmp_path,
+):
+    repo = repository
+    head = await repo.commit("one")
+    await repo.retain(head)
+    second = await repo.retain(head, completion="close-2")
+    identity = CompletionIdentity("p", "r", "task", "close-1")
+    other = replace(identity, generation="close-2")
+    truth = GitTruth(repo.git, cache_limit=1)
+    snapshot = await repo.snapshot(truth=truth)
+    read = GitProvenance.read_completion
+    probe = AsyncMock()
+
+    async def inspect(self, requested, **kwargs):
+        await probe(requested)
+        return await read(self, requested, **kwargs)
+
+    monkeypatch.setattr(GitProvenance, "read_completion", inspect)
+    await snapshot.read_completion(identity)
+    await snapshot.read_completion(other)
+    await snapshot.read_completion(identity)
+    assert probe.await_count == 3 and len(truth._completions) == 1
+    missing_store = replace(snapshot, observation=replace(
+        snapshot.observation, store=str(tmp_path / "unavailable-store")))
+    # Scope prevents an available store's cache from hiding a missing checkout.
+    assert (await missing_store.is_delivered(replace(second, completion_id="close-1"))).state == (
+        DeliveryState.UNKNOWN)
+    assert probe.await_count == 4
+    assert (await snapshot.read_completion(identity))["source_oid"] == head
+    assert probe.await_count == 4
+    failure = AsyncMock(side_effect=[GitError("unavailable"), await read(
+        GitProvenance(repo.git, str(repo.path), repository_url=str(repo.remote)),
+        other, refs=snapshot.observation.source_heads)])
+    monkeypatch.setattr(GitProvenance, "read_completion", failure)
+    with pytest.raises(GitError):
+        await snapshot.read_completion(other)
+    assert (await snapshot.read_completion(other))["source_oid"] == head
+    assert failure.await_count == 2
 
 
 @pytest.mark.parametrize("change", [{"task_status": "READY"}, {"claim_epoch": 2},
@@ -820,3 +1060,169 @@ async def test_spent_patch_budget_is_negative_and_merge_noop_still_proves(reposi
     await repo.publish()
     proof = await (await repo.snapshot()).is_delivered(request, source_base=repo.base)
     assert (proof.state, proof.reason) == (DeliveryState.CONTAINED, "merge_noop")
+
+
+async def test_overlapping_train_targets_share_two_fetches_but_next_visit_is_fresh(repository):
+    import asyncio
+
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True)
+    head = await repo.commit("shared-source")
+    await repo.run("push", "origin", "HEAD:refs/heads/epic")
+    fetch = repo.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked_fetch(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await fetch(*args, **kwargs)
+
+    repo.git.afetch_origin = AsyncMock(side_effect=blocked_fetch)
+    first = asyncio.create_task(repo.snapshot(truth=truth))
+    await entered.wait()
+    others = [asyncio.create_task(repo.snapshot(
+        truth=truth, target="refs/heads/epic" if i % 2 else "refs/heads/missing",
+    )) for i in range(52)]
+    await asyncio.sleep(0)
+    release.set()
+    snapshots = await asyncio.gather(first, *others)
+    assert repo.git.afetch_origin.await_count == 2
+    assert snapshots[0].target_oid == repo.base
+    for i, snapshot in enumerate(snapshots[1:]):
+        assert snapshot.target_oid == (head if i % 2 else None)
+        assert snapshot.error == (None if i % 2 else "missing_target")
+    assert not truth._fetches
+
+    await repo.publish()
+    assert (await repo.snapshot(truth=truth)).target_oid == head
+    assert repo.git.afetch_origin.await_count == 3
+    assert snapshots[0].target_oid == repo.base
+
+
+async def test_shared_fetch_started_before_a_push_cannot_answer_its_caller(repository, tmp_path):
+    import asyncio
+
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True)
+    head = await repo.commit("new-head")
+    writer = tmp_path / "writer.git"
+    await repo.git._arun(["clone", "--bare", str(repo.path), str(writer)], cwd=str(tmp_path))
+    fetch = repo.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def fetched_before_push(*args, **kwargs):
+        await fetch(*args, **kwargs)
+        entered.set()
+        await release.wait()
+
+    repo.git.afetch_origin = AsyncMock(side_effect=fetched_before_push)
+    first = asyncio.create_task(repo.snapshot(truth=truth))
+    await entered.wait()
+    # Train publication uses a separate repository, so it cannot update the
+    # observer's tracking refs or order against its already-started fetch.
+    await repo.git._arun(["push", str(repo.remote), "HEAD:refs/heads/main"], cwd=str(writer))
+    second = asyncio.create_task(repo.snapshot(truth=truth))
+    await asyncio.sleep(0)
+    release.set()
+    before, after = await asyncio.gather(first, second)
+    assert before.target_oid == repo.base
+    assert after.target_oid == head
+    assert await after.is_fresh()
+    assert repo.git.afetch_origin.await_count == 2
+    assert not truth._fetches
+
+
+@pytest.mark.parametrize("cancel_leader", [True, False])
+async def test_shared_fetch_cancellation_does_not_strand_other_readers(repository, cancel_leader):
+    import asyncio
+
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True)
+    fetch = repo.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked_fetch(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await fetch(*args, **kwargs)
+
+    repo.git.afetch_origin = AsyncMock(side_effect=blocked_fetch)
+    leader = asyncio.create_task(repo.snapshot(truth=truth))
+    await entered.wait()
+    waiter = asyncio.create_task(repo.snapshot(truth=truth))
+    await asyncio.sleep(0)
+    cancelled, survivor = (leader, waiter) if cancel_leader else (waiter, leader)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    release.set()
+    if cancel_leader:
+        with pytest.raises(SharedFetchCancelled, match="shared fetch was cancelled"):
+            await survivor
+    else:
+        assert (await survivor).target_oid == repo.base
+    assert not truth._fetches
+    assert repo.git.afetch_origin.await_count == 1
+
+    repo.git.afetch_origin.side_effect = fetch
+    assert (await repo.snapshot(truth=truth)).target_oid == repo.base
+    assert repo.git.afetch_origin.await_count == 2
+
+
+@pytest.mark.parametrize("error", [
+    RuntimeError("unexpected failure"),
+    GitHubAccessError("rate_limited", "paused", retry_at=1000.0, http_status=403),
+    GitHubAccessError("forbidden", "access denied", http_status=403),
+])
+async def test_shared_fetch_propagates_non_git_failure_without_retries(repository, error):
+    import asyncio
+
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True)
+    fetch = repo.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def fail(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        raise error
+
+    repo.git.afetch_origin = AsyncMock(side_effect=fail)
+    leader = asyncio.create_task(repo.snapshot(truth=truth))
+    await entered.wait()
+    waiters = [asyncio.create_task(repo.snapshot(truth=truth)) for _ in range(12)]
+    await asyncio.sleep(0)
+    release.set()
+    outcomes = await asyncio.gather(leader, *waiters, return_exceptions=True)
+    assert all(outcome is error for outcome in outcomes)
+    assert repo.git.afetch_origin.await_count == 1
+    assert not truth._fetches
+
+    repo.git.afetch_origin.side_effect = fetch
+    assert (await repo.snapshot(truth=truth)).target_oid == repo.base
+    assert repo.git.afetch_origin.await_count == 2
+
+
+async def test_shared_fetch_failure_never_becomes_delivery_evidence(repository):
+    import asyncio
+
+    repo = repository
+    truth = GitTruth(repo.git, share_fetches=True)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def fail(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        raise GitError("unavailable")
+
+    repo.git.afetch_origin = AsyncMock(side_effect=fail)
+    first = asyncio.create_task(repo.snapshot(truth=truth, target="refs/heads/missing"))
+    await entered.wait()
+    second = asyncio.create_task(repo.snapshot(truth=truth))
+    await asyncio.sleep(0)
+    release.set()
+    snapshots = await asyncio.gather(first, second)
+    assert all(snapshot.error == "snapshot_git_error: unavailable" for snapshot in snapshots)
+    assert all(snapshot.target_oid is None for snapshot in snapshots)
+    assert repo.git.afetch_origin.await_count == 1
+    assert not truth._fetches

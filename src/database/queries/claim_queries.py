@@ -34,10 +34,13 @@ from src.database.queries.hierarchy_queries import (
     HIERARCHY_MODES,
     ProjectIntegrationMode,
     container_flag_exists,
+    cross_parent_prerequisites_on_default,
     delivered_prerequisites_for_projects,
     delivered_same_parent_prerequisites_when_hierarchical,
+    epic_refresh_ready,
     materialized_origin_when_hierarchical,
     never_leaseable_container,
+    open_epic_refresh_batches,
 )
 from src.database.queries.session_queries import _row_to_session
 from src.database.queries.task_queries import (
@@ -48,10 +51,12 @@ from src.database.queries.task_queries import (
 )
 from src.database.tables import (
     agents,
+    integration_batches,
     integration_branch_owners,
     integration_repair_stages,
     projects,
     sessions,
+    task_branch_origins,
     task_completion_records,
     task_delivery_receipts,
     task_integration_checkpoints,
@@ -91,6 +96,8 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         "sibling_prerequisite_not_delivered": (
             delivered_same_parent_prerequisites_when_hierarchical(hierarchy_mode)
         ),
+        "prerequisite_not_on_default_branch": cross_parent_prerequisites_on_default(hierarchy_mode),
+        "epic_refresh_pending": epic_refresh_ready(hierarchy_mode),
         # Containers settle when their children finish. A worker holding one
         # could never close it and would block the settlement it waits for.
         "container_settles_without_worker": ~container_flag_exists(),
@@ -367,6 +374,9 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     # preparation that applies it; left behind, every later prepare re-enters
     # the handoff path against a preserved ref that has since moved or gone.
     "supervisor_recovery_checkpoint",
+    # A stopped writer's saved-WIP resume point (``stranded_work``): consumed
+    # by the preparation that continues from it, like the handoff above.
+    "failover_resume_checkpoint",
     PREPARE_BACKOFF_UNTIL_KEY,
     PREPARE_BACKOFF_ATTEMPTS_KEY,
     "slot_reset_failure",
@@ -374,6 +384,8 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     # for the wait, so it goes stale at exactly the same boundary as the
     # ladder it throttles.
     "branch_fenced",
+    "stack_prerequisites_conflict",
+    "stack_preparation_changed",
 )
 
 #: Matches exactly what PostgreSQL's ``double precision`` input accepts here:
@@ -413,7 +425,25 @@ def numeric_meta_value(column, *, default: str = "0"):
 
 
 def _claim_preparation_predicates():
+    origin = task_branch_origins.alias("claim_stack_origin")
+    repair = tasks.alias("claim_stack_repair")
+    completion = task_completion_records.alias("claim_stack_completion")
+    latest_outcome = (
+        select(completion.c.outcome).where(completion.c.task_id == repair.c.id)
+        .order_by(completion.c.completed_at.desc()).limit(1).correlate(repair).scalar_subquery()
+    )
+    repair_passed = exists(select(literal(1)).where(
+        repair.c.id == origin.c.stack_snapshot["preparation_conflict"]["repair_task_id"].astext,
+        repair.c.status == TaskStatus.COMPLETED.value,
+        latest_outcome == "pass",
+    ).correlate(origin))
     return {
+        "stack_prerequisites_conflict": ~exists(select(literal(1)).where(
+            origin.c.task_id == tasks.c.id,
+            origin.c.retired_at.is_(None),
+            origin.c.stack_snapshot.op("?")("preparation_conflict"),
+            ~repair_passed,
+        )),
         "workspace_requirement": ~exists(select(literal(1)).where(
             task_workspace_requirements.c.task_id == tasks.c.id,
             task_workspace_requirements.c.kind_id.notin_(("project-repo", "vault")),
@@ -434,12 +464,27 @@ def claim_frontier_predicates(hierarchy_modes=None):
         "hold_label": apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
     }
     predicates["sibling_prerequisite_not_delivered"] = delivered_prerequisites_for_projects(
-        hierarchy_modes
+        hierarchy_modes, cross_parent=False
     )
+    for name, predicate in (
+        ("prerequisite_not_on_default_branch", cross_parent_prerequisites_on_default),
+        ("epic_refresh_pending", epic_refresh_ready),
+    ):
+        predicates[name] = case(
+            {pid: predicate(mode) for pid, mode in hierarchy_modes.items()},
+            value=tasks.c.project_id, else_=predicate(),
+        ) if hierarchy_modes else predicate()
     return predicates
 
 
 FRONTIER_PREDICATE_DETAILS = {
+    "prerequisite_not_on_default_branch": (
+        "a cross-epic prerequisite needs exact source containment on the default branch"
+    ),
+    "epic_refresh_pending": (
+        "the epic must contain every proven cross-epic source and its open epic-refresh "
+        "batch must finish before its children start"
+    ),
     "supervisor_profile": "profile_id must not be supervisor",
     "dependency_blocked": "is_blocked must be false",
     "already_assigned": "assigned_agent_id must be empty",
@@ -450,7 +495,8 @@ FRONTIER_PREDICATE_DETAILS = {
     ),
     "sibling_prerequisite_not_delivered": (
         "delivered_same_parent_prerequisites_when_hierarchical(): requires the preserved "
-        "parent origin and delivery of each completed blocks sibling to the shared parent; "
+        "parent origin and each completed blocks sibling delivered to the shared parent or "
+        "proven on its own task branch under the project stacked policy; "
         "Git-first uses current Git proof, shadow uses matching code receipts after rework"
     ),
     "container_settles_without_worker": "container_flag_exists() must be false",
@@ -458,6 +504,7 @@ FRONTIER_PREDICATE_DETAILS = {
     "retired_repair_delegate": "repair delegate stage must be active or awaiting_completion",
     "workspace_requirement": "workspace requirements must be project-repo or vault",
     "claim_prepare_backoff": "claim_prepare_backoff_until must not be in the future",
+    "stack_prerequisites_conflict": "the prerequisite stack repair needs a passing completion",
     "hold_label": "no hold:* label may be present",
     "route_not_claimable": (
         "route_source must be router, override or role with a profile (legacy too while "
@@ -475,7 +522,7 @@ class ClaimQueryMixin:
     """
 
     async def claim_frontier_exclusions(
-        self, task_id: str, *, router_ready: bool | None = None
+        self, task_id: str, *, router_ready: bool | None = None, cached_only: bool = False,
     ) -> list[dict]:
         """Evaluate the real claim filters for one READY task, without scheduler guesses.
 
@@ -484,29 +531,111 @@ class ClaimQueryMixin:
         """
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
-        predicates = claim_frontier_predicates(
-            await hierarchy_frontier_modes(self, task_id=task_id)
+        unavailable = {}
+        modes = await hierarchy_frontier_modes(
+            self, task_id=task_id, cached_only=cached_only,
+            **({"display_unavailable": unavailable} if cached_only else {}),
         )
+        predicates = claim_frontier_predicates(modes)
         if router_ready is not None:
             predicates["route_not_claimable"] = route_claimable(router_ready)
+        display_predicates = {}
+        if unavailable:
+            from dataclasses import replace
+
+            # These counterfactual predicates classify diagnostic uncertainty
+            # only. The actual modes and all decision queries remain fail closed.
+            display_modes = {
+                pid: replace(
+                    mode,
+                    delivered_prerequisite_ids=(mode.delivered_prerequisite_ids or frozenset())
+                    | unavailable.get(pid, {}).get("siblings", frozenset()),
+                    default_prerequisite_ids=mode.default_prerequisite_ids
+                    | unavailable.get(pid, {}).get("default", frozenset()),
+                ) for pid, mode in modes.items()
+            }
+            display_predicates = {
+                name: predicate for name, predicate in claim_frontier_predicates(display_modes).items()
+                if name in {
+                    "sibling_prerequisite_not_delivered", "prerequisite_not_on_default_branch",
+                }
+            }
         async with self._engine.connect() as conn:
             row = (await conn.execute(
-                select(*(predicate.label(name) for name, predicate in predicates.items()))
+                select(
+                    *(predicate.label(name) for name, predicate in predicates.items()),
+                    *(predicate.label("display_" + name)
+                      for name, predicate in display_predicates.items()),
+                )
                 .where(tasks.c.id == task_id, tasks.c.status == TaskStatus.READY.value)
             )).mappings().one_or_none()
         if row is None:
             return []
-        return [
+        exclusions = [
             {
-                "code": f"frontier_{name}",
+                "code": ("delivery_evidence_unavailable"
+                         if name in display_predicates and row["display_" + name]
+                         else f"frontier_{name}"),
                 "detail": (
-                    "Pool claim frontier excludes this READY task: "
+                    "Delivery evidence has not loaded yet; claim frontier eligibility "
+                    f"for {name} is unknown (snapshot_unavailable)"
+                    if name in display_predicates and row["display_" + name]
+                    else "Pool claim frontier excludes this READY task: "
                     + FRONTIER_PREDICATE_DETAILS[name]
                 ),
                 "ref": task_id,
             }
             for name in predicates if not row[name]
         ]
+        if not row["epic_refresh_pending"]:
+            async with self._engine.connect() as conn:
+                batches = (await conn.execute(
+                    open_epic_refresh_batches().where(tasks.c.id == task_id)
+                    .order_by(integration_batches.c.id)
+                )).scalars().all()
+            for exclusion in exclusions:
+                if exclusion["code"] == "frontier_epic_refresh_pending" and batches:
+                    exclusion["batch_id"] = batches[0]
+                    exclusion["batch_ids"] = batches
+                    exclusion["detail"] += "; blocking epic-refresh batch: " + ", ".join(batches)
+        if not row["prerequisite_not_on_default_branch"]:
+            from src.database.tables import task_dependencies
+
+            source = tasks.alias("explain_cross_source")
+            dependent = tasks.alias("explain_cross_dependent")
+            mode = next(iter(modes.values()), None)
+            async with self._engine.connect() as conn:
+                sources = (await conn.execute(select(source.c.id, source.c.parent_task_id)
+                    .select_from(task_dependencies.join(source,
+                        source.c.id == task_dependencies.c.depends_on_task_id)
+                        .join(dependent, dependent.c.id == task_dependencies.c.task_id))
+                    .where(dependent.c.id == task_id, task_dependencies.c.dep_type == "blocks",
+                           source.c.status == "COMPLETED",
+                           source.c.parent_task_id.is_distinct_from(dependent.c.parent_task_id)
+                           | source.c.parent_task_id.is_(None)))).all()
+            missing = set().union(*(entry["default"] for entry in unavailable.values()))
+            exclusions.extend({
+                "code": ("delivery_evidence_unavailable" if tid in missing
+                         else "prerequisite_not_on_default_branch"),
+                "ref": tid, "epic_id": parent,
+                "detail": (f"Prerequisite {tid}: delivery evidence has not loaded yet; "
+                           "default-branch delivery is unknown (snapshot_unavailable)"
+                           if tid in missing else f"Prerequisite {tid} (epic {parent or tid}) "
+                           "is not proven on the default branch"),
+                }
+                for tid, parent in sources if mode is None or tid not in mode.default_prerequisite_ids)
+        if cached_only:
+            for exclusion in exclusions:
+                if exclusion["code"] in {
+                    "frontier_sibling_prerequisite_not_delivered",
+                    "frontier_prerequisite_not_on_default_branch",
+                    "frontier_epic_refresh_pending",
+                    "prerequisite_not_on_default_branch",
+                }:
+                    exclusion["detail"] += (
+                        "; delivery read is cache-only; missing or stale evidence withholds work"
+                    )
+        return exclusions
 
     async def take_claim_slot(self, conn, session_id: str, *, now: float, cap: int | None):
         """CAS the session into ``claiming``; ``(kind, session_or_None)``.
@@ -520,6 +649,7 @@ class ClaimQueryMixin:
             sessions.c.task_id.is_(None),
             sessions.c.claim_phase.is_(None),
             sessions.c.desired_state == "running",
+            func.coalesce(sessions.c.claim_refusal["retry_at"].as_float(), 0) <= now,
         ]
         if cap is not None:
             cond.append(sessions.c.claims < cap)
@@ -543,6 +673,9 @@ class ClaimQueryMixin:
         record = _row_to_session(row)
         if took:
             return "slot", record
+        if (record.claim_phase != "active" and record.claim_refusal
+                and record.claim_refusal["retry_at"] > now):
+            return "claim_refusal", record
         if record.claim_phase in ("active", "preparing", "claiming"):
             return record.claim_phase, record
         if record.desired_state != "running":
@@ -747,12 +880,9 @@ class ClaimQueryMixin:
             )
             .values(state=AgentState.BUSY.value, current_task_id=task_id)
         )
-        if supports_returning(conn):
-            reserved = (
-                await conn.execute(reserve.returning(agents.c.id))
-            ).scalar_one_or_none() is not None
-        else:
-            reserved = (await conn.execute(reserve)).rowcount == 1
+        reserved = (
+            await conn.execute(reserve.returning(agents.c.id))
+        ).scalar_one_or_none() is not None
         if not reserved:
             return None
         out = await self._apply_transition(
@@ -865,28 +995,8 @@ class ClaimQueryMixin:
                     locked_at=now,
                 )
             )
-            if supports_returning(conn):
-                row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
-                slot = self._row_to_workspace(row) if row is not None else None
-            else:
-                await conn.execute(stmt)
-                row = (
-                    (
-                        await conn.execute(
-                            select(workspaces).where(
-                                workspaces.c.project_id
-                                == select(sessions.c.project_id)
-                                .where(sessions.c.id == session_id)
-                                .scalar_subquery(),
-                                workspaces.c.workspace_path == work_dir,
-                                workspaces.c.locked_by_agent_id == agent_id,
-                            )
-                        )
-                    )
-                    .mappings()
-                    .fetchone()
-                )
-                slot = self._row_to_workspace(row) if row is not None else None
+            row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
+            slot = self._row_to_workspace(row) if row is not None else None
         await self._upsert_meta_many(
             task_id, {CLAIMED_BY_SESSION_KEY: session_id, "work_dir": work_dir}, conn=conn
         )
@@ -932,33 +1042,18 @@ class ClaimQueryMixin:
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
-        Returning the row (via ``RETURNING`` where the dialect has it) saves
-        the caller a re-read to build the response's session block.  Falsy
-        on failure, so the old ``if not await activate_claim(...)`` callers
-        read unchanged.
+        PostgreSQL's ``RETURNING`` supplies the response row without a re-read.
+        All writes follow the session/task locks and admission guards; a
+        rejected activation changes neither the branch nor diagnostics.
 
-        *branch_name* is the branch the claim's slot reset just put the
-        worktree on.  It is persisted to ``tasks.branch_name`` under the same
-        row lock and in the same transaction as the activation, so a claim
-        either publishes both or neither: a prepare that fails after the
-        reset leaves no half-written branch for a later close to trust.  The
-        push-assignment path writes the same field from
-        ``WorkspaceMixin._assign_worktree_slot``; the pool-claim path used to
-        discard it, which left ``branch_name`` NULL on every development-mode
-        pool task and made its close refuse forever in
-        ``resolve_workspace_checkpoint``.
+        *branch_name* records the slot reset's branch in ``tasks.branch_name``
+        in the activation transaction. A failed preparation leaves no branch
+        that a later close could mistake for a usable checkout.
 
-        *clear_preparation_metadata* folds the successful-preparation
-        cleanup — the pause checkpoint and prepare-backoff keys in
-        ``CLAIM_PREPARATION_METADATA_KEYS``, which all go stale at exactly
-        this boundary — into the ``needs_attention`` delete below.  It used
-        to be a separate ``clear_claim_preparation_metadata`` call after this
-        transaction committed, which cost a whole extra pooled checkout (~6
-        statements' worth of wire) *and* a second delete on the same table
-        for the same task.  Riding along here also makes the two atomic:
-        there is no longer a window in which a claim is active while its
-        backoff ladder still says the last preparation failed.  It is inside
-        every activation guard, so an activation that bails clears nothing.
+        Successful activation resets both refusal streaks and clears stale
+        ``claim_refusal`` and ``needs_attention`` metadata. With *clear_preparation_metadata*, it
+        also deletes the pause/checkpoint and backoff keys in
+        ``CLAIM_PREPARATION_METADATA_KEYS`` in that same transaction.
         """
 
         async def _run(c):
@@ -993,18 +1088,13 @@ class ClaimQueryMixin:
                     claims=sessions.c.claims + 1,
                     last_claim_epoch=epoch,
                     last_claim_result="claimed",
+                    claim_failure_count=0,
+                    claim_failure_reason=None,
+                    claim_failure_at=None,
+                    claim_refusal=None,
                 )
             )
-            if supports_returning(c):
-                row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
-            else:
-                if (await c.execute(stmt)).rowcount != 1:
-                    return None
-                row = (
-                    (await c.execute(select(sessions).where(sessions.c.id == session_id)))
-                    .mappings()
-                    .fetchone()
-                )
+            row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
             if row is None:
                 return None
             # A claim only becomes usable after preparation has succeeded and

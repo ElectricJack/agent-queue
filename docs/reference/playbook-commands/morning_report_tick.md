@@ -58,9 +58,14 @@ deterministic fallback. Repeated ticks are safe; each one only moves rows forwar
 
 ## When a playbook uses it
 
-The report service or a system playbook calls it on a short cadence (the reviewed
-minute-tick playbook is the next implementation slice). Project and worker
-principals are refused: the schedule is install-wide, not per project.
+The reviewed `morning-report` system playbook calls it. The daemon emits
+`report.morning_due` once per local day after the zoned morning time
+(`src/reports/morning_due.py`), with an event id keyed by schedule and local date,
+so dispatch dedup gives one run per day. That run repeats the tick a minute apart
+on a durable timer while the event's report is `building`, `failed`, `ready` or
+`authoring`, and ends once it settles or the tick answers for another day. A failed
+call gets one retry a minute later. Project and worker principals are refused: the
+schedule is install-wide, not per project.
 
 ## How it works internally
 
@@ -100,7 +105,8 @@ the stored rows.
 playbook. That includes a supervisor's manual `aq playbook run --playbook-id
 morning-report`: the run executes as the supervisor session and fails on the
 `rejected` edge with the bound result `state: rejected, reason: out_of_scope`.
-The `timer.1m` dispatch runs as the service principal and is accepted. `report.invalid` reports a config validation error or a non-finite
+The `report.morning_due` dispatch and its timer resumes run as service principals
+and are accepted. `report.invalid` reports a config validation error or a non-finite
 `now`. A collection failure does not fail the tick: the row moves to
 `failed:snapshot_unavailable` and the next tick retries it. `state: waiting` with
 `reason` `before_schedule`, `timezone_guard` or `covered` means nothing was due.

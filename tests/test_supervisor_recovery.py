@@ -20,9 +20,11 @@ from src.database.tables import (
     projects,
     task_branch_origins,
     task_integration_checkpoints,
+    tasks,
+    workspaces,
 )
 from src.models import (
-    KIND_MODE_WORKTREE, Agent, AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord,
+    KIND_MODE_WORKTREE, Agent, AgentProfile, AgentState, Project, RepoConfig, RepoSourceType, SessionRecord,
     Task, TaskStatus, Workspace, WorkspaceKind,
 )
 from src.orchestrator import Orchestrator
@@ -108,6 +110,199 @@ async def notify(env, project_id="p", **extra):
 async def queued_messages(env):
     async with env.db._engine.connect() as conn:
         return (await conn.execute(select(messages))).mappings().all()
+
+
+ORPHAN_NOW = 10_000
+
+
+async def missing_session_task(env, *, heartbeat=100, updated_at=100, **changes):
+    await env.db.create_agent(Agent(
+        id="idle", name="Idle", profile_id="worker", last_heartbeat=heartbeat,
+    ))
+    # update_task deliberately refreshes updated_at; reproduce the abandoned
+    # assignment with its original task-scoped heartbeat and revision.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "t").values(
+            status="IN_PROGRESS", assigned_agent_id="idle", updated_at=updated_at,
+            **changes,
+        ))
+
+
+async def test_missing_session_requeues_once_preserving_task_identity(env):
+    await missing_session_task(env)
+    before = await env.db.get_task("t")
+    result = await env.handler.recover_missing_session_task("t", now=ORPHAN_NOW)
+    assert result == {"success": True, "outcome": "recovered", "status": "READY"}
+    after = await env.db.get_task("t")
+    assert after.assigned_agent_id is None
+    assert after.retry_count == before.retry_count + 1
+    for field in ("branch_name", "profile_id", "intelligence_class", "description", "project_id"):
+        assert getattr(after, field) == getattr(before, field)
+    again = await env.handler.recover_missing_session_task("t", now=ORPHAN_NOW)
+    assert again["outcome"] == "not_orphaned"
+    comments = (await env.db.list_task_comments("t"))["comments"]
+    assert len(comments) == 1
+    assert "Recovered orphaned" in comments[0]["body"]
+
+
+@pytest.mark.parametrize("guard", [
+    "heartbeat", "recent_assignment", "launch", "control_lock", "adapter", "live_agent",
+    "live_task", "manual_pause", "attention", "held_incident", "timer", "container",
+    "daemon_task", "paused_project", "hold_label",
+])
+async def test_missing_session_does_not_recover_active_or_held_work(env, guard):
+    await missing_session_task(
+        env, heartbeat=ORPHAN_NOW if guard == "heartbeat" else 100,
+        updated_at=ORPHAN_NOW if guard == "recent_assignment" else 100,
+        **({"resume_after": ORPHAN_NOW + 60} if guard == "timer" else {}),
+        **({"task_type": "promotion"} if guard == "daemon_task" else {}),
+    )
+    if guard == "launch":
+        env.orch._running_tasks["t"] = object()
+    elif guard == "adapter":
+        env.orch._adapters["idle"] = object()
+    elif guard in ("live_agent", "live_task"):
+        await env.db.create_session(SessionRecord(
+            id="live", name="live", provider="fake", harness="fake", profile_id="worker",
+            project_id="p", agent_id="idle" if guard == "live_agent" else None,
+            task_id="t" if guard == "live_task" else None, lifecycle="pool",
+            state="running", desired_state="running", epoch="test", instance_token="live",
+            work_dir="/unused", started_at=200,
+        ))
+    elif guard == "manual_pause":
+        await env.db.set_task_meta("t", "manual_pause", {"reason": "operator"})
+    elif guard == "attention":
+        await env.db.set_task_meta("t", "needs_attention", "operator_review")
+    elif guard == "held_incident":
+        await env.db.set_task_meta("t", "supervisor_recovery_incident", {
+            "id": "existing", "decision": "hold",
+        })
+    elif guard == "container":
+        await env.db.create_task(Task(id="child", project_id="p", title="Child", description=""))
+        await env.db.add_dependency("child", "t", dep_type="parent-child")
+    elif guard == "hold_label":
+        await env.db.add_task_label("t", "hold:operator")
+    elif guard == "paused_project":
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(projects).where(projects.c.id == "p").values(status="PAUSED"))
+    if guard != "recent_assignment":
+        # Hierarchy/label edits can refresh the revision. Exercise the guard
+        # itself, rather than accidentally passing on the launch grace alone.
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "t").values(updated_at=100))
+    if guard == "control_lock":
+        async with env.orch._task_control_lock("t"):
+            result = await env.handler.recover_missing_session_task("t", now=ORPHAN_NOW)
+    else:
+        result = await env.handler.recover_missing_session_task("t", now=ORPHAN_NOW)
+    assert result["outcome"] != "recovered"
+    task = await env.db.get_task("t")
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.retry_count == 0
+
+
+@pytest.mark.parametrize("race", ["heartbeat", "epoch", "session"])
+async def test_missing_session_final_recheck_fences_new_execution(env, race):
+    await missing_session_task(env)
+    observed = await env.db.missing_session_recovery_candidate("t", now=ORPHAN_NOW, grace=480)
+    assert observed is not None
+    if race == "heartbeat":
+        await env.db.update_agent("idle", last_heartbeat=ORPHAN_NOW)
+    elif race == "epoch":
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "t").values(claim_epoch=2))
+    else:
+        await env.db.create_session(SessionRecord(
+            id="new", name="new", provider="fake", harness="fake", profile_id="worker",
+            project_id="p", agent_id="idle", task_id="t", lifecycle="task", state="starting",
+            desired_state="running", epoch="test", instance_token="new", work_dir="/unused",
+            started_at=ORPHAN_NOW,
+        ))
+    assert await env.db.recover_missing_session_task(observed, now=ORPHAN_NOW, grace=480) is None
+    assert (await env.db.get_task("t")).status is TaskStatus.IN_PROGRESS
+
+
+async def test_missing_session_exhaustion_reuses_one_supervisor_incident(env):
+    await missing_session_task(env, retry_count=2, max_retries=2)
+    result = await env.handler.recover_missing_session_task("t", now=ORPHAN_NOW)
+    assert result["status"] == "FAILED"
+    assert (await env.db.get_task("t")).retry_count == 2
+    await env.db.queue_task_recovery_notifications()
+    await env.db.queue_task_recovery_notifications()
+    assert len(await queued_messages(env)) == 1
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert current["reason"] == "session_missing"
+
+
+@pytest.mark.parametrize("stopped", [True, False, None])
+async def test_missing_session_checks_exact_previous_writer(env, stopped):
+    await stopped_attempt(env, attention=False)
+    await env.db.update_session("s", task_id=None)
+    await missing_session_task(env)
+    probe = AsyncMock(return_value=stopped)
+    env.orch.session_providers = SimpleNamespace(
+        create=lambda *_: SimpleNamespace(confirm_stopped=probe),
+    )
+    result = await env.handler.recover_missing_session_task("t", now=ORPHAN_NOW)
+    assert probe.await_count == 1
+    assert probe.call_args.args[0].instance_token == "s"
+    assert (result["outcome"] == "recovered") is (stopped is True)
+
+
+@pytest.mark.parametrize("guard", [None, "changed_branch", "missing_checkout", "pinned"])
+async def test_missing_session_keeps_committed_staged_and_unstaged_work(env, tmp_path, guard):
+    from src.git.manager import GitError
+    from src.orchestrator.task_checkpoint import restore_checkpoint
+
+    await missing_session_task(env)
+    await env.db.update_agent("idle", state=AgentState.BUSY, current_task_id="t")
+    path = tmp_path / "retained"
+    _handoff_git(tmp_path, "init", "--initial-branch=aq/keep", str(path))
+    (path / "committed").write_text("committed progress\n")
+    _handoff_git(path, "add", ".")
+    _handoff_git(path, "commit", "-m", "task progress")
+    head = _handoff_git(path, "rev-parse", "HEAD")
+    (path / "draft").write_text("staged progress\n")
+    _handoff_git(path, "add", "draft")
+    (path / "draft").write_text("unstaged progress\n")
+    (path / "untracked").write_text("untracked progress\n")
+    await env.db.create_workspace(Workspace(
+        id="retained", project_id="p", workspace_path=str(path), source_type=RepoSourceType.CLONE,
+        locked_by_task_id="t", locked_by_agent_id="idle", locked_at=100,
+    ))
+    if guard == "changed_branch":
+        _handoff_git(path, "switch", "-c", "aq/other")
+    elif guard == "pinned":
+        async with env.db._engine.begin() as conn:
+            await conn.execute(update(workspaces).where(workspaces.c.id == "retained")
+                               .values(job_pin_count=1))
+    elif guard == "missing_checkout":
+        path.rename(tmp_path / "moved")
+        with pytest.raises(GitError):
+            await env.handler.recover_missing_session_task("t", now=ORPHAN_NOW)
+    if guard != "missing_checkout":
+        result = await env.handler.recover_missing_session_task("t", now=ORPHAN_NOW)
+    if guard:
+        if guard == "changed_branch":
+            assert result["outcome"] == "workspace_branch_changed"
+        assert (await env.db.get_task("t")).status is TaskStatus.IN_PROGRESS
+        assert (await env.db.get_workspace("retained")).locked_by_task_id == "t"
+        return
+    assert result["status"] == "READY"
+    assert (await env.db.get_workspace("retained")).locked_by_task_id is None
+    assert (await env.db.get_agent("idle")).state is AgentState.IDLE
+    assert (await env.db.get_agent("idle")).current_task_id is None
+    assert (await env.db.get_task("t")).preferred_workspace_id == "retained"
+    assert _handoff_git(path, "rev-parse", "HEAD") == head
+    # Simulate slot reuse; normal preparation can restore all three forms of
+    # local progress without resetting the task's branch to its parent's base.
+    _handoff_git(path, "reset", "--hard")
+    _handoff_git(path, "clean", "-fd")
+    assert await restore_checkpoint(env.db, env.orch.git, "t", str(path)) == "aq/keep"
+    assert _handoff_git(path, "rev-parse", "HEAD") == head
+    assert _handoff_git(path, "show", ":draft") == "staged progress"
+    assert (path / "draft").read_text() == "unstaged progress\n"
+    assert (path / "untracked").read_text() == "untracked progress\n"
 
 
 async def decide(env, current, decision="retry", **extra):
@@ -239,14 +434,41 @@ async def test_stale_pending_incident_is_superseded_when_task_resumes(env):
     assert (await env.db.get_message("msg-" + replacement["id"])).archived_at is None
 
 
-async def test_retry_preserves_work_and_routing_records_comment_and_consumes_budget_once(env):
+@pytest.mark.parametrize("route_source", ["legacy", "router", "role", "override"])
+async def test_retry_preserves_work_and_routing_records_comment_and_consumes_budget_once(
+    env, route_source,
+):
+    route = {"constraints": {"exclude_providers": ["gemini"]}, "reason": "previous selection"}
+    await env.db.update_task("t", route_source=route_source, route=route,
+                             class_hint="standard-high")
+    before = await env.db.get_task("t")
     current = await incident(env)
     results = await asyncio.gather(decide(env, current), decide(env, current))
     assert sum("error" not in r for r in results) == 1, results
     task = await env.db.get_task("t")
     assert task.status == TaskStatus.READY
     assert task.retry_count == 1
-    assert task.profile_id == "worker" and task.intelligence_class == "deep-high"
+    assert task.class_hint == before.class_hint == "standard-high"
+    if route_source in {"legacy", "router"}:
+        assert (task.route_source, task.profile_id, task.intelligence_class) == (
+            "unrouted", None, None,
+        )
+        assert task.provider_intent == "class_only"
+        expected_route = {"constraints": route["constraints"]}
+        if route_source == "legacy":
+            expected_route["legacy"] = {
+                "profile_id": before.profile_id,
+                "intelligence_class": before.intelligence_class,
+                "provider_intent": before.provider_intent,
+            }
+        assert task.route == expected_route
+    else:
+        assert (task.route_source, task.profile_id, task.intelligence_class) == (
+            route_source, "worker", "deep-high",
+        )
+        assert task.route == route
+    # A stuck-session recovery requests a fresh route without a work verdict.
+    assert await env.db.get_task_meta("t", "routing_failed_attempts") is None
     assert task.branch_name == "aq/keep" and task.description == "Keep requirements"
     assert await env.db.get_task_meta("t", "needs_attention") is None
     assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") == 1
@@ -724,6 +946,121 @@ async def test_failed_task_without_a_worker_attempt_gets_one_triage_incident(env
     assert current["reason"] == "terminal_failed"
     assert current["attempt_id"] is None
     assert current["retry_allowed"] is False
+    assert len(await queued_messages(env)) == 1
+
+
+@pytest.mark.parametrize("daemon_authored", [False, True])
+async def test_failed_without_attempt_hold_preserves_failure_and_archives_notice(env, daemon_authored):
+    if daemon_authored:
+        await env.db.update_task("t", task_type="promotion", created_by_kind="promotion")
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    first = await notify(env)
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    before = asdict(await env.db.get_task("t"))
+
+    assert "error" in await decide(env, current)  # No attempt can prove a safe retry.
+    result = await decide(env, current, "hold")
+    assert "error" not in result, result
+    assert result["status"] == "FAILED"
+    assert asdict(await env.db.get_task("t")) == before
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert held["decision"] == "hold" and held["retry_allowed"] is False
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+    assert (await env.db.get_message("msg-" + first["incident_id"])).archived_at is not None
+    comments = (await env.db.list_task_comments("t"))["comments"]
+    assert len(comments) == 1 and "no worker attempt" in comments[0]["body"]
+    assert "error" in await decide(env, current, "hold")
+    assert await env.db.queue_task_recovery_notifications() == 0
+    assert len(await queued_messages(env)) == 1
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("edit", ["comment", "description", "reconciliation"])
+async def test_no_attempt_incident_survives_ordinary_task_updates(env, held, edit):
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    first = await notify(env)
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if held:
+        assert "error" not in await decide(env, current, "hold")
+    before = await env.db.get_task("t")
+    if edit == "comment":
+        await env.db.add_task_comment(
+            "t", "Diagnosis: preserve the aborted promotion.",
+            author_kind="supervisor", author_id="supervisor-p",
+        )
+    elif edit == "description":
+        await env.db.update_task_description("t", "Keep requirements plus diagnosis")
+    else:
+        await env.db.transition_task(
+            "t", TaskStatus.FAILED, force=True, context="integration_reconciliation",
+            pr_url="https://github.com/test/repo/pull/1403",
+        )
+    assert (await env.db.get_task("t")).updated_at != before.updated_at
+
+    assert await env.db.queue_task_recovery_notifications() == 0
+    replay = await notify(env)
+    assert replay["outcome"] == "existing" and replay["incident_id"] == first["incident_id"]
+    assert replay["redelivered"] is False
+    assert len(await queued_messages(env)) == 1
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert recorded["id"] == current["id"]
+    assert recorded["decision"] == ("hold" if held else None)
+    if not held:
+        assert "error" not in await decide(env, current, "hold")
+
+
+@pytest.mark.parametrize("write", ["transition", "update"])
+async def test_new_no_attempt_failure_rejects_old_hold_before_scan(env, write):
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    await notify(env)
+    old = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    for status in (TaskStatus.READY, TaskStatus.FAILED):
+        if write == "transition":
+            await env.db.transition_task("t", status, force=True)
+        else:
+            await env.db.update_task("t", status=status)
+    result = await decide(env, old, "hold")
+    assert "incident is stale" in result["error"]
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] is None
+    assert await env.db.queue_task_recovery_notifications() == 1
+    new = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert new["id"] != old["id"]
+    assert (await env.db.get_message("msg-" + old["id"])).archived_at is not None
+    assert "error" not in await decide(env, new, "hold")
+
+
+@pytest.mark.parametrize("change", ["new_stopped_attempt", "new_live_attempt", "claim_epoch"])
+async def test_hold_rejects_genuine_execution_changes_before_scan(env, change):
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    await notify(env)
+    old = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if change == "claim_epoch":
+        await env.db.update_task("t", claim_epoch=1)
+    elif change == "new_stopped_attempt":
+        await stopped_attempt(env, sid="new", started=9000, attention=False)
+    else:
+        await env.db.create_session(SessionRecord(
+            id="new", name="new", task_id="t", project_id="p", profile_id="worker",
+            harness="fake", provider="fake", lifecycle="task", state="running",
+            desired_state="running", epoch="test", instance_token="new",
+            work_dir="/never-used", started_at=9000,
+        ))
+    result = await decide(env, old, "hold")
+    assert "incident is stale" in result["error"]
+    assert not (await env.db.list_task_comments("t"))["comments"]
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] is None
+
+
+async def test_legacy_failed_row_without_generation_keeps_one_incident_after_comment(env):
+    # An installed row from before failure generations existed.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "t").values(status="FAILED"))
+    first = await notify(env)
+    await env.db.add_task_comment(
+        "t", "Legacy failure diagnosis", author_kind="supervisor", author_id="supervisor-p",
+    )
+    assert await env.db.queue_task_recovery_notifications() == 0
+    assert (await notify(env))["incident_id"] == first["incident_id"]
     assert len(await queued_messages(env)) == 1
 
 

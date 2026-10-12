@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.database.tables import (
@@ -22,23 +23,18 @@ from src.database.tables import (
     integration_subject_journal,
     integration_subjects,
     projects,
+    repos,
+    task_branch_origins,
     task_integration_checkpoints,
     tasks,
 )
+from src.git.manager import GitError
+from src.integration.delivery_branches import observe_completed_branches
 from src.integration.delivery_truth import DeliveryState
-from src.integration.models import RepairPolicy
+from src.integration.models import RepairPolicy, integration_ci_sources
+from src.integration.promotion_steps import flow_status
 from src.integration.records import ParentEpisodeRecords
 
-ACTIVE_BATCH_STATES = (
-    "sealing",
-    "sealed",
-    "building",
-    "testing",
-    "repairing",
-    "human_blocked",
-    "promoting",
-    "cleanup_pending",
-)
 TERMINAL_TASK_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 # What a train visit's state asks of whoever reads the status.
 TRAIN_VISIT_BLOCKERS = {
@@ -53,6 +49,10 @@ TRAIN_VISIT_BLOCKERS = {
     "source_moved": ("source_moved", "a member's source moved since the batch froze"),
     "unknown": ("unobserved", "the last visit could not observe Git or checks"),
 }
+
+
+#: How long one task's explain waits for its completed-branch read.
+_COMPLETED_BRANCH_BUDGET_SECONDS = 5.0
 
 
 def _blocker(
@@ -77,15 +77,20 @@ class IntegrationStatusService:
     def __init__(
         self, db, *, clock: Callable[[], float] = time.time, delivery: Any = None,
         git_first: str = "shadow", train: Any = None,
+        flow_problems: Any = None, cached_only: bool = False,
     ) -> None:
         self.db = db
         self.clock = clock
+        # Per project, the layer 1-3 problems the daemon found re-validating
+        # a stored promotion flow at start (R17); status re-runs layers 1-2.
+        self.flow_problems = flow_problems or {}
         # ``git_first: active`` projects the train's Git, check, review and
         # intent facts; it never reads subjects, journals, generations or
         # receipts. ``train`` is the daemon's IntegrationTrain, for its last
         # visit per target; without it only durable facts are reported.
         self.git_first = git_first
         self.train = train
+        self.cached_only = cached_only
         # Git delivery truth (a DeliveryObserver).  The daemon registers one
         # on its database; without it nothing is claimed about delivery.
         self.delivery = (
@@ -105,7 +110,8 @@ class IntegrationStatusService:
         if self.delivery is None or not ids:
             return None
         return await self.delivery.observe(
-            ids, max_age=getattr(self.delivery, "READ_MAX_AGE", 0.0)
+            ids, max_age=getattr(self.delivery, "READ_MAX_AGE", 0.0),
+            **({"cached_only": True} if self.cached_only else {}),
         )
 
     async def _delivery_candidates(
@@ -315,7 +321,24 @@ class IntegrationStatusService:
             "repository_id": project["integration_repository_id"],
             "subjects": subjects,
             "operator_decisions": await history_on(conn, project_id),
+            "promotion_flow": await self._promotion_flow_on(conn, project),
+            "ci_source": integration_ci_sources(project["hierarchical_integration_policy"]),
         }
+
+    async def _promotion_flow_on(self, conn: AsyncConnection, project) -> dict[str, Any] | None:
+        """The stored flow as a chain; ``misconfigured`` when it no longer validates."""
+        if not project["promotion_flow"]:
+            return None
+        default_branch = None
+        if project["integration_repository_id"] is not None:
+            default_branch = await conn.scalar(select(repos.c.default_branch).where(
+                repos.c.id == project["integration_repository_id"],
+                repos.c.project_id == project["id"]))
+        return flow_status(
+            project["promotion_flow"],
+            default_branch=default_branch or project["repo_default_branch"],
+            recorded=self.flow_problems.get(project["id"]),
+        )
 
     async def status(self, project_id: str) -> dict[str, Any] | None:
         """Subject facts and Git delivery evidence, verified on one snapshot."""
@@ -633,10 +656,37 @@ class IntegrationStatusService:
             from src.operator_decisions import history_on
 
             decisions = await history_on(conn, project_id)
+            promotion_flow = await self._promotion_flow_on(conn, project)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
         blockers.extend(self._train_source_blockers(visits))
+        from src.integration.stacked_branches import EpicRefresh
+        from src.integration.train import TrainTarget
+        from src.integration.train_sources import project_snapshot
+
+        epics = []
+        repository = await self.db.get_repo(project["integration_repository_id"]) if project[
+            "integration_repository_id"] else None
+        if repository is not None:
+            default = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
+            observed = await project_snapshot(self.db, TrainTarget(
+                project_id, repository.id, default))
+            async with self.db._engine.connect() as conn:
+                child = tasks.alias("status_epic_child")
+                ids = (await conn.execute(select(tasks.c.id).where(
+                    tasks.c.project_id == project_id, tasks.c.repo_id == repository.id,
+                    tasks.c.branch_name.is_not(None),
+                    select(child.c.id).where(child.c.parent_task_id == tasks.c.id).exists(),
+                ).order_by(tasks.c.id))).scalars().all()
+            for task_id in ids:
+                try:
+                    if observed is None:
+                        raise ValueError("default branch cannot be observed")
+                    _, _, _, distance = await EpicRefresh(self.db).inspect(task_id, snapshot=observed)
+                    epics.append(distance)
+                except (ValueError, GitError, OSError):
+                    epics.append({"task_id": task_id, "behind": None, "state": "unknown"})
         return {
             "projection_kind": "train",
             "project_id": project_id,
@@ -650,7 +700,11 @@ class IntegrationStatusService:
             "operator_decisions": decisions,
             "targets": [{**visit, **evidence.get(key, {})} for key, visit in visits.items()],
             "batches": batches,
+            "epics": epics,
             "blockers": _sorted_blockers(blockers),
+            "promotion_flow": promotion_flow,
+            # Which runner produces each target kind's required checks.
+            "ci_source": integration_ci_sources(project["hierarchical_integration_policy"]),
         }
 
     async def train_task_blockers(self, task_id: str) -> dict[str, Any] | None:
@@ -658,7 +712,8 @@ class IntegrationStatusService:
         async with self._consistent_snapshot() as conn:
             row = await self._one(
                 conn,
-                select(tasks.c.id, tasks.c.project_id, projects.c.hierarchical_integration_mode,
+                select(tasks.c.id, tasks.c.project_id, tasks.c.status,
+                       projects.c.hierarchical_integration_mode,
                        projects.c.hierarchical_integration_desired_mode)
                 .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
                 .where(tasks.c.id == task_id),
@@ -671,11 +726,31 @@ class IntegrationStatusService:
             batches = await self._train_batches_on(
                 conn, integration_batches.c.id.in_(carrying)
             )
+            ahead = []
+            if not batches and row["status"] == "COMPLETED":
+                ahead = await self._open_batches_ahead_on(conn, row["project_id"], task_id)
         visits = self._train_visits(row["project_id"])
+        own = self._train_source_blockers(visits, task_id=task_id)
         blockers: list[dict[str, Any]] = []
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
-        blockers.extend(self._train_source_blockers(visits, task_id=task_id))
+        for batch in [] if own else ahead:
+            # One batch at a time per target: an admissible source the open batch
+            # does not carry waits for it to settle, whatever holds that batch. A
+            # source the train refused is blocked by its own reason, not the queue.
+            blockers.append(_blocker(
+                "queued_behind_open_batch",
+                f"{batch['target_ref']} is held by open batch {batch['id']} "
+                f"({batch['lifecycle']}); {task_id} is not a member and waits for it "
+                "to settle",
+                batch["id"], task_id=task_id, batch_id=batch["id"],
+                lifecycle=batch["lifecycle"],
+            ))
+            blockers.extend(self._train_batch_blockers(batch, visits))
+        blockers.extend(own)
+        # Likewise a refused source already says why its branch waits.
+        if row["status"] == "COMPLETED" and not (batches or ahead or own):
+            blockers.extend(await self._completed_branch_blockers(row["project_id"], task_id))
         return {
             "task_id": task_id,
             "project_id": row["project_id"],
@@ -688,13 +763,66 @@ class IntegrationStatusService:
             "blockers": _sorted_blockers(blockers),
         }
 
+    async def _completed_branch_blockers(
+        self, project_id: str, task_id: str
+    ) -> list[dict[str, Any]]:
+        """A COMPLETED task branch holding work nothing will deliver or retire.
+
+        The read ``aq doctor --check integration.completed_undelivered`` makes,
+        for one task under a short budget; an unreadable snapshot says nothing.
+        """
+        if self.delivery is None or getattr(self.delivery, "git", None) is None:
+            return []
+        try:
+            inventory = await asyncio.wait_for(observe_completed_branches(
+                self.db, self.delivery, project_ids={project_id}, task_ids={task_id},
+                now=self.clock(), cached_only=self.cached_only,
+            ), _COMPLETED_BRANCH_BUDGET_SECONDS)
+        except (TimeoutError, GitError, OSError):
+            return []
+        return [
+            _blocker(
+                "completed_undelivered",
+                f"{entry['branch']} holds work the default branch cannot reach: "
+                f"{entry['reason']}; {entry['remedy']}",
+                entry["branch"], task_id=task_id, rule=entry["rule"], head=entry["head"],
+                remedy=entry["remedy"],
+            )
+            for entry in inventory["entries"]
+            if not entry["accounted"] and entry["rule"] != "unknown"
+        ]
+
+    async def _open_batches_ahead_on(
+        self, conn: AsyncConnection, project_id: str, task_id: str
+    ) -> list[dict[str, Any]]:
+        """Live batches on *task*'s routed target, when the task's branch is live."""
+        from src.integration.delivery_observer import delivery_targets
+        from src.integration.release import LIVE_LIFECYCLES
+
+        live = (await conn.execute(select(exists(select(task_branch_origins.c.task_id).where(
+            task_branch_origins.c.task_id == task_id,
+            task_branch_origins.c.retired_at.is_(None),
+        ))))).scalar_one()
+        routed = (await delivery_targets(conn, [task_id], reduced=True)).get(task_id)
+        if not live or routed is None:
+            return []
+        return await self._train_batches_on(conn, and_(
+            integration_batches.c.project_id == project_id,
+            integration_batches.c.repository_id == routed.repository_id,
+            integration_batches.c.target_ref == routed.target_ref,
+            integration_batches.c.lifecycle.in_(LIVE_LIFECYCLES),
+        ))
+
     async def _train_batches_on(self, conn: AsyncConnection, where) -> list[dict[str, Any]]:
         """Open git batches with their members, intent and open repair tasks."""
+        from src.integration.batches import candidate_ref, ejection_instruction
+
         table = integration_batches
         rows = await self._all(
             conn,
             select(table.c.id, table.c.project_id, table.c.repository_id, table.c.target_ref, table.c.intent,
-                   table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at)
+                   table.c.lifecycle, table.c.repair_attempt_count, table.c.created_at,
+                   ejection_instruction(table.c.id).label("ejected"))
             .where(where, table.c.target_ref.is_not(None), table.c.lifecycle != "promoted")
             .order_by(table.c.created_at, table.c.id)
             .limit(100),
@@ -721,11 +849,15 @@ class IntegrationStatusService:
             )
             .order_by(tasks.c.id),
         )
-        from src.integration.batches import candidate_ref
-
         from src.operator_decisions import history_on, related_on
 
         for row in rows:
+            ejected = row.pop("ejected")
+            row["member_disposition"] = (
+                "pending" if row["intent"] == "aborted" and ejected
+                else "withheld" if row["intent"] == "aborted"
+                else row["intent"]
+            )
             row["operator_decisions"] = await history_on(
                 conn, row["project_id"], await related_on(conn, "batch", row["id"])
             )
@@ -913,73 +1045,6 @@ class IntegrationStatusService:
                 }
             )
         return result
-
-    @staticmethod
-    def _batch_projection(
-        batch: dict[str, Any] | None, revision: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        if batch is None:
-            return None
-        return {
-            "id": batch["id"],
-            "repository_id": batch["repository_id"],
-            "request_id": batch["request_id"],
-            "trigger": batch["trigger"],
-            "state": batch["lifecycle"],
-            "revision": batch["current_revision"],
-            "base_sha": batch["base_sha"],
-            "integration_branch": batch["integration_branch"],
-            "tested_candidate_sha": batch["tested_candidate_sha"],
-            "ci_evidence_id": batch["ci_evidence_id"],
-            "final_main_sha": batch["final_main_sha"],
-            "cleanup_state": batch["cleanup_state"],
-            "revision_state": revision["state"] if revision else None,
-            "candidate_sha": revision["head_sha"] if revision else None,
-        }
-
-    @staticmethod
-    def _project_blockers(
-        project,
-        batch: dict[str, Any] | None,
-        revision: dict[str, Any] | None,
-        repair: list[dict[str, Any]],
-        cleanup: list[dict[str, Any]],
-        *,
-        now: float,
-    ) -> list[dict[str, Any]]:
-        blockers: list[dict[str, Any]] = []
-        if batch is not None and (
-            batch["lifecycle"] == "testing"
-            or revision is None
-            or revision["state"] not in {"green", "promoted"}
-        ):
-            blockers.append(
-                _blocker(
-                    "pending_ci", "active candidate is not proven green", batch["id"]
-                )
-            )
-        for operation in repair:
-            if operation["state"] == "human_required" or (
-                batch is not None and batch["lifecycle"] == "human_blocked"
-            ):
-                blockers.append(
-                    _blocker(
-                        "human_hold",
-                        "integration repair awaits a human",
-                        operation["id"],
-                    )
-                )
-        blockers.extend(IntegrationStatusService._repair_blockers(repair, now=now))
-        conflict = next((item for item in cleanup if item["state"] == "conflict"), None)
-        if conflict is not None:
-            blockers.append(
-                _blocker(
-                    "cleanup_conflict",
-                    "cleanup requires operator reconciliation",
-                    conflict["identity"],
-                )
-            )
-        return blockers
 
     @staticmethod
     def _repair_blockers(

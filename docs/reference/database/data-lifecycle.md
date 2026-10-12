@@ -90,9 +90,11 @@ criteria, context, metadata, labels, tools, per-attempt `task_results` and
 layout rows. `sessions.task_id` is nulled rather than deleted, so the session
 history survives, and `agents.current_task_id` is cleared.
 
-Archiving never touches the remote. A task whose branch was materialised keeps
-that branch; the origin row is simply retired, which is what lets the task leave
-the queue at all.
+Archiving queues durable, audited retirement of the task's private local and remote
+branches. The origin row is retired, which lets the task leave
+the queue. Cleanup commits the observed SHAs and backup bundle paths in
+`branch_retirements` before exact-SHA deletion; live writers, attached worktrees
+and protected flow branches remain guarded. See [branch retirement](../../specs/design/branch-retirement.md).
 
 ### The retention sweep
 
@@ -163,6 +165,7 @@ Per task, the delete:
 | `workspaces.locked_by_task_id` / `locked_by_agent_id` / `locked_at` | cleared | Releasing the lock, rather than leaving it pointing at a task that no longer exists. |
 | `token_ledger` | **kept** | The tokens were really spent against the project's budget. Dropping them would understate cost. `aq project delete` remains the bulk escape hatch. |
 | `task_branch_origins` | left alone, except for a discard intent | Origins carry no foreign key to `tasks`, so a retired origin already outlives its task. |
+| `branch_retirements` | **kept** | Retirement decisions and pre-delete SHA audits must survive removal of their task. |
 
 ### Deleting a task that owns a branch
 
@@ -177,10 +180,12 @@ aq task delete --task-id <id> --cascade --branches delete   # also remove the re
 ```
 
 `delete` marks the retired origin `pending`; the ref is removed asynchronously by
-[`src/integration/branch_discard.py`](../../../src/integration/branch_discard.py),
+[`src/integration/branch_discard.py`](../../../src/integration/branch_discard.py)
+through the audited [retirement service](../../../src/integration/branch_retirement.py),
 with a compare-and-swap on the head it observed. It refuses a live branch owner
-and the default branch, and parks anything ambiguous for
-`aq doctor --check integration.branch_discards`. Archive always keeps the branch.
+and protected flow branches, and parks ambiguous heads as conflicts. Origin discard
+status remains available through `aq doctor --check integration.branch_discards`.
+Archive queues retirement automatically after its delivery and session admission checks.
 
 ## What refuses to delete
 

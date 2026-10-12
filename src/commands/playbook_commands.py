@@ -248,6 +248,26 @@ class PlaybookCommandsMixin:
         event = self._event(args, "dry_run")
         if isinstance(event, str):
             return {"error": event}
+        # A simulation is routine worker verification, but its synthetic event
+        # must not borrow another task/project's data or paid AI authority.
+        from src.api.auth import RequestScope
+        from src.api.scope import held_task_for_session
+        from src.commands.principal import PrincipalKind, current_principal
+
+        principal = current_principal()
+        if principal and principal.kind == PrincipalKind.SESSION and not principal.elevated:
+            task = await held_task_for_session(self.db, RequestScope(
+                kind="session", session_id=principal.session_id,
+                task_id=principal.task_id, project_id=principal.project_id,
+            ))
+            if task is None:
+                return {"error": "No active task for this session"}
+            for key, expected in (("project_id", task.project_id), ("task_id", task.id)):
+                if event.get(key) not in (None, expected):
+                    return {"error": f"out of scope: event {key} mismatch"}
+                event[key] = expected
+            if args.get("invoke_ai"):
+                return {"error": "Worker dry runs simulate AI steps; invoke_ai requires a supervisor"}
         return await self._run_v2_artifact(
             playbook_id, event, dry_run=True, invoke_ai=bool(args.get("invoke_ai", False))
         )

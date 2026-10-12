@@ -184,10 +184,46 @@ aq task close --outcome pass|fail --summary "..." --claim-next --wait 60
 | `stale_claim` | a mutator's `claim_epoch` no longer matches the task's current one |
 | `out_of_scope` | the caller isn't allowed to claim (not a pool session) |
 
+`prepare_failed` and `not_admissible` carry `retry_after` (seconds),
+`refusal_count`, and `instructions`. Respect the cooldown before another attempt.
+The daemon persists the same-session result/reason streak across restarts; cooldown
+replays do not advance it or prepare work. It delays the first refusal for 60 seconds,
+then identical failures for 300/600/1200/1800 seconds. A changed admission reason or
+successful activation clears the streak. Empty frontiers, claim conflicts and daemon
+connection failures keep their normal retry behavior.
+
+On a repeated identical refusal, **report the blocker once** to the project supervisor
+(see aq-comms). A `refusal_count >= 2`, or `drain_requested` with blocker instructions,
+also requires that single report. Include result, reason, session and retry evidence.
+If idle (no held claim **or preparation**, using the response's session claim_phase
+and `.aq/claim.json`), run `aq session drain-ack` and exit: the pool can recycle you.
+The server marks an idle session for drain on the second identical failure.
+If preparation retained ownership, preserve it and **end the turn awaiting the
+supervisor's inbox delivery**. Durable waits require an active claim and cannot be
+registered during preparation. If you hold an active claim, register **one** durable
+message wait for the reply with the returned thread/cursor, then end the turn:
+
+```bash
+aq wait register --kind message --ref <reply-thread> --after-seq <cursor> \
+  --timeout 3600 --idempotency-key claim-blocker-reply
+```
+
+Consume the existing wait when notified and follow the reply. On timeout, inspect
+the outcome once and ask for direction; it is not permission to restart an unchanged
+claim loop. Do not keep polling claims/inboxes, reread unchanged context or repeat the
+blocker report. Never drain a retained claim just to make the refusal disappear.
+
 `aq task close`'s TASK_ID argument is optional: omit it (as the loop above
 does) and the daemon closes whichever task this session currently holds —
 which is the only sane form for a pool worker, whose task changes with every
 claim. The same goes for `aq task heartbeat`.
+
+Three identical preparation refusals in one session persist across daemon
+restarts and return `drain_requested`; the daemon disables that workspace
+and stops the worker through guarded pool teardown. On `prepare_failed`,
+retry the claim. On `drain_requested` or `session_exhausted`, run
+`aq session drain-ack` and exit 0. A quarantined workspace keeps its checkout
+and any branch attachment for operator recovery; never delete its Git locks.
 
 `task_close --claim-next` attempts another claim after closing. By default,
 AQ retires the conversation after one task and returns `drain_requested` or

@@ -55,6 +55,9 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
     "reconcile_collaborations",  # daemon-only expiry and retention
     "integration_train_tick",  # daemon-only git-first train dispatch
@@ -166,9 +169,13 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "report_brief",
             "report_submit",
             "delete_task",
+            "remove_task",
             "archive_task",
             "delete_project",
             "provider_allocation_apply",
+            "policy_export",
+            "policy_diff",
+            "policy_apply",
         }
     )
     | DASHBOARD_STATE_COMMANDS
@@ -177,11 +184,12 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
 #: The subset of :data:`DETAILED_ERROR_COMMANDS` that documents its 422 body
 #: with :class:`~src.api.models.task.HierarchyRefusalResponse`.
 HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset(
-    {"delete_task", "archive_task", "delete_project"}
+    {"delete_task", "remove_task", "archive_task", "delete_project"}
 )
 
 # Non-default statuses keyed by the command and its stable command error code.
 ERROR_STATUS: dict[tuple[str, str], int] = {
+    ("review_reopen", "unauthorized"): 403,
     ("edit_intelligence_class", "revision_conflict"): 409,
     ("delete_intelligence_class", "revision_conflict"): 409,
     ("delete_intelligence_class", "class_referenced"): 409,
@@ -429,6 +437,7 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                 for field in REFUSED_ROUTING_ARGS:
                     if field in raw_body and field not in args:
                         args[field] = raw_body[field]
+        args = {key: value for key, value in args.items() if not key.startswith("_")}
         for _key in SERVER_OWNED_ARG_KEYS:
             args.pop(_key, None)
 

@@ -247,16 +247,35 @@ exchange. Columns (schema detail in the implementation spec):
 
 ### 6.1 Delivery policy
 
-The delivery engine (a cascade step plus a `message.sent` subscriber) resolves the target
-to a concrete session and picks one of three paths:
+The delivery engine runs in one independent daemon service, started after session/token
+initialization and stopped before database shutdown. It resolves the target to a concrete
+session and picks one of three paths below. Scheduling, Git operations and patrol
+playbooks do not own its progress. A `message.sent` subscriber supplies a coalesced wake
+hint; pending database rows are authoritative, including at startup and when an event was
+missed. Passes run no faster than `messages.delivery_interval`. Disabled delivery performs
+no message work and resumes the durable backlog when enabled again.
+
+Each mailbox is visited once per pass even when it has messages from several projects;
+the first pending row supplies its project context. Each recipient has a 120-second
+budget, including cold start. Failure or timeout leaves undelivered rows retryable and
+does not abort other recipients. Transcript reply recovery has a separate 120-second
+budget. The scheduler retains recovery/notification maintenance but does not run a second
+delivery consumer. A direct cycle caller without the service retains the delivery seam.
+Concurrent engine passes are skipped while one is in flight.
 
 1. **Target session idle** → provider `nudge` for the first pending message only, as a
    single line pointing at its durable body (``Handle `aq message status <id> --json`.``);
    the rest stay pending for later passes. The nudge carries no body and no reply
    instruction — the supervisor profile teaches `aq reply <msg-id>` for user messages,
    and internal notices (`task_recovery`, `agent_question`) take no reply. The nudge
-   marks the row delivered, so `message_inbox` no longer lists it and `message_status`
-   is the recipient's only way to reach the body. It is therefore on the agent
+   records a notification attempt, leaving the row pending until the recipient
+   reads its body with `message_status`, replies, or receives inbox/prime injection.
+   An operator or another supervisor inspecting status does not consume the
+   recipient's message. Notification attempts and their timestamps survive daemon
+   restarts. Retry after 60 seconds, doubling up to five minutes; after three
+   unanswered attempts queue one durable alert, including the original body, to
+   the global supervisor. The alert does not recursively escalate. The original
+   message stays pending and retryable. `message_status` is therefore on the agent
    surface (`AGENT_COMMAND_SET`) and granted to every shipped profile that reads its
    own mailbox, and a non-elevated session may read only messages addressed to its
    own mailboxes (the `message_inbox` mailbox fence). A task comment has no
@@ -271,12 +290,11 @@ to a concrete session and picks one of three paths:
    sleeping `on_demand` session first **wakes** it
    (session-runtime start with `--resume`); this is the "wakes on first message" behavior.
 2. **Target session busy (mid-turn)** → do not interrupt. The message waits and is
-   nudged on the first cycle that observes the session idle. This *was* a
+   nudged on the first delivery pass that observes the session idle. This *was* a
    `UserPromptSubmit` hook running `aq inbox --inject`; it was removed 2026-08-27 because
    the command was a stub, so it cost ~1.3 s per prompt and delivered nothing. The two
-   moments — "next prompt boundary" and "first idle observation" — are within one cascade
-   tick of each other, so the path is a latency optimization rather than a delivery
-   mechanism, and it should be reinstated only with a measurement behind it.
+   moments — "next prompt boundary" and "first idle observation" — are usually close;
+   prompt-boundary injection should be reinstated only with a measurement behind it.
 3. **Session starting** → pending messages ride into the first prompt via `aq prime`
    (prime content assembly is owned by the aq-surface spec; this spec only defines that
    undelivered messages are part of it, and that `archive_after_inject` rows are archived
@@ -285,6 +303,24 @@ to a concrete session and picks one of three paths:
 Idle/busy detection is **not** defined here: the engine consumes the session-runtime
 spec's activity signal (transcript in-turn state, A.6) through a narrow interface. Until
 that lands, the engine can only queue and prime-inject — an acceptable degraded mode.
+
+Session recipients may be immutable UUIDs or historical named supervisor addresses.
+A retired UUID is never redirected to a successor with the same name. The global
+supervisor has no project and can receive project-scoped messages without acquiring that
+project as its session scope. Profile recipients remain inbox/prime broadcasts; they do
+not identify a live session to wake. A per-project supervisor address does not silently
+become a global supervisor address.
+
+Wake logs identify the message and recipient, and distinguish refused from submitted.
+Terminal guard refusals name the observed condition (attached client, copy mode, unknown
+prompt prefix, or cursor outside the pane), retaining the existing guard behavior. All
+provider failures, including unsupported nudges, are available in session diagnostics;
+logs retain evidence across daemon restarts. A confirmed nudge does not stamp
+`delivered_at` or `read_at`. Reading the body as its recipient or replying stamps both;
+inbox/prime injection stamps delivery. No stamp proves the requested work was performed.
+A process crash after notification reservation but before submit delays its retry by
+the bounded backoff; a crash after submit can repeat a pointer on restart: this is
+at-least-once transport, not an exactly-once handling guarantee.
 
 ### 6.2 Reply protocol
 
@@ -306,7 +342,7 @@ delivered-but-unreplied row ever written would qualify forever.
 
 ### 6.3 Events
 
-`message.sent` (row created), `message.delivered` (nudge confirmed submitted, or injected),
+`message.sent` (row created), `message.delivered` (body read by recipient, or injected),
 `message.replied` (reply row linked). All registered in the event payload registry.
 Subsystems integrate only through these events — the Discord adapter, dashboard WS stream,
 and delivery engine never call each other (principle #7).
@@ -331,6 +367,26 @@ supervisor's resumed harness session, not in the REPL.
 **Discord / dashboard** are thin: they translate to the same API and render `message.*`
 events. Neither holds chat history of its own — the supervisor's session is the
 conversation of record (visible via `aq session peek supervisor-<pid>` / attach).
+
+The dashboard flock includes every live named project supervisor, including sessions
+without a durable agent row. Each entry names its project and exposes the persisted
+harness/model, state, idle duration and last activity. Selecting it opens its existing
+terminal and a Messages tab using the same logical address as `aq chat <project>`.
+Session-backed entries have no agent settings or enable toggle. Project access labels
+must name that project; only the global supervisor is labelled as supervising all projects.
+
+Messages shows recent inbound mail and replies across threads for that supervisor,
+including mail from other surfaces. Queued/unread, delivered, read and replied states
+come from durable message timestamps and reply links. A refused delivery remains pending
+for retry and displays the session lens's latest delivery diagnostic. Message events refresh
+the pane; bounded polling reconciles missed events and read acknowledgements.
+
+Auth health reports recent API authentication/authorization outcomes for the session:
+an observed 401/403 is red for fifteen minutes, and a successful later call restores
+healthy status. An absent or old observation is unknown. Expired/revoked tokens are
+attributed only by a matching server-side token record; arbitrary invalid tokens are
+never attributed to a session. These bounded diagnostics are process-local and reset
+to unknown on daemon restart; they do not change authentication or delivery policy.
 
 ---
 

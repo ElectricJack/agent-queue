@@ -225,7 +225,7 @@ class TestSatisfactionTruthTable:
 class TestGateClause:
     @pytest.mark.parametrize(
         "status,expect_blocked",
-        [("open", True), ("expired", True), ("resolved", False)],
+        [("open", True), ("expired", True), ("cancelled", True), ("resolved", False)],
     )
     async def test_gate_status(self, db, status, expect_blocked):
         await mktask(db, "t")

@@ -13,13 +13,15 @@ task's archive or delete.
 
 from __future__ import annotations
 
+import json
 import random
 
-from sqlalchemy import and_, exists, func, insert, or_, select, update
+from sqlalchemy import and_, case, delete, exists, func, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
     doc_review_attachments, doc_review_comments, doc_review_dispatches,
-    doc_review_revisions, doc_reviews, gates, task_gates, tasks,
+    doc_review_revisions, doc_reviews, gates, projects, task_gates, task_metadata, tasks,
 )
 from src.task_names import ADJECTIVES, NOUNS
 
@@ -28,6 +30,25 @@ __all__ = ["ReviewQueriesMixin"]
 #: Plain ``rev-<adjective>-<noun>`` picks before falling back to a numeric
 #: suffix — the same budget as ``fresh_root_id`` in ``src/task_names.py``.
 _ID_RETRIES = 10
+
+
+def _project_paused():
+    return exists().where(
+        projects.c.id == doc_reviews.c.project_id,
+        projects.c.status == "PAUSED",
+    )
+
+
+def _review_projection():
+    return select(
+        doc_reviews,
+        and_(
+            _project_paused(),
+            doc_reviews.c.state == "in_review",
+            doc_reviews.c.decider.in_(("user", "user_or_supervisor")),
+        ).label("held_while_paused"),
+    )
+
 
 #: ``list_review_revisions`` omits the (up to 256 KB) body and a playbook
 #: review's pinned artifact bytes (its ``playbook`` pin names their hash).
@@ -44,6 +65,51 @@ class ReviewQueriesMixin:
     """
 
     # -- ids and paths ---------------------------------------------------
+
+    async def set_review_gate_state(
+        self, review_id: str, gate_id: str | None, *, cancelled: bool,
+        by: str, conn,
+    ) -> list[str]:
+        """Cancel/reopen a review's gate and attention flags with its transition.
+
+        Both states keep blocking. Refresh the blocked projection as well,
+        including for legacy gates that were incorrectly resolved.
+        Reopening clears only our attention flag, and only when no other
+        withdrawn review holds that task. The caller owns the review row lock.
+        """
+        if not gate_id:
+            return []
+        await conn.execute(update(gates).where(
+            gates.c.id == gate_id, gates.c.gate_type == "review", gates.c.await_id == review_id,
+        ).values(
+            status="cancelled" if cancelled else "open",
+            resolved_by=by if cancelled else None,
+            resolution="review_withdrawn" if cancelled else None,
+        ))
+        waiters = sorted((await conn.execute(select(task_gates.c.task_id).where(
+            task_gates.c.gate_id == gate_id,
+        ))).scalars().all())
+        if waiters:
+            await self.recompute_blocked(set(waiters), conn=conn)
+        if cancelled:
+            for task_id in waiters:
+                stmt = pg_insert(task_metadata).values(
+                    task_id=task_id, key="needs_attention", value=json.dumps("review_withdrawn"),
+                )
+                # Preserve an unrelated attention reason.
+                await conn.execute(stmt.on_conflict_do_nothing())
+        elif waiters:
+            other_withdrawal = exists(select(task_gates.c.task_id).join(
+                doc_reviews, doc_reviews.c.gate_id == task_gates.c.gate_id,
+            ).where(
+                task_gates.c.task_id == task_metadata.c.task_id,
+                doc_reviews.c.state == "withdrawn",
+            ))
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id.in_(waiters), task_metadata.c.key == "needs_attention",
+                task_metadata.c.value == json.dumps("review_withdrawn"), ~other_withdrawal,
+            ))
+        return waiters
 
     async def generate_review_id(self) -> str:
         """A fresh ``rev-<adjective>-<noun>`` id no review already has."""
@@ -79,7 +145,7 @@ class ReviewQueriesMixin:
     async def get_review(self, review_id: str) -> dict | None:
         async with self._engine.begin() as conn:
             row = (
-                (await conn.execute(select(doc_reviews).where(doc_reviews.c.id == review_id)))
+                (await conn.execute(_review_projection().where(doc_reviews.c.id == review_id)))
                 .mappings()
                 .first()
             )
@@ -148,7 +214,7 @@ class ReviewQueriesMixin:
                 )
             )
             conditions.append(or_(doc_reviews.c.author_task_id == task_id, waiting))
-        stmt = select(doc_reviews)
+        stmt = _review_projection()
         if conditions:
             stmt = stmt.where(and_(*conditions))
         stmt = stmt.order_by(doc_reviews.c.updated_at.desc(), doc_reviews.c.id.asc())
@@ -251,6 +317,13 @@ class ReviewQueriesMixin:
         a concurrent decision, revision or withdrawal got there first, and
         nothing was written.
         """
+        if values.get("state", "in_review") != "in_review":
+            # A request closed while its project is paused was held, never
+            # announced: retire it so resume releases only what awaits review.
+            announced = values.get("current_revision", doc_reviews.c.current_revision)
+            values = {**values, "notified_revision": case(
+                (_project_paused(), announced), else_=doc_reviews.c.notified_revision,
+            )}
         result = await conn.execute(
             update(doc_reviews)
             .where(
@@ -405,6 +478,7 @@ class ReviewQueriesMixin:
             .where(
                 doc_reviews.c.notified_revision < doc_reviews.c.current_revision,
                 doc_reviews.c.decider.in_(("user", "user_or_supervisor")),
+                ~_project_paused(),
             )
             .order_by(doc_reviews.c.updated_at.asc(), doc_reviews.c.id.asc())
         )

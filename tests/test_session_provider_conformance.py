@@ -22,6 +22,7 @@ See docs/specs/implementation/session-runtime.md §8.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -132,8 +133,27 @@ def _spec(case, tmp_path, name="s-t1", token="tok-1") -> SessionSpec:
 
 
 class TestSubprocessFailures:
-    async def test_early_exit_raises_startup_error_with_log_path(self, tmp_path):
+    @pytest.mark.parametrize("ready_delay_ms", [0, 100])
+    async def test_early_exit_raises_startup_error_with_log_path(
+        self, tmp_path, monkeypatch, ready_delay_ms
+    ):
         """A failed readiness check must not leave an addressable handle."""
+
+        spawn = asyncio.create_subprocess_exec
+
+        async def spawn_exited_child(*args, **kwargs):
+            proc = await spawn(*args, **kwargs)
+            # Synchronize on the real child's exit rather than assuming Python
+            # starts and exits within the readiness delay on a busy CI runner.
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn_exited_child)
 
         class _Cfg:
             data_dir = str(tmp_path / "state")
@@ -146,13 +166,14 @@ class TestSubprocessFailures:
             env={},
             prompt=None,
             prompt_mode="none",
-            ready_delay_ms=100,
+            ready_delay_ms=ready_delay_ms,
             instance_token="early-token",
         )
 
         with pytest.raises(SessionDiedDuringStartup) as caught:
             await provider.start(spec)
 
+        assert "exited with code 7" in str(caught.value)
         assert caught.value.start_stderr_path
         assert "failed" in open(caught.value.start_stderr_path, encoding="utf-8").read()
         assert await provider.list_running("s-") == []

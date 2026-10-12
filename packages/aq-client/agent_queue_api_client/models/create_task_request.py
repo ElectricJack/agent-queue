@@ -25,7 +25,7 @@ class CreateTaskRequest:
             opens a PR (review pipeline owns the merge); 'direct' merges into the default branch on completion. Omit to
             inherit the project/system policy.
         task_type (None | str | Unset): The kind of work, a hint to the router (optional): design is code or system
-            design, art is art-heavy design
+            design, art is art-heavy design, operator is scoped project setup
         intelligence_class (None | str | Unset): Intelligence-class hint for the router, e.g. deep-high or standard-
             high. Use list_intelligence_classes for current IDs. The task is stored unrouted with this class as its
             class_hint; the project's routing playbook picks the profile, provider and final class within its policy. A task

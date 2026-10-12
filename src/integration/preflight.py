@@ -145,6 +145,9 @@ async def daemon_functional_preflight(
                 required_classes.add(boundary.verifier_intelligence_class)
             if None in required_classes or not required_classes.issubset(class_ids):
                 blockers.append("intelligence_route_unavailable")
+            if boundary.route is None:
+                # Route-free (git-first train) policy: no playbook to check.
+                continue
             try:
                 definition = store.load(boundary.route.artifact.artifact_sha256)
             except Exception:
@@ -210,6 +213,8 @@ async def daemon_functional_preflight(
         # blocker above names the cause.
         return FunctionalPreflight(blockers)
 
+    from src.integration.promotion_steps import read_stored_promotion_flow
+
     report = await app_mode.evaluate(
         app_mode.AppModeContext(
             project_id=project_id,
@@ -219,6 +224,7 @@ async def daemon_functional_preflight(
             client=client,
             identity=credential_identity,
             policy=policy,
+            promotion_flow=await read_stored_promotion_flow(orchestrator.db, project_id),
         )
     )
     return FunctionalPreflight([*blockers, *report.blockers], report.warnings)

@@ -29,7 +29,9 @@ New to AQ? Start with [Install](../tutorials/install.md) and
 | [End-to-end testing the swarm](e2e-swarm.md) | Proving claims, pools, formulas or the task hierarchy still compose, against a real daemon. |
 | [Feature history and integration merges](feature-merge-history.md) | Reading ancestry in the **optional strict** integration modes. |
 | [Hierarchical integration trains](hierarchical-integration-trains.md) | Rolling out the **optional, off-by-default** train mode for a project. |
-| [Git-first train activation](git-first-train-runbook.md) | Switching `integration.git_first` between `shadow` and `active`, reading train blockers, and rolling back. |
+| [Git-first train activation](git-first-train-runbook.md) | Activating the restored train, reading PR/candidate gates, and using supervisor batch controls. |
+| [Promotion flows](promotion-flow.md) | Configuring a branch chain and pinned promotion PRs; draft sections identify pending tasks. |
+| [Releases](releases.md) | Preparing, deploying and recovering a release; preparation and hotfix automation remain task-marked drafts. |
 | [Shadow week and the guarded root cutover](reconciler-shadow-cutover-runbook.md) | Observing the root subject engine in shadow mode for a week, comparing its decisions with legacy's, and transferring root subjects behind an explicit human approval. |
 | [Agent collaboration threads](agent-collaboration.md) | Settling a shared goal *now*, between 2-4 running agents: creating a thread, exchanging the small ordered messages it carries, and waiting on a reply or a typed end reason. |
 

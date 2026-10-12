@@ -25,6 +25,8 @@ class MessageInboxResponse:
         injected (int | None | Unset):
         archived (int | None | Unset):
         messages (list[MessageModel] | Unset):
+        consumed (int | None | Unset):
+        consumed_messages (list[MessageModel] | None | Unset):
     """
 
     to_kind: str
@@ -33,6 +35,8 @@ class MessageInboxResponse:
     injected: int | None | Unset = UNSET
     archived: int | None | Unset = UNSET
     messages: list[MessageModel] | Unset = UNSET
+    consumed: int | None | Unset = UNSET
+    consumed_messages: list[MessageModel] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,6 +65,24 @@ class MessageInboxResponse:
                 messages_item = messages_item_data.to_dict()
                 messages.append(messages_item)
 
+        consumed: int | None | Unset
+        if isinstance(self.consumed, Unset):
+            consumed = UNSET
+        else:
+            consumed = self.consumed
+
+        consumed_messages: list[dict[str, Any]] | None | Unset
+        if isinstance(self.consumed_messages, Unset):
+            consumed_messages = UNSET
+        elif isinstance(self.consumed_messages, list):
+            consumed_messages = []
+            for consumed_messages_type_0_item_data in self.consumed_messages:
+                consumed_messages_type_0_item = consumed_messages_type_0_item_data.to_dict()
+                consumed_messages.append(consumed_messages_type_0_item)
+
+        else:
+            consumed_messages = self.consumed_messages
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -77,6 +99,10 @@ class MessageInboxResponse:
             field_dict["archived"] = archived
         if messages is not UNSET:
             field_dict["messages"] = messages
+        if consumed is not UNSET:
+            field_dict["consumed"] = consumed
+        if consumed_messages is not UNSET:
+            field_dict["consumed_messages"] = consumed_messages
 
         return field_dict
 
@@ -118,6 +144,37 @@ class MessageInboxResponse:
 
                 messages.append(messages_item)
 
+        def _parse_consumed(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        consumed = _parse_consumed(d.pop("consumed", UNSET))
+
+        def _parse_consumed_messages(data: object) -> list[MessageModel] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                consumed_messages_type_0 = []
+                _consumed_messages_type_0 = data
+                for consumed_messages_type_0_item_data in _consumed_messages_type_0:
+                    consumed_messages_type_0_item = MessageModel.from_dict(consumed_messages_type_0_item_data)
+
+                    consumed_messages_type_0.append(consumed_messages_type_0_item)
+
+                return consumed_messages_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[MessageModel] | None | Unset, data)
+
+        consumed_messages = _parse_consumed_messages(d.pop("consumed_messages", UNSET))
+
         message_inbox_response = cls(
             to_kind=to_kind,
             to_id=to_id,
@@ -125,6 +182,8 @@ class MessageInboxResponse:
             injected=injected,
             archived=archived,
             messages=messages,
+            consumed=consumed,
+            consumed_messages=consumed_messages,
         )
 
         message_inbox_response.additional_properties = d

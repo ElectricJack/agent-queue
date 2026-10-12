@@ -1084,6 +1084,8 @@ class ExecutionMixin:
         # The operator-handoff checkpoint was applied by this launch's prepare;
         # keeping it would replay the handoff on every later prepare.
         await self.db.delete_task_meta(task.id, "supervisor_recovery_checkpoint")
+        # Likewise the saved-WIP resume point (``stranded_work.RESUME_POINT_META``).
+        await self.db.delete_task_meta(task.id, "failover_resume_checkpoint")
         logger.info(
             "Task %s: session %s started (%s/%s) in %s",
             task.id,
@@ -1743,6 +1745,7 @@ class ExecutionMixin:
                  or ordinary_repair is not None)
         )
         completion_source = None
+        completion_commits = None
         if git_completion and commit and (not workspace_path or not task.branch_name):
             feedback = "A completion with a recorded code artifact requires its exact published task branch."
             return {
@@ -1751,15 +1754,26 @@ class ExecutionMixin:
             }
         if git_completion and workspace_path and task.branch_name:
             try:
-                if (ordinary_repair is not None
-                    or not await self._vault_only_delivery(ctx) and await self._task_uses_git(ctx)):
+                if ordinary_repair is not None or await self._task_uses_git(ctx):
                     from src.integration.provenance import record_worker_completion
 
                     completion_id = completion_id or str(uuid.uuid4())
+                    no_code = await self._task_produces_no_code(ctx)
+                    # Development: a proven-empty no-code slot owes containment, not a push.
+                    no_code_proven = no_code and ctx.no_work_proven and getattr(
+                        project, "hierarchical_integration_mode", None) == "development"
                     completion_source = await record_worker_completion(
                         self.db, self.git, task, project, workspace_path,
-                        completion_id, commit=commit,
-                        no_code_intent=await self._task_produces_no_code(ctx),
+                        completion_id, commit=commit, no_code_intent=no_code,
+                        allow_unpublished_no_change=await self._vault_only_delivery(ctx),
+                        no_code_proven=no_code_proven,
+                    )
+                    origin = await self.db.get_task_branch_origin_for_promotion(
+                        task.id, task.repo_id or project.integration_repository_id,
+                    )
+                    completion_commits = (
+                        [] if no_code_proven or origin and origin["base_sha"] == completion_source
+                        else [completion_source]
                     )
             except Exception as exc:
                 # Publication failures leave the same claim/worktree live.
@@ -1791,7 +1805,11 @@ class ExecutionMixin:
             # COMPLETED: the agent's word triggers verification but does not
             # replace its verdict.
             new_status = TaskStatus.BLOCKED
-            context = "session_close_pipeline_stop"
+            context = (
+                "verification_failed"
+                if ctx.verification_issues and not ctx.verification_infrastructure_failure
+                else "session_close_pipeline_stop"
+            )
         elif failure_class == "hard":
             new_status = TaskStatus.BLOCKED
             context = "session_close_hard_failure"
@@ -1810,6 +1828,31 @@ class ExecutionMixin:
             else:
                 new_status = TaskStatus.READY
                 context = "retry"
+
+        slot_restored = False
+        if ordinary_repair is not None and pool and workspace_path:
+            # Restore before accepting the close or releasing its lease. A
+            # managed job pin is a temporary refusal, not a failed repair:
+            # keep this exact claim and reservation for the worker's retry.
+            from src.jobs.policy import JobError
+
+            slot = await self._slot_workspace_at(workspace_path)
+            if slot is not None:
+                try:
+                    await self._worktree_slots().restore_slot_after_task(slot, task_id=task.id)
+                    slot_restored = True
+                except JobError as exc:
+                    if str(exc) != "jobs.workspace_busy":
+                        raise
+                    feedback = (
+                        "Close deferred: a managed job still pins this workspace. "
+                        "Wait for the job to settle, then retry close with the same claim."
+                    )
+                    return {
+                        "status": task.status.value, "pr_url": None, "pipeline_ok": False,
+                        "verification_retry": True, "close_deferred": "jobs.workspace_busy",
+                        "issues": [feedback], "feedback": feedback,
+                    }
 
         # Persist a pipeline-discovered PR on the row so the review policy
         # (final-reviewer trigger, downstream ``pr-merged`` gates) can see
@@ -1854,7 +1897,7 @@ class ExecutionMixin:
                         "feedback": feedback,
                     }
             elif review_evidence_snapshot is not None and new_status == TaskStatus.COMPLETED:
-                from src.integration.review_evidence import ReviewEvidenceProducer
+                from src.integration.reviews import ReviewEvidenceProducer
 
                 async with self.db.immediate() as conn:
                     transition = await ReviewEvidenceProducer(
@@ -2198,7 +2241,6 @@ class ExecutionMixin:
                 await BranchLock(self.db).release(ordinary_fence)
             release_needed = False
         handoff_unproven = False
-        slot_restored = False
         if release_needed:
             if failed_writer:
                 # Both handoff proofs end in ``detach_workspace_for_integration_handoff``,
@@ -2279,6 +2321,8 @@ class ExecutionMixin:
             response["completion_source"] = repair_writer_head
         elif git_completion:
             response["completion_source"] = completion_source
+            if completion_commits is not None:
+                response["completion_commits"] = completion_commits
         if handoff_unproven:
             # ``_cmd_task_close`` reads this to skip the pool teardown
             # (``restore_slot_after_task`` / ``release_claim`` / claim file).
@@ -2322,7 +2366,9 @@ class ExecutionMixin:
             slot = await self._slot_workspace_at(workspace_path)
             if slot is None:
                 return False
-            await self._worktree_slots().restore_slot_after_task(slot, task_id=task_id)
+            await self._worktree_slots().restore_slot_after_task(
+                slot, task_id=task_id, detach_pushed_branch=False
+            )
             return True
         except Exception:
             logger.warning(

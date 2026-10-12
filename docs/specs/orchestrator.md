@@ -1001,6 +1001,22 @@ subsequently dies, `integration release-owner` may prove its exact termination,
 preserve its work and release those resources. This does not authorize generic
 recovery of `productive_death`, nor does a route change amend an incident snapshot.
 
+A failed session close restores its slot before proving the integration handoff.
+That restoration must preserve the task branch and HEAD: moving a clean, pushed
+checkout to the default branch invalidates the following exact-tip proof. The
+handoff itself detaches the verified task tip before releasing its owner. Pool
+close uses the held claim and checkout proof; task-lifecycle close additionally
+requires the provider to confirm the writer stopped. Missing proof retains the
+attachment, regardless of harness or model.
+
+For a stranded `BLOCKED/session_close_hard_failure`, a project supervisor may
+preview `aq integration release-owner --task-id TASK_ID --dry-run`, then apply
+without `--dry-run`. The command requires a stopped session and fresh provider
+confirmation, preserves unpublished work, and rechecks the owner fence and
+checkout ownership before release. It does not turn a hard failure into success
+or grant automatic recovery. An intentional retry uses `aq task restart TASK_ID`
+after the attachment is released and the failure has been reviewed.
+
 For an ordinary hierarchy/train producer in `BLOCKED/session_not_live`, an
 operator may complete that intentional handoff with `aq task resume` **after** an
 operator-backed owner-release audit and a subsequent explicit route override.

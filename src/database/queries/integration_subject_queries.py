@@ -83,7 +83,9 @@ class IntegrationSubjectQueriesMixin:
                 await conn.execute(
                     pg_insert(integration_subjects)
                     .values(**values)
-                    .on_conflict_do_nothing(constraint="uq_integration_subjects_key")
+                    # Concurrent creators may share a deterministic id as well
+                    # as the natural key. Either unique index can conflict first.
+                    .on_conflict_do_nothing()
                     .returning(integration_subjects)
                 )
             )
@@ -103,8 +105,18 @@ class IntegrationSubjectQueriesMixin:
                 )
             )
             .mappings()
-            .one()
+            .first()
         )
+        if row is None:
+            # A different subject owns the conflicting id, admission slot or
+            # batch. Surface its constraint violation instead of accepting it
+            # as a replay of the requested natural key.
+            row = (
+                await conn.execute(
+                    pg_insert(integration_subjects).values(**values).returning(integration_subjects)
+                )
+            ).mappings().one()
+            return dict(row), True
         return dict(row), False
 
     async def ensure_integration_subject(

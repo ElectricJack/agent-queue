@@ -595,6 +595,11 @@ class WorkspaceServiceImpl:
     async def validate_path(self, path: str) -> str | None:
         """Validate that a path resolves within an allowed directory."""
         real = os.path.realpath(path)
+        from src.task_templates import editable_task_template_path
+
+        template_path = editable_task_template_path(path, self._config.data_dir)
+        if template_path is not None:
+            return template_path
         workspace_real = os.path.realpath(self._config.workspace_dir)
         if real.startswith(workspace_real + os.sep) or real == workspace_real:
             return real

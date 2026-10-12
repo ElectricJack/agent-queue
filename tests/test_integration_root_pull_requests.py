@@ -23,10 +23,11 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.git.manager import GitError
 from src.integration.root_pull_requests import (
     REDRIVE_EVENT,
+    EpicPullRequestService,
     RootDeliveryRedrive,
     RootPullRequestReconciler,
 )
@@ -122,6 +123,24 @@ async def test_reconciler_opens_the_pr_a_completed_leaf_root_lacks(db):
     git.acreate_pr.assert_awaited_once()
     assert git.acreate_pr.await_args.kwargs["branch"] == branch
     assert await _pr_url(db, "r1") == PR
+
+
+async def test_stored_closed_pr_reports_named_blocker_and_recovers_when_reopened(db):
+    await _root(db, pr_url=PR)
+    git = _git()
+    git.bind_github_repository.return_value = GitHubRepositoryBinding(123, "o/r")
+    client = AsyncMock()
+    client.pull_request.return_value = {"state": "closed"}
+    git._github_client = lambda binding: client
+    service = EpicPullRequestService(db, git_manager=git)
+    for _ in range(2):
+        result = await service.open_for_epic("r1")
+        assert result["outcome"] == "pr_closed" and result["pr_url"] == PR
+    assert await _pr_url(db, "r1") == PR
+    git.acreate_pr.assert_not_awaited()
+    client.pull_request.return_value = {"state": "open"}
+    assert (await service.open_for_epic("r1"))["outcome"] == "already_open"
+    git.acreate_pr.assert_not_awaited()
 
 
 async def test_reconciler_selects_only_pr_ready_train_roots(db):

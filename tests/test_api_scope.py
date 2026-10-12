@@ -14,6 +14,10 @@ SESSION = RequestScope(kind="session", session_id="s1", task_id="t1", project_id
 #: the capability gate.
 EXPECTED_AGENT_COMMANDS = {
     "prime",
+    # Wrappers verify a live operator claim; raw setup controls remain excluded.
+    "operator_execute",
+    "operator_preflight",
+    "dry_run_playbook",
     "get_schema",
     "task_show",
     "task_set",
@@ -35,6 +39,11 @@ EXPECTED_AGENT_COMMANDS = {
     "wait_get",
     "wait_list",
     "wait_cancel",
+    # Recurring prompts derive their session owner and fence worker claims.
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
     # Collaboration: the held task joins, reads and closes; never creates.
     "collaboration_accept",
     "collaboration_get",
@@ -95,11 +104,18 @@ EXPECTED_AGENT_COMMANDS = {
     # Mandatory routing §7: a worker re-routes a task it filed.
     "task_route",
     "integration_status",
+    # Promotion validation and cached history reads are pinned to the worker's project.
+    "promote_schema",
+    "promote_validate",
+    "promote_rulesets",
+    "promote_status",
+    "promote_list",
     "integration_resolve_candidate_member",
     "review_submit",
     "review_show",
     "review_list",
     "review_withdraw",
+    "review_reopen",
     "review_comment",
     "review_attachment_add",
     "review_attachment_list",
@@ -158,8 +174,13 @@ class TestCheckCommandScope:
         assert "local operator or supervisor" in check_command_scope(
             "edit_project", {"integration_repository_id": "repo"}, SESSION
         )
-        for command in ("review_delegate", "review_import_edits"):
+        for command in ("review_delegate", "review_import_edits", "promote_approve"):
             assert "local operator" in check_command_scope(command, {}, elevated)
+            assert "local operator" in check_command_scope(command, {}, SESSION)
+
+    def test_git_first_train_controls_are_operator_controls(self):
+        assert {"integration_pause_batch", "integration_resume_batch", "integration_eject",
+                "integration_seal_now", "integration_record_root_noop"} <= OPERATOR_INTEGRATION_CONTROLS
 
     def test_review_decision_commands_remain_outside_worker_scope(self):
         """Only a held dispatch task can comment; no worker may decide."""
@@ -205,6 +226,23 @@ class TestCheckCommandScope:
         assert "project_id mismatch" in check_command_scope(
             "integration_status", {"project_id": "p2"}, SESSION
         )
+
+    def test_promotion_history_reads_are_project_scoped_and_mutations_stay_refused(self):
+        for command in ("promote_status", "promote_list"):
+            args = {}
+            assert check_command_scope(command, args, SESSION) is None
+            assert args["project_id"] == "p1"
+            assert "project_id mismatch" in check_command_scope(
+                command, {"project_id": "p2"}, SESSION
+            )
+            assert "no assigned project" in check_command_scope(
+                command, {}, RequestScope(kind="session", session_id="idle")
+            )
+        assert check_command_scope("promote_approve", {}, SESSION) == (
+            "out of scope: review control requires local operator"
+        )
+        for command in ("promote_request", "promote_cancel"):
+            assert check_command_scope(command, {}, SESSION) == f"out of scope: {command}"
 
     def test_task_id_mismatch_blocked(self):
         msg = check_command_scope("task_show", {"task_id": "other"}, SESSION)

@@ -33,7 +33,7 @@ from src.integration.ci import (
     failed_run_verdict,
     is_numeric_producer_id,
 )
-from src.integration.subjects import CIEvidence, CIState, HeadIdentity, Subject
+from src.integration.runtime_contracts import CIEvidence, CIState, HeadIdentity, Subject
 from src.jobs.adapters import finite_command
 from src.jobs.policy import JobError, TERMINAL
 
@@ -196,6 +196,8 @@ class HostedCIProducer:
                 reason=str(exc),
             )
         except (GitHubAccessError, OSError) as exc:
+            if isinstance(exc, GitHubAccessError) and exc.category == "rate_limited":
+                raise
             return ProducerObservation(
                 **common,
                 state=CIState.INFRA,

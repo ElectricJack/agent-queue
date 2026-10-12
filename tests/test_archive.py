@@ -569,17 +569,29 @@ class TestArchiveCommands:
         assert worker["code"] == "hierarchy.abandon_not_for_sessions"
 
         handler._current_scope = None
-        archived = await handler._cmd_archive_task(
+        undecided = await handler._cmd_archive_task(
             {
                 "task_id": "undelivered",
                 "abandon_undelivered": True,
                 "reason": "superseded by manual patch",
             },
         )
+        assert undecided["code"] == "hierarchy.disposition_required"
+        assert await db.get_task("undelivered") is not None
+
+        archived = await handler._cmd_archive_task(
+            {
+                "task_id": "undelivered",
+                "disposition": "obsolete",
+                "reason": "superseded by manual patch",
+            },
+        )
         assert archived["archived"] == "undelivered"
+        assert archived["disposition"] == "obsolete"
         comments = (await db.list_task_comments("undelivered", project_id="p-dev"))["comments"]
         assert any(
             "Delivery abandoned before archive by operator: superseded by manual patch" in row["body"]
+            and "Disposition: obsolete" in row["body"]
             for row in comments
         )
         assert len(
@@ -587,6 +599,69 @@ class TestArchiveCommands:
                 event_type="task.delivery_abandoned", task_id="undelivered"
             )
         ) == 1
+        # The branch is retired through the audited path, carrying the decision.
+        async with db._engine.connect() as conn:
+            reasons = set((await conn.execute(text(
+                "SELECT reason FROM branch_retirements WHERE task_id = 'undelivered'"
+            ))).scalars())
+        assert reasons == {"task archived (obsolete): superseded by manual patch"}
+
+    async def test_deliver_disposition_keeps_undelivered_work_and_reports_its_delivery(
+        self, handler, db
+    ):
+        """``deliver`` archives nothing: it records the decision and says what delivers it."""
+        await _seed_development_project(db)
+        await _seed_task(
+            db,
+            "undelivered",
+            pid="p-dev",
+            status=TaskStatus.COMPLETED,
+            repo_id="web-repo",
+            branch_name="aq/undelivered",
+        )
+        await db.save_task_completion(
+            TaskCompletion(
+                id="close-undelivered",
+                task_id="undelivered",
+                outcome="pass",
+                commits=["a" * 40],
+                completed_at=time.time(),
+            )
+        )
+        both = await handler._cmd_archive_task(
+            {"task_id": "undelivered", "disposition": "deliver", "abandon_undelivered": True},
+        )
+        assert "drop --abandon-undelivered" in both["error"]
+        unknown = await handler._cmd_archive_task(
+            {"task_id": "undelivered", "disposition": "later"},
+        )
+        assert "must be one of deliver, obsolete, retire" in unknown["error"]
+
+        kept = await handler._cmd_archive_task(
+            {"task_id": "undelivered", "disposition": "deliver", "reason": "lands next train"},
+        )
+
+        assert kept["archived"] == ""
+        assert kept["kept"] == "undelivered"
+        assert kept["disposition"] == "deliver"
+        assert [row["task_id"] for row in kept["undelivered"]] == ["undelivered"]
+        # A root gets its authorize-root dry run: the train's own answer.
+        assert isinstance(kept["delivery"], dict) and kept["delivery"]["dry_run"] is True
+        assert await db.get_task("undelivered") is not None
+        assert await db.get_archived_task("undelivered") is None
+        comments = (await db.list_task_comments("undelivered", project_id="p-dev"))["comments"]
+        assert any(
+            "Delivery disposition by operator: deliver: lands next train" in row["body"]
+            and "undelivered holders: undelivered" in row["body"]
+            for row in comments
+        )
+        assert len(await db.get_recent_events(
+            event_type="task.delivery_disposition", task_id="undelivered"
+        )) == 1
+        async with db._engine.connect() as conn:
+            assert not (await conn.execute(text(
+                "SELECT 1 FROM branch_retirements WHERE task_id = 'undelivered'"
+            ))).first()
 
 
 # ---------------------------------------------------------------------------

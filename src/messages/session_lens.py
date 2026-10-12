@@ -57,8 +57,7 @@ class SupervisorRestartError(ValueError):
 #:
 #: * ``idle``     — live and quiet; safe to nudge.
 #: * ``busy``     — live and mid-turn; delivery engine skips this pass and
-#:                  lets the ``UserPromptSubmit`` inject hook catch the
-#:                  message at the next prompt boundary.
+#:                  retries at the next idle observation.
 #: * ``sleeping`` — a wake-able target (supervisor) with no live session.
 #: * ``absent``   — no live session and the messenger must not spawn one
 #:                  (task sessions are launched by the task lifecycle).
@@ -319,6 +318,25 @@ class SessionLens:
         # path would race the orchestrator and violate ownership.
         if kind != "session" or not target_id.startswith(_SUPERVISOR_NAME_PREFIX):
             return False
+
+        suffix = target_id[len(_SUPERVISOR_NAME_PREFIX):]
+        if suffix != _GLOBAL_SUPERVISOR_SUFFIX:
+            project = await self._db.get_project(suffix)
+            if project is not None and not project.supervisor_enabled:
+                logger.info("Project supervisor %s is disabled; refusing start/wake", suffix)
+                return False
+            # A message after re-enabling may arrive while the previous turn
+            # is still draining. Reuse that running instance on this explicit
+            # wake rather than spawning a second terminal with the same name.
+            current = await self._db.get_session_by_name(
+                _resolve_runtime_session_name(kind, target_id)
+            )
+            if (current is not None and current.state == "running"
+                    and current.desired_state == "stopped"):
+                await self._db.update_session_instance(
+                    current.id, current.instance_token, require_desired_state="stopped",
+                    desired_state="running",
+                )
 
         row, handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
         if row is not None and handle is not None:
@@ -725,10 +743,12 @@ class SessionLens:
                 "; AQ text remains in the composer" if exc.composer_dirty else "",
             )
             return False
-        except CapabilityUnsupported:
-            # Row stays pending. The delivery engine retries with backoff.
+        except CapabilityUnsupported as exc:
+            self._record_nudge_failure(row.id, exc)
+            logger.warning("message nudge to %s (%s): %s", row.name, row.id, exc)
             return False
-        except Exception:
+        except Exception as exc:
+            self._record_nudge_failure(row.id, exc)
             logger.exception("nudge failed for %s", row.name)
             return False
         self._nudge_failures.pop(row.id, None)
@@ -745,7 +765,7 @@ class SessionLens:
         """The latest refused nudge for *session_id* since its last success."""
         return self._nudge_failures.get(session_id)
 
-    def _record_nudge_failure(self, session_id: str, exc: NotSubmitted) -> None:
+    def _record_nudge_failure(self, session_id: str, exc: Exception) -> None:
         if session_id not in self._nudge_failures and len(self._nudge_failures) >= 256:
             self._nudge_failures.pop(next(iter(self._nudge_failures)))
         self._nudge_failures[session_id] = {
@@ -758,7 +778,7 @@ class SessionLens:
             "reason_kind": (
                 str(exc.reason) if isinstance(exc, NudgeDeferred) else None
             ),
-            "composer_dirty": exc.composer_dirty,
+            "composer_dirty": getattr(exc, "composer_dirty", False),
         }
 
     async def tail_assistant_turn(
@@ -825,9 +845,15 @@ class SessionLens:
         if (
             kind == "session"
             and target_id.startswith(_SUPERVISOR_NAME_PREFIX)
-            and await self._supervisor_address(target_id, project_id) is not None
         ):
-            return "sleeping"
+            address = await self._supervisor_address(target_id, project_id)
+            if address is not None:
+                suffix = address[len(_SUPERVISOR_NAME_PREFIX):]
+                if suffix == _GLOBAL_SUPERVISOR_SUFFIX:
+                    return "sleeping"
+                project = await self._db.get_project(suffix)
+                if project is not None and project.supervisor_enabled:
+                    return "sleeping"
         return "absent"
 
     async def _supervisor_address(self, target_id: str, project_id: str | None) -> str | None:
@@ -933,6 +959,17 @@ class SessionLens:
             return None, None
 
         if row is None:
+            return None, None
+        if (row.lifecycle == "named" and row.project_id is not None
+                and row.name == "n-supervisor--" + row.project_id):
+            project = await self._db.get_project(row.project_id)
+            if project is None or not project.supervisor_enabled:
+                return None, None
+        if kind == "session" and (
+            row.state not in {"starting", "running"} or row.desired_state != "running"
+        ):
+            # An immutable UUID must never fall through to a successor with
+            # the same runtime name. Named addresses may wake separately.
             return None, None
         handle = SessionHandle(
             name=row.name,

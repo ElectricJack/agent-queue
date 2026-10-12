@@ -769,11 +769,29 @@ detail) into `_fail_session_launch`; the exit path is
   locked by the task, never a pool claim still `preparing` (`not_started`),
   and plan files -- left out of every task commit -- do not count as work at
   risk. It runs in the orchestrator cycle, so each is bounded by
-  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds. A
-  hierarchy/train branch is left to its integration owner (`checkpoint:
-  integration_managed`), and a tripped task there takes a short provider pause
-  instead of READY, as the launch path does when the integration release is
-  unconfirmed.
+  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds.
+* **A hierarchy/train branch** keeps its integration owner, so its checkpoint
+  is `stranded_work.save_wip_to_task_branch`: the stopped writer's work becomes
+  one `WIP saved by AQ: <reason>` commit fast-forwarded onto the task's *own*
+  branch (never forced, only in the project's integration repository), with no
+  `aq/preserved` snapshot. Only the task's own writer is saved (owner role
+  `worker` or `repair`, owner id the task): a verifier's checkout is not the
+  task's work and is left untouched. The save records `failover_resume_checkpoint`
+  (repository, branch, base, saved sha) in task metadata; the next exact-origin
+  preparation starts from `origin/<branch>` while it still descends from that
+  sha (else from the filing base), and launch or pool-claim activation consumes
+  it. A pool claim is retained while its owner is attached, so once the save
+  leaves the checkout clean and pushed the exit path hands the owner back
+  (`arelease_integration_writer_for_retry(pool=True)`) before the teardown. A
+  branch that cannot fast-forward is left untouched (`checkpoint:
+  integration_managed`) for owner recovery, and a tripped task there takes a
+  short provider pause instead of READY, as the launch path does when the
+  integration release is unconfirmed.
+* **`aq task stop` on a hierarchy/train writer** (`stop_task`, and the forced
+  shutdown and delete paths) stops the process first and then saves the same
+  way instead of refusing because the writer or its workspace is still
+  attached; it records the same resume point. A dirty verifier keeps the
+  refusal.
 * **Order on the exit path:** checkpoint while the session row is still live
   (a daemon that dies mid-push re-runs the failover next tick, where a row
   already marked non-live would have let the orphan sweep BLOCK the task),
@@ -792,7 +810,15 @@ detail) into `_fail_session_launch`; the exit path is
 * **The hand-off note** is `task_metadata['provider_failover_handoff']` plus a
   system comment (`system:provider-failover`), and `aq prime` renders it in
   the task-context section on its own, so a later re-route comment cannot push
-  it out of the five recent comments.
+  it out of the five recent comments. It names the saved commit, tells the next
+  worker to continue from the branch tip rather than restart, and keeps the
+  stopped session's last ~80 screen lines (`screen_tail`, captured before the
+  stop, at most 8 KiB of UTF-8). Prime quotes only the last whole lines within
+  2 KiB (`PRIME_SCREEN_BYTES`) and points at `aq session logs` for the rest:
+  its body is required knowledge context, and a body over the context budget
+  fails `aq prime` outright (`context.required_over_budget`). The quote sits
+  inside a fence its content cannot close, labelled as quoted output.
+  Writing it emits `task.handoff` for the dashboard and supervisor playbooks.
 * **A move to another provider drops `session_resume_key`**
   (`ProviderRerouteService._move`): the carried conversation id belongs to the
   old CLI, and a harness without a transcript reader would take it unchecked.
@@ -1174,6 +1200,12 @@ replay and the five-minute timer never notify twice:
 | Discord, passively | the hourly digest | any half change or batch in the window | `collect_digest_activity` gains a producer over `provider_availability_transitions` and `task_reroutes`, emitting `WorkFact`s in the already-declared, producer-less `system` category with stable keys `provider:<key>:<generation>` / `reroute:<batch_id>`. A system fact makes a window eligible on its own: an outage in a quiet hour is exactly what the digest is for. |
 | Discord, actively | a durable escalation (the `escalation_create` row, written by the daemon), `source_kind = "provider_availability"`, `source_identity = "<provider>:<generation>"`, `incident_key = "provider:<provider>:<generation>"` | **only when a human must act**: `unauthenticated`; `failing` for longer than `notify.escalate_failing_after_seconds`; or every provider unavailable per D15. Never for `exhausted` with a known `until` — there is nothing to decide. | severity `high` (`critical` when everything is down); `decision_requested` is the remediation. Filed under the project with the most affected tasks (ties by id), because escalations are project-scoped; with no affected task, none is filed. Resolved by the same command when the provider leaves that state. |
 
+Project supervisors are opt-in. A disabled project's notice routes to
+`session:supervisor-global` while retaining its project context and
+`reroute:<batch>:<project>` thread. Deduplication uses that thread regardless
+of recipient changes or read/archive state, so a later sweep never repeats
+the notice and projects sharing the global supervisor keep separate notices.
+
 **As built (`bold-rapids.6`).** The escalation half lives in
 `ProviderAvailabilityService.reconcile_escalations`
 (`src/providers/availability_service.py`), run by
@@ -1275,9 +1307,11 @@ receive no provider events, matching the operator-only provider API.
   its expiry, held and re-routed counts, and actions — *Disable for…*,
   *Recheck*, *Clear override*. The rule the cards already follow applies: a state
   is server-derived and never recomputed in the browser.
-* **A banner** on every page while any provider is unavailable: *"Codex
+* **A banner** on every desktop page while any provider is unavailable: *"Codex
   unavailable — logged out since 12:04 · 5 tasks moved to Claude · 4 held"*,
-  linking to the card.
+  linking to the card. Hide it below the dashboard's 768 CSS px mobile
+  breakpoint; provider state remains available on mobile in the Metrics
+  provider cards.
 * **Task detail**: an intent chip (*Pinned* / *Preferred* / *Class only*),
   editable where routing is editable; *"re-routed from `standard-high-codex` ·
   undo"*; and the hold, rendered like `TaskAttention` with the `kind` in words.

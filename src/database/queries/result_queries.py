@@ -165,6 +165,13 @@ class ResultQueryMixin:
             if idempotent:
                 statement = statement.on_conflict_do_nothing(index_elements=["id"])
             await conn.execute(statement)
+            if completion.outcome == "fail" or completion.work_outcome == "abandoned":
+                from src.integration.branch_retirement import request_task_retirement_on
+
+                await request_task_retirement_on(
+                    conn, completion.task_id, request_id="close:" + completion.id,
+                    reason="failed close" if completion.outcome == "fail" else "abandoned close",
+                )
             flipped = await self.recompute_blocked({completion.task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
 

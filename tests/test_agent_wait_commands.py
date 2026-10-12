@@ -404,7 +404,16 @@ async def test_task_wait_cascade_resolves_and_wakes_idle_pool_holder(
         (env.session.name, f"Handle `aq wait show {wait_id} --consume --json`."),
     ]
     message = await env.db.get_message(resolved["result_message_id"])
+    assert message.delivered_at is None and message.read_at is None
+    assert message.last_notified_at == NOW + 200 and message.notification_attempts == 1
+    consumed = await execute(commands, "wait_get", dict(
+        wait_id=wait_id, consume=True, claim_epoch=1,
+    ))
+    assert consumed["success"], consumed
+    assert consumed["wait"] == resolved
+    message = await env.db.get_message(resolved["result_message_id"])
     assert message.delivered_at == NOW + 200
+    assert message.via == "wait_consume"
     # Repeated reconciliation/delivery must not submit the result twice.
     await Orchestrator._reconcile_sessions(orch)
     orch._last_delivery_pass = 0
@@ -520,7 +529,14 @@ async def test_plain_message_wakes_idle_pool_holder(commands, env, monkeypatch, 
 
     assert typed() == [f"Handle `aq message status {message_id} --json`."]
     message = await env.db.get_message(message_id)
-    assert message.delivered_at == NOW and message.via == "nudge"
+    assert message.delivered_at is None and message.read_at is None
+    assert message.last_notified_at == NOW and message.notification_attempts == 1
+    assert message.via == "nudge"
+    read = await execute(commands, "message_status", {"message_id": message_id})
+    assert read["state"] == "acknowledged", read
+    assert read["message"]["body"] == message.body
+    message = await env.db.get_message(message_id)
+    assert message.delivered_at == NOW and message.read_at == NOW and message.via == "read"
 
 
 async def _ask_on_thread(commands, env):
@@ -569,7 +585,16 @@ async def test_thread_wait_fires_on_reply_and_wakes_idle_holder(
 
     await Orchestrator._deliver_messages(orch)
     assert f"Handle `aq wait show {wait_id} --consume --json`." in typed()
-    assert (await env.db.get_message(resolved["result_message_id"])).delivered_at == NOW + 30
+    message = await env.db.get_message(resolved["result_message_id"])
+    assert message.delivered_at is None and message.read_at is None
+    assert message.last_notified_at == NOW + 30 and message.notification_attempts == 1
+    consumed = await execute(commands, "wait_get", dict(
+        wait_id=wait_id, consume=True, claim_epoch=1,
+    ))
+    assert consumed["success"], consumed
+    assert consumed["wait"]["digest"]["message_id"] == reply_id
+    message = await env.db.get_message(resolved["result_message_id"])
+    assert message.delivered_at == NOW + 30 and message.via == "wait_consume"
 
 
 async def test_unthreaded_guidance_does_not_satisfy_a_thread_wait(commands, env, monkeypatch):

@@ -91,6 +91,10 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "window_id": "digest-window-1",
         "request_id": "report-hourly-digest-window-1",
     },
+    "report.morning_due": {
+        "local_date": "2026-10-10",
+        "report_id": "morning-2026-10-10",
+    },
     "assignment.route.requested": {
         "project_id": "proj-1",
         "tasks": [],
@@ -884,6 +888,7 @@ _CANONICAL_PAYLOADS["task.claim_conflict"] = {
     "session_id": "sess-1",
 }
 _CANONICAL_PAYLOADS["snapshot.refreshed"] = {"tick": 1234567890.0}
+_CANONICAL_PAYLOADS["project.paused"] = {"project_id": "proj-1"}
 _CANONICAL_PAYLOADS["project.resumed"] = {"project_id": "proj-1"}
 _CANONICAL_PAYLOADS["project.created"] = {
     "project_id": "proj-1",
@@ -954,6 +959,12 @@ _CANONICAL_PAYLOADS["pool.enabled_changed"] = {
     "project_id": "proj-1",
     "profile_id": "worker",
     "enabled": False,
+}
+_CANONICAL_PAYLOADS["pool.renamed"] = {
+    "profile_id": "worker",
+    "old_name": "Worker",
+    "name": "Space Bunny",
+    "backup_path": "/vault/agent-types/worker/profile.md.bak-1",
 }
 # This switch event is also the wake-up contract for already-parked pool claims.
 # Global worker pools §6.3 / §4 — emitted by ``_emit_placement_starved`` and
@@ -1154,6 +1165,19 @@ _CANONICAL_PAYLOADS.update(
             "title": "Implement feature X",
             "reason": "session_exited_without_close",
         },
+        "task.handoff": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "reason": "usage-limit screen on a stalled session: Free usage exceeded",
+            "disposition": "requeued",
+            "checkpoint": "pushed",
+            "session_id": "s-1",
+            "provider": "opencode",
+            "harness": "opencode",
+            "branch": "aq/fresh-rapids-73",
+            "head": "0123456789abcdef0123456789abcdef01234567",
+        },
         "task.closed": {
             "task_id": "t-1",
             "project_id": "proj-1",
@@ -1218,6 +1242,12 @@ _CANONICAL_PAYLOADS.update(
 # ═══════════════════════════════════════════════════════════════════════════
 # (a) Valid payloads pass validation silently
 # ═══════════════════════════════════════════════════════════════════════════
+
+_CANONICAL_PAYLOADS.update({
+    event: {"project_id": "my-app", "step_id": "release"}
+    for event in ("promotion.source_settled", "promotion.request_due",
+                  "promotion.hotfix_completed", "promotion.intent_due", "promotion.delivered")
+})
 
 
 class TestValidPayloadPassesSilently:

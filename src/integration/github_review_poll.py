@@ -21,7 +21,9 @@ without keeping exceptions or rendering their tracebacks for each root.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,11 +34,202 @@ from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.integration.source_ancestry import SourceAncestryInvalid, SourceAncestryObservation
+from src.integration.source_ci import pull_request_conflicts
 from src.models import TaskStatus
+from src.projects.github import GitHubError
 
 logger = logging.getLogger(__name__)
 
 _UNREAD = object()
+
+#: GitHub computes a PR's mergeability in the background after a read; the
+#: first ``null`` is looked at again this soon rather than after the backoff.
+MERGEABILITY_RETRY_SECONDS = 15
+
+
+def pull_request_mismatch(pull, binding, *, branch, base_ref, head_sha):
+    """The PR must propose this repository's exact source to this boundary."""
+    head, base = pull.get("head"), pull.get("base")
+    head_repo = head.get("repo") if isinstance(head, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    if pull.get("state") not in {"open", "closed"}:
+        raise ValueError("GitHub pull request state is malformed")
+    if pull.get("state") != "open":
+        return "closed"
+    if not all(isinstance(item, dict) for item in (head, base, head_repo, base_repo)):
+        raise ValueError("GitHub pull request identity is malformed")
+    if head.get("ref") != branch or head_repo.get("id") != binding.repository_id:
+        return "head branch changed"
+    if base.get("ref") != base_ref or base_repo.get("id") != binding.repository_id:
+        return "base changed"
+    if head.get("sha") != head_sha:
+        return "head moved"
+    return None
+
+
+class RootPullRequestGate:
+    """Read the PR at freeze time; unavailable observations back off, never admit.
+
+    Git alone has already decided this source is pending. These observations
+    authorize admission, and have no bearing on delivery or a frozen batch.
+    """
+
+    def __init__(self, db, *, repository, checks, clock=time.time, review_requirements=None,
+                 failure_handler=None):
+        self.db, self.repository, self.checks, self.clock = db, repository, checks, clock
+        self.review_requirements = review_requirements
+        self.failure_handler = failure_handler
+        self._deferred = {}
+
+    async def __call__(self, target, member):
+        return await self._observe(target, member)
+
+    async def admit_repaired_source(self, target, member):
+        """Authorize a source whose exact repair is admitted in the same batch."""
+        return await self._observe(target, member, repaired_source=True)
+
+    async def _observe(self, target, member, *, repaired_source=False):
+        from src.integration.reviews import (
+            ReviewerPermissionUnavailable,
+            observe_pull_request_review_state,
+        )
+        from src.integration.runtime_contracts import HeadIdentity
+
+        async with self.db._engine.connect() as conn:
+            row = (await conn.execute(select(
+                tasks.c.pr_url, tasks.c.branch_name, projects.c.hierarchical_integration_policy,
+                projects.c.hierarchical_integration_generation,
+            ).join(projects, projects.c.id == tasks.c.project_id).where(
+                tasks.c.id == member.task_id,
+            ))).mappings().one()
+            request = None
+            if self.failure_handler is not None and not repaired_source:
+                from src.integration.delivery_truth import load_delivery_requests
+
+                request = (await load_delivery_requests(self.db, [member.task_id],
+                    repository_id=target.repository_id, target_ref=target.target_ref,
+                    conn=conn, reduced=True)).get(member.task_id)
+        policy = row["hierarchical_integration_policy"] or {}
+        url = row["pr_url"]
+
+        def blocker(code, **detail):
+            return {"code": code, "task_id": member.task_id, "ref": member.task_id,
+                    "source_sha": member.source_sha, "pr_url": url,
+                    "detail": f"root {member.task_id} PR admission: {code}", **detail}
+
+        if not isinstance(url, str) or not url.strip():
+            return blocker("awaiting_pr")
+        key = (target.key, member.task_id, member.source_sha, url, row["branch_name"],
+               json.dumps(policy, sort_keys=True), request)
+        for stale in list(self._deferred):
+            if stale[:2] == key[:2] and stale != key:
+                del self._deferred[stale]
+        previous = self._deferred.get(key)
+        now = self.clock()
+        if (previous and now < previous["retry_at"]
+                and not (repaired_source and previous["code"] == "pr_checks_red")):
+            return previous
+
+        def defer(code, *, due_at=None, **detail):
+            delay = min((previous or {}).get("retry_seconds", 30) * 2, 600)
+            result = blocker(code, retry_at=max(now + delay, due_at or 0),
+                             retry_seconds=delay, **detail)
+            self._deferred[key] = result
+            return result
+
+        def computing():
+            # A repeated null falls back to the ordinary backoff.
+            if (previous or {}).get("mergeable") == "unknown":
+                return defer("awaiting_pr_checks", mergeable="unknown")
+            result = blocker("awaiting_pr_checks", mergeable="unknown",
+                             retry_at=now + MERGEABILITY_RETRY_SECONDS,
+                             retry_seconds=(previous or {}).get("retry_seconds", 30))
+            self._deferred[key] = result
+            return result
+
+        try:
+            binding, client = await self.repository(target)
+            number = GitHubAccess.validate_pr_url(binding, url)
+            pull = await client.pull_request(url)
+            mismatch = pull_request_mismatch(pull, binding,
+                branch=str(row["branch_name"]).removeprefix("refs/heads/"),
+                base_ref=target.target_ref.removeprefix("refs/heads/"), head_sha=member.source_sha)
+            if mismatch:
+                return defer("pr_closed" if mismatch == "closed" else "awaiting_pr",
+                             reason=mismatch)
+            if pull.get("draft"):
+                return defer("pr_draft")
+            from src.integration.models import integration_ci_policy
+
+            ci = integration_ci_policy(policy)
+            # Local member validation uses the trusted integration job lane.
+            # Even automatic admission cannot execute unreviewed code there, so
+            # a local or hybrid root requires the exact-head approval first.
+            local = ci is not None and ci.source_for("root") != "hosted"
+            reviewed = (policy.get("root") or {}).get("admission", "reviewed") == "reviewed"
+
+            async def review_state():
+                reviews = await client.paged_list(
+                    f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100")
+                return await observe_pull_request_review_state(reviews, member.source_sha,
+                    client=client, binding=binding, requirements=self.review_requirements)
+
+            if local:
+                state = await review_state()
+                if state != "approved":
+                    return defer(state)
+            exact = await self.checks(target, member, policy, binding)
+            if exact is None:
+                raise ValueError("PR required checks observer is unavailable")
+            result = await exact.refresh_if_due(HeadIdentity(repository_id=target.repository_id,
+                ref="refs/heads/" + pull["head"]["ref"], sha=member.source_sha, generation=0))
+            # A successful authenticated listing can prove that no PR workflow
+            # exists for this exact head. GitHub suppresses that workflow for
+            # dirty PRs; the frozen candidate owns integration and its own CI.
+            # An outage, an executing run or a genuine failure never qualifies.
+            suppressed = (pull_request_conflicts(pull) and bool(result.checks)
+                          and all(check.detail.get("missing_pr_run") is True
+                                  for check in result.checks)
+                          and result.state.value in {"pending", "unknown"})
+            if not result.green and not suppressed and result.state.value != "red":
+                if result.state.value != "unknown" and pull.get("mergeable") is None:
+                    return computing()
+            if result.state.value == "unknown" and not suppressed:
+                return defer("unknown", due_at=result.due_at, reason="PR checks unavailable")
+            repaired_red = repaired_source and result.state.value == "red"
+            if not result.green and not suppressed and not repaired_red:
+                recovery = {}
+                if result.state.value == "red" and request is not None:
+                    from src.integration.checks import Conclusion
+                    from src.integration.root_pr_recovery import RootPRCheckFailure
+
+                    # Workflow-level failure, absent checks and cancellations do
+                    # not establish a failed required job that a worker can fix.
+                    if any(check.conclusion is Conclusion.FAILURE for check in result.checks):
+                        recovery = await self.failure_handler(RootPRCheckFailure(
+                            request=request, source_sha=member.source_sha,
+                            source_base_sha=member.source_base_sha, pr_url=url,
+                            policy_generation=row["hierarchical_integration_generation"],
+                            policy=policy, checks=result,
+                        ))
+                return defer(recovery.get("blocker") or (
+                             "pr_checks_red" if result.state.value == "red"
+                             else "awaiting_pr_checks"), due_at=result.due_at,
+                             **({"recovery": recovery} if recovery else {}))
+            if reviewed and not local:
+                state = await review_state()
+                if state != "approved":
+                    return defer(state)
+            self._deferred.pop(key, None)
+            return None
+        except ReviewerPermissionUnavailable as exc:
+            return defer("pr_review_permission_unavailable", reason=str(exc))
+        except (GitError, GitHubError, GitHubAccessError, OSError, ValueError, KeyError, TypeError) as exc:
+            from src.git.github_contracts import rate_limit_cause
+
+            if rate_limit_cause(exc) is not None:
+                raise
+            return defer("unknown", reason=str(exc))
 
 
 @dataclass
@@ -241,7 +434,7 @@ class GitHubReviewPoller:
         try:
             binding = await self.git.bind_github_repository(url)
             found = _Repository(binding, self.git._github_client(binding))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - repository adapter failures back off
             delay = min(
                 failure.delay * 2 if failure else self.repository_retry_seconds,
                 self.repository_retry_max_seconds,
@@ -384,10 +577,14 @@ class GitHubReviewPoller:
         self, row: dict[str, Any], source: dict[str, Any], binding: Any, client: Any,
         number: int, seen: _Observation,
     ) -> bool:
-        """Store each new human verdict on the exact head; False if one was not stored."""
+        """Store only trusted human verdicts on the exact head."""
+        from src.integration.reviews import trusted_pull_request_reviewers
+
         reviews = await client.paged_list(
             f"/repositories/{binding.repository_id}/pulls/{number}/reviews?per_page=100"
         )
+        trusted = await trusted_pull_request_reviewers(
+            reviews, client=client, binding=binding)
         complete = True
         for review in sorted(reviews, key=lambda item: item.get("id", -1)):
             review_id = review.get("id")
@@ -402,6 +599,8 @@ class GitHubReviewPoller:
             login = user.get("login")
             if not isinstance(login, str) or not login.strip():
                 raise GitHubAccessError("conflict_or_invalid", "GitHub reviewer was malformed")
+            if login.casefold() not in trusted:
+                continue
             if review.get("commit_id") != source["head"]:
                 continue
             approved = state == "APPROVED"

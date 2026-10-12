@@ -28,6 +28,7 @@ from src.commands.principal import principal_context
 class EscalationCreateArgs(CommandArgs):
     project_id: str
     task_id: str | None = None
+    task_title: str | None = None
     source_kind: str
     source_identity: str
     incident_key: str

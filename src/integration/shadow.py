@@ -15,7 +15,7 @@ from src.logging_config import CorrelationContext
 from src.integration.delivery_truth import DeliveryRequest, DeliveryState
 from src.integration.git_truth import GitTruth, epic_complete, repair_progress
 from src.integration.observe import DatabaseObservationReader
-from src.integration.subjects import CIState, SubjectEngine, SubjectKind
+from src.integration.runtime_contracts import CIState, SubjectEngine, SubjectKind
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,9 @@ class GitFirstDiagnostics:
             proposed = (
                 None
                 if proof is None or proof.state is DeliveryState.UNKNOWN
-                else proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT}
+                else proof.state in {
+                    DeliveryState.CONTAINED, DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT,
+                }
             )
             self.record(
                 subject,

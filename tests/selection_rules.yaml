@@ -67,14 +67,17 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: ["src/stall_watch.py", "src/database/queries/stall_watch_queries.py"], areas: ["task-lifecycle"] }
+  - { paths: ["src/policy_profiles/**", "src/commands/policy_commands.py", "src/api/models/policy.py", "src/cli/policy.py", "dashboard/src/pages/project/PolicyProfiles.tsx", "dashboard/src/api/policy.ts"], areas: ["policy-profiles"] }
   - { paths: ["tests/integration_ownership.py", "tests/integration_ownership.json", "tests/integration_ownership_report.json"], areas: ["integration-trains"] }
-  - { paths: ["scripts/integration-cutover-evidence.py", "scripts/backfill-legacy-deliveries.py"], areas: ["integration-trains"] }
+  - { paths: ["scripts/integration-cutover-evidence.py", "scripts/backfill-legacy-deliveries.py", "scripts/benchmark-git-truth.py", "scripts/benchmark-train-selection.py", "scripts/cleanup-origin-integration-refs.py"], areas: ["integration-trains"] }
   - { paths: ["src/knowledge/__init__.py", "src/knowledge/imports/**", "tests/fixtures/knowledge/**"], areas: ["knowledge-inventory"] }
   - { paths: ["src/records/**", "src/knowledge/**", "src/database/queries/record_queries.py", "src/database/queries/knowledge_queries.py", "tests/record_helpers.py"], areas: ["knowledge-records"] }
   - { paths: ["src/object_loop/**", "src/commands/object_loop_commands.py", "src/commands/contracts/object_loop.py", "src/api/models/object_loop.py"], areas: ["object-loop"] }
   # Match the core now and the sibling command/CLI files as they land.
   - { paths: ["src/**/collaboration*.py", "src/commands/*wait_commands.py", "src/cli/*wait*.py"], areas: ["collaboration"] }
   - { paths: ["src/agent_waits.py", "src/database/queries/agent_wait_queries.py", "src/commands/wait_commands.py", "src/commands/contracts/wait.py", "src/cli/waits.py"], areas: ["agent-waits"] }
+  - { paths: ["src/agent_cron.py", "src/database/queries/agent_cron_queries.py", "src/commands/cron_commands.py", "src/commands/contracts/cron.py", "src/cli/cron.py", "src/api/models/cron.py"], areas: ["agent-cron"] }
   - { paths: ["src/jobs/**", "src/commands/job_commands.py", "src/database/queries/job_queries.py", "src/commands/contracts/job.py", "src/api/models/job.py", "src/cli/jobs.py"], areas: ["managed-jobs"] }
   - { paths: ["src/jobs/pytest_output.py"], areas: ["development-delivery"] }
   # ---- repository files outside src/
@@ -106,10 +109,13 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/regenerate-generated.sh", ".gitattributes"], areas: ["generated-artifacts"] }
   - { paths: ["scripts/gen-command-docs.py", "scripts/check-docs.py"], areas: ["docs-guards"] }
   - { paths: ["scripts/generate-config-schema-inventory.py"], areas: ["config"] }
+  - { paths: ["scripts/generate-promotion-flow-schema.py", "docs/reference/promotion-flow-schema.json", "src/commands/promote_commands.py", "src/commands/contracts/promote.py", "src/integration/promotion_steps.py", "src/integration/promotion_routing.py"], areas: ["integration-promotion"] }
   - { paths: ["scripts/generate-cli-command-inventory.py", "scripts/generate-command-catalogue.py"], areas: ["cli-framework"] }
   - { paths: ["scripts/build_release_artifact.py"], areas: ["packaging", "dashboard-server", "install"] }
   - { paths: ["scripts/check-merge-conflicts.sh"], areas: ["git-manager"] }
+  - { paths: ["scripts/operator-checks/**"], areas: ["supervisor"] }
   - { paths: ["scripts/migrate_task_records.py"], areas: ["database"] }
+  - { paths: ["scripts/check_additive_migrations.py", "scripts/rollback_drill.py"], areas: ["database", "install"] }
   - { paths: ["scripts/migrate-legacy-playbook-worker-routes.py"], areas: ["playbook-authoring", "task-routing"] }
   - { paths: ["scripts/reap_test_databases.py"], areas: ["test-substrate"] }
   - { paths: ["scripts/reconcile-claude-usage.py"], areas: ["transcripts"] }
@@ -150,6 +156,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/fixtures/playbooks/**"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine", "shipped-playbooks", "ci-sentinel", "supervisor", "task-routing", "epic-trains", "integration-promotion", "document-reviews", "docs-guards"] }
   - { paths: ["tests/fixtures/provider_failover/**"], areas: ["provider-failover", "e2e-kit"] }
   - { paths: ["tests/fixtures/reports/**"], areas: ["digest"] }
+  - { paths: ["tests/fixtures/routing/**"], areas: ["task-routing"] }
   - { paths: ["tests/fixtures/train_onboarding/**"], areas: ["epic-trains"] }
   - { paths: ["tests/fixtures/task_graphs/**"], areas: ["task-graph-creation", "intelligence-classes", "integration-trains"] }
   - { paths: ["tests/fixtures/transcripts/**"], areas: ["transcripts"] }
@@ -161,7 +168,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/vault.py"], areas: ["vault", "profiles", "intelligence-classes", "harnesses"] }
   - { paths: ["src/assignment_routing.py", "src/explain.py"], areas: ["task-routing", "work-graph"] }
   - { paths: ["src/claim_file.py", "src/pool_claims.py"], areas: ["claims", "worker-pools"] }
-  - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py"], areas: ["config"] }
+  - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py", "src/portable_setup.py"], areas: ["config"] }
   - { paths: ["src/conversations/**"], areas: ["discord-conversations", "supervisor"] }
   - { paths: ["src/deliverables.py", "src/state_machine.py", "src/task_summary.py", "src/task_names.py"], areas: ["task-lifecycle"] }
   - { paths: ["src/docs_urls.py"], areas: ["docs-guards", "playbook-authoring"] }
@@ -172,7 +179,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/llm_logger.py", "src/logging_config.py"], areas: ["logging"] }
   - { paths: ["src/main.py"], areas: ["orchestrator", "daemon-cli"] }
   - { paths: ["src/orphan_workflow_recovery.py", "src/workflow_pipeline_view.py", "src/workflow_stage_resume_handler.py"], areas: ["orchestrator"] }
-  - { paths: ["src/prompt_builder.py", "src/prompt_manager.py"], areas: ["prompts"] }
+  - { paths: ["src/prompt_builder.py", "src/prompt_manager.py", "src/task_templates.py"], areas: ["prompts"] }
   - { paths: ["src/dashboard_paths.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/remote_links.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/review_keys.py"], areas: ["document-reviews"] }
@@ -256,10 +263,12 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/profile_commands.py"], areas: ["profiles", "intelligence-classes"] }
   - { paths: ["src/commands/project_commands.py", "src/commands/project_onboarding_commands.py"], areas: ["projects"] }
   - { paths: ["src/commands/proposal_commands.py", "src/commands/review_commands.py", "src/commands/spec_commands.py"], areas: ["document-reviews"] }
+  - { paths: ["src/commands/task_changes.py"], areas: ["task-dependencies", "task-hierarchy", "task-archive", "task-comments", "work-graph", "task-routing"] }
   - { paths: ["src/commands/provider_commands.py", "src/commands/provider_allocation_commands.py"], areas: ["provider-failover"] }
   - { paths: ["src/commands/question_commands.py"], areas: ["agent-questions"] }
   - { paths: ["src/commands/report_commands.py"], areas: ["digest"] }
   - { paths: ["src/commands/routing_commands.py"], areas: ["task-routing"] }
+  - { paths: ["src/commands/operator_commands.py", "src/commands/operator_authority.py"], areas: ["operator-workers", "task-routing", "policy-profiles"] }
   - { paths: ["src/commands/session_commands.py"], areas: ["session-runtime", "claims"] }
   - { paths: ["src/commands/task_commands.py", "src/commands/helpers.py"], areas: ["task-lifecycle", "task-hierarchy", "task-dependencies", "task-archive"] }
   - { paths: ["src/commands/task_comment_commands.py"], areas: ["task-comments"] }

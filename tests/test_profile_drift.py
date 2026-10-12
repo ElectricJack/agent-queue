@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 import src.doctor  # side effect: populates sys.modules with the submodules
 from src.doctor.models import DoctorContext, Severity
@@ -34,6 +35,8 @@ from src.profiles.drift import (
 )
 from tests.db_fixtures import lease_dsn
 from src.config import DatabaseConfig
+from src.models import Agent
+from src.profiles.parser import parse_profile
 
 # ``src/doctor/__init__.py`` rebinds the package attribute ``profile_checks``
 # to the *factory function*, shadowing the submodule; sys.modules is the only
@@ -368,11 +371,55 @@ def test_reseed_can_skip_the_backup(defaults_root, data_dir):
     assert not [p for p in os.listdir(_vault(data_dir).parent) if ".bak-" in p]
 
 
+@pytest.mark.parametrize("backup", [True, False])
+@pytest.mark.parametrize("name", ["Review Spec Ingest", 'Review: "Specs" \\ Résumé', "Review\nSpecs"])
+def test_full_reseed_preserves_renamed_display_name(defaults_root, data_dir, backup, name):
+    renamed = SHIPPED.replace("name: Reviewer\n", yaml.safe_dump({"name": name}))
+    stale = renamed.replace('"read_only": true', '"read_only": false')
+    _write(_vault(data_dir), stale)
+
+    result = reseed_profile(data_dir, "reviewer", defaults_root, backup=backup)
+
+    text = _vault(data_dir).read_text(encoding="utf-8")
+    parsed = parse_profile(text)
+    assert parsed.is_valid, parsed.errors
+    assert parsed.frontmatter.name == name
+    assert parsed.frontmatter.id == "reviewer"
+    assert parsed.config["read_only"] is True
+    assert parsed.role == parse_profile(SHIPPED).role
+    assert diff_profile("reviewer", data_dir, defaults_root).status == STATUS_OK
+    if backup:
+        assert Path(result["backup_path"]).read_text(encoding="utf-8") == stale
+    else:
+        assert result["backup_path"] is None
+
+
 def test_reseed_creates_a_missing_copy(defaults_root, data_dir):
     result = reseed_profile(data_dir, "reviewer", defaults_root)
     assert result["created"] is True
     assert result["backup_path"] is None
     assert _vault(data_dir).exists()
+    assert parse_profile(_vault(data_dir).read_text(encoding="utf-8")).frontmatter.name == "Reviewer"
+
+
+@pytest.mark.parametrize(
+    "stale",
+    [
+        b"no frontmatter",
+        b"---\nid: reviewer\nname: [invalid\n---\n",
+        b"---\nid: reviewer\nname: ''\n---\n",
+        b"---\nid: reviewer\nname: \xff\n---\n",
+    ],
+)
+def test_reseed_uses_shipped_name_when_vault_name_is_unavailable(defaults_root, data_dir, stale):
+    path = _vault(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(stale)
+
+    result = reseed_profile(data_dir, "reviewer", defaults_root)
+
+    assert path.read_text(encoding="utf-8") == SHIPPED
+    assert Path(result["backup_path"]).read_bytes() == stale
 
 
 def test_reseed_refuses_a_non_system_profile(defaults_root, data_dir):
@@ -862,6 +909,30 @@ async def test_profile_reseed_requires_a_system_profile(handler):
     assert "error" in await handler.execute("profile_reseed", {})
     result = await handler.execute("profile_reseed", {"profile_id": "my-own"})
     assert "not a shipped system profile" in result["error"]
+
+
+@pytest.mark.parametrize("grants_only", [False, True])
+async def test_profile_reseed_keeps_renamed_role_and_existing_agent(handler, grants_only):
+    path = Path(handler.config.data_dir) / "vault" / "agent-types" / "spec-ingest" / "profile.md"
+    original = path.read_text(encoding="utf-8")
+    renamed = original.replace("name: Review Spec Ingest", "name: My Spec Review")
+    stale, _ = _drop_one_aq_command_grant(renamed)
+    path.write_text(stale, encoding="utf-8")
+    await handler.db.update_profile("spec-ingest", name="My Spec Review")
+    await handler.db.create_agent(Agent(
+        id="existing-spec-ingest", name="Operator Agent Name", profile_id="spec-ingest",
+    ))
+    before = {agent.id: (agent.name, agent.profile_id) for agent in await handler.db.list_agents()}
+
+    result = await handler.execute(
+        "profile_reseed", {"profile_id": "spec-ingest", "grants_only": grants_only}
+    )
+
+    assert result["success"] is True
+    assert parse_profile(path.read_text(encoding="utf-8")).frontmatter.name == "My Spec Review"
+    assert (await handler.db.get_profile("spec-ingest")).name == "My Spec Review"
+    assert {agent.id: (agent.name, agent.profile_id) for agent in await handler.db.list_agents()} == before
+    assert Path(result["backup_path"]).read_text(encoding="utf-8") == stale
 
 
 async def test_profile_reseed_grants_only_merges_instead_of_overwriting(handler):

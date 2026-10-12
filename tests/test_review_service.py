@@ -118,6 +118,30 @@ async def revise(svc, review_id, content, *, note="changed", resolves=()):
     )
 
 
+@pytest.mark.parametrize("content,note,code", [
+    (DOC, "Addressed comments", "unchanged_content"),
+    ("---\ntitle: different\n---\n" + DOC, "Updated metadata", "unchanged_content"),
+    (DOC.replace("\n\n", "\n\n\n"), "Spacing", "unchanged_content"),
+    (DOC + "\nNew behavior.\n", "Progress-only: runners checked", "progress_only"),
+    (DOC + "\nNew behavior.\n", "Formatting only", "progress_only"),
+])
+async def test_resubmit_hygiene_does_not_advance_revision_or_emit(svc, db, hooks, content, note, code):
+    result = await submit(svc)
+    events = list(hooks.events)
+    await raises(code, revise(svc, result["review_id"], content, note=note))
+    assert (await db.get_review(result["review_id"]))["current_revision"] == 1
+    assert len(await db.list_review_revisions(result["review_id"])) == 1
+    assert hooks.events == events
+
+
+async def test_code_whitespace_change_is_substantive(svc):
+    content = DOC + "\n```python\nif ready:\n    run()\n```\n"
+    result = await submit(svc, content=content)
+    revised = await revise(svc, result["review_id"], content.replace("    run()", "run()"),
+                           note="Fix code example indentation")
+    assert revised["revision"] == 2
+
+
 async def approve(svc, review_id, revision=1, note="ok"):
     return await svc.decide(
         review_id=review_id, revision=revision, decision="approve", note=note, decided_by=OPERATOR
@@ -327,8 +351,13 @@ async def test_approve_resolves_the_gate_and_unblocks_waiters(svc, db, hooks, tm
     assert event["revision"] == 1
     assert event["unblocked_task_ids"] == ["impl"]
     assert event["note"] == "Ship it."
-    assert hooks.of("spec.approved") == []
-    assert [kind for kind, _ in hooks.events] == ["review.submitted", "review.decided"]
+    assert hooks.of("spec.approved") == [{
+        "project_id": PROJECT,
+        "spec_path": str((svc.vault_root / result["vault_path"]).resolve()),
+    }]
+    assert [kind for kind, _ in hooks.events] == [
+        "review.submitted", "review.decided", "spec.approved",
+    ]
 
 
 async def test_racing_decisions_let_exactly_one_win(svc, db, hooks):
@@ -342,6 +371,52 @@ async def test_racing_decisions_let_exactly_one_win(svc, db, hooks):
     assert losses[0].code in {"review_closed", "not_in_review", "stale_revision"}
     assert (await db.get_review(review_id))["state"] == wins[0]["state"]
     assert len(hooks.of("review.decided")) == 1
+
+
+@pytest.mark.parametrize("kind", ["spec", "plan", "other"])
+async def test_only_approved_specs_and_plans_emit_ingestion(svc, hooks, kind):
+    submitted = await submit(svc, kind=kind)
+    await approve(svc, submitted["review_id"])
+    events = hooks.of("spec.approved")
+    assert len(events) == (0 if kind == "other" else 1)
+    if events:
+        assert events[0]["spec_path"] == str((svc.vault_root / submitted["vault_path"]).resolve())
+    await raises("review_closed", approve(svc, submitted["review_id"]))
+    assert hooks.of("spec.approved") == events
+
+
+@pytest.mark.parametrize("spec_kind", ["design", "implementation"])
+async def test_revision_classification_survives_revise_approval_and_recovery(
+    svc, db, tmp_path, spec_kind,
+):
+    submitted = await submit(svc, content=f"---\nspec_kind: {spec_kind}\n---\n{DOC}")
+    review_id = submitted["review_id"]
+    assert (await db.get_review_revision(review_id, 1))["spec_kind"] == spec_kind
+    assert read_vault(tmp_path, submitted["vault_path"])[0]["spec_kind"] == spec_kind
+    await request_changes(svc, review_id)
+    await revise(svc, review_id, DOC + "\nMore implementation detail.\n")
+    assert (await db.get_review_revision(review_id, 2))["spec_kind"] == spec_kind
+    await approve(svc, review_id, revision=2)
+    (tmp_path / submitted["vault_path"]).unlink()
+    await svc.show(review_id=review_id)
+    fm, _ = read_vault(tmp_path, submitted["vault_path"])
+    assert fm["spec_kind"] == spec_kind
+    assert fm["status"] == "approved"
+
+
+async def test_revision_can_change_classification_without_mutating_prior_revision(svc, db):
+    submitted = await submit(svc, content=f"---\nspec_kind: design\n---\n{DOC}")
+    review_id = submitted["review_id"]
+    await request_changes(svc, review_id)
+    await revise(svc, review_id, f"---\nspec_kind: implementation\n---\n{DOC}")
+    assert (await db.get_review_revision(review_id, 1))["spec_kind"] == "design"
+    assert (await db.get_review_revision(review_id, 2))["spec_kind"] == "implementation"
+
+
+@pytest.mark.parametrize("field", ["spec_kind: typo", "spec_kind: [design]", "[broken"])
+async def test_invalid_spec_classification_is_refused_without_review(svc, db, field):
+    await raises("bad_spec_kind", submit(svc, content=f"---\n{field}\n---\n{DOC}"))
+    assert await db.list_reviews(project_id=PROJECT) == []
 
 
 # ── 5. decide: request changes ────────────────────────────────────────────
@@ -605,7 +680,7 @@ async def test_a_failed_vault_write_never_fails_the_submission(svc, db, tmp_path
 # ── 9. withdraw ───────────────────────────────────────────────────────────
 
 
-async def test_withdraw_keeps_the_gate_and_flags_waiters(svc, db, hooks, tmp_path):
+async def test_withdraw_cancels_the_gate_and_flags_waiters(svc, db, hooks, tmp_path):
     result = await submit(svc)
     review_id, gate_id = result["review_id"], result["gate_id"]
     await mktask(db, "impl")
@@ -620,7 +695,7 @@ async def test_withdraw_keeps_the_gate_and_flags_waiters(svc, db, hooks, tmp_pat
         "withdrawn", OPERATOR, "superseded",
     )
     assert review["decided_at"] == review["updated_at"]
-    assert (await db.get_gate(gate_id))["status"] == "open"
+    assert (await db.get_gate(gate_id))["status"] == "cancelled"
     assert hooks.resolved == []
     assert (await db.get_task("impl")).is_blocked is True
     for tid in ("impl", "impl-2"):
@@ -650,6 +725,129 @@ async def test_withdraw_from_changes_requested(svc, db):
     assert (review["state"], review["decided_by"], review["decision_note"]) == (
         "withdrawn", OPERATOR, None,
     )
+
+
+async def test_reopen_retains_identity_gate_audit_and_approval_hold(svc, db, hooks, tmp_path):
+    result = await submit(svc, content="---\nspec_kind: implementation\n---\n" + DOC)
+    rid, gid = result["review_id"], result["gate_id"]
+    await mktask(db, "impl")
+    await attach(db, gid, "impl")
+    await svc.withdraw(review_id=rid, reason="accidental", by=OPERATOR, via="dashboard")
+
+    shown = await svc.show(review_id=rid)
+    assert shown["dependent_task_ids"] == ["impl"]
+    assert shown["gate"]["status"] == "cancelled"
+    assert shown["review"]["withdrawn_via"] == "dashboard"
+    reopened = await svc.reopen(review_id=rid, revision=1, by=OPERATOR)
+    assert reopened["review_id"] == rid
+    assert reopened["revision"] == 2
+    assert reopened["vault_path"] == result["vault_path"]
+    review = await db.get_review(rid)
+    assert review["gate_id"] == gid
+    assert review["state"] == "in_review"
+    assert review["decided_by"] is None
+    assert review["withdrawn_by"] == OPERATOR
+    assert review["withdrawn_at"] == NOW
+    assert review["withdrawal_reason"] == "accidental"
+    assert (await db.get_gate(gid))["status"] == "open"
+    assert await db.get_gate_waiters(gid) == {"impl"}
+    assert (await db.get_task("impl")).is_blocked
+    assert await db.get_task_meta("impl", "needs_attention") is None
+    current = await db.get_review_revision(rid, 2)
+    assert current["content"] == DOC
+    assert current["spec_kind"] == "implementation"
+    assert read_vault(tmp_path, result["vault_path"])[0]["revision"] == 2
+    assert len(hooks.of("review.revised")) == 1
+    await raises("stale_revision", approve(svc, rid, revision=1))
+    await approve(svc, rid, revision=2)
+    assert (await db.get_task("impl")).is_blocked is False
+    await raises("review_closed", svc.reopen(review_id=rid, revision=2, by=OPERATOR))
+
+
+async def test_reopen_rejects_stale_revision_and_concurrent_attempts(svc, db):
+    rid = (await submit(svc))["review_id"]
+    await revise(svc, rid, DOC + "\nMore\n")
+    await svc.withdraw(review_id=rid, reason="", by=OPERATOR)
+    await raises("stale_revision", svc.reopen(review_id=rid, revision=1, by=OPERATOR))
+    results = await asyncio.gather(
+        svc.reopen(review_id=rid, revision=2, by=OPERATOR),
+        svc.reopen(review_id=rid, revision=2, by=OPERATOR),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, dict) for result in results) == 1
+    assert sum(isinstance(result, ReviewError) for result in results) == 1
+    assert (await db.get_review(rid))["current_revision"] == 3
+
+
+async def test_gate_cancellation_failure_rolls_back_withdrawal(svc, db, monkeypatch):
+    rid = (await submit(svc))["review_id"]
+    async def fail(*args, **kwargs):
+        raise RuntimeError("gate write failed")
+    monkeypatch.setattr(db, "set_review_gate_state", fail)
+    with pytest.raises(RuntimeError, match="gate write failed"):
+        await svc.withdraw(review_id=rid, reason="", by=OPERATOR)
+    assert (await db.get_review(rid))["state"] == "in_review"
+
+
+async def test_reopen_preserves_other_withdrawal_and_unrelated_attention(svc, db):
+    first, second = await submit(svc, title="First"), await submit(svc, title="Second")
+    await mktask(db, "impl")
+    await mktask(db, "other")
+    await db.set_task_meta("other", "needs_attention", "unrelated")
+    await attach(db, first["gate_id"], "impl", "other")
+    await attach(db, second["gate_id"], "impl")
+    for result in (first, second):
+        await svc.withdraw(review_id=result["review_id"], reason="", by=OPERATOR)
+    await svc.reopen(review_id=first["review_id"], revision=1, by=OPERATOR)
+    assert await db.get_task_meta("impl", "needs_attention") == "review_withdrawn"
+    assert await db.get_task_meta("other", "needs_attention") == "unrelated"
+    await svc.reopen(review_id=second["review_id"], revision=1, by=OPERATOR)
+    assert await db.get_task_meta("impl", "needs_attention") is None
+
+
+async def test_concurrent_reopens_clear_shared_withdrawal_attention(svc, db, monkeypatch):
+    reviews = [await submit(svc, title=title) for title in ("First", "Second")]
+    await mktask(db, "impl")
+    for review in reviews:
+        await attach(db, review["gate_id"], "impl")
+        await svc.withdraw(review_id=review["review_id"], reason="", by=OPERATOR)
+    original = db.set_review_gate_state
+    both_transitioned = asyncio.Event()
+    arrivals = 0
+
+    async def overlap(*args, **kwargs):
+        nonlocal arrivals
+        arrivals += 1
+        if arrivals == 2:
+            both_transitioned.set()
+        await both_transitioned.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(db, "set_review_gate_state", overlap)
+    await asyncio.wait_for(asyncio.gather(*(
+        svc.reopen(review_id=review["review_id"], revision=1, by=OPERATOR)
+        for review in reviews
+    )), timeout=15)
+    assert await db.get_task_meta("impl", "needs_attention") is None
+    assert (await db.get_task("impl")).is_blocked
+
+
+async def test_failed_gate_reopen_preserves_review_revision_and_attention(svc, db, monkeypatch):
+    review = await submit(svc)
+    await mktask(db, "impl")
+    await attach(db, review["gate_id"], "impl")
+    await svc.withdraw(review_id=review["review_id"], reason="", by=OPERATOR)
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("gate write failed")
+
+    monkeypatch.setattr(db, "set_review_gate_state", fail)
+    with pytest.raises(RuntimeError, match="gate write failed"):
+        await svc.reopen(review_id=review["review_id"], revision=1, by=OPERATOR)
+    assert (await db.get_review(review["review_id"]))["state"] == "withdrawn"
+    assert await db.get_review_revision(review["review_id"], 2) is None
+    assert (await db.get_gate(review["gate_id"]))["status"] == "cancelled"
+    assert await db.get_task_meta("impl", "needs_attention") == "review_withdrawn"
 
 
 # ── 10. comment ───────────────────────────────────────────────────────────

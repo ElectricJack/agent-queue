@@ -290,6 +290,10 @@ class JobCommandsMixin:
         if not job:
             return {"success": False, "error": "not_found"}
         result = job["result"]
+        if result:
+            message = await self.db.get_message(f"job:{job['id']}:terminal")
+            if message is not None:
+                await self._acknowledge_message_read(message)
         if result and "max_bytes" in args:
             from src.jobs.result import bounded
 

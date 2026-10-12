@@ -233,6 +233,31 @@ async def _check_alembic_orphan(ctx: DoctorContext) -> CheckResult:
             data={"stamped": stamped, "heads": heads},
         )
 
+    if ctx.config.database.schema_ahead_migrations:
+        from src.database.migration_guard import SchemaAheadCode, SchemaAheadPolicy
+
+        policy = SchemaAheadPolicy(
+            ctx.config.database.schema_ahead_migrations,
+            ctx.config.database.schema_ahead_max_revisions,
+        )
+        try:
+            accepted = await asyncio.to_thread(policy.accepts, tuple(stamped), _VERSIONS_DIR)
+            detail = (
+                "retained migrations prove an additive schema ahead of code; "
+                "leave the schema and Alembic stamp unchanged"
+                if accepted
+                else "retained migrations do not prove this schema; deploy matching code"
+            )
+            severity = Severity.OK if accepted else Severity.ERROR
+        except SchemaAheadCode as exc:
+            detail, severity = str(exc), Severity.ERROR
+        return CheckResult(
+            id=CHECK_ID,
+            severity=severity,
+            detail=detail,
+            data={"stamped": stamped, "heads": heads, "retained_migrations": True},
+        )
+
     sources = {rev: await find_revision_source(rev) for rev in orphans}
     parts: list[str] = []
     for rev in orphans:
@@ -358,7 +383,7 @@ async def _fix_alembic_orphan(ctx: DoctorContext) -> CheckResult:
     """Repair one orphaned ``alembic_version`` row.  Never runs unattended."""
     before = await _check_alembic_orphan(ctx)
     orphans: list[str] = before.data.get("orphans", [])
-    if not orphans:
+    if not orphans or ctx.config.database.schema_ahead_migrations:
         return before
 
     url = _alembic_url(ctx)

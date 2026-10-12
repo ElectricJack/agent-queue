@@ -22,7 +22,9 @@ never from the task row or its status:
    temporary index -- the working tree and the live index are never touched
    -- and anything origin does not already carry (a dirty tree, a HEAD or a
    local branch ahead of or diverged from origin and not on the default
-   branch) is pushed, never forced, to ``aq/preserved/<owner-row-id>``.  The
+   branch) is pushed, never forced, to the task branch itself. Only a
+   divergent tip uses a temporary ``aq/recovery/<owner-row-id>/<sha>`` ref,
+   consumed and deleted when the retry merges it into the task branch. The
    branch is then detached in place, without reset or clean.  A fetch or
    push failure refuses with ``origin_unreachable``.
 3. **Release in one transaction.**  A compare-and-swap on
@@ -106,8 +108,123 @@ NOT_RECOVERABLE_STATE = "not_recoverable_state"
 RECOVERED_EVENT = "integration.owner_recovered"
 REFUSED_EVENT = "integration.owner_recovery_refused"
 
-#: Where preserved work lands on origin: ``aq/preserved/<owner-row-id>``.
+#: Legacy audits remain readable; new recovery never creates these copies.
 PRESERVED_PREFIX = "aq/preserved/"
+RECOVERY_PREFIX = "aq/recovery/"
+
+
+def recovery_ref_allowed(ref: str | None, branch: str, owner_row_id: str, sha: str) -> bool:
+    """Bind a recovery destination to its audited owner and exact commit."""
+    return ref in {
+        branch.removeprefix("refs/heads/"),
+        PRESERVED_PREFIX + owner_row_id,
+        f"{RECOVERY_PREFIX}{owner_row_id}/{sha}",
+    }
+
+
+async def consume_recovery_progress(
+    git, checkout, branch, progress, *, repository_url, lock_held=False,
+):
+    """Publish a real merge of audited progress, then remove its temporary ref.
+
+    The caller holds the branch's writer fence. Immutable
+    object operations leave every checkout/index untouched. A completed push
+    or deletion is replayed from ancestry, never by copying/re-authoring work.
+    """
+    branch = branch.removeprefix("refs/heads/")
+    ref, sha = progress["ref"], progress["sha"]
+    if not recovery_ref_allowed(ref, branch, progress["owner_row_id"], sha):
+        raise GitError("recovery ref does not match its audited owner")
+    await git.afetch_origin(
+        checkout, repository_url=repository_url, lock_held=lock_held, all_heads=True,
+    )
+    target = await git.als_remote_ref(checkout, branch)
+    snapshot = target if ref == branch else await git.als_remote_ref(checkout, ref)
+    if target.state is RemoteRefState.ERROR or snapshot.state is RemoteRefState.ERROR:
+        raise GitError("recovery origin ref is unreadable")
+    head = target.oid if target.state is RemoteRefState.PRESENT else None
+    contained = bool(head and await git.ais_ancestor(checkout, sha, head, strict=True))
+    if ref == branch:
+        if not contained:
+            raise GitError("preserved ref changed: task branch lost audited progress")
+        return head
+    if snapshot.state is RemoteRefState.ABSENT:
+        if contained:
+            await _cleanup_snapshot_refs(git, checkout, ref, sha)
+            return head  # A previous attempt already published and deleted it.
+        raise GitError("preserved ref changed or is unavailable")
+    if snapshot.oid != sha:
+        raise GitError("preserved ref changed from its audited commit")
+    if not contained:
+        if head is None or await git.ais_ancestor(checkout, head, sha, strict=True):
+            head = sha
+        else:
+            result = await git.arun_git_result(
+                ["merge-tree", "--write-tree", head, sha], cwd=checkout, lock_held=True,
+            )
+            if result.returncode:
+                raise GitError("recovery snapshot conflicts with the task branch; work retained")
+            tree = result.stdout.splitlines()[0]
+            result = await git.arun_git_result(
+                [*git.resolve_commit_identity().config_args(), "commit-tree", tree,
+                 "-p", head, "-p", sha, "-m", "aq: merge recovered task progress"],
+                cwd=checkout, lock_held=True,
+            )
+            if result.returncode:
+                raise GitError("recovery merge commit failed; snapshot retained")
+            head = result.stdout.strip()
+        await git.apush_validated_ref(checkout, head, branch)
+    # Recheck the exact current target before irreversible snapshot removal.
+    target = await git.als_remote_ref(checkout, branch)
+    if (target.state is not RemoteRefState.PRESENT
+        or not await git.ais_ancestor(checkout, sha, target.oid, strict=True)):
+        raise GitError("task branch moved before recovery snapshot cleanup")
+    await git.adelete_remote_ref_exact(checkout, ref, sha)
+    await git.afetch_origin(
+        checkout, repository_url=repository_url, lock_held=lock_held, all_heads=True,
+    )
+    await _cleanup_snapshot_refs(git, checkout, ref, sha)
+    return target.oid
+
+
+async def _cleanup_snapshot_refs(git, checkout, ref, sha):
+    for local_ref in (f"refs/heads/{ref}", f"refs/remotes/origin/{ref}"):
+        if await git.arev_parse(checkout, local_ref) == sha:
+            await git._arun(["update-ref", "-d", local_ref, sha], cwd=checkout)
+
+
+async def resume_recovery_snapshots(
+    db, git, checkout, repository_id, branch, *, repository_url, lock_held=False,
+):
+    """Consume every audited snapshot for this exact target before preparing it."""
+    bare = branch.removeprefix("refs/heads/")
+    async with db._engine.connect() as conn:
+        audits = (await conn.execute(
+            select(integration_owner_recoveries).where(
+                integration_owner_recoveries.c.repository_id == repository_id,
+                integration_owner_recoveries.c.ref.in_((bare, "refs/heads/" + bare)),
+                integration_owner_recoveries.c.outcome == PRESERVED_AND_RELEASED,
+            ).order_by(integration_owner_recoveries.c.created_at.desc())
+        )).mappings().all()
+    seen = set()
+    head = None
+    for audit in audits:
+        evidence = audit["evidence"] or {}
+        progress = evidence.get("snapshots") or [{
+            "ref": evidence.get("preserved_ref"), "sha": evidence.get("preserved_sha"),
+        }]
+        for item in progress:
+            ref = item["ref"]
+            # Direct publication is already authoritative; historical audits
+            # must not obstruct a later rebuilt/accepted branch revision.
+            if not ref or ref == bare or ref in seen:
+                continue
+            seen.add(ref)
+            head = await consume_recovery_progress(
+                git, checkout, bare, item | {"owner_row_id": audit["owner_row_id"]},
+                repository_url=repository_url, lock_held=lock_held,
+            )
+    return head
 
 #: A refusal repeating the latest recorded reason within this window is not
 #: recorded again (the sweep retries every 300 s).
@@ -375,6 +492,12 @@ class OwnerRecovery:
             origin_sha = remote.oid if remote.state is RemoteRefState.PRESENT else None
             local_sha = await self.git.arev_parse(checkout, f"refs/heads/{branch}")
             evidence.update(origin_sha=origin_sha, local_sha=local_sha)
+            pending = await self._pending_publication(row)
+            if pending:
+                prior = pending["evidence"]
+                for key in ("preserved_ref", "preserved_sha", "snapshots"):
+                    evidence[key] = prior.get(key)
+                evidence["publication_id"] = pending["id"]
 
             held_by_worktree = False
             for entry in await self.git.aworktree_list(checkout):
@@ -431,13 +554,15 @@ class OwnerRecovery:
             ):
                 preserve.append(("commit", None, local_sha))
 
-            preserved_ref = PRESERVED_PREFIX + row["id"]
             if preserve and dry_run:
                 for kind, path, sha in preserve:
+                    diverged = bool(origin_sha and not await self.git.ais_ancestor(
+                        checkout, origin_sha, sha, strict=True,
+                    ))
                     planned.append(
                         {
                             "action": "push",
-                            "ref": preserved_ref,
+                            "ref": (f"{RECOVERY_PREFIX}{row['id']}/{sha}" if diverged else branch),
                             "source": (
                                 f"snapshot of {path}"
                                 if kind == "snapshot"
@@ -454,10 +579,56 @@ class OwnerRecovery:
                     if kind == "snapshot":
                         sha = await self._snapshot(path, sha, row["id"])
                     shas.append(sha)
-                evidence["preserved_sha"] = await self._push_preserved(
-                    checkout, preserved_ref, shas, row["id"], repository_url
-                )
-                evidence["preserved_ref"] = preserved_ref
+                tip = origin_sha
+                snapshots = list(evidence.get("snapshots") or [])
+                pushes = []
+                for sha in dict.fromkeys(shas):
+                    if tip and await self.git.ais_ancestor(checkout, sha, tip, strict=True):
+                        continue
+                    diverged = bool(tip and not await self.git.ais_ancestor(
+                        checkout, tip, sha, strict=True,
+                    ))
+                    ref = f"{RECOVERY_PREFIX}{row['id']}/{sha}" if diverged else branch
+                    pushes.append((sha, ref))
+                    if diverged:
+                        item = {"ref": ref, "sha": sha}
+                        if item not in snapshots:
+                            snapshots.append(item)
+                    else:
+                        tip = sha
+                evidence["snapshots"] = snapshots
+                progress = snapshots[0] if snapshots else {"ref": branch, "sha": tip}
+                evidence["preserved_ref"] = progress["ref"]
+                evidence["preserved_sha"] = progress["sha"]
+                # Durable intent precedes publication. A crash before the
+                # release must not make already-published progress invisible.
+                await self._journal_publication(row, evidence)
+                for sha, ref in pushes:
+                    try:
+                        await self.git.apush_validated_ref(checkout, sha, ref)
+                    except (GitError, GitHubAccessError) as exc:
+                        raise _Refusal(ORIGIN_UNREACHABLE, f"pushing {ref}: {exc}") from exc
+                legacy_ref = PRESERVED_PREFIX + row["id"]
+                legacy = await self.git.als_remote_ref(checkout, legacy_ref)
+                if (legacy.state is RemoteRefState.PRESENT and tip
+                    and await self.git.ais_ancestor(checkout, legacy.oid, tip, strict=True)):
+                    await self.git.adelete_remote_ref_exact(checkout, legacy_ref, legacy.oid)
+                    await _cleanup_snapshot_refs(self.git, checkout, legacy_ref, legacy.oid)
+            if pending and not preserve:
+                # Publication may have completed even though the release did
+                # not. Re-prove its objects before completing the same audit.
+                items = evidence.get("snapshots") or [{
+                    "ref": evidence["preserved_ref"], "sha": evidence["preserved_sha"],
+                }]
+                for item in items:
+                    observed = await self.git.als_remote_ref(checkout, item["ref"])
+                    contained = (origin_sha and await self.git.ais_ancestor(
+                        checkout, item["sha"], origin_sha, strict=True,
+                    ))
+                    if not contained and (
+                        observed.state is not RemoteRefState.PRESENT or observed.oid != item["sha"]
+                    ):
+                        raise _Refusal(ORIGIN_UNREACHABLE, "pending recovery publication is unproved")
             for path in detach:
                 if dry_run:
                     planned.append({"action": "detach", "worktree": path})
@@ -467,7 +638,7 @@ class OwnerRecovery:
                     evidence.setdefault("detached", []).append(path)
         if dry_run:
             evidence["planned"] = planned
-        return _Plan(preserved=bool(preserve), workspace_clean=workspace_clean)
+        return _Plan(preserved=bool(preserve or pending), workspace_clean=workspace_clean)
 
     async def _checkout_for(self, row: dict[str, Any]) -> tuple[str | None, str, str | None, str]:
         """Base checkout, default branch, row checkout, authorized repository URL.
@@ -613,54 +784,6 @@ class OwnerRecovery:
         if result.returncode != 0:
             raise GitError(f"git commit-tree failed: {(result.stderr or '').strip()}")
         return result.stdout.strip()
-
-    async def _push_preserved(
-        self, checkout: str, ref: str, shas: list[str], owner_row_id: str,
-        repository_url: str,
-    ) -> str:
-        """Put every sha in *shas* on origin's *ref*, never forcing; return its tip.
-
-        One source is pushed as is.  Several -- or a ref that already holds
-        something else -- are joined under one commit that has each as a
-        parent, so the push is a fast-forward and nothing already preserved
-        is dropped.  A ref already holding everything is left alone.
-        """
-        shas = list(dict.fromkeys(shas))
-        existing = await self.git.als_remote_ref(checkout, ref)
-        if existing.state is RemoteRefState.ERROR:
-            raise _Refusal(ORIGIN_UNREACHABLE, f"reading origin/{ref}: {existing.error}")
-        held = existing.oid if existing.state is RemoteRefState.PRESENT else None
-        if held is not None:
-            if await self.git.arev_parse(checkout, f"{held}^{{commit}}") is None:
-                try:
-                    await self.git.afetch_origin(
-                        checkout, repository_url=repository_url, lock_held=True
-                    )
-                except (GitError, GitHubAccessError) as exc:
-                    raise _Refusal(
-                        ORIGIN_UNREACHABLE,
-                        f"fetching origin/{ref}: {exc}",
-                    ) from exc
-            missing = [
-                sha
-                for sha in shas
-                if sha != held and not await self.git.ais_ancestor(checkout, sha, held)
-            ]
-            if not missing:
-                return held
-            shas = missing
-        if len(shas) == 1 and (
-            held is None or await self.git.ais_ancestor(checkout, held, shas[0])
-        ):
-            tip = shas[0]
-        else:
-            parents = shas + ([held] if held is not None else [])
-            tip = await self._commit(checkout, f"{shas[0]}^{{tree}}", parents, owner_row_id)
-        try:
-            await self.git.apush_validated_ref(checkout, tip, ref)
-        except GitError as exc:
-            raise _Refusal(ORIGIN_UNREACHABLE, f"pushing {ref}: {exc}") from exc
-        return tip
 
     # -- step 5: release ------------------------------------------------------
 
@@ -817,9 +940,53 @@ class OwnerRecovery:
 
     # -- audit ----------------------------------------------------------------
 
+    async def _pending_publication(self, row):
+        async with self.db._engine.connect() as conn:
+            records = (await conn.execute(select(integration_owner_recoveries).where(
+                integration_owner_recoveries.c.owner_row_id == row["id"],
+                integration_owner_recoveries.c.outcome == NOT_ELIGIBLE,
+            ).order_by(integration_owner_recoveries.c.created_at.desc()))).mappings().all()
+        return next((record for record in records if (
+            record["reason"] == "publication_pending" or record["evidence"].get("publication_id")
+        ) and record["evidence"].get("preserved_sha") and all(
+            record["evidence"].get(key) == row[key]
+            for key in ("fence_token", "session_id", "workspace_id", "handoff_state")
+        )), None)
+
+    async def _journal_publication(self, row, evidence):
+        async with self.db.immediate() as conn:
+            audit_id = evidence.get("publication_id")
+            updated = None
+            if audit_id:
+                updated = await conn.execute(update(integration_owner_recoveries).where(
+                    integration_owner_recoveries.c.id == audit_id,
+                    integration_owner_recoveries.c.reason == "publication_pending",
+                ).values(evidence=json.loads(json.dumps(evidence, default=str))))
+            if updated is None or updated.rowcount != 1:
+                audit_id = uuid.uuid4().hex
+                await conn.execute(insert(integration_owner_recoveries).values(
+                    id=audit_id, owner_row_id=row["id"], repository_id=row["repository_id"],
+                    ref=row["ref"], task_id=row["owner_id"], outcome=NOT_ELIGIBLE,
+                    reason="publication_pending", evidence=json.loads(json.dumps(evidence, default=str)),
+                    principal="owner-recovery:pending", created_at=self.clock(),
+                ))
+            evidence["publication_id"] = audit_id
+
     async def _audit(
         self, conn, row: dict[str, Any], result: RecoveryOutcome, principal: str, now: float
     ) -> None:
+        if result.evidence.get("publication_id"):
+            updated = await conn.execute(update(integration_owner_recoveries).where(
+                integration_owner_recoveries.c.id == result.evidence["publication_id"],
+                integration_owner_recoveries.c.owner_row_id == row["id"],
+                integration_owner_recoveries.c.reason == "publication_pending",
+            ).values(
+                outcome=result.outcome, reason=result.reason,
+                evidence=json.loads(json.dumps(result.evidence, default=str)),
+                principal=principal, created_at=now,
+            ))
+            if updated.rowcount == 1:
+                return
         await conn.execute(
             insert(integration_owner_recoveries).values(
                 id=uuid.uuid4().hex,

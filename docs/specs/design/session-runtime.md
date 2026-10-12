@@ -237,6 +237,15 @@ drain or a terminal verdict, an operator via `aq session sleep | wake | kill`. D
 writes both fields at once, so a drained session stops being wanted at the moment it stops
 running. **Waking is always explicit**; nothing infers it from activity.
 
+An explicit `desired_state=sleeping` on a starting or running named session stops its
+process on the next reconciler tick, independently of idle timeout, outstanding work,
+or pending input submission. A failed stop leaves the runtime state live for retry.
+Recording sleep intent or transitioning to sleeping cancels that session instance's
+active cron schedules and archives undelivered scheduled prompts in the same transaction.
+An explicit wake received during the stop remains wanted and can start a successor.
+Every wake resolves the current profile's intelligence class and model, even when
+resuming the previous conversation; historical session settings are not launch settings.
+
 Starting is delegated to the session lens rather than reimplemented in the reconciler
 (the lens owns token minting, the global-supervisor cases and work_dir resolution).
 Failed starts spend the stall ladder's `max_restarts` budget and end in `quarantined`, so
@@ -248,6 +257,52 @@ all) and recycle-on-drift. Both are writable now that intent is representable; b
 the [supervisor-agent](supervisor-agent.md) routing story settled first.
 
 ### 4.3 Heartbeats, leases, and the stall ladder
+
+Idle sessions stop on their second identical preparation/admission blocker under the
+session cooldown guard (worker-pools §4); retained preparations preserve their
+ownership and use the separate quarantine budget below. An idle session drains
+at two failures and leaves its workspace enabled; it never reaches the third
+failure needed for workspace quarantine.
+
+Pool claim preparation has a separate persisted refusal budget. Three consecutive
+preparation failures with the same reason, in the same session, request a drain and
+disable that session's workspace. Empty-frontier polls and admission waits neither
+spend nor clear this budget; a different failure starts a new streak, and successful
+activation clears it. The count survives daemon restarts. The write is fenced by
+the session instance and preparation epoch, and cannot affect an active claim.
+The response is `drain_requested` and instructs the worker to run `aq session
+drain-ack` and exit. Reconciliation stops the exact session through normal guarded
+pool teardown even if the worker ignores the response. Attached branch ownership
+and its claim/workspace bindings remain available for recovery; quarantining a
+workspace never deletes its checkout or removes an index lock. An operator repairs
+and re-enables it after proving the retained work safe.
+
+Both operator stall sweeps report live pool workers with zero activated claims
+after 15 minutes, even when repeated claim attempts keep `last_activity` fresh.
+Idle pools without matching READY work and without preparation failures are normal
+standby and are excluded. Preparations in flight remain governed by their own
+timeout, rather than this report.
+
+The orphan sweep also checks assigned `IN_PROGRESS` tasks with **no session row**.
+After both the task revision and its assigned agent's task heartbeat are older
+than `sessions.lease_ttl_seconds` (at least 120 seconds for launch grace), a task
+with no launch in flight and no live session for that agent is recoverable.
+An agent's IDLE state alone is never proof that its process stopped. If an old
+attempt still identifies a session, the provider must confirm that exact instance
+stopped. Unknown liveness, operator holds, containers, daemon-authored work,
+job-pinned workspaces and integration-owned recovery are excluded.
+
+Recovery runs through `CommandHandler`, under the task control lock. It preserves
+any retained checkout with the existing Git checkpoint/restore path before an
+atomic, revalidated release of its workspace and assignment. The task keeps its
+branch, route and workspace preference, spends one worker retry and returns to
+READY. An exhausted budget becomes FAILED for the existing deduplicated supervisor
+incident path. A changed task, heartbeat, session or workspace cancels the write;
+an unproven integration attachment or checkpoint failure retains all resources.
+Repeated sweeps cannot recover the same task revision twice. The supervisor's
+`scripts/operator-checks/stall-sweep.py` independently reports `ORPHANED` for stale
+assigned tasks absent from a successful, complete live-session listing; a failed
+listing is an incomplete check, never evidence that sessions are absent.
 
 `agents.last_heartbeat` is fed from two sources: transcript `in-turn` activity (§4.5) and
 explicit `aq task heartbeat` calls (the prompt instructs agents to call it before long

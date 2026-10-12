@@ -10,6 +10,7 @@ from src.commands.handler import CommandHandler
 from src.integration.hierarchy import HierarchyIntegration
 from src.models import (
     AgentProfile,
+    TaskType,
     DepType,
     Project,
     Task,
@@ -65,6 +66,73 @@ class MockAdapterFactory:
         self.last_profile = profile
         self.create_calls.append({"agent_type": agent_type, "profile": profile})
         return MockAdapter(result=self.result, tokens=self.tokens, on_wait=self.on_wait)
+
+
+async def test_startup_backfills_legacy_playbook_sources_including_inactive_artifacts(tmp_path):
+    from pathlib import Path
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import PlaybookDefinition, source_digest
+    from tests.playbook_v2_helpers import twin
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("source-backfill.db")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.playbooks.enabled = True
+    source = "# Legacy inactive policy\n"
+    path = Path(config.vault_root) / "system/playbooks/legacy-inactive.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(source)
+    definition = PlaybookDefinition.model_validate(twin()).model_copy(
+        update={"source_hash": source_digest(source)}
+    )
+    store = ArtifactStore(config.compiled_root)
+    ref = store.put(
+        definition, source_digest=definition.source_hash,
+        contract_fingerprint="sha256:" + "b" * 64,
+        profile_fingerprint="profile", compiler_build="test",
+    )
+    assert not store.source_path_for(ref.artifact_sha256).exists()
+    orch = Orchestrator(config, runtimes=MockAdapterFactory())
+    orch.set_command_handler(CommandHandler(orch, config))
+    try:
+        await orch.initialize()
+        assert store.load_source(ref.artifact_sha256) == source
+    finally:
+        await orch.shutdown()
+
+
+@pytest.mark.parametrize("empty_vault", [False, True], ids=["absent", "empty"])
+async def test_first_install_activates_policy_after_loading_profiles(tmp_path, empty_vault):
+    from pathlib import Path
+    from src.playbooks.required import (
+        DEFAULT_SYSTEM_PLAYBOOK_IDS, INSTALL_RECEIPT, REQUIRED_SYSTEM_PLAYBOOK_IDS,
+    )
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("fresh-policy.db")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.playbooks.enabled = True
+    if empty_vault:
+        Path(config.vault_root).mkdir(parents=True)
+    orch = Orchestrator(config, runtimes=MockAdapterFactory())
+    orch.set_command_handler(CommandHandler(orch, config))
+    try:
+        await orch.initialize()
+        assert orch.required_playbook_status["ok"], orch.required_playbook_status
+        rows = await orch.db.list_playbook_activations()
+        assert {row["playbook_id"] for row in rows} == set(
+            REQUIRED_SYSTEM_PLAYBOOK_IDS + DEFAULT_SYSTEM_PLAYBOOK_IDS
+        )
+        assert all(row["enabled"] for row in rows)
+        assert '"activation_pending": false' in (
+            Path(config.data_dir) / INSTALL_RECEIPT
+        ).read_text()
+    finally:
+        await orch.shutdown()
 
 
 async def _drain_running_tasks(orch: Orchestrator) -> None:
@@ -220,6 +288,50 @@ class TestSchedulerBlockerLogging:
         assert caplog.messages == []
 
 
+async def test_message_pointer_arrives_while_scheduler_git_work_is_blocked(orch, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def stalled_git(_now):
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(orch, "_drain_branch_materializations", stalled_git)
+    monkeypatch.setattr(orch.session_lens, "activity", AsyncMock(return_value="idle"))
+    notified = asyncio.Event()
+
+    async def submit_nudge(**_kwargs):
+        notified.set()
+        return True
+
+    nudge = AsyncMock(side_effect=submit_nudge)
+    monkeypatch.setattr(orch.session_lens, "nudge", nudge)
+    orch.config.messages.delivery_interval = 0.1
+    scheduler = asyncio.create_task(orch.run_one_cycle())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        msg = await orch.db.create_message(
+            project_id=None, from_kind="user", from_id="cli", to_kind="session",
+            to_id="global-session-uuid", body="Verify the queued request",
+        )
+        await orch.bus.emit("message.sent", {
+            "message_id": msg.id, "project_id": None, "from_kind": "user",
+            "to_kind": "session", "to_id": msg.to_id,
+        })
+        await asyncio.wait_for(notified.wait(), timeout=15)
+        stored = await orch.db.get_message(msg.id)
+        assert not scheduler.done()
+        assert stored.via == "nudge" and stored.read_at is None
+        assert stored.delivered_at is None and stored.notification_attempts == 1
+        assert stored.last_notified_at is not None
+        nudge.assert_awaited_once_with(
+            kind="session", target_id=msg.to_id, project_id=None,
+            text=f"Handle `aq message status {msg.id} --json`.",
+        )
+    finally:
+        scheduler.cancel()
+        await asyncio.gather(scheduler, return_exceptions=True)
+
+
 async def test_orchestrator_owns_single_integration_service_loop(orch):
     service = orch.integration_service
     # No GitHub App config must not leave the entire integration transport unwired.
@@ -231,27 +343,22 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     assert service is not None
     assert service._task is not None
     assert service._task.get_name() == "integration-reconciliation-service"
-    assert orch.integration_scheduler is not None
+    assert orch.integration_scheduler is None
     assert orch.integration_outbox is not None
     assert orch.integration_attestation_service is not None
     assert not hasattr(orch, "integration_control_service")
     assert orch.branch_materialization_service is not None
-    assert service._subject_runtime is not None
-    assert orch.config.integration.reconciler_active is True
-    assert len(service._subject_runtime.loops) == 1
-    assert service._subject_runtime.loops[0]._mode.value == "active"
-    assert service._parent_subject_runtime is orch.parent_subject_runtime
-    assert service._development_subject_runtime is orch.development_subject_runtime
+    assert orch.branch_materialization_service.legacy_container_collection is False
+    assert service._subject_runtime is None
+    assert service._parent_subject_runtime is None
+    assert service._development_subject_runtime is None
     assert service._outbox is orch.integration_outbox
     assert "delegate cleanup" in service._maintenance
     assert orch.integration_train is None and service._train is None
-    assert (
-        orch.integration_attestation_resolver.__self__
-        is orch.integration_attestation_service
-    )
+    assert orch.integration_attestation_resolver.__self__ is orch.integration_attestation_service
 
 
-async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_path):
+async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_path, monkeypatch):
     config = AppConfig(
         database=DatabaseConfig(url=lease_dsn("train.db")),
         workspace_dir=str(tmp_path / "workspaces"),
@@ -259,6 +366,11 @@ async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_p
     )
     config.worktrees.enabled = False
     config.integration.git_first = "active"
+    import sys
+    for name in ("scheduler", "promotion", "main_promotion", "root_runtime", "parent_runtime",
+                 "reconciler", "root_adapters", "candidates", "subjects", "parent_engine",
+                 "settling", "stale_schedule"):
+        monkeypatch.setitem(sys.modules, f"src.integration.{name}", None)
     orch = Orchestrator(config, runtimes=MockAdapterFactory())
     from src.commands.handler import CommandHandler
 
@@ -272,8 +384,15 @@ async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_p
             "success": True, "started": [], "running": [], "skipped": [], "deferred": [],
         }
         assert service._subject_runtime is None
+        assert orch.integration_scheduler is None
+        assert orch.promotion_service is None
+        assert orch.root_promotion_service is None
+        assert orch.integration_outbox._before_dispatch is None
         assert orch.parent_subject_runtime is None
         assert orch.development_subject_runtime is None
+        # No parent runtime means no legacy collection episode either
+        # (grand-lantern-78, 2026-10-07).
+        assert orch.branch_materialization_service.legacy_container_collection is False
         assert service._task is not None
     finally:
         await _drain_running_tasks(orch)
@@ -428,7 +547,7 @@ async def test_orchestrator_outbox_sinks_unsubscribed_events_with_runtime_eviden
     assert "NoIntegrationEventConsumer: no ready playbook" in unknown["last_error"]
 
 
-async def test_runtime_cycle_materializes_origins_and_starts_untouched_container(orch, tmp_path):
+async def test_runtime_cycle_materializes_origins_without_legacy_container_episode(orch, tmp_path):
     """The daemon cycle, not a direct service call, owns origin reconciliation."""
     from sqlalchemy import insert
 
@@ -523,8 +642,8 @@ async def test_runtime_cycle_materializes_origins_and_starts_untouched_container
     await orch.run_one_cycle()
 
     checkpoint = await orch.db.get_integration_checkpoint("materialization-epic")
-    assert checkpoint["episode_id"] is not None
-    assert (await orch.db.get_task("materialization-epic")).status is TaskStatus.PAUSED
+    assert checkpoint["episode_id"] is None
+    assert (await orch.db.get_task("materialization-epic")).status is TaskStatus.IN_PROGRESS
     origin = await orch.db.get_task_branch_origin_for_promotion(
         "materialization-epic", "materialization-repo"
     )
@@ -594,24 +713,70 @@ async def test_configured_orchestrator_installs_shared_repository_client(
     monkeypatch.setattr(orchestrator.github_access, "bind_repository", bind_repository)
     await orchestrator.initialize()
     try:
-        repository = RepoConfig(
-            id="repo",
-            project_id="p",
-            source_type=RepoSourceType.CLONE,
-            url="https://github.com/acme/widgets.git",
+        references = (
+            "https://github.com/acme/widgets.git",
+            "https://github.com/acme/widgets",
+            "https://github.com/acme/widgets.git/",
+            "https://github.com/acme/widgets/",
+            "HTTPS://GitHub.com/acme/widgets",
+            "https://www.github.com/acme/widgets",
+            "https://github.com:443/acme/widgets.git",
+            "git@github.com:acme/widgets.git",
+            "ssh://git@github.com/acme/widgets",
+            "ssh://git@github.com:22/acme/widgets.git",
+            "acme/widgets",
+            "github.com/acme/widgets",
         )
-        resolved = await orchestrator.github_repository_binding_resolver(repository)
-        client = orchestrator.github_client_factory(binding)
+        client = None
+        for reference in references:
+            repository = RepoConfig(
+                id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=reference,
+            )
+            resolved = await orchestrator.github_repository_binding_resolver(repository)
+            resolved_client = orchestrator.github_client_factory(binding)
 
-        assert resolved == binding
-        assert isinstance(client, GitHubClient)
-        assert client.repository == binding
-        assert client.access is orchestrator.github_access
+            assert resolved == binding, reference
+            assert isinstance(resolved_client, GitHubClient)
+            assert resolved_client.repository == binding
+            assert resolved_client.access is orchestrator.github_access
+            if client is not None:
+                assert resolved_client is client
+            client = resolved_client
+            assert orchestrator.github_access.credential_identity.mode is (
+                GitHubCredentialMode.APP if use_app else GitHubCredentialMode.EXISTING_LOGIN
+            )
+        assert bind_repository.await_count == len(references)
+        assert all(call.args == ("acme/widgets",) for call in bind_repository.await_args_list)
+
+        # Rejected input must not select credentials or construct another client.
+        for reference in (
+            "https://gitlab.com/acme/widgets.git",
+            "git@other.example:acme/widgets.git",
+            str(tmp_path / "local.git"),
+            "http://github.com/acme/widgets.git",
+            "https://user:password@github.com/acme/widgets.git",
+            "https://github.com:8443/acme/widgets.git",
+            "ssh://root@github.com/acme/widgets.git",
+            "https://github.com/acme/widgets.git?token=secret",
+            "https://github.com/acme/widgets.git#fragment",
+            "https://github.com/acme/widgets/tree/main.git",
+            "https://github.com/acme/../widgets.git",
+            "https://github.com/acme/widgets%2fother.git",
+        ):
+            repository.url = reference
+            assert await orchestrator.github_repository_binding_resolver(repository) is None
+        assert bind_repository.await_count == len(references)
         assert orchestrator.github_client_factory(binding) is client
-        assert orchestrator.github_access.credential_identity.mode is (
-            GitHubCredentialMode.APP if use_app else GitHubCredentialMode.EXISTING_LOGIN
-        )
-        bind_repository.assert_awaited_once_with("acme/widgets")
+
+        # A validated URL still requires successful binding with the selected
+        # authority; provider failures must propagate without ambient fallback.
+        from src.git.github_contracts import GitHubAccessError
+
+        bind_repository.side_effect = GitHubAccessError("credentials", "binding denied")
+        repository.url = "git@github.com:acme/widgets.git"
+        with pytest.raises(GitHubAccessError, match="binding denied"):
+            await orchestrator.github_repository_binding_resolver(repository)
+        assert orchestrator.github_client_factory(binding) is client
     finally:
         await orchestrator.shutdown()
 
@@ -1395,6 +1560,39 @@ class TestRecoverStaleState:
         task = await orch.db.get_task("t-1")
         assert task.status == TaskStatus.READY
         assert task.assigned_agent_id is None
+
+    @pytest.mark.parametrize("task_type", [TaskType.PROMOTION, TaskType.BACKMERGE])
+    async def test_daemon_authored_intent_is_left_in_progress(self, orch, task_type):
+        """A promotion intent has no agent; StepAdmission needs it IN_PROGRESS
+        with no profile, so a restart must not hand it to the router."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(
+            Task(
+                id="promote-1",
+                project_id="p-1",
+                title="Promote staging",
+                description="Daemon-authored step intent.",
+                status=TaskStatus.IN_PROGRESS,
+                task_type=task_type,
+            )
+        )
+
+        await orch._recover_stale_state()
+
+        assert (await orch.db.get_task("promote-1")).status == TaskStatus.IN_PROGRESS
+
+    async def test_router_never_sees_daemon_authored_intents(self, orch):
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        for task_id, task_type in (("promote-1", TaskType.PROMOTION),
+                                   ("backmerge-1", TaskType.BACKMERGE),
+                                   ("work-1", TaskType.FEATURE)):
+            await orch.db.create_task(Task(id=task_id, project_id="p-1", title=task_id,
+                                           description="d", status=TaskStatus.READY,
+                                           task_type=task_type))
+
+        candidates = {task.id for task in await orch._route_needed_candidates()}
+
+        assert candidates == {"work-1"}
 
     async def test_container_task_still_auto_completes(self, orch):
         """Event-driven settlement (spec §7) keys off the container flag, so
@@ -2544,6 +2742,8 @@ class TestPhaseVerifyNormalTask:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+        assert ctx.verification_issues
+        assert ctx.verification_infrastructure_failure
 
 
 class TestPhaseVerifyApprovalTask:

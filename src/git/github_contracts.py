@@ -103,6 +103,18 @@ class GitHubAccessError(RuntimeError):
         super().__init__(message)
 
 
+def rate_limit_cause(exc: BaseException) -> GitHubAccessError | None:
+    """The ``rate_limited`` GitHub failure anywhere in *exc*'s cause chain."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, GitHubAccessError) and current.category == "rate_limited":
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def credential_identity_from_client(client: Any) -> GitHubCredentialIdentity:
     """Read the shared credential identity from the composed client.
 

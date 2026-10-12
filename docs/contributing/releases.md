@@ -54,27 +54,13 @@ Publish a SHA-256 requirements lock beside each release and install it with
 pip's `--require-hashes` option. The package-data manifest protects the bundle
 after installation; pip's hash checking protects the downloaded wheel.
 
-The repository carries eight Git tags — `plan1-complete`, `plan2-complete`,
-`plan3-complete`, `e2e-kit-complete`, `pre-agent-merge`, `pre-mass-merge`,
-`pre-sdk-strip`, `pre-worktree-migration`. Every one of them is a **checkpoint
-before or after a large migration**, kept so the state on either side can be
-recovered. None is a release. Do not add a tag expecting tooling to notice it;
-nothing does.
-
-```bash
-git tag
-```
-
-```text
-e2e-kit-complete
-plan1-complete
-plan2-complete
-plan3-complete
-pre-agent-merge
-pre-mass-merge
-pre-sdk-strip
-pre-worktree-migration
-```
+Historical checkpoint tags such as `plan1-complete` and `pre-sdk-strip` mark
+migrations; they are not release selectors. A versioned promotion now publishes
+an immutable annotated release tag, and checkout installations can select its
+family through `deploy.tag_glob` and `deploy.target`. See
+[prepare, deploy and recover a release](../guides/releases.md) for the current
+tag selector, `deploy.json`, rollback and database restore. Wheel packaging and
+package upgrades still follow the procedure on this page.
 
 ## Dependency pinning
 

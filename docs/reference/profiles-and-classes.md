@@ -18,6 +18,13 @@ first; this page is exhaustive rather than gentle.
 Both directories are watched, so a saved file takes effect without a daemon
 restart.
 
+New non-pool agents created for task demand use the profile's display `name`.
+When an enabled agent of the same profile already has that name, the new
+agent gets the lowest free numeric suffix starting at `2`, such as
+`Review Spec Ingest 2`. Existing agents keep their saved names and are reused
+when they can serve the task. Installer refresh and profile reseeding do not
+create agent rows.
+
 ## Agent profile format
 
 A profile is one markdown file: YAML frontmatter, then sections. Sections whose
@@ -300,7 +307,7 @@ holds the task, and no filing command takes a profile.
 | `aq agent import-profile` / `export-profile` | YAML round-trip. |
 | `aq agent profile-drift` | Which vault system profiles diverge from `src/profiles/defaults/`, on the semantic fields (`read_only`, `harness`, `lifecycle`, `needs_workspace`), missing/extra sections, and `missing_grants` (per-namespace `## Capabilities` grant names the shipped default has that the vault copy lacks). |
 | `aq agent profile-reseed --profile-id <id> --grants-only` | Additive repair: merge only the missing `## Capabilities` grants into the vault copy, keeping `.bak-<epoch>`; every other edit (e.g. `harness`) survives untouched. Refuses if the vault copy has no `## Capabilities` section. |
-| `aq agent profile-reseed --profile-id <id>` | Overwrite one vault profile with the shipped version, keeping `.bak-<epoch>`; also clears its tombstone. |
+| `aq agent profile-reseed --profile-id <id>` | Restore one vault profile from the shipped version while preserving a nonempty display name in valid vault frontmatter, keeping `.bak-<epoch>`; also clears its tombstone. |
 | `aq agent profile-audit --legacy-only` | Profiles still deriving capabilities from `allowed_tools`. |
 | `aq agent check-profile` / `install-profile` | Validate and install a profile's `## Install` dependencies. |
 | `aq agent show-effective-profile` | Run the resolution cascade for a `(project, agent-type)` pair. |

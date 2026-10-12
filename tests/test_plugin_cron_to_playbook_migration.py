@@ -297,31 +297,25 @@ class TestVaultInstallation:
     def test_all_default_playbooks_installed(self, tmp_path):
         """Only the minimal default playbook set is auto-installed.
 
-        Everything else now lives under ``docs/example_playbooks/``
-        as opt-in reference material. The optional report playbooks ship
-        installed but disabled; the operator activates them explicitly.
+        Retired sources are absent; their reviewed recordings remain available
+        separately for audit and explicit import.
         """
         result = ensure_default_playbooks(str(tmp_path))
 
         expected = {
-            "blocked-task-escalation.md",
             "default-assignment-routing.md",
             "default-pipeline.md",
             "morning-report.md",
             "provider-failover.md",
             "provider-usage-probe.md",
-            "supervisor-digest.md",
+            "stuck-task-watch.md",
             "supervisor-failure-triage.md",
-            "supervisor-hourly-report.md",
         }
         installed = set(result["created"])
         assert expected == installed, (
             f"Missing playbooks: {expected - installed}, "
             f"Extra playbooks: {installed - expected}"
         )
-        digest = _read(str(tmp_path / "vault" / "system" / "playbooks"), "supervisor-digest.md")
-        frontmatter, _ = _parse_frontmatter(digest)
-        assert frontmatter["enabled"] is False
 
 
 # ===================================================================

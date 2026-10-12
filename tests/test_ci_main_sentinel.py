@@ -117,6 +117,9 @@ def test_artifact_observes_then_repairs_or_escalates() -> None:
     assert inputs["source_kind"] == {"type": "literal", "value": "core"}
     assert inputs["source_identity"]["path"] == "escalation_key"
     assert inputs["incident_key"]["path"] == "escalation_key"
+    assert inputs["task_title"] == {
+        "type": "binding_ref", "binding": "baseline", "path": "escalation_title",
+    }
     assert inputs["severity"] == {"type": "literal", "value": "high"}
     assert escalate.transitions == {
         "created": done, "reused": done, "rejected": failed, "runtime_error": failed

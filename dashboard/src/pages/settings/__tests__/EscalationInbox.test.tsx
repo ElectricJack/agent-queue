@@ -70,6 +70,13 @@ function renderInbox() {
 }
 
 describe("Escalation inbox", () => {
+  it("shows the paused hold instead of a delivery warning", () => {
+    api.escalations[0]!.held_while_paused = true;
+    renderInbox();
+    expect(screen.getByText("held while paused")).toBeInTheDocument();
+    expect(screen.queryByText("delivery pending")).not.toBeInTheDocument();
+  });
+
   it("lists escalations with state, project, open count and pending delivery", () => {
     renderInbox();
     expect(screen.getByText(/1 open of 2\./)).toBeInTheDocument();

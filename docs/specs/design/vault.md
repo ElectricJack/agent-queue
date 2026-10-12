@@ -89,9 +89,13 @@ can browse, edit, and visualize alongside the system's own read/write operations
 │   │   └── agent-queue/
 │   │       └── ...
 │   │
-│   └── templates/                      # Templates for new profiles, playbooks
+│   └── templates/                      # Profile, playbook and generated task templates
 │       ├── profile-template.md
-│       └── playbook-template.md
+│       ├── playbook-template.md
+│       └── tasks/                      # Live generated worker instructions
+│           ├── source-ci-repair.md
+│           ├── root-pr-check-repair.md
+│           └── ...                     # See generated-task-templates.md
 │
 ├── config.yaml                         # System configuration
 ├── .env                                # Secrets

@@ -43,6 +43,8 @@ from enum import StrEnum
 from src.claim_file import read_claim_file, remove_claim_file_if_matches
 from src.models import SessionRecord, TaskStatus
 from src.pool_claims import (
+    CLAIM_FAILURE_DRAIN_REASON,
+    MAX_IDENTICAL_CLAIM_FAILURES,
     idle_pool_claim_loop_stalled,
     is_live_pool_claim_task_status,
     pool_claim_budget_exhausted,
@@ -337,11 +339,13 @@ class SessionReconciler:
         live = await self._step_observe(now)
         for step in (
             self._step_flock_audit,
+            self._step_claim_refusals,
             self._step_drain_ack,
             self._step_prepare_timeout,
             self._step_exits,
             self._step_abandoned_pool_claim_loop,
             self._step_orphans,
+            self._step_disabled_project_supervisors,
             self._step_idle_stop_intent,
             self._step_stall_ladder,
             self._step_named,
@@ -665,7 +669,7 @@ class SessionReconciler:
                     f"is retired ({retirement['disposition']}) and no close of it can be "
                     "accepted. The session reconciler stopped the session; the task was "
                     "not closed or marked passed. Its checkout and branch stay preserved: "
-                    "owner recovery snapshots unpushed work to aq/preserved/<owner-row> "
+                    "owner recovery publishes unpushed work to this task branch "
                     "before it releases the branch."
                 ),
                 author_kind="supervisor",
@@ -735,7 +739,7 @@ class SessionReconciler:
                     "come. The session reconciler stopped the session; the task's terminal "
                     "state and completion were not changed. Its claim, checkout and branch "
                     "binding stay for owner recovery (`aq integration release-owner`), "
-                    "which snapshots unpushed work to aq/preserved/<owner-row> before it "
+                    "which publishes unpushed work to this task branch before it "
                     "releases the branch."
                 ),
                 author_kind="supervisor",
@@ -885,6 +889,35 @@ class SessionReconciler:
         """
         return pool_claim_loop_stall_seconds(self.config.swarm)
 
+    async def _step_claim_refusals(self, live: list[SessionRecord], now: float) -> None:
+        """Stop a repeating preparation even if its harness ignores the drain.
+
+        Stop intent and workspace quarantine were committed together with
+        the failure count. The normal pool teardown proves process exit and
+        retains attached ownership; no active task is interrupted here.
+        """
+        if self.orchestrator is None:
+            return
+        for observed in live:
+            if (observed.lifecycle != "pool" or observed.desired_state != "stopped"
+                    or observed.end_reason != CLAIM_FAILURE_DRAIN_REASON
+                    or observed.claim_failure_count < MAX_IDENTICAL_CLAIM_FAILURES):
+                continue
+            if observed.task_id and self._task_control_held(observed.task_id):
+                continue
+            current = await self._still_live(observed)
+            if (current is None or current.instance_token != observed.instance_token
+                    or current.desired_state != "stopped"
+                    or current.end_reason != CLAIM_FAILURE_DRAIN_REASON
+                    or current.claim_failure_count < MAX_IDENTICAL_CLAIM_FAILURES
+                    or current.claim_phase in {"active", "claiming"}):
+                continue
+            if current.task_id and self._task_control_held(current.task_id):
+                continue
+            await self.orchestrator._terminate_pool_session(
+                current, reason=CLAIM_FAILURE_DRAIN_REASON,
+            )
+
     async def _step_abandoned_pool_claim_loop(
         self, live: list[SessionRecord], now: float
     ) -> None:
@@ -1008,6 +1041,14 @@ class SessionReconciler:
 
     async def _step_exits(self, live: list[SessionRecord], now: float) -> None:
         for row in live:
+            if row.lifecycle == "named":
+                row = await self._still_live(row)
+                if row is None:
+                    continue
+                if row.state in {"starting", "running"} and row.desired_state == "sleeping":
+                    # Explicit sleep owns this transition even if the process
+                    # has already exited. Do not retire its intent as a drain.
+                    continue
             provider = self._provider_for(row)
             if provider is None:
                 continue
@@ -1020,6 +1061,11 @@ class SessionReconciler:
                 logger.debug("process_alive probe failed for %s", row.id, exc_info=True)
                 continue
             if alive:
+                if row.task_id:
+                    try:
+                        await self._renew_live_session_leases(row, now)
+                    except Exception:
+                        logger.debug("liveness lease renewal failed for %s", row.id, exc_info=True)
                 continue
 
             if row.state == "starting" and not await self._claim_starting_reconciliation(
@@ -1053,7 +1099,46 @@ class SessionReconciler:
                 rapid_crash_window=float(self.sessions_config.restart_window_seconds),
                 opencode=self._runs_opencode(row),
             )
-            await self._apply_verdict(provider, row, task, verdict, now)
+            if verdict.verdict is not Verdict.DRAINED:
+                from src.sessions.worker_recovery import context_thrashed
+
+                if await context_thrashed(row, base_dir=self.transcript_base_dir):
+                    verdict = ExitVerdict(Verdict.CONTEXT_THRASH, "Autocompact is thrashing")
+            # ``peek`` holds the whole pane plus scrollback: the hand-off
+            # note's screen tail when the provider explains this death.
+            await self._apply_verdict(provider, row, task, verdict, now, screen=peek)
+
+    async def _renew_live_session_leases(self, row: SessionRecord, now: float) -> None:
+        """Process existence grants only the first stall interval and backoff.
+
+        HOLD/REPORT do not spend rungs, so the activity-based deadline is
+        also necessary. A durable wait has its own finite deadline; question
+        waits and drain intent do not grant process-only authority.
+        """
+        if row.state not in {"starting", "running"} or row.desired_state != "running":
+            return
+        if await self._waiting_for_question(row, now):
+            return
+        from src.integration.lock import DEFAULT_TTL_SECONDS, renew_session_leases_on_liveness
+
+        waiting, resumed = await self._wait_lease(row, now)
+        if waiting:
+            task = await self.db.get_task(row.task_id)
+            wait = await self.db.blocking_wait_for(row, task.claim_epoch, now) if task else None
+            if wait is None:
+                return
+            renew_until = wait["deadline_at"]
+        else:
+            last = max(row.last_activity or row.started_at or 0.0, resumed)
+            renew_until = (
+                last
+                + max(DEFAULT_TTL_SECONDS, float(self.sessions_config.lease_ttl_seconds))
+                + float(self.sessions_config.stall_backoff_seconds)
+            )
+        async with self.db.immediate() as conn:
+            await renew_session_leases_on_liveness(
+                self.db, conn, row.id, now, renew_until=renew_until
+            )
 
     async def _claim_starting_reconciliation(self, row: SessionRecord, now: float) -> bool:
         """Fence an enabled stale STARTING row, or defer a concurrent launch."""
@@ -1108,6 +1193,8 @@ class SessionReconciler:
         task,
         verdict: ExitVerdict,
         now: float,
+        *,
+        screen: str | None = None,
     ) -> None:
         await self._emit(
             "session.exited",
@@ -1118,6 +1205,13 @@ class SessionReconciler:
             verdict=str(verdict.verdict),
             reason=verdict.reason,
         )
+        if task is not None and verdict.verdict is not Verdict.DRAINED:
+            record = await self._record_worker_failure(row, task, verdict.verdict.value, now)
+            if record is None:
+                return  # A newer claim, manual stop, or close owns this task.
+            if verdict.verdict is Verdict.CONTEXT_THRASH:
+                await self._recover_guarded_failure(provider, row, task, record, now)
+                return
         availability = self._provider_availability()
         if verdict.verdict is Verdict.RATE_LIMIT and availability is not None:
             # Broad pane text needs two sessions (D2/D3). The strict retry
@@ -1129,7 +1223,7 @@ class SessionReconciler:
                 resets_at=verdict.resets_at,
             )
 
-        if await self._apply_provider_failover(row, task, verdict, now):
+        if await self._apply_provider_failover(row, task, verdict, now, screen=screen):
             return
 
         if row.lifecycle == "pool":
@@ -1304,7 +1398,13 @@ class SessionReconciler:
                 )
 
     async def _apply_provider_failover(
-        self, row: SessionRecord, task, verdict: ExitVerdict, now: float
+        self,
+        row: SessionRecord,
+        task,
+        verdict: ExitVerdict,
+        now: float,
+        *,
+        screen: str | None = None,
     ) -> bool:
         """A mid-task death its provider explains (provider-failover D13).
 
@@ -1326,7 +1426,8 @@ class SessionReconciler:
            READY for the ``provider-failover`` sweep; first, uncorroborated
            signal -> a ``launch.suspect_backoff_seconds`` pause with its
            ``provider_pause`` record.
-        4. The hand-off note, once the outcome is written.
+        4. The hand-off note, once the outcome is written, quoting the tail
+           of *screen* (the stopped session's last pane capture).
 
         Returns False, having done nothing, for every other exit, which keeps
         the verdict handling below exactly as it was.
@@ -1364,7 +1465,7 @@ class SessionReconciler:
         verdict_name = str(verdict.verdict)
         # A pool claim still being prepared: the daemon owns that slot.
         checkpoint = await orch.provider_failover_checkpoint(
-            task, preserve=not pool or row.claim_phase == "active"
+            task, preserve=not pool or row.claim_phase == "active", reason=verdict.reason
         )
 
         async def handoff(outcome: str, *, held: bool = False) -> None:
@@ -1378,6 +1479,7 @@ class SessionReconciler:
                 disposition=outcome,
                 held=held,
                 now=now,
+                screen=screen,
             )
 
         if verdict.verdict is Verdict.RATE_LIMIT:
@@ -1434,6 +1536,8 @@ class SessionReconciler:
             context, resume_after, meta = inflight.CONTEXT_UNAVAILABLE, None, {}
 
         if pool:
+            if checkpoint.status in ("pushed", "clean"):
+                await self._hand_back_pool_integration_owner(task, reason=context)
             if pause:
                 await orch._terminate_pool_session(
                     row,
@@ -1496,6 +1600,28 @@ class SessionReconciler:
         )
         return True
 
+    async def _hand_back_pool_integration_owner(self, task, *, reason: str) -> None:
+        """Release a stopped pool writer's train/hierarchy owner before its teardown.
+
+        An attached integration owner retains a pool claim through
+        ``terminate_pool_session``, leaving the task to owner recovery.  The
+        checkpoint just left the checkout clean and on ``origin`` -- the pool
+        handoff's proof -- so hand the owner back now, as a failed claim
+        preparation does; the teardown then releases the claim.  Refused or
+        unmanaged, nothing changes and the claim stays retained.
+        """
+        release = getattr(self.orchestrator, "arelease_integration_writer_for_retry", None)
+        if release is None:
+            return
+        try:
+            await release(task, reason=reason, pool=True)
+        except Exception:
+            logger.warning(
+                "Task %s: integration owner hand-back after provider failover failed",
+                task.id,
+                exc_info=True,
+            )
+
     async def _record_exit_incident(
         self,
         task,
@@ -1534,6 +1660,76 @@ class SessionReconciler:
         except Exception:
             logger.debug(
                 "could not record exit incident for %s", task.id, exc_info=True
+            )
+
+    async def _record_worker_failure(self, row, task, cause: str, now: float):
+        from src.sessions.worker_recovery import record_failure, save_continuation
+
+        record = await record_failure(self.db, row, task, cause, now=now)
+        if record is not None:
+            try:
+                await save_continuation(self.db, row, task, record)
+            except Exception:
+                logger.warning("could not save recovery note for %s", task.id, exc_info=True)
+        return record
+
+    async def _recover_guarded_failure(self, provider, row, task, record, now: float) -> None:
+        """One retry, then explicit attention, across replacement sessions."""
+        from src.sessions.worker_recovery import MAX_SAME_CAUSE, THRASH_CAUSE
+
+        cause = record["cause"]
+        blocked = record["count"] >= MAX_SAME_CAUSE
+        if cause == THRASH_CAUSE:
+            # A fresh retry must not resume the context that just thrashed.
+            await self.db.delete_task_meta(task.id, "session_resume_key")
+        await self.db.set_task_meta(task.id, META_STALL_NUDGES, "0")
+        await self.db.set_task_meta(task.id, META_STALL_LAST_ACTION, "0")
+        if cause == "stalled":
+            try:
+                await provider.interrupt(self._handle(row))
+            except Exception:
+                logger.debug("interrupt failed for %s", row.id, exc_info=True)
+        if row.lifecycle == "pool":
+            if self.orchestrator is None:
+                return
+            await self.orchestrator._terminate_pool_session(
+                row, reason=cause,
+                task_status=TaskStatus.BLOCKED if blocked else TaskStatus.READY,
+            )
+        else:
+            await self._stop_session(provider, row, reason=cause)
+            if not blocked:
+                await self.db.transition_task(
+                    task.id, TaskStatus.PAUSED, context=f"session_{cause}_retry",
+                    resume_after=now + self.sessions_config.restart_backoff_seconds,
+                    assigned_agent_id=None,
+                )
+            if cause != THRASH_CAUSE:
+                await self._carry_resume_key(row, task)
+            await self._release_task(task, row, reason=cause)
+        await self.db.add_task_comment(
+            task.id,
+            f"Worker {row.id}: {cause}, consecutive incident {record['count']}. "
+            + ("BLOCKED; automatic relaunch stopped. Supervisor investigation required. "
+               if blocked else "Retrying with a bounded continuation note. ")
+            + "Check the branch and recovery note in aq prime before repeating reads.",
+            author_kind="supervisor", author_id="session-reconciler",
+        )
+        if blocked:
+            await self.db.notify_task_recovery(task.id, project_id=task.project_id)
+            await self._emit(
+                "task.needs_attention", task_id=task.id, project_id=task.project_id,
+                title=task.title, session_id=row.id, reason=f"session_{cause}",
+            )
+            await self._emit(
+                "task.failed", task_id=task.id, project_id=task.project_id,
+                title=task.title, status=TaskStatus.BLOCKED.value, context=f"session_{cause}",
+                error=f"{record['count']} consecutive {cause} incidents; automatic retries stopped",
+            )
+        else:
+            await self._emit(
+                "task.restarted", task_id=task.id, project_id=task.project_id,
+                title=task.title, session_id=row.id, attempt=record["count"], reason=cause,
             )
 
     async def _apply_rate_limit_cooldown(self, row: SessionRecord) -> None:
@@ -1963,6 +2159,11 @@ class SessionReconciler:
             screen.line,
             now - (row.last_activity or row.started_at),
         )
+        from src.providers.inflight import HANDOFF_SCREEN_LINES
+
+        # Read before the stop takes the pane with it: the next worker's
+        # hand-off note quotes what this one was doing.
+        last_screen = await self._peek(provider, row, HANDOFF_SCREEN_LINES)
         try:
             await provider.stop(self._handle(row), grace=2.0)
         except Exception:
@@ -1983,7 +2184,7 @@ class SessionReconciler:
             usage_exhausted=screen.usage_exhausted,
             resets_at=now + screen.retry_after if screen.retry_after else None,
         )
-        await self._apply_verdict(provider, row, task, verdict, now)
+        await self._apply_verdict(provider, row, task, verdict, now, screen=last_screen)
         return True
 
     async def _step_stall_ladder(self, live: list[SessionRecord], now: float) -> None:
@@ -2014,6 +2215,19 @@ class SessionReconciler:
                 continue
             waiting, resumed = await self._wait_lease(row, now)
             if waiting:
+                continue
+            # The synthetic compaction error can leave an interactive CLI
+            # alive at its prompt. Its exact-session transcript is positive
+            # evidence even while the pane repaints and reports activity.
+            from src.sessions.worker_recovery import context_thrashed
+
+            if await context_thrashed(row, base_dir=self.transcript_base_dir):
+                provider = self._provider_for(row)
+                task = await self.db.get_task(row.task_id)
+                if provider is not None and task is not None:
+                    record = await self._record_worker_failure(row, task, "context_thrash", now)
+                    if record is not None:
+                        await self._recover_guarded_failure(provider, row, task, record, now)
                 continue
             # OpenCode's retry countdown continuously repaints its pane. A
             # blocking retry footer is positive evidence even when that
@@ -2144,22 +2358,14 @@ class SessionReconciler:
 
             # Rungs exhausted: interrupt, kill, and let the scheduler
             # relaunch with the harness resume key so context survives.
+            record = await self._record_worker_failure(row, task, "stalled", now)
+            if record is None:
+                continue
             if row.lifecycle == "pool":
-                # No in-place restart for a pool session -- the pool step
-                # starts a fresh one next tick; this one's claim (and the
-                # task it holds) goes back through the normal termination
-                # path.
-                if self.orchestrator is None:
-                    logger.warning(
-                        "Pool session %s stalled but no orchestrator is wired "
-                        "— skipping", row.id,
-                    )
-                    continue
-                try:
-                    await provider.interrupt(self._handle(row))
-                except Exception:
-                    logger.debug("interrupt failed for %s", row.id, exc_info=True)
-                await self.orchestrator._terminate_pool_session(row, reason="stalled")
+                await self._recover_guarded_failure(provider, row, task, record, now)
+                continue
+            if record["count"] >= 2:
+                await self._quarantine(row, task, reason="stall", now=now)
                 continue
             count = await self.db.bump_session_restarts(row.id)
             # ``>=``, matching the rapid-crash branch.  ``>`` here allowed
@@ -2357,8 +2563,19 @@ class SessionReconciler:
                 continue
             row = await self.db.get_session_for_task(task.id)
             if row is None:
-                # Never launched as a session (legacy runtime, or the
-                # scheduler is mid-launch).  Not ours to touch.
+                # A pool's task pointer can disappear before its task/agent
+                # assignment is released. No live-row step can see that task.
+                # The command rechecks liveness, launch grace and resource
+                # identity before checkpointing and requeueing it.
+                handler = getattr(self.orchestrator, "_command_handler", None)
+                if handler is not None:
+                    try:
+                        await handler.recover_missing_session_task(task.id, now=now)
+                    except Exception:
+                        logger.warning(
+                            "Missing-session recovery retained task %s for retry", task.id,
+                            exc_info=True,
+                        )
                 continue
             waiting, _ = await self._wait_lease(row, now)
             if waiting:
@@ -2403,6 +2620,69 @@ class SessionReconciler:
             )
 
     # -- idle stop intent --------------------------------------------------
+
+    async def _disabled_project_supervisor(self, row: SessionRecord) -> bool:
+        if (row.lifecycle != "named" or row.project_id is None
+                or row.name != "n-supervisor--" + row.project_id):
+            return False
+        project = await self.db.get_project(row.project_id)
+        return project is not None and not project.supervisor_enabled
+
+    async def _step_disabled_project_supervisors(self, live, now: float) -> None:
+        """Drain opt-out supervisors only after their current transcript turn."""
+        from src.sessions.transcripts import resolve_reader
+
+        for row in live:
+            if self._is_deferred(row.name):
+                continue
+            if not await self._disabled_project_supervisor(row):
+                continue
+            fresh = await self._still_live(row)
+            if fresh is None:
+                continue
+            row = fresh
+            await self.db.update_session_instance(
+                row.id, row.instance_token, desired_state="stopped",
+            )
+            # The generic stop grace must never interrupt this turn. Read the
+            # transcript directly: the delivery lens deliberately refuses to
+            # resolve a disabled supervisor as a message target.
+            reader = resolve_reader(row.harness, base_dir=self.transcript_base_dir)
+            if reader is None:
+                continue
+            try:
+                path = await asyncio.to_thread(reader.resolve_session, row)
+                if path is None:
+                    continue
+                entries, _offset = await reader.read_new(path, 0)
+                meaningful = [entry for entry in entries if entry.type in {
+                    "user", "assistant", "tool_use", "tool_result",
+                } and (entry.type != "assistant" or entry.text or entry.turn_complete)]
+                if not meaningful:
+                    continue
+                last = meaningful[-1]
+                if not last.turn_complete or last.ts < (row.started_at or 0) - 5:
+                    continue
+            except Exception:
+                logger.debug("disabled supervisor turn unavailable: %s", row.name, exc_info=True)
+                continue
+            fresh = await self._still_live(row)
+            if fresh is None or not await self._disabled_project_supervisor(fresh):
+                continue
+            provider = self._provider_for(fresh)
+            if provider is not None:
+                try:
+                    await provider.stop(self._handle(fresh), grace=2.0)
+                    if not await provider.confirm_instance_stopped(self._handle(fresh)):
+                        continue
+                except Exception:
+                    logger.warning("disabled supervisor stop failed: %s", fresh.name, exc_info=True)
+                    continue
+                await self.db.update_session_instance(
+                    fresh.id, fresh.instance_token, require_desired_state="stopped",
+                    state="stopped", desired_state="stopped",
+                    end_reason="project_supervisor_disabled", ended_at=now,
+                )
 
     def _idle_stop_grace(self) -> float:
         """Seconds a finished session may keep its process before it is stopped."""
@@ -2494,6 +2774,8 @@ class SessionReconciler:
         a *running* worker cannot avoid (``get_profile``, for the claim
         budget) is only reached by a worker that holds no open task.
         """
+        if await self._disabled_project_supervisor(row):
+            return False
         if row.claim_phase in ("claiming", "preparing"):
             return False
         if self._is_deferred(row.name):
@@ -2590,8 +2872,10 @@ class SessionReconciler:
         which one is wanted (see
         ``docs/superpowers/specs/2026-08-27-session-desired-state-design.md``):
 
-        * **down** — a running session past its profile's ``idle_timeout``
-          is drained to ``sleeping``, and its *intent* becomes ``sleeping``
+        * **down** — explicit sleep intent stops a starting/running session
+          regardless of activity or outstanding work. Otherwise a running
+          session past its profile's ``idle_timeout`` is drained to
+          ``sleeping``, and its *intent* becomes ``sleeping``
           at the same moment.  That second half is what stops the flap: a
           drained session stops being wanted, so the up-branch does not
           immediately undo the down-branch.
@@ -2604,14 +2888,45 @@ class SessionReconciler:
         and work_dir resolution, and two copies of that would drift.
         """
         await self._converge_named_up(now)
-        idle_rows = [r for r in live if r.lifecycle == "named" and r.state == "running"]
-        if not idle_rows:
+        named_rows = [r for r in live if r.lifecycle == "named"]
+        if not named_rows:
             return
-        for row in idle_rows:
+        for observed in named_rows:
+            if self._is_deferred(observed.name):
+                continue
+            row = await self._still_live(observed)
+            if (row is None or row.instance_token != observed.instance_token
+                    or row.lifecycle != "named" or row.state not in {"starting", "running"}):
+                continue
+            provider = self._provider_for(row)
+            if row.desired_state == "sleeping":
+                if provider is None:
+                    continue
+                try:
+                    await provider.stop(self._handle(row), grace=2.0)
+                except Exception:
+                    logger.warning("Sleeping session %s failed; retrying next tick", row.id,
+                                   exc_info=True)
+                    continue
+                # Preserve a wake arriving during stop: the process is asleep,
+                # but running intent must launch its successor on the next tick.
+                changed = await self.db.update_session_instance(
+                    row.id, row.instance_token, state="sleeping",
+                    sleep_reason="desired_sleeping", end_reason="desired_sleeping",
+                )
+                if changed:
+                    await self._emit(
+                        "session.sleeping", session_id=row.id, name=row.name,
+                        project_id=row.project_id, reason="desired_sleeping",
+                    )
+                continue
+            if row.state != "running" or row.desired_state != "running":
+                continue
+            if await self._disabled_project_supervisor(row):
+                continue
             # Named supervisors have no task stall ladder. Recover an owned
             # notification even if its message was consumed through the inbox
             # and therefore no longer produces another delivery attempt.
-            provider = self._provider_for(row)
             resubmit = getattr(provider, "resubmit_pending", None)
             if callable(resubmit):
                 try:
@@ -2678,6 +2993,9 @@ class SessionReconciler:
             logger.debug("listing wanted named sessions failed", exc_info=True)
             return
         for row in wanted:
+            if await self._disabled_project_supervisor(row):
+                await self.db.update_session(row.id, desired_state="stopped")
+                continue
             # Generic agent terminals are explicitly started by the operator.
             # They have no supervisor address and must not spend its retry
             # budget (or be quarantined without any launch being attempted).
@@ -2812,15 +3130,25 @@ class SessionReconciler:
                     limit,
                 )
                 if task is not None:
-                    await self.db.set_task_meta(
-                        task.id, "needs_attention", "exited_holding_task"
-                    )
+                    record = await self._record_worker_failure(row, task, "stuck_timeout", now)
+                    if record is None:
+                        continue
+                    if record["count"] >= 2:
+                        await self._recover_guarded_failure(
+                            self._provider_for(row), row, task, record, now
+                        )
+                        continue
+                    await self.db.set_task_meta(task.id, "needs_attention", "exited_holding_task")
                 await self.orchestrator._terminate_pool_session(row, reason="stuck_timeout")
                 continue
             provider = self._provider_for(row)
             if provider is None:
                 continue
             task = await self.db.get_task(row.task_id)
+            if task is not None and task.status is TaskStatus.IN_PROGRESS:
+                record = await self._record_worker_failure(row, task, "stuck_timeout", now)
+                if record is None:
+                    continue
             logger.warning(
                 "Session %s exceeded stuck_timeout_seconds (%ss) — force-killing",
                 row.id,

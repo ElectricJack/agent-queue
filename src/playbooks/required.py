@@ -1,27 +1,13 @@
-"""Startup reconciliation for reviewed system playbooks that the daemon requires.
+"""One-time playbook installation, read-only readiness and explicit repair.
 
-The activation table is durable, while the runtime subscription is not.  This
-module bridges that boundary: it installs the reviewed bundle on a new data
-directory, records the first activation, and makes an inactive required policy
-an explicit readiness failure instead of an empty event subscription.
-
-Seeding is also the only supply line a corrected bundle has.  ``playbook_v2_import``
-refuses every path outside the vault root, so a bundle rebuilt against a changed
-command contract reaches an install only by being written into the vault here.
-
-``vault/reviewed-playbooks/<id>/`` is daemon-owned for every id AQ ships.  A
-reviewed artifact freezes the capability fingerprint of each profile it names,
-so a bundle seeded by an older release stops validating as soon as a shipped
-profile's grants move -- and because ``playbook_v2_import`` reads only from the
-vault, a vault copy that is never refreshed strands the install for good.
-Seeding therefore replaces a drifted copy with the shipped recording, moving
-the old directory aside first, and the reconciler re-points a broken system
-activation at the freshly imported shipped artifact.
+Restart rehydrates subscriptions from durable activations. It never restores
+deleted policy or replaces an operator's activation with a shipped artifact.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -43,17 +29,21 @@ REQUIRED_SYSTEM_PLAYBOOK_IDS = (
     # D11).  Without it tasks on a dead provider hold and never move.
     "provider-failover",
 )
-# Shared system playbooks every install gets, but which are not a readiness
-# requirement: activated once, on the first start that finds no activation for
-# them, and never re-enabled after an operator disables one.  Before this set
-# existed a fresh install activated only the two required policies above, and
-# Settings -> Playbooks showed nothing else even though these ship with AQ.
-DEFAULT_SYSTEM_PLAYBOOK_IDS = ("supervisor-failure-triage", "default-pipeline")
-# The legacy bundle remains importable for audit, but it cannot stay enabled:
-# it subscribes to the same ``task.failed`` event as the reviewed successor.
-RETIRED_DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation",)
-# The AQ command a required playbook's active artifact must grant, or its
-# system activation is re-pointed at the shipped artifact even while healthy.
+# Activated only by the first-install receipt, never on an existing installation.
+# These defaults are not readiness requirements.
+DEFAULT_SYSTEM_PLAYBOOK_IDS = ("supervisor-failure-triage", "default-pipeline", "stuck-task-watch")
+# Explicit installation inventory. Morning reporting still requires operator
+# activation and reports.morning.enabled. Project defaults are code-owned
+# creation/graft settings in this release, not a separate shipped playbook.
+# Retired policies remain available as reviewed bundles for explicit import,
+# but are absent from both this inventory and the default source directory.
+INITIAL_SYSTEM_PLAYBOOK_IDS = (
+    *REQUIRED_SYSTEM_PLAYBOOK_IDS,
+    *DEFAULT_SYSTEM_PLAYBOOK_IDS,
+    "morning-report",
+)
+INSTALL_RECEIPT = "playbook-installation.json"
+# A missing grant fails readiness; only explicit repair replaces the artifact.
 # Mandatory routing (spec 2026-09-28 §6.7): only ``task_route_apply`` writes a
 # router route, so an older router -- the shipped ``task_route`` artifact, or a
 # vault compile that diverged from it -- would stay ready and route nothing a
@@ -67,14 +57,58 @@ def reviewed_bundle_source() -> Path:
     return Path(__file__).resolve().parents[1] / "prompts" / "reviewed_playbooks"
 
 
-def shipped_reviewed_playbook_ids() -> tuple[str, ...]:
-    """Every reviewed bundle this daemon carries, activated or not.
+def install_initial_playbooks(data_dir: str) -> list[str]:
+    """Install once for an absent/empty vault, never infer intent from deletion.
 
-    The directory is the list.  ``ci-main-sentinel`` is project-scoped and is
-    never activated by the reconciler, but ``playbook_v2_import`` refuses any
-    path outside the vault root, so a bundle an operator cannot find in the
-    vault is a bundle they cannot import at all.
+    The receipt is outside the vault so removing the vault cannot reseed it.
+    Record intent before writes: a partial install needs explicit doctor repair.
+    Existing vaults get only a receipt, with no pending activation or migration.
     """
+    root = Path(data_dir)
+    receipt = root / INSTALL_RECEIPT
+    if receipt.exists():
+        return []
+    vault = root / "vault"
+    root.mkdir(parents=True, exist_ok=True)
+    first = not vault.exists() or not any(vault.iterdir())
+    try:
+        with receipt.open("x", encoding="utf-8") as handle:
+            json.dump({"version": 1, "activation_pending": first}, handle)
+    except FileExistsError:
+        return []
+    if not first:
+        return []
+    written = ensure_reviewed_playbook_bundles(data_dir, ids=INITIAL_SYSTEM_PLAYBOOK_IDS)
+    sources = vault / "system" / "playbooks"
+    sources.mkdir(parents=True, exist_ok=True)
+    for identifier in written:
+        shutil.copy2(reviewed_bundle_source() / identifier / "source.md", sources / f"{identifier}.md")
+    return written
+
+
+def _consume_initial_activation(data_dir: str) -> bool:
+    receipt = Path(data_dir) / INSTALL_RECEIPT
+    if not receipt.is_file():
+        return False
+    try:
+        state = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.error("Cannot read playbook installation receipt; use explicit doctor repair")
+        return False
+    if not isinstance(state, dict) or state.get("version") != 1:
+        logger.error("Invalid playbook installation receipt; use explicit doctor repair")
+        return False
+    if not state.get("activation_pending"):
+        return False
+    state["activation_pending"] = False
+    staging = receipt.with_suffix(".tmp")
+    staging.write_text(json.dumps(state) + "\n", encoding="utf-8")
+    staging.replace(receipt)
+    return True
+
+
+def shipped_reviewed_playbook_ids() -> tuple[str, ...]:
+    """Every reviewed bundle available for deliberate installation."""
     source_root = reviewed_bundle_source()
     if not source_root.is_dir():
         return ()
@@ -110,7 +144,7 @@ def _recorded_sha(bundle: Path) -> str | None:
         return None
 
 
-def reviewed_bundle_drift(data_dir: str) -> list[dict[str, Any]]:
+def reviewed_bundle_drift(data_dir: str, *, ids: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
     """Each shipped bundle whose vault copy is missing or differs from it.
 
     Read-only; ``ensure_reviewed_playbook_bundles`` is the repair.  An empty
@@ -118,7 +152,7 @@ def reviewed_bundle_drift(data_dir: str) -> list[dict[str, Any]]:
     """
     destination_root = Path(data_dir) / "vault" / "reviewed-playbooks"
     drift: list[dict[str, Any]] = []
-    for playbook_id in shipped_reviewed_playbook_ids():
+    for playbook_id in ids if ids is not None else shipped_reviewed_playbook_ids():
         source = reviewed_bundle_source() / playbook_id
         destination = destination_root / playbook_id
         shipped_sha = _recorded_sha(source)
@@ -173,7 +207,9 @@ def _carry_operator_files(installed: Path, staging: Path) -> None:
             shutil.copy2(entry, target, follow_symlinks=False)
 
 
-def ensure_reviewed_playbook_bundles(data_dir: str) -> list[str]:
+def ensure_reviewed_playbook_bundles(
+    data_dir: str, *, ids: tuple[str, ...] | None = None
+) -> list[str]:
     """Seed the shipped reviewed bundles into the vault and refresh stale copies.
 
     Seeding used to be write-if-absent, so the vault copy was written once and
@@ -198,7 +234,7 @@ def ensure_reviewed_playbook_bundles(data_dir: str) -> list[str]:
     """
     destination_root = Path(data_dir) / "vault" / "reviewed-playbooks"
     written: list[str] = []
-    for playbook_id in shipped_reviewed_playbook_ids():
+    for playbook_id in ids if ids is not None else shipped_reviewed_playbook_ids():
         source = reviewed_bundle_source() / playbook_id
         destination = destination_root / playbook_id
         present = destination.exists() or destination.is_symlink()
@@ -291,11 +327,12 @@ def _required_state(playbook_id: str, activation: Any, import_error: str | None)
         diagnostic = f"{prefix}activation is {health}"
         if import_error is not None:
             diagnostic += f"; reviewed artifact import failed: {import_error}"
-    return {"ok": False, "diagnostic": diagnostic}
+    return {"ok": False, "diagnostic": diagnostic,
+            "fix_command": "aq doctor --check playbooks.required --fix"}
 
 
 class RequiredPlaybookReconciler:
-    """Persist and validate the required system activation before subscribing."""
+    """Observe durable policy; bootstrap once and repair only when requested."""
 
     def __init__(self, *, config: Any, db: Any, handler: Any) -> None:
         self._config = config
@@ -310,51 +347,41 @@ class RequiredPlaybookReconciler:
         # older verdict.
         self._lock = asyncio.Lock()
 
-    async def reconcile(self) -> dict[str, Any]:
-        """Import the reviewed bytes, then create or repair system activations.
+    async def reconcile(self, *, repair: bool = False) -> dict[str, Any]:
+        """Observe existing policy; install only once or on explicit repair.
 
-        A missing activation is created.  An existing one is durable operator
-        state and is kept while it is healthy or disabled -- an operator's own
-        compatible artifact keeps serving, and a disabled one stays disabled.
-        An *enabled* activation that no longer validates is different: it
-        serves nothing, and no restart could ever make it serve again, so it is
-        re-pointed at the freshly imported shipped artifact, which the import
-        has just validated against the live registries.  So is an enabled,
-        ready one whose artifact lacks the command :data:`REQUIRED_GRANTS`
-        names: a router that cannot call ``task_route_apply`` serves events
-        and routes nothing.  An unhealthy or disabled required activation
-        still leaves a machine-readable readiness diagnostic.
+        A missing activation is not evidence of a new installation. The external
+        installation receipt authorizes the one initial attempt, consumed before
+        writes so a crash cannot turn later restarts into automatic repairs.
         """
         async with self._lock:
+            initial = await asyncio.to_thread(_consume_initial_activation, self._config.data_dir)
+            if not initial and not repair:
+                return await self._refresh_status_locked()
             required: dict[str, dict[str, Any]] = {}
             import_errors: dict[str, str] = {}
             for playbook_id in REQUIRED_SYSTEM_PLAYBOOK_IDS:
-                activation, import_error, repointed_from = await self._install_shipped(playbook_id)
+                activation, import_error, repointed_from = await self._install_shipped(
+                    playbook_id, enable_disabled=repair
+                )
                 if import_error is not None:
                     import_errors[playbook_id] = import_error
                 required[playbook_id] = _required_state(playbook_id, activation, import_error)
                 if repointed_from is not None:
                     required[playbook_id]["repointed_from"] = repointed_from
 
-            defaults = await self._activate_defaults()
-            await self._retire_superseded_defaults()
+            # Optional defaults are installed once, never resurrected by a
+            # required-policy repair. Their deliberate import remains available.
+            defaults = await self._activate_defaults() if initial else {}
             self._import_errors = import_errors
             self.status = {
                 "ok": all(item["ok"] for item in required.values()),
                 "required": required,
                 "defaults": defaults,
             }
-            for playbook_id, item in required.items():
+            for item in required.values():
                 if not item["ok"]:
                     logger.error("%s", item["diagnostic"])
-                elif playbook_id in import_errors:
-                    logger.warning(
-                        "required playbook %s is serving %s, but the shipped reviewed "
-                        "artifact did not import: %s",
-                        playbook_id,
-                        item["artifact_sha256"],
-                        import_errors[playbook_id],
-                    )
             return self.status
 
     async def refresh_status(self) -> dict[str, Any]:
@@ -367,23 +394,45 @@ class RequiredPlaybookReconciler:
         a profile edit that breaks or heals an activation shows up here too.
         """
         async with self._lock:
-            records, _contracts, _profiles = await self._handler._v2_health_records()
-            required = {
-                playbook_id: _required_state(
-                    playbook_id,
-                    _system_activation(records, playbook_id),
-                    self._import_errors.get(playbook_id),
-                )
-                for playbook_id in REQUIRED_SYSTEM_PLAYBOOK_IDS
-            }
-            self.status = {
-                **self.status,
-                "ok": all(item["ok"] for item in required.values()),
-                "required": required,
-            }
-            return self.status
+            return await self._refresh_status_locked()
 
-    async def _install_shipped(self, playbook_id: str) -> tuple[Any, str | None, str | None]:
+    async def _refresh_status_locked(self) -> dict[str, Any]:
+        records, _contracts, _profiles = await self._handler._v2_health_records()
+        required = {
+            playbook_id: _required_state(
+                playbook_id,
+                _system_activation(records, playbook_id),
+                self._import_errors.get(playbook_id),
+            )
+            for playbook_id in REQUIRED_SYSTEM_PLAYBOOK_IDS
+        }
+        for playbook_id, state in required.items():
+            if state["ok"]:
+                missing = await self._missing_grant(playbook_id, state["artifact_sha256"])
+                if missing:
+                    state.update(ok=False, diagnostic=f"{playbook_id}: missing grant {missing}")
+            if not state["ok"]:
+                state["fix_command"] = "aq doctor --check playbooks.required --fix"
+        defaults = {
+            identifier: {
+                "activated": False,
+                "enabled": bool(activation and activation.enabled),
+                "health": activation.health.value if activation else "missing",
+            }
+            for identifier in DEFAULT_SYSTEM_PLAYBOOK_IDS
+            for activation in [_system_activation(records, identifier)]
+        }
+        self.status = {
+            **self.status,
+            "defaults": defaults,
+            "ok": all(item["ok"] for item in required.values()),
+            "required": required,
+        }
+        return self.status
+
+    async def _install_shipped(
+        self, playbook_id: str, *, enable_disabled: bool = False
+    ) -> tuple[Any, str | None, str | None]:
         """Import the shipped bundle and point the system activation at it if needed.
 
         Returns ``(activation, import_error, repointed_from)``.  The activation
@@ -403,7 +452,9 @@ class RequiredPlaybookReconciler:
         shipped_sha = imported["artifact_sha256"]
         repointed_from = None
         if activation is not None:
-            if not activation.enabled or activation.active_artifact_sha256 == shipped_sha:
+            if (not activation.enabled and not enable_disabled) or (
+                activation.enabled and activation.active_artifact_sha256 == shipped_sha
+            ):
                 return activation, None, None
             why = activation.health.value
             if why == "ready":
@@ -510,30 +561,6 @@ class RequiredPlaybookReconciler:
             if repointed_from is not None:
                 defaults[playbook_id]["repointed_from"] = repointed_from
         return defaults
-
-    async def _retire_superseded_defaults(self) -> None:
-        """Disable the reviewed predecessor once failure triage is installed.
-
-        This is intentionally a narrow migration instead of a generic
-        overwrite of operator-owned defaults. The old artifact stays durable
-        and auditable, but no runtime may subscribe both policies to one
-        failure event and produce duplicate supervisor wakes.
-        """
-        records, _contracts, _profiles = await self._handler._v2_health_records()
-        for playbook_id in RETIRED_DEFAULT_SYSTEM_PLAYBOOK_IDS:
-            activation = _system_activation(records, playbook_id)
-            if activation is None or not activation.enabled:
-                continue
-            await self._db.set_playbook_activation(
-                playbook_id=playbook_id,
-                scope="system",
-                scope_identifier="",
-                artifact_sha256=activation.active_artifact_sha256,
-                enabled=False,
-                activated_by=_ACTOR,
-                health="disabled",
-                reasons='["superseded by supervisor-failure-triage"]',
-            )
 
     async def replay_route_needed_events(self) -> dict[str, Any]:
         """Replay held routing events after the runtime has refreshed its snapshot."""

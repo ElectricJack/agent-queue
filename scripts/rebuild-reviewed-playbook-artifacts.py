@@ -50,6 +50,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -64,9 +66,8 @@ from src.playbooks.validation import (  # noqa: E402
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 SHIPPED = {
+    "stuck-task-watch": "src/prompts/default_playbooks/stuck-task-watch.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
-    "supervisor-digest": "src/prompts/default_playbooks/supervisor-digest.md",
-    "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
@@ -76,7 +77,6 @@ SHIPPED = {
     "agent-queue-parent-integration": (
         "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
     ),
-    "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
@@ -84,6 +84,8 @@ SHIPPED = {
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
     "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
     "root-train": "src/prompts/integration_playbooks/root-train.md",
+    "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
+    "promotion-continuous": "src/prompts/integration_playbooks/promotion-continuous.md",
 }
 SOURCES = SHIPPED
 
@@ -244,11 +246,15 @@ def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
             "dedup_key": template(lit("spec-ingest:"), event("spec_path")),
             "title": template(lit("Ingest spec "), event("spec_path")),
             "profile_id": lit("spec-ingest"),
-            "intelligence_class": lit("standard-high"),
-            "description": lit(
-                "Read this spec, list existing tasks in the project, and emit "
-                "task_batch_propose with the derived task graph. Iterate on "
-                "validation errors."
+            "intelligence_class": lit("deep-high"),
+            "description": template(
+                lit("spec_path: "), event("spec_path"),
+                lit(". Read spec_kind and check implementation grounding. Design specs get "
+                    "one deep-high implementation-spec authoring child in an epic, submitted "
+                    "to Jack's review queue. Implementation specs get parallel phase epics "
+                    "and self-contained children. Validate, then task_batch_propose followed "
+                    "directly by task_batch_commit; no human proposal gate. The batch "
+                    "creates work only; updates to existing tasks need an approved change set."),
             ),
         },
         ("created", "reused"),
@@ -310,6 +316,8 @@ def _load(rel_path: str) -> PlaybookSource:
 
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
+    if playbook_id in {"promotion-request", "promotion-continuous"}:
+        return _promotion_policy_body(source)
     if playbook_id == "object-loop":
         return _object_loop_body(source)
     if playbook_id == "supervisor-hourly-report":
@@ -318,6 +326,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _default_pipeline_body(source)
     if playbook_id == "default-assignment-routing":
         return _default_assignment_routing_body(source)
+    if playbook_id == "stuck-task-watch":
+        return _stuck_task_watch_body(source)
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
     if playbook_id in ("agent-queue-root-train", "root-train"):
@@ -532,6 +542,84 @@ def _github_issue_triage_body(source: PlaybookSource) -> dict[str, Any]:
         {"project_id": event("project_id"), "review_id": event("review_id"),
          "revision": event("revision")},
         ("closed", "ignored"))
+    return {"rules": rules, "steps": steps}
+
+
+def _promotion_policy_body(source):
+    from src.commands.contracts import CONTRACTS
+
+    continuous = source.frontmatter["id"] == "promotion-continuous"
+    rules, steps = [], {}
+    def event(path):
+        return {"type": "event_ref", "path": path}
+    def lit(value):
+        return {"type": "literal", "value": value}
+    def bound(path):
+        return {"type": "binding_ref", "binding": "input", "path": "policy." + path}
+    def truth(path):
+        return {"type": "exists", "value": bound(path), "mode": "truthy"}
+    for rule, trigger in (("advance-source", "promotion.source_settled"),
+                          ("explicit-request", "promotion.request_due"),
+                          ("hotfix-completed", "promotion.hotfix_completed"),
+                          ("visit-intent", "promotion.intent_due"),
+                          ("backmerge-delivered", "promotion.delivered")):
+        ref = _source_ref_for_heading(source, "## Rule: " + rule)
+        def sid(name):
+            return rule + "--" + name
+        def step(name, kind, **fields):
+            steps[sid(name)] = {"type": kind, "rule": rule, "title": name,
+                                "source": ref, **fields}
+        def cmd(name, command, inputs, success, *, save=None, outcomes=None):
+            contract = CONTRACTS.get(command).contract.execution
+            transitions = {outcome.name: sid("notify") for outcome in contract.outcomes}
+            transitions.update({outcome.name: sid(success) for outcome in contract.outcomes
+                                if outcome.classification.value == "success"})
+            transitions.update({"runtime_error": sid("failed")})
+            transitions.update({key: sid(value) for key, value in (outcomes or {}).items()})
+            step(name, "command", command=command, inputs=inputs, transitions=transitions,
+                 **({"save_result_as": save} if save else {}))
+        for name, outcome in (("done", "completed"), ("failed", "failed")):
+            steps[sid(name)] = _terminal(rule, outcome, _source_ref_for_heading(source, "## Failure handling"))
+        notify_inputs = {"project_id": event("project_id"), "to_kind": lit("user"),
+                         "to_id": lit("user"), "from_id": lit(source.frontmatter["id"]),
+                         "from_kind": lit("system"),
+                         "body": lit("Promotion needs operator attention. Inspect aq promote status; use prepare, approve or cancel after resolving the named hold.")}
+        cmd("notify", "message_send", notify_inputs, "done")
+        # Refused notification must end; it never loops back into itself.
+        steps[sid("notify")]["transitions"] = {key: (sid("done") if value == sid("done") else sid("failed"))
+                                                for key, value in steps[sid("notify")]["transitions"].items()}
+        entry = "read"
+        if rule == "visit-intent":
+            entry = "publish"
+            cmd("publish", "integration_promotion_publish", {"batch_id": event("batch_id")}, "done",
+                outcomes={"held": "notify", "unknown": "notify"})
+        elif rule == "backmerge-delivered":
+            entry = "backmerge"
+            cmd("backmerge", "integration_backmerge_source",
+                {"project_id": event("project_id"), "step_id": event("step_id")}, "done")
+        elif rule == "advance-source" and not continuous:
+            entry = "done"
+        else:
+            identity = {"project_id": event("project_id"), "step_id": event("step_id")}
+            if rule == "hotfix-completed":
+                identity["from_task"] = event("from_task")
+            cmd("read", "integration_promotion_policy_input", identity, "choose", save="input")
+            cases = [{"when": truth("backmerge_pending"), "goto": sid("notify")}]
+            if continuous and rule == "advance-source":
+                cases.append({"when": truth("newer_source"), "goto": sid("cancel")})
+                cmd("cancel", "promote_cancel", {"project_id": event("project_id"),
+                    "request_id": bound("active_request_id")}, "request")
+            cases.append({"when": truth("active_request_id"), "goto": sid("done")})
+            step("choose", "decision", cases=cases, default=sid("request"))
+            inputs = {**identity, "source_sha": bound("source_sha")}
+            if rule != "advance-source":
+                inputs["notes_reviewed"] = event("notes_reviewed")
+            cmd("request", "promote_request", inputs, "done")
+        if rule == "advance-source" and not continuous:
+            steps.pop(sid("notify"))
+            steps.pop(sid("failed"))
+        rules.append({"id": rule, "name": rule, "source": ref,
+                      "trigger": {"event_type": trigger}, "entry_step": sid(entry)})
     return {"rules": rules, "steps": steps}
 
 
@@ -802,6 +890,43 @@ def routing_policy_block(source_text: str) -> str:
     return "".join(f"{line}\n" for line in blocks[0])
 
 
+#: The classifier's risk answer, in ascending order
+#: (:data:`src.routing.policy.RISK_LEVELS`).
+_RISK_LEVELS = ["low", "medium", "high", "very_high"]
+
+
+def _classification_schema(policy_text: str) -> dict[str, Any]:
+    """The classify step's ``output_schema`` for the policy block *policy_text*.
+
+    A policy with a top-level ``risk`` table asks the classifier for ``risk``
+    and ``risk_reason`` as well; one without it keeps the six fields, so a
+    policy that does not use risk compiles to the same artifact as before.
+    """
+    properties: dict[str, Any] = {
+        "task_type": {"type": "string"},
+        "intelligence_class": {"type": "string"},
+        "narrow": {"type": "boolean"},
+        "test_verified": {"type": "boolean"},
+        "independent_verifier": {"type": "boolean"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 400},
+    }
+    required = [
+        "task_type", "intelligence_class", "narrow",
+        "test_verified", "independent_verifier", "reason",
+    ]
+    parsed = yaml.safe_load(policy_text)
+    if isinstance(parsed, dict) and parsed.get("risk"):
+        properties["risk"] = {"type": "string", "enum": list(_RISK_LEVELS)}
+        properties["risk_reason"] = {"type": "string", "minLength": 1, "maxLength": 400}
+        required += ["risk", "risk_reason"]
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
 def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
     """The routing semantic body for ``default-assignment-routing``.
 
@@ -940,22 +1065,7 @@ def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
                         "questions", "allowed_kinds", "allowed_classes",
                     )
                 },
-                "output_schema": {
-                    "type": "object",
-                    "properties": {
-                        "task_type": {"type": "string"},
-                        "intelligence_class": {"type": "string"},
-                        "narrow": {"type": "boolean"},
-                        "test_verified": {"type": "boolean"},
-                        "independent_verifier": {"type": "boolean"},
-                        "reason": {"type": "string", "minLength": 1, "maxLength": 400},
-                    },
-                    "required": [
-                        "task_type", "intelligence_class", "narrow",
-                        "test_verified", "independent_verifier", "reason",
-                    ],
-                    "additionalProperties": False,
-                },
+                "output_schema": _classification_schema(policy["value"]),
                 "budget": {
                     "max_calls": 1,
                     "max_output_tokens": 4096,
@@ -1091,6 +1201,7 @@ def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:
                     "source_identity": bound("escalation_key"),
                     "incident_key": bound("escalation_key"),
                     "summary": bound("escalation_title"),
+                    "task_title": bound("escalation_title"),
                     "investigation": bound("escalation_question"),
                     "decision_requested": {
                         "type": "literal",
@@ -1245,21 +1356,108 @@ def _supervisor_failure_triage_body(source: PlaybookSource) -> dict[str, Any]:
 
 
 def _morning_report_body(source: PlaybookSource) -> dict[str, Any]:
-    """One optional minute reconciliation command, with no model or worker step."""
+    """One run per local day that ticks a minute apart until the report settles.
+
+    No model or worker step.  ``report.morning_due`` carries a per-day event
+    id, so the dispatch dedup is the once-per-local-day key; the timer waits
+    keep the reconciliation inside that one run instead of a run per minute.
+    """
     index = ProseIndex(source, source.vault_path)
     rule = "reconcile-morning"
-    tick, done, failed = (f"{rule}--{suffix}" for suffix in ("tick", "done", "failed"))
+    tick, settle, pause, backoff, retry, recheck, done, failed = (
+        f"{rule}--{suffix}"
+        for suffix in (
+            "tick", "settle", "pause", "backoff", "retry", "recheck", "done", "failed"
+        )
+    )
+
+    def command(title: str, ordinal: int, binding: str, then: str, error: str) -> dict:
+        return {
+            "type": "command", "rule": rule, "title": title,
+            "source": index.step_ref(rule, ordinal), "command": "morning_report_tick",
+            "inputs": {}, "save_result_as": binding,
+            "transitions": {"completed": then, "rejected": error, "runtime_error": error},
+        }
+
+    def settled(title: str, ordinal: int, binding: str) -> dict[str, Any]:
+        """Wait while the event's own report is pending; anything else ends."""
+        pending = {"type": "bool", "op": "and", "operands": [
+            {"type": "comparison", "op": "eq",
+             "left": {"type": "binding_ref", "binding": binding, "path": "report_id"},
+             "right": {"type": "event_ref", "path": "report_id"}},
+            {"type": "comparison", "op": "in",
+             "left": {"type": "binding_ref", "binding": binding, "path": "state"},
+             "right": {"type": "literal",
+                       "value": ["building", "failed", "ready", "authoring"]}},
+        ]}
+        return {
+            "type": "decision", "rule": rule, "title": title,
+            "source": index.step_ref(rule, ordinal),
+            "cases": [{"when": pending, "goto": pause}], "default": done,
+        }
+
+    def timer(title: str, ordinal: int, fired: str) -> dict[str, Any]:
+        return {
+            "type": "wait", "rule": rule, "title": title,
+            "source": index.step_ref(rule, ordinal), "wait_kind": "timer",
+            "timeout_seconds": 60,
+            "transitions": {"fired": fired, "runtime_error": failed},
+        }
+
     return {
         "rules": [{
-            "id": rule, "name": rule, "trigger": {"event_type": "timer.1m"},
+            "id": rule, "name": rule, "trigger": {"event_type": "report.morning_due"},
             "entry_step": tick, "source": index.rule_ref(rule),
         }],
         "steps": {
-            tick: {
-                "type": "command", "rule": rule, "title": "tick",
-                "source": index.step_ref(rule, 1), "command": "morning_report_tick",
-                "inputs": {}, "save_result_as": "report",
-                "transitions": {"completed": done, "rejected": failed, "runtime_error": failed},
+            tick: command("tick", 1, "report", settle, backoff),
+            settle: settled("settle", 2, "report"),
+            pause: timer("pause", 3, tick),
+            backoff: timer("backoff", 4, retry),
+            retry: command("retry", 5, "retried", recheck, failed),
+            recheck: settled("recheck", 6, "retried"),
+            done: _terminal(rule, "completed", index.step_ref(rule, 2)),
+            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
+
+
+def _stuck_task_watch_body(source: PlaybookSource) -> dict[str, Any]:
+    """Read each tick and send a summary only when the result is nonempty."""
+    index = ProseIndex(source, source.vault_path)
+    rule = "watch-stalled-work"
+    observe, choose, notify, done, failed = (
+        f"{rule}--{suffix}" for suffix in ("observe", "choose", "notify", "done", "failed")
+    )
+    def lit(value):
+        return {"type": "literal", "value": value}
+    return {
+        "rules": [{
+            "id": rule, "name": rule, "trigger": {"event_type": "timer.10m"},
+            "entry_step": observe, "source": index.rule_ref(rule),
+        }],
+        "steps": {
+            observe: {
+                "type": "command", "rule": rule, "title": "observe",
+                "source": index.step_ref(rule, 1), "command": "get_stuck_tasks",
+                "inputs": {}, "save_result_as": "watch",
+                "transitions": {"read": choose, "rejected": failed, "runtime_error": failed},
+            },
+            choose: {
+                "type": "decision", "rule": rule, "title": "has stuck tasks",
+                "source": index.step_ref(rule, 2),
+                "cases": [{"when": {"type": "exists", "mode": "truthy",
+                           "value": {"type": "binding_ref", "binding": "watch", "path": "stuck"}},
+                           "goto": notify}], "default": done,
+            },
+            notify: {
+                "type": "command", "rule": rule, "title": "notify global supervisor",
+                "source": index.step_ref(rule, 3), "command": "message_send",
+                "inputs": {"to_kind": lit("session"), "to_id": lit("supervisor-global"),
+                           "from_kind": lit("system"), "from_id": lit("stuck-task-watch"),
+                           "subject": lit("Stuck tasks"),
+                           "body": {"type": "binding_ref", "binding": "watch", "path": "summary"}},
+                "transitions": {"queued": done, "rejected": failed, "runtime_error": failed},
             },
             done: _terminal(rule, "completed", index.step_ref(rule, None)),
             failed: _terminal(rule, "failed", index.step_ref(rule, None)),
@@ -1466,9 +1664,13 @@ def _terminal(rule: str, outcome: str, source_ref: dict[str, Any]) -> dict[str, 
     }
 
 
-def build(playbook_id: str) -> dict[str, Any]:
-    """Compile one shipped source and report what a reviewer would see."""
-    rel_path = SOURCES[playbook_id]
+def build(playbook_id: str, rel_path: str | None = None) -> dict[str, Any]:
+    """Compile one shipped source and report what a reviewer would see.
+
+    *rel_path* compiles a draft of the shipped playbook in place of its
+    shipped source, with the same semantic body.
+    """
+    rel_path = rel_path or SOURCES[playbook_id]
     source = _load(rel_path)
     body = semantic_body(playbook_id, source)
     if not body:
@@ -1538,15 +1740,34 @@ def main() -> int:
         action="store_true",
         help="report drift in the deterministic fields, write nothing",
     )
+    parser.add_argument(
+        "--source",
+        help=(
+            "compile this draft source of one shipped id instead of its shipped "
+            "source; needs --out and exactly one id"
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        help=(
+            "write the bundle here instead of the fixture tree; the manifest is "
+            "seeded from the fixture's on first write"
+        ),
+    )
     parser.add_argument("ids", nargs="*", default=None)
     args = parser.parse_args()
+    if args.source and (not args.out or len(args.ids or []) != 1):
+        parser.error("--source needs --out and exactly one playbook id")
 
     drift = 0
     for playbook_id in args.ids or list(SOURCES):
         print(f"{playbook_id}:")
-        result = build(playbook_id)
-        directory = FIXTURE_ROOT / playbook_id
+        result = build(playbook_id, args.source)
+        directory = Path(args.out).resolve() if args.out else FIXTURE_ROOT / playbook_id
         directory.mkdir(parents=True, exist_ok=True)
+        seed_manifest = FIXTURE_ROOT / playbook_id / "manifest.md"
+        if args.out and not (directory / "manifest.md").exists() and seed_manifest.exists():
+            (directory / "manifest.md").write_bytes(seed_manifest.read_bytes())
         files: dict[Path, bytes] = {
             directory / "source.md": (REPO_ROOT / result["rel_path"]).read_bytes(),
             directory / "diagnostics.json": (
@@ -1606,7 +1827,7 @@ def main() -> int:
                 if stable(existing) == stable(payload):
                     continue
             drift += 1
-            rel = path.relative_to(REPO_ROOT)
+            rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
             if args.check:
                 print(f"  DRIFT {rel}")
             else:

@@ -18,7 +18,8 @@ The division of labour follows that module's contract:
   the fetch (:meth:`DeliveryView.fresh`).  Anything unverified is unknown, and
   unknown fails closed: it never settles, archives or deletes.
 
-Nothing here is persisted.  A view lives for one request.
+Nothing here is persisted. A view lives for one request; the truth cache may
+reuse immutable Git proofs for identical completion inputs and pinned OIDs.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ import time
 import weakref
 from collections.abc import Iterable, Mapping
 from functools import partial
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 
@@ -41,8 +42,10 @@ from src.database.tables import (
     projects,
     repos,
     task_completion_records,
+    task_branch_origins,
     tasks,
 )
+from src.git.manager import GitError, RemoteRefState
 from src.integration.delivery_truth import (
     DeliveryEvidence,
     DeliveryRequest,
@@ -211,6 +214,27 @@ async def delivery_targets(conn, task_ids: Iterable[str], *, reduced=False) -> d
                         target.project_id, target.repository_id, target.repository_url,
                         "refs/heads/" + str(parent_ref).removeprefix("refs/heads/"),
                     )
+    # A hotfix's recorded origin selects its chain target even for ordinary
+    # delivery readers. Arbitrary parent refs retain the existing routing.
+    from src.integration.promotion_routing import promotion_origin_target
+
+    origins = (await conn.execute(select(task_branch_origins).where(
+        task_branch_origins.c.task_id.in_(ids), task_branch_origins.c.retired_at.is_(None),
+    ))).mappings().all()
+    configs = {row.id: row for row in (await conn.execute(select(
+        projects.c.id, projects.c.promotion_flow, projects.c.default_branch_cutover).where(
+        projects.c.id.in_({target.project_id for target in found.values()}),
+    ))).all()}
+    for origin in origins:
+        task_id = origin["task_id"]
+        target = found.get(task_id)
+        if target is None:
+            continue
+        config = configs[target.project_id]
+        branch = promotion_origin_target(target.target_ref, config.promotion_flow, origin,
+                                         target.repository_id, config.default_branch_cutover)
+        found[task_id] = DeliveryTarget(target.project_id, target.repository_id,
+                                        target.repository_url, "refs/heads/" + branch)
     return found
 
 
@@ -249,10 +273,26 @@ class DeliveryView:
         A snapshot that failed already answered unknown for all of its tasks,
         so it has no target to go stale and does not spoil its peers.
         """
+        groups = {}
         for snapshot in self.snapshots:
-            if snapshot.error is None and not await snapshot.is_fresh():
-                return False
-        return True
+            if snapshot.error is None:
+                key = snapshot.git, snapshot.store, snapshot.repository_url
+                groups.setdefault(key, []).append(snapshot)
+        fresh = True
+        for (git, store, url), snapshots in groups.items():
+            branches = sorted({s.target_ref.removeprefix("refs/heads/") for s in snapshots})
+            try:
+                refs = (await git.als_remote_refs(store, branches)
+                        if await git.aget_remote_url(store) == url else {})
+            except (GitError, OSError):
+                refs = {}
+            for snapshot in snapshots:
+                ref = refs.get(snapshot.target_ref.removeprefix("refs/heads/"))
+                current = bool(ref and ref.state is RemoteRefState.PRESENT
+                               and ref.oid == snapshot.target_oid)
+                snapshot._freshness[snapshot.target_ref] = current
+                fresh &= current
+        return fresh
 
     async def verified_on(self, conn, task_ids: Iterable[str]) -> dict[str, DeliveryEvidence]:
         """Evidence whose identity and target still hold on *conn*.
@@ -280,8 +320,80 @@ class DeliveryView:
             for task_id in group:
                 evidence = self.evidence[task_id]
                 if current.get(task_id) == evidence.request:
+                    base = getattr(evidence, "source_base", None)
+                    if base is not None:
+                        current_base = await conn.scalar(select(task_branch_origins.c.base_sha).where(
+                            task_branch_origins.c.task_id == task_id,
+                            task_branch_origins.c.repository_id == target.repository_id,
+                            task_branch_origins.c.retired_at.is_(None),
+                        ))
+                        if current_base != base:
+                            continue
                     verified[task_id] = evidence
         return verified
+
+
+@dataclass
+class PrerequisiteView:
+    """Sibling delivery and default-branch delivery from the same graph read."""
+
+    siblings: DeliveryView
+    default: DeliveryView
+    #: Dependent task id -> the cross-parent prerequisites it waits on, each
+    #: with whether its exact default-branch source is already contained in
+    #: the dependent's own parent branch (so no epic refresh is needed).
+    parent_containment: Mapping[str, Mapping[str, bool]] = field(default_factory=dict)
+    parent_snapshots: tuple[DeliverySnapshot, ...] = ()
+
+    def get(self, task_id):
+        return self.siblings.get(task_id)
+
+    def satisfied(self, task_id):
+        return self.siblings.satisfied(task_id)
+
+    @property
+    def evidence(self):
+        return self.siblings.evidence
+
+    @property
+    def targets(self):
+        return self.siblings.targets
+
+    @property
+    def all_ids(self):
+        return self.siblings.evidence.keys() | self.default.evidence.keys()
+
+    @property
+    def snapshots(self):
+        return self.siblings.snapshots + self.default.snapshots + self.parent_snapshots
+
+    async def fresh(self):
+        return await DeliveryView(snapshots=self.snapshots).fresh()
+
+    async def parents_fresh(self):
+        return await DeliveryView(snapshots=tuple(
+            snapshot for snapshot in self.parent_snapshots if snapshot.error is None
+        )).fresh()
+
+    async def verified_on(self, conn, ids):
+        return await self.siblings.verified_on(conn, ids)
+
+    async def mode(self, mode, *, conn=None):
+        from dataclasses import replace
+
+        siblings, default = self.siblings.evidence, self.default.evidence
+        if conn is not None:
+            siblings = await self.siblings.verified_on(conn, self.all_ids)
+            default = await self.default.verified_on(conn, self.all_ids)
+        default_ids = frozenset(tid for tid, p in default.items() if p.satisfied)
+        return replace(mode,
+            delivered_prerequisite_ids=frozenset(tid for tid, p in siblings.items() if p.satisfied),
+            default_prerequisite_ids=default_ids,
+            parent_contained_task_ids=frozenset(
+                dependent for dependent, sources in self.parent_containment.items()
+                if sources and all(contained and tid in default_ids
+                                   for tid, contained in sources.items())
+            ))
 
 
 _FETCH_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -304,7 +416,9 @@ def prerequisite_observer(db):
     return None
 
 
-async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
+async def hierarchy_frontier_modes(
+    db, *, project_ids=None, task_id=None, cached_only=False, display_unavailable=None,
+):
     """Request-scoped Git prerequisite evidence for scheduling and diagnostics.
 
     A cycle shares these modes between the scheduler and pool measurement.
@@ -312,6 +426,10 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
     revalidation uses a short connection without locks. Advisory readers reuse
     successful snapshots within READ_MAX_AGE, still checking target freshness.
     Claim activation fetches and revalidates its own view under the task locks.
+    ``cached_only`` pins existing evidence for interactive diagnostics without
+    fetching or checking remote freshness; database identities are still checked.
+    ``display_unavailable`` optionally receives cache misses by project and target
+    kind. It is diagnostic metadata, never part of the admission modes.
 
     Shadow observers preserve receipt admission. An unstable active view supplies
     an empty delivered set, so it cannot fall back to a stale receipt.
@@ -337,17 +455,71 @@ async def hierarchy_frontier_modes(db, *, project_ids=None, task_id=None):
         mode = ProjectIntegrationMode.of(project)
         if not mode.hierarchical:
             continue
-        view = await observer.prerequisite_view(
-            project.id, task_id=task_id, max_age=observer.READ_MAX_AGE,
-        )
-        verified = {}
-        if await view.fresh():
-            async with db._engine.connect() as conn:
-                verified = await view.verified_on(conn, view.evidence)
-        modes[project.id] = replace(mode, delivered_prerequisite_ids=frozenset(
-            tid for tid, proof in verified.items() if proof.satisfied
-        ))
+        timeout = (FRONTIER_DISPLAY_TIMEOUT_SECONDS if cached_only
+                   else FRONTIER_MODE_TIMEOUT_SECONDS)
+        try:
+            modes[project.id] = await asyncio.wait_for(_project_frontier_mode(
+                db, observer, project, mode, task_id=task_id, cached_only=cached_only,
+                display_unavailable=display_unavailable,
+            ), timeout)
+        except TimeoutError:
+            # Fail closed for this read: no Git-proven prerequisite admits work,
+            # but one slow Git view never holds the scheduler, pools or explain.
+            logger.warning(
+                "hierarchy frontier for %s%s exceeded %.0fs; withholding Git-gated work",
+                project.id, f" task {task_id}" if task_id else "", timeout,
+            )
+            modes[project.id] = replace(
+                mode, delivered_prerequisite_ids=frozenset(),
+            )
     return modes
+
+
+#: Wall-clock bound on one project's Git prerequisite view in a scheduler,
+#: pool or claim read. Exceeding it withholds Git-gated work for that read.
+FRONTIER_MODE_TIMEOUT_SECONDS = 60.0
+#: Interactive diagnostics (explain, pool display) read cached evidence only and
+#: must answer inside a CLI request.
+FRONTIER_DISPLAY_TIMEOUT_SECONDS = 10.0
+
+
+async def _project_frontier_mode(
+    db, observer, project, mode, *, task_id, cached_only, display_unavailable=None,
+):
+    from dataclasses import replace
+
+    view = await observer.prerequisite_view(
+        project.id, task_id=task_id, max_age=observer.READ_MAX_AGE,
+        **({"cached_only": True} if cached_only else {}),
+    )
+    verified_mode = replace(mode, delivered_prerequisite_ids=frozenset())
+    if cached_only:
+        if display_unavailable is not None:
+            unavailable = {
+                kind: frozenset(tid for tid, proof in delivery.evidence.items()
+                                if proof.reason == "snapshot_unavailable")
+                for kind, delivery in (("siblings", view.siblings), ("default", view.default))
+            }
+            if any(unavailable.values()):
+                display_unavailable[project.id] = unavailable
+        fresh = all(snapshot._freshness.get(snapshot.target_ref, True)
+                    for snapshot in view.snapshots)
+    else:
+        fresh = await view.fresh()
+    if fresh:
+        async with db._engine.connect() as conn:
+            verified_mode = await view.mode(mode, conn=conn)
+    stackable = frozenset()
+    if mode.stacked:
+        from src.integration.stacked_branches import observe_stacks
+
+        stack_view = await observe_stacks(observer, project.id, task_id=task_id,
+                                           max_age=observer.READ_MAX_AGE,
+                                           **({"cached_only": True} if cached_only else {}))
+        if await stack_view.fresh():
+            async with db._engine.connect() as conn:
+                stackable = frozenset(await stack_view.verified_on(conn))
+    return replace(verified_mode, stackable_prerequisite_ids=stackable)
 
 
 def _fetch_lock(path: Path) -> asyncio.Lock:
@@ -361,8 +533,9 @@ class DeliveryObserver:
 
     Each repository gets an observer clone beside, never inside, the
     publisher's retained checkout. The reduced observer fetches once per
-    repository and shares its refs across targets; a read-only surface may reuse a snapshot within
-    :data:`READ_MAX_AGE`, and no evaluated answer outlives its request.
+    repository and shares its refs across targets. A read-only surface may reuse
+    a snapshot within :data:`READ_MAX_AGE`. Reduced diagnostics consume only
+    existing OID-bound proofs; guarded writers still fetch and recheck inputs.
     """
 
     #: Attempts to take a view whose targets did not move while it was evaluated.
@@ -380,6 +553,7 @@ class DeliveryObserver:
         self.target_loader = partial(delivery_targets, reduced=truth is not None)
         self.data_dir = Path(data_dir) / "development-integration"
         self._recent: dict[DeliveryTarget, tuple[float, DeliverySnapshot]] = {}
+        self._stack_ref_cache: dict = {}
 
     def store_path(self, repository_id: str) -> Path:
         digest = hashlib.sha256(repository_id.encode()).hexdigest()[:20]
@@ -392,7 +566,9 @@ class DeliveryObserver:
             await self.git.acreate_checkout(target.repository_url, str(path), no_checkout=True)
         return path
 
-    async def _snapshot(self, target: DeliveryTarget, max_age: float = 0.0) -> DeliverySnapshot:
+    async def _snapshot(
+        self, target: DeliveryTarget, max_age: float = 0.0, *, cached_only: bool = False,
+    ) -> DeliverySnapshot:
         """A fetched snapshot, or an unknown one: a failure is never an empty answer.
 
         *max_age* lets a read-only caller reuse a successful snapshot of the
@@ -400,8 +576,18 @@ class DeliveryObserver:
         """
         path = self.store_path(target.repository_id)
         recent = self._recent.get(target)
-        if max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age:
+        if (max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age
+            and (recent[1].error is None or cached_only)
+            and (not cached_only or recent[1]._freshness.get(target.target_ref, True))):
             return recent[1]
+        if cached_only:
+            # Interactive diagnostic reads must never queue behind a fetch or start
+            # one. Expired evidence is unknown, not evidence of non-delivery.
+            return DeliverySnapshot(
+                self.git, str(path), target.project_id, target.repository_id,
+                target.repository_url, target.target_ref, None, MappingProxyType({}),
+                "snapshot_unavailable",
+            )
         try:
             async with _fetch_lock(path):
                 store = await self._store(target)
@@ -417,8 +603,29 @@ class DeliveryObserver:
                         repository_id=target.repository_id,
                         repository_url=target.repository_url, target_ref=target.target_ref,
                     )
-            if snapshot.error is None:
-                self._recent[target] = (time.monotonic(), snapshot)
+            if snapshot.error in {None, "missing_target"}:
+                # The fetch captured every remote branch. Preserve its timestamp
+                # for every covered target, including previously cached branches
+                # that have since disappeared, without extending reused evidence.
+                stamp = time.monotonic()
+                covered = {target} | {
+                    cached for cached in self._recent
+                    if (cached.project_id, cached.repository_id, cached.repository_url)
+                    == (target.project_id, target.repository_id, target.repository_url)
+                } | {
+                    replace(target, target_ref="refs/heads/" + ref.removeprefix(
+                        "refs/remotes/origin/"))
+                    for ref in snapshot.source_heads
+                    if ref.startswith("refs/remotes/origin/") and ref != "refs/remotes/origin/HEAD"
+                }
+                for covered_target in covered:
+                    oid = snapshot.source_heads.get("refs/remotes/origin/" +
+                                                    covered_target.target_ref.removeprefix(
+                                                        "refs/heads/"))
+                    self._recent[covered_target] = (stamp, replace(
+                        snapshot, target_ref=covered_target.target_ref, target_oid=oid,
+                        error=None if oid else "missing_target",
+                    ))
             return snapshot
         except Exception as exc:  # noqa: BLE001 - any failure is an unknown observation
             logger.warning(
@@ -431,19 +638,21 @@ class DeliveryObserver:
                 f"observer_error: {type(exc).__name__}",
             )
 
-    async def snapshot(self, target: DeliveryTarget) -> DeliverySnapshot:
-        """Fetch one isolated, request-scoped snapshot for an external reader."""
-        snapshot = (await self._snapshot(target)).for_request()
+    async def snapshot(
+        self, target: DeliveryTarget, *, max_age: float = 0.0, cached_only: bool = False,
+    ) -> DeliverySnapshot:
+        """One isolated, request-scoped snapshot; diagnostics can require a cached read."""
+        snapshot = (await self._snapshot(target, max_age, cached_only=cached_only)).for_request()
         if self.truth is not None:
             from src.integration.git_truth import GitTruthSnapshot
 
-            return GitTruthSnapshot(self.truth, snapshot)
+            return GitTruthSnapshot(self.truth, snapshot, cached_only=cached_only)
         return snapshot
 
     async def _evaluate(self, target: DeliveryTarget, task_ids: set[str], max_age: float = 0.0,
-                        *, snapshot=None):
+                        *, snapshot=None, cached_only: bool = False):
         if snapshot is None:
-            snapshot = await self._snapshot(target, max_age)
+            snapshot = await self._snapshot(target, max_age, cached_only=cached_only)
         snapshot = snapshot.for_request()
         requests = await self.request_loader(
             self.db, task_ids, repository_id=target.repository_id,
@@ -453,7 +662,15 @@ class DeliveryObserver:
             if self.truth is not None:
                 from src.integration.git_truth import GitTruthSnapshot
 
-                evaluated = await GitTruthSnapshot(self.truth, snapshot).evaluate_many(requests.values())
+                async with self.db._engine.connect() as conn:
+                    bases = dict((await conn.execute(select(
+                        task_branch_origins.c.task_id, task_branch_origins.c.base_sha,
+                    ).where(task_branch_origins.c.task_id.in_(task_ids),
+                            task_branch_origins.c.repository_id == target.repository_id,
+                            task_branch_origins.c.retired_at.is_(None)))).all())
+                truth = GitTruthSnapshot(self.truth, snapshot, cached_only=cached_only)
+                evaluated = {tid: await truth.is_delivered(request, source_base=bases.get(tid))
+                             for tid, request in requests.items()}
             else:
                 evaluated = await snapshot.evaluate_many(requests.values())
         except Exception as exc:  # noqa: BLE001 - a broken observation is unknown
@@ -468,45 +685,126 @@ class DeliveryObserver:
 
     async def prerequisite_view(
         self, project_id: str, *, task_id: str | None = None, max_age: float = 0.0,
+        cached_only: bool = False,
     ):
-        """Current completed sibling prerequisites; only advisory readers reuse snapshots.
+        """Completed prerequisites, routed to the parent or default branch.
 
         Claims keep the default max_age=0 to fetch before revalidating under locks.
         """
         from src.database.tables import task_dependencies
 
         dependent = tasks.alias("delivery_dependent")
-        query = select(tasks.c.id).select_from(task_dependencies.join(
+        dependent_parent = tasks.alias("delivery_dependent_parent")
+        query = select(tasks.c.id, tasks.c.parent_task_id,
+                       dependent.c.parent_task_id.label("dependent_parent"),
+                       dependent.c.id.label("dependent_id"),
+                       dependent_parent.c.branch_name.label("parent_branch"),
+                       ).select_from(task_dependencies.join(
             tasks, tasks.c.id == task_dependencies.c.depends_on_task_id,
-        ).join(dependent, dependent.c.id == task_dependencies.c.task_id)).where(
+        ).join(dependent, dependent.c.id == task_dependencies.c.task_id).outerjoin(
+            dependent_parent, dependent_parent.c.id == dependent.c.parent_task_id,
+        )).where(
             dependent.c.project_id == project_id,
             dependent.c.status.in_(("READY", "IN_PROGRESS")),
-            dependent.c.parent_task_id.is_not(None),
-            tasks.c.parent_task_id == dependent.c.parent_task_id,
             tasks.c.status == "COMPLETED", task_dependencies.c.dep_type == "blocks",
         )
         if task_id is not None:
             query = query.where(dependent.c.id == task_id)
         async with self.db._engine.connect() as conn:
-            ids = (await conn.execute(query)).scalars().all()
-        return await self.observe(ids, max_age=max_age)
+            rows = (await conn.execute(query)).all()
+        siblings = {tid for tid, parent, child_parent, _dep, _branch in rows
+                    if parent is not None and parent == child_parent}
+        cross = {tid for tid, parent, child_parent, _dep, _branch in rows
+                 if parent is None or parent != child_parent}
+        for _attempt in range(self.FRESH_ATTEMPTS):
+            default = await self.observe(cross, max_age=max_age, target_loader=delivery_targets,
+                                         cached_only=cached_only)
+            containment, parents = await self._parent_containment(
+                rows, default, cached_only=cached_only,
+            )
+            view = PrerequisiteView(
+                await self.observe(siblings, max_age=max_age, cached_only=cached_only),
+                default, containment, parents,
+            )
+            if cached_only or await view.parents_fresh():
+                return view
+            if not await default.fresh() or not await view.siblings.fresh():
+                return view
+            # An epic may advance while main stays fixed. Retake its shared
+            # repository snapshot instead of retaining a stale containment answer.
+            max_age = 0.0
+        return view
 
-    async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0) -> DeliveryView:
+    async def _parent_containment(
+        self, rows, default, *, cached_only=False,
+    ) -> tuple[dict[str, dict[str, bool]], tuple[DeliverySnapshot, ...]]:
+        """Whether each cross-parent prerequisite is already in the dependent's epic.
+
+        A child whose epic branch already contains every cross-epic
+        prerequisite's exact default-branch source needs no epic refresh, so an
+        unrelated open batch on that epic cannot withhold it. Anything not
+        proven here stays False and keeps the refresh rule.
+        """
+        from src.integration.delivery_truth import DeliveryState
+
+        result: dict[str, dict[str, bool]] = {}
+        parents: dict[tuple[str, str, str], DeliverySnapshot] = {}
+        if self.truth is None:
+            return result, ()
+        from src.integration.git_truth import GitTruthSnapshot
+
+        snapshots = {(s.project_id, s.repository_id): s for s in default.snapshots}
+        for tid, parent, child_parent, dependent_id, branch in rows:
+            if child_parent is None or (parent is not None and parent == child_parent):
+                continue
+            sources = result.setdefault(dependent_id, {})
+            sources[tid] = False
+            proof = default.evidence.get(tid)
+            if proof is None or not branch:
+                continue
+            if proof.state is DeliveryState.NO_ARTIFACT:
+                sources[tid] = True
+                continue
+            snapshot = snapshots.get((proof.request.project_id, proof.request.repository_id))
+            if not proof.satisfied or not proof.source_oid or snapshot is None:
+                continue
+            parent_ref = "refs/heads/" + branch.removeprefix("refs/heads/")
+            try:
+                observed = GitTruthSnapshot(self.truth, snapshot,
+                                            cached_only=cached_only).for_target(parent_ref)
+                parents[(snapshot.project_id, snapshot.repository_id, parent_ref)] = (
+                    observed.observation
+                )
+                contained = await observed.is_delivered(
+                    replace(proof.request, target_ref=parent_ref),
+                    source_base=getattr(proof, "source_base", None),
+                )
+            except Exception as exc:  # noqa: BLE001 - unproven keeps the refresh rule
+                logger.debug("parent containment of %s for %s unknown: %s",
+                             tid, dependent_id, exc)
+                continue
+            sources[tid] = bool(contained.satisfied and contained.source_oid == proof.source_oid)
+        return result, tuple(parents.values())
+
+    async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0,
+                      target_loader=None, cached_only: bool = False) -> DeliveryView:
         """Evaluate each task's current completion against its project's target.
 
         A view is retaken when a target moved during evaluation; if it keeps
         moving the last view is returned and :meth:`DeliveryView.fresh` stays
         false for the caller to fail closed on.  Only a read-only surface
         passes *max_age* (see :data:`READ_MAX_AGE`); every guarded writer
-        fetches.
+        fetches. ``cached_only`` is for interactive diagnostics: absent or
+        expired snapshots return unknown without fetching or waiting on Git.
         """
         ids = set(task_ids)
+        target_loader = target_loader or self.target_loader
         view = DeliveryView(self.db)
         if not ids:
             return view
         for _attempt in range(self.FRESH_ATTEMPTS):
             async with self.db._engine.connect() as conn:
-                targets = await self.target_loader(conn, ids)
+                targets = await target_loader(conn, ids)
             groups: dict[DeliveryTarget, set[str]] = {}
             for task_id, target in targets.items():
                 groups.setdefault(target, set()).add(task_id)
@@ -515,20 +813,24 @@ class DeliveryObserver:
             repositories = {}
             for target, group in sorted(groups.items(), key=lambda item: item[0].repository_id):
                 shared = None
-                if self.truth is not None:
+                if self.truth is not None and not cached_only:
                     from src.integration.git_truth import GitTruthSnapshot
 
                     key = target.project_id, target.repository_id, target.repository_url
                     if key not in repositories:
                         repositories[key] = GitTruthSnapshot(
-                            self.truth, await self._snapshot(target, max_age),
+                            self.truth, await self._snapshot(
+                                target, max_age, cached_only=cached_only,
+                            ),
                         )
                     shared = repositories[key].for_target(target.target_ref).observation
-                snapshot, found = await self._evaluate(target, group, max_age, snapshot=shared)
+                snapshot, found = await self._evaluate(
+                    target, group, max_age, snapshot=shared, cached_only=cached_only,
+                )
                 snapshots.append(snapshot)
                 evidence.update(found)
             view = DeliveryView(self.db, evidence, targets, tuple(snapshots), self.request_loader,
-                                self.target_loader)
-            if max_age > 0 or await view.fresh():
+                                target_loader)
+            if cached_only or max_age > 0 or await view.fresh():
                 return view
         return view

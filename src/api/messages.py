@@ -15,6 +15,8 @@ session-runtime spec and is deliberately not referenced here.
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -22,6 +24,7 @@ from pydantic import BaseModel, Field
 from src.api.auth import LOCAL_SCOPE
 from src.api.dependencies import get_command_handler
 from src.api.scope import check_command_scope
+from src.api.models.message import MessageModel
 from src.messages.session_lens import _GLOBAL_SUPERVISOR_SUFFIX
 
 router = APIRouter(tags=["sessions"])
@@ -77,6 +80,21 @@ class SessionMessageResponse(BaseModel):
     state: str  # "queued" | "delivered"
 
 
+class SessionDeliveryDiagnostic(BaseModel):
+    at: float
+    reason: str
+    deferred: bool = False
+
+
+class SessionMessagesResponse(BaseModel):
+    success: bool = True
+    session: str
+    project_id: str | None = None
+    count: int
+    messages: list[MessageModel]
+    delivery_failure: SessionDeliveryDiagnostic | None = None
+
+
 @router.post("/api/messages/send")
 async def post_message(
     payload: MessageSendRequest,
@@ -89,14 +107,7 @@ async def post_message(
     scope_err = check_command_scope("message_send", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "session_instance_token": scope.session_instance_token,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        "elevated": scope.elevated,
-    }
+    args["_scope"] = asdict(scope)
     result = await ch.execute("message_send", args)
     if "error" in result:
         return JSONResponse(result, status_code=422)
@@ -171,18 +182,10 @@ async def post_session_message(
         "thread_id": payload.thread_id,
         "priority": payload.priority,
     }
-    args.pop("_scope", None)
     scope_err = check_command_scope("message_send", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "session_instance_token": scope.session_instance_token,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        "elevated": scope.elevated,
-    }
+    args["_scope"] = asdict(scope)
 
     result = await ch.execute("message_send", args)
     if "error" in result:
@@ -194,7 +197,7 @@ async def post_session_message(
     )
 
 
-@router.get("/api/sessions/{name}/messages")
+@router.get("/api/sessions/{name}/messages", response_model=SessionMessagesResponse)
 async def get_session_messages(
     name: str,
     request: Request,
@@ -202,6 +205,7 @@ async def get_session_messages(
     since: float | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     include_archived: bool = Query(default=False),
+    supervisor_only: bool = Query(default=False),
     ch=Depends(get_command_handler),
 ) -> dict:
     """Poll the conversation for a session.
@@ -221,18 +225,25 @@ async def get_session_messages(
         "limit": limit,
         "include_archived": include_archived,
     }
-    args.pop("_scope", None)
     scope_err = check_command_scope("message_list", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "session_instance_token": scope.session_instance_token,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        "elevated": scope.elevated,
-    }
+    args["_scope"] = asdict(scope)
+
+    failure = None
+    if supervisor_only:
+        # Server-derived addresses filter before LIMIT so worker traffic cannot
+        # crowd supervisor mail out of the recent conversation. Includes historical
+        # UUID recipients and replies; a logical address still sends via aq chat.
+        records = [s for s in await ch.db.list_sessions()
+                   if s.profile_id == "supervisor" and s.project_id == project_id
+                   and s.lifecycle == "named"]
+        args["session_addresses"] = [name, *(s.id for s in records)]
+        lens = getattr(ch.orchestrator, "session_lens", None)
+        if lens is not None:
+            diagnostics = [lens.nudge_failure(s.id) for s in records
+                           if s.state in {"starting", "running", "draining"}]
+            failure = max((d for d in diagnostics if d), key=lambda d: d["at"], default=None)
 
     result = await ch.execute("message_list", args)
     if "error" in result:
@@ -244,4 +255,5 @@ async def get_session_messages(
         "project_id": project_id,
         "count": result.get("count", 0),
         "messages": result.get("messages", []),
+        "delivery_failure": failure,
     }

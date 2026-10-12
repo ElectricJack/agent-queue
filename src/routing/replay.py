@@ -68,8 +68,12 @@ def replay_routes(records: list[dict], policy: RoutingPolicy, digest: str) -> di
             missing.append("quota_window_identity_or_age_unknown")
         constraints = route.get("constraints") or {}
         hints = route.get("hints") or {}
+        # The rule names the origin the router routed on, which for a repair is
+        # projected from its stored ``created_by_kind`` (``system``,
+        # ``source_ci_repair``); the stored origin answers only for a rule
+        # that matched none.
         origin = record.get("created_by_kind")
-        if not origin and "+origins." in route.get("rule", ""):
+        if "+origins." in route.get("rule", ""):
             origin = route["rule"].split("+origins.", 1)[1]
         result = plan_route(TaskFacts(
             task_id=task_id, task_type=route.get("task_type") or record.get("task_type"),

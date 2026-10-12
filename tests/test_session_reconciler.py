@@ -13,14 +13,18 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import update
 
 from src.config import AppConfig, DatabaseConfig
 from src.database import Database
-from src.database.tables import task_branch_origins
+from src.database.tables import task_branch_origins, tasks
+from src.integration.lock import DEFAULT_TTL_SECONDS, RENEWAL_MARGIN_SECONDS, BranchLock
 from src.integration.models import BranchKey, Fence
-from src.integration.ownership import BranchOwnership
+from src.integration.ownership import BranchOwnership, StaleFence
 from src.models import (
     Agent,
     AgentState,
@@ -78,7 +82,7 @@ class _Bus:
 async def db(tmp_path):
     database = Database(lease_dsn("t.db"))
     await database.initialize()
-    await database.create_project(Project(id="p1", name="P1"))
+    await database.create_project(Project(id="p1", name="P1", supervisor_enabled=True))
     yield database
     await database.close()
 
@@ -275,6 +279,54 @@ async def _session(
     return row
 
 
+async def test_disabled_project_supervisor_finishes_its_turn_before_stopping(
+    db, provider, reconciler, config, monkeypatch, tmp_path,
+):
+    row = await _session(
+        db, provider, task_id=None, name="n-supervisor--p1", lifecycle="named",
+        profile_id="supervisor", started_at=NOW - 100,
+    )
+    await db.update_project("p1", supervisor_enabled=False)
+    config.sessions.idle_stop_grace_seconds = 1
+    entry = SimpleNamespace(type="tool_use", text="working", ts=NOW, turn_complete=False)
+    reader = SimpleNamespace(
+        resolve_session=lambda _: tmp_path / "transcript",
+        read_new=AsyncMock(side_effect=lambda *_: ([entry], 1)),
+    )
+    monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _, **kwargs: reader)
+    handle = reconciler._handle(row)
+    await reconciler.tick(now=NOW)
+    await reconciler.tick(now=NOW + 100)
+    assert await provider.is_running(handle)
+    assert (await db.get_session(row.id)).desired_state == "stopped"
+    # The generic stop grace and named up/sleep paths cannot interrupt this turn.
+    entry = SimpleNamespace(type="assistant", text="done", ts=NOW + 101, turn_complete=True)
+    await reconciler.tick(now=NOW + 102)
+    assert not await provider.is_running(handle)
+    stopped = await db.get_session(row.id)
+    assert stopped.state == "stopped"
+    assert stopped.end_reason == "project_supervisor_disabled"
+
+
+async def test_disabled_project_supervisor_does_not_restart_or_stop_without_turn_proof(
+    db, provider, reconciler, monkeypatch,
+):
+    row = await _session(
+        db, provider, task_id=None, name="n-supervisor--p1", lifecycle="named",
+        profile_id="supervisor", started_at=NOW - 100,
+    )
+    await db.update_project("p1", supervisor_enabled=False)
+    monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _, **kwargs: None)
+    await reconciler.tick(now=NOW)
+    assert await provider.is_running(reconciler._handle(row))
+    await provider.stop(reconciler._handle(row))
+    await db.update_session(row.id, state="stopped", desired_state="running")
+    reconciler.starter = SimpleNamespace(ensure_started=AsyncMock())
+    await reconciler._converge_named_up(NOW + 1000)
+    reconciler.starter.ensure_started.assert_not_awaited()
+    assert (await db.get_session(row.id)).desired_state == "stopped"
+
+
 async def _claimed_pool_session(
     db,
     provider,
@@ -314,7 +366,174 @@ async def _claimed_pool_session(
 # ---------------------------------------------------------------------------
 
 
+class TestWorkerContextRecovery:
+    @pytest.mark.parametrize("cause", ["context_thrash", "stalled", "stuck_timeout"])
+    async def test_two_distinct_pool_claims_block_and_notify_across_reconciler_restart(
+        self, db, provider, pool_reconciler, config, registry, bus, tmp_path, cause
+    ):
+        from src.sessions.worker_recovery import CONTINUATION_KEY, STREAK_KEY
+
+        first = await _claimed_pool_session(db, provider, tmp_path, last_activity=NOW - 1000)
+        # The incident query rejects attempts from a prior task incarnation.
+        # Match the fixture task's creation clock to the simulated sessions.
+        await db.update_task("t1", created_at=NOW - 6000)
+        await db.add_task_comment("t1", "Finished parser; next verify loop guard.",
+                                  author_kind="agent", author_id=first.id)
+        async def fail(rec, row, now):
+            if cause == "context_thrash":
+                provider.feed_output(row.name, "Autocompact is thrashing: context refilled",
+                                     activity=False)
+                provider.script_death(row.name)
+                await rec._step_exits([row], now)
+            elif cause == "stalled":
+                await db.set_task_meta("t1", META_STALL_NUDGES,
+                                       str(config.sessions.stall_max_nudges))
+                await db.set_task_meta("t1", META_STALL_LAST_ACTION, "0")
+                await rec._step_stall_ladder([row], now)
+            else:
+                config.agents_config.stuck_timeout_seconds = 300
+                await rec._step_backstop([row], now)
+
+        await fail(pool_reconciler, first, NOW)
+        assert (await db.get_task("t1")).status is TaskStatus.READY
+        assert (await db.get_task_meta("t1", STREAK_KEY))["count"] == 1
+        note = await db.get_task_meta("t1", CONTINUATION_KEY)
+        assert "Finished parser" in note["progress"][0]["body"]
+
+        task = await db.get_task("t1")
+        await db.update_task("t1", claim_epoch=task.claim_epoch + 1)
+        await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="test_reclaim", force=True,
+                                 assigned_agent_id="a1")
+        task = await db.get_task("t1")
+        second = await _session(db, provider, sid="s2", name="p-worker-2", lifecycle="pool",
+                                agent_id="a1", last_claim_epoch=task.claim_epoch,
+                                claim_phase="active", started_at=NOW + 10,
+                                last_activity=NOW - 1000)
+        replacement = SessionReconciler(db, config, registry, bus=bus,
+                                        orchestrator=pool_reconciler.test_orch)
+        await fail(replacement, second, NOW + 20)
+        current = await db.get_task("t1")
+        assert current.status is TaskStatus.BLOCKED
+        assert current.assigned_agent_id is None
+        assert await db.get_task_meta("t1", "needs_attention") == f"session_{cause}"
+        assert (await db.get_task_meta("t1", STREAK_KEY))["count"] == 2
+        incident = await db.get_task_meta("t1", "supervisor_recovery_incident")
+        assert incident and incident["reason"] == f"session_{cause}"
+        assert not pool_reconciler.test_orch._pool_quarantine
+        # Replaying the exit cannot spend another incident or launch a worker.
+        await replacement._step_exits([second], NOW + 30)
+        assert (await db.get_task_meta("t1", STREAK_KEY))["count"] == 2
+
+        # Intentional recovery admits a new streak, retaining historical progress.
+        await db.transition_task("t1", TaskStatus.READY, context="restart_task")
+        assert await db.get_task_meta("t1", STREAK_KEY) is None
+        assert await db.get_task_meta("t1", CONTINUATION_KEY) is not None
+
+    async def test_count_is_idempotent_changes_cause_and_rejects_stale_instance(
+        self, db, provider
+    ):
+        from dataclasses import replace
+        from src.sessions.worker_recovery import STREAK_KEY, record_failure
+
+        task = await _task(db)
+        first = await _session(db, provider)
+        one = await record_failure(db, first, task, "context_thrash", now=NOW)
+        same = await record_failure(db, first, task, "context_thrash", now=NOW + 1)
+        assert one == same and one["count"] == 1
+        stale = replace(first, instance_token="wrong")
+        assert await record_failure(db, stale, task, "stalled", now=NOW + 2) is None
+        await db.update_session(first.id, state="stopped", desired_state="stopped")
+        second = await _session(db, provider, sid="s2", name="s-second")
+        changed = await record_failure(db, second, task, "productive_death", now=NOW + 3)
+        assert changed["count"] == 1 and changed["cause"] == "productive_death"
+        assert await db.get_task_meta(task.id, STREAK_KEY) == changed
+
+    @pytest.mark.parametrize("live", [False, True])
+    async def test_exact_transcript_error_recovers_dead_and_live_claude(
+        self, db, provider, pool_reconciler, tmp_path, live
+    ):
+        import json
+        from datetime import datetime, timezone
+        from src.sessions.transcripts.claude import slug_work_dir
+        from src.sessions.worker_recovery import STREAK_KEY
+
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        await db.update_session(row.id, session_key="native-session")
+        row = await db.get_session(row.id)
+        root = tmp_path / ".claude" / "projects" / slug_work_dir(row.work_dir)
+        root.mkdir(parents=True)
+        (root / "native-session.jsonl").write_text(json.dumps({
+            "type": "assistant", "isApiErrorMessage": True,
+            "timestamp": datetime.fromtimestamp(NOW, timezone.utc).isoformat(),
+            "message": {"content": [{"type": "text", "text":
+                                     "Autocompact is thrashing: the context refilled"}]},
+        }) + "\n")
+        pool_reconciler.transcript_base_dir = tmp_path
+        if live:
+            await pool_reconciler._step_stall_ladder([row], NOW)
+        else:
+            provider.script_death(row.name)
+            await pool_reconciler._step_exits([row], NOW)
+        assert (await db.get_task_meta("t1", STREAK_KEY))["cause"] == "context_thrash"
+        assert (await db.get_task("t1")).status is TaskStatus.READY
+
+    async def test_transcript_quotations_and_old_errors_are_ignored(self, db, provider, tmp_path):
+        import json
+        from datetime import datetime, timezone
+        from src.sessions.transcripts.claude import slug_work_dir
+        from src.sessions.worker_recovery import context_thrashed
+
+        await _task(db)
+        row = await _session(db, provider, session_key="native", started_at=NOW)
+        root = tmp_path / ".claude" / "projects" / slug_work_dir(row.work_dir)
+        root.mkdir(parents=True)
+        path = root / "native.jsonl"
+        for kind, api_error, timestamp in (("user", True, NOW), ("assistant", False, NOW),
+                                           ("assistant", True, NOW - 100)):
+            path.write_text(json.dumps({"type": kind, "isApiErrorMessage": api_error,
+                "timestamp": datetime.fromtimestamp(timestamp, timezone.utc).isoformat(),
+                "message": {"content": "Autocompact is thrashing: context refilled"}}) + "\n")
+            assert not await context_thrashed(row, base_dir=tmp_path)
+
+        # A newer normal assistant response supersedes an earlier real error.
+        error = {"type": "assistant", "isApiErrorMessage": True,
+                 "timestamp": datetime.fromtimestamp(NOW, timezone.utc).isoformat(),
+                 "message": {"content": "Autocompact is thrashing: context refilled"}}
+        recovered = {**error, "isApiErrorMessage": False, "message": {"content": "Continuing"}}
+        path.write_text(json.dumps(error) + "\n" + json.dumps(recovered) + "\n")
+        assert not await context_thrashed(row, base_dir=tmp_path)
+
+    async def test_stale_claim_and_manual_stop_cannot_count_or_block(
+        self, db, provider, tmp_path
+    ):
+        from dataclasses import replace
+        from src.sessions.worker_recovery import STREAK_KEY, record_failure
+
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        task = await db.get_task("t1")
+        stale = replace(task, claim_epoch=task.claim_epoch + 1)
+        assert await record_failure(db, row, stale, "context_thrash", now=NOW) is None
+        await db.update_session(row.id, desired_state="stopped")
+        assert await record_failure(db, row, task, "context_thrash", now=NOW) is None
+        assert await db.get_task_meta("t1", STREAK_KEY) is None
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+
 class TestExitClassifier:
+    def test_context_thrash_precedes_rate_limit_and_crash(self):
+        verdict = classify_exit(
+            self._row(started_at=NOW - 10), self._task(),
+            "Autocompact is thrashing: context refilled to the limit\nrate limit", now=NOW,
+        )
+        assert verdict.verdict is Verdict.CONTEXT_THRASH
+
+    def test_quoted_context_thrash_is_not_a_diagnostic(self):
+        verdict = classify_exit(
+            self._row(started_at=NOW - 5000), self._task(),
+            'Task: fix "Autocompact is thrashing: context refilled"', now=NOW,
+        )
+        assert verdict.verdict is Verdict.PRODUCTIVE_DEATH
+
     def _row(self, started_at=NOW):
         return SessionRecord(
             id="s",
@@ -1728,6 +1947,173 @@ class TestStallLadder:
         assert provider.sent_nudges == []
 
 
+class TestLiveRefLeases:
+    @pytest.fixture
+    async def lease(self, db, provider, tmp_path, monkeypatch):
+        """One clock for acquisition, attachment, renewal and tick observations."""
+        clock = SimpleNamespace(now=NOW)
+        lock = BranchLock(db, clock=lambda: clock.now)
+        monkeypatch.setattr("src.integration.lock.BranchLock", lambda db, **kw: lock)
+        row = await _claimed_pool_session(
+            db, provider, tmp_path, started_at=NOW, last_activity=NOW
+        )
+        provider.sessions[row.name].activity = NOW
+        target = BranchKey(repository_id="repo", branch="aq/test")
+        fence = await lock.acquire(target, "t1")
+        await BranchOwnership(db, clock=lambda: clock.now).attach(fence, row.id, "ws1")
+        return SimpleNamespace(clock=clock, lock=lock, row=row, target=target, fence=fence)
+
+    async def test_silent_ten_minute_tool_call_revives_expired_lease(
+        self, lease, db, provider, reconciler, config
+    ):
+        initial = await lease.lock.get(lease.target)
+        assert initial.expires_at == NOW + DEFAULT_TTL_SECONDS
+        lease.clock.now = NOW + 600
+        assert initial.expires_at < lease.clock.now
+        with pytest.raises(StaleFence, match="expired"):
+            await lease.lock.renew(lease.fence)
+        assert await provider.process_alive(reconciler._handle(lease.row))
+
+        await reconciler.tick(now=lease.clock.now)
+
+        renewed = await lease.lock.get(lease.target)
+        assert renewed.holder == "t1" and renewed.fence == lease.fence.token
+        assert renewed.expires_at == (
+            NOW + config.sessions.lease_ttl_seconds + config.sessions.stall_backoff_seconds
+        )
+        assert renewed.expires_at > lease.clock.now
+        # Ordinary fenced publication requires unexpired authority, not revival permission.
+        async with lease.lock.exclusion(lease.fence):
+            pass
+        assert (await db.get_session(lease.row.id)).last_activity == NOW
+
+    async def test_ordinary_ticks_do_not_lock_or_write_ample_runway(
+        self, lease, reconciler, monkeypatch
+    ):
+        renew = AsyncMock(wraps=lease.lock.renew)
+        lock_on = AsyncMock(wraps=lease.lock.lock_on)
+        monkeypatch.setattr(lease.lock, "renew", renew)
+        monkeypatch.setattr(lease.lock, "lock_on", lock_on)
+        for seconds in (0, 30, DEFAULT_TTL_SECONDS - RENEWAL_MARGIN_SECONDS - 1):
+            lease.clock.now = NOW + seconds
+            await reconciler._step_exits([lease.row], lease.clock.now)
+        renew.assert_not_awaited()
+        lock_on.assert_not_awaited()
+
+        lease.clock.now += 1
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        renew.assert_awaited_once()
+        lock_on.assert_awaited_once()
+        # Once authority reaches the silence deadline, even near-expiry
+        # ticks cannot extend it and must not keep locking/writing it.
+        lease.clock.now = NOW + 700
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        renew.assert_awaited_once()
+        lock_on.assert_awaited_once()
+        lease.clock.now += 1
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        renew.assert_awaited_once()
+        lock_on.assert_awaited_once()
+
+    @pytest.mark.parametrize("change", [{"state": "draining"}, {"desired_state": "stopped"}])
+    @pytest.mark.parametrize("seconds", [450, 600])
+    async def test_drain_does_not_renew_or_revive(
+        self, lease, db, reconciler, seconds, change
+    ):
+        before = await lease.lock.get(lease.target)
+        await db.update_session(lease.row.id, **change)
+        # Use the stale running snapshot too: the locked row must reject stop intent.
+        lease.clock.now = NOW + seconds
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        await db.touch_session_activity(lease.row.id, lease.clock.now)
+        assert await lease.lock.get(lease.target) == before
+
+    @pytest.mark.parametrize("rungs", [2, 3])
+    @pytest.mark.parametrize("seconds", [450, 600])
+    async def test_later_stall_rungs_do_not_renew_or_revive(
+        self, lease, db, reconciler, rungs, seconds
+    ):
+        before = await lease.lock.get(lease.target)
+        await db.set_task_meta("t1", META_STALL_NUDGES, str(rungs))
+        lease.clock.now = NOW + seconds
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        await db.touch_session_activity(lease.row.id, lease.clock.now)
+        assert await lease.lock.get(lease.target) == before
+
+    @pytest.mark.parametrize("reason", [NudgeReason.DRAFT, NudgeReason.UNREADABLE])
+    async def test_hold_and_report_have_finite_authority(
+        self, lease, db, provider, reconciler, config, bus, monkeypatch, reason
+    ):
+        provider.script_composer_refusal(lease.row.name, str(reason), kind=reason)
+        monkeypatch.setattr(
+            "src.sessions.reconciler.harness_progress", AsyncMock(return_value=("unknown", None))
+        )
+        deadline = NOW + config.sessions.lease_ttl_seconds + config.sessions.stall_backoff_seconds
+        for seconds in (600, 700, 800, 3600):
+            lease.clock.now = NOW + seconds
+            await reconciler.tick(now=lease.clock.now)
+            assert (await lease.lock.get(lease.target)).expires_at <= deadline
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+        assert (await db.get_session(lease.row.id)).state == "running"
+        with pytest.raises(StaleFence, match="expired"):
+            async with lease.lock.exclusion(lease.fence):
+                pass
+        if reason is NudgeReason.UNREADABLE:
+            assert bus.payload("task.stalled")["evidence"] == "unverified"
+
+    async def test_question_wait_does_not_grant_process_only_authority(
+        self, lease, reconciler
+    ):
+        before = await lease.lock.get(lease.target)
+        reconciler.orchestrator = SimpleNamespace(
+            agent_questions=SimpleNamespace(is_waiting=AsyncMock(return_value=True))
+        )
+        lease.clock.now = NOW + 600
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        assert await lease.lock.get(lease.target) == before
+
+    async def test_durable_wait_renews_only_until_its_explicit_deadline(
+        self, lease, db, reconciler
+    ):
+        await db.create_task(Task(id="producer", project_id="p1", title="Producer", description=""))
+        await db.register_agent_wait(
+            identity=dict(
+                session_id=lease.row.id, instance_token=lease.row.instance_token,
+                project_id="p1", claim_epoch=lease.row.last_claim_epoch, elevated=False,
+            ),
+            kind="task", match={"task_id": "producer"}, deadline_at=NOW + 1200,
+            idempotency_key="ref-lease-wait", now=NOW,
+        )
+        for seconds, expiry in ((600, 1080), (1000, 1200), (1201, 1200)):
+            lease.clock.now = NOW + seconds
+            await reconciler._step_exits([lease.row], lease.clock.now)
+            assert (await lease.lock.get(lease.target)).expires_at == NOW + expiry
+        with pytest.raises(StaleFence, match="expired"):
+            async with lease.lock.exclusion(lease.fence):
+                pass
+
+    @pytest.mark.parametrize("displaced", ["claim", "assignment", "task_status", "takeover"])
+    async def test_displaced_claim_cannot_revive(self, lease, db, reconciler, displaced):
+        lease.clock.now = NOW + 600
+        if displaced == "claim":
+            await db.update_session(lease.row.id, last_claim_epoch=lease.row.last_claim_epoch + 1)
+        elif displaced == "assignment":
+            async with db.immediate() as conn:
+                await conn.execute(update(tasks).where(tasks.c.id == "t1").values(
+                    assigned_agent_id=None
+                ))
+        elif displaced == "task_status":
+            await db.transition_task("t1", TaskStatus.PAUSED)
+        else:
+            successor = await lease.lock.acquire(lease.target, "successor")
+            assert successor.token == lease.fence.token + 1
+        before = await lease.lock.get(lease.target)
+        await reconciler._step_exits([lease.row], lease.clock.now)
+        assert await lease.lock.get(lease.target) == before
+        with pytest.raises(StaleFence):
+            async with lease.lock.exclusion(lease.fence):
+                pass
+
 # ---------------------------------------------------------------------------
 # Stall ladder: an unreadable composer is not a human
 # ---------------------------------------------------------------------------
@@ -2490,6 +2876,71 @@ class TestDesiredState:
 
         monkeypatch.setattr(db, "get_profile", _get_profile)
 
+    @pytest.mark.parametrize("state", ["starting", "running"])
+    @pytest.mark.parametrize("alive", [False, True])
+    async def test_explicit_sleep_stops_busy_named_session_without_idle_timeout(
+        self, db, provider, reconciler, bus, monkeypatch, state, alive
+    ):
+        session = await self._named(db, provider, state=state, desired_state="sleeping")
+        provider.sessions[session.name].process_alive = alive
+        await self._idle_profile(db, monkeypatch, timeout=0)
+        provider.resubmit_pending = AsyncMock(return_value=True)
+        db.has_supervision_work = AsyncMock(return_value=True)
+
+        await reconciler.tick(now=NOW)
+
+        row = await db.get_session("n1")
+        assert (row.state, row.desired_state, row.sleep_reason) == (
+            "sleeping", "sleeping", "desired_sleeping"
+        )
+        assert await provider.list_running("n-") == []
+        provider.resubmit_pending.assert_not_awaited()
+        db.has_supervision_work.assert_not_awaited()
+        assert bus.payload("session.sleeping")["reason"] == "desired_sleeping"
+
+        await reconciler.tick(now=NOW + 1)
+        assert (await db.get_session("n1")).state == "sleeping"
+        assert bus.types().count("session.sleeping") == 1
+
+    async def test_explicit_sleep_retries_failed_provider_stop(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        await self._named(db, provider, desired_state="sleeping")
+        await self._idle_profile(db, monkeypatch, timeout=0)
+        stop = provider.stop
+        monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("unavailable")))
+
+        await reconciler.tick(now=NOW)
+        row = await db.get_session("n1")
+        assert (row.state, row.desired_state) == ("running", "sleeping")
+        assert [handle.name for handle in await provider.list_running("n-")] == [row.name]
+
+        monkeypatch.setattr(provider, "stop", stop)
+        await reconciler.tick(now=NOW + 1)
+        assert (await db.get_session("n1")).state == "sleeping"
+        assert await provider.list_running("n-") == []
+
+    async def test_explicit_sleep_reads_intent_again_before_stopping(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        await self._named(db, provider, desired_state="sleeping")
+        await self._idle_profile(db, monkeypatch, timeout=0)
+        stop = AsyncMock(wraps=provider.stop)
+        monkeypatch.setattr(provider, "stop", stop)
+        original = reconciler._step_observe
+
+        async def wake_after_snapshot(now):
+            live = await original(now)
+            await db.update_session("n1", desired_state="running")
+            return live
+
+        monkeypatch.setattr(reconciler, "_step_observe", wake_after_snapshot)
+        await reconciler.tick(now=NOW)
+
+        stop.assert_not_awaited()
+        row = await db.get_session("n1")
+        assert (row.state, row.desired_state) == ("running", "running")
+
     async def test_named_session_recovers_owned_submit_without_a_task(
         self, db, provider, reconciler, monkeypatch
     ):
@@ -2515,6 +2966,84 @@ class TestDesiredState:
         await reconciler.tick(now=NOW)
         row = await db.get_session("n1")
         assert row.state == "sleeping" and row.desired_state == "sleeping"
+
+    @pytest.mark.parametrize("state", ["starting", "running"])
+    @pytest.mark.parametrize("timeout", [0, 600])
+    async def test_explicit_sleep_overrides_activity_work_and_pending_submit(
+        self, db, provider, reconciler, bus, monkeypatch, state, timeout
+    ):
+        await _task(db)
+        row = await self._named(db, provider, state=state, last_activity=NOW)
+        await self._idle_profile(db, monkeypatch, timeout=timeout)
+        provider.resubmit_pending = AsyncMock(return_value=True)
+        starter = self._Starter()
+        reconciler.starter = starter
+        # Intent can arrive after the tick's observation snapshot.
+        live = await db.list_sessions(live_only=True)
+        await db.update_session(row.id, desired_state="sleeping")
+        await reconciler._step_named(live, NOW)
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("sleeping", "sleeping")
+        assert current.sleep_reason == "desired_sleeping"
+        assert not await provider.is_running(reconciler._handle(row))
+        provider.resubmit_pending.assert_not_awaited()
+        assert bus.payload("session.sleeping")["reason"] == "desired_sleeping"
+        await reconciler.tick(now=NOW + 1)
+        assert starter.calls == []
+        assert bus.types().count("session.sleeping") == 1
+
+    async def test_explicit_sleep_stop_failure_retries_without_claiming_success(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        row = await self._named(db, provider, desired_state="sleeping")
+        stop = provider.stop
+        failed_stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+        monkeypatch.setattr(provider, "stop", failed_stop)
+        await reconciler.tick(now=NOW)
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("running", "sleeping")
+        assert "session.sleeping" not in bus.types()
+        monkeypatch.setattr(provider, "stop", stop)
+        await reconciler.tick(now=NOW + 1)
+        assert (await db.get_session(row.id)).state == "sleeping"
+        assert not await provider.is_running(reconciler._handle(row))
+
+    async def test_explicit_sleep_defers_incomplete_provider_observation(
+        self, db, provider, reconciler, bus
+    ):
+        row = await self._named(db, provider, desired_state="sleeping")
+        reconciler._deferred_prefixes.add("n-")
+        await reconciler._step_named([row], NOW)
+        assert (await db.get_session(row.id)).state == "running"
+        assert await provider.is_running(reconciler._handle(row))
+        assert "session.sleeping" not in bus.types()
+
+    async def test_explicit_sleep_skips_replaced_instance(self, db, provider, reconciler):
+        row = await self._named(db, provider, desired_state="sleeping")
+        await db.update_session(row.id, instance_token="successor", desired_state="running")
+        await reconciler._step_named([row], NOW)
+        current = await db.get_session(row.id)
+        assert (current.state, current.instance_token) == ("running", "successor")
+        assert await provider.is_running(reconciler._handle(row))
+
+    async def test_wake_during_sleep_stop_remains_wanted(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        row = await self._named(db, provider, desired_state="sleeping", started_at=NOW - 1000)
+        stop = provider.stop
+
+        async def wake_then_stop(handle, *, grace):
+            await db.update_session(row.id, desired_state="running")
+            await stop(handle, grace=grace)
+
+        monkeypatch.setattr(provider, "stop", wake_then_stop)
+        starter = self._Starter()
+        reconciler.starter = starter
+        await reconciler._step_named([row], NOW)
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("sleeping", "running")
+        await reconciler._step_named([], NOW + 1)
+        assert starter.calls == [("supervisor-p1", "p1")]
 
     async def test_wanted_but_not_live_is_started(self, db, provider, reconciler, bus):
         starter = self._Starter()
@@ -3023,15 +3552,31 @@ class TestOrphanStep:
         await releasing_reconciler.tick(now=NOW)
         assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
 
-    async def test_a_task_that_never_had_a_session_is_not_touched(
+    async def test_missing_session_without_command_handler_is_not_touched(
         self, db, provider, releasing_reconciler, tmp_path
     ):
-        """Legacy-runtime tasks are not the session reconciler's business."""
+        """Embedded reconcilers must not mutate outside CommandHandler."""
         await _task(db)
         await _busy_agent_and_workspace(db, tmp_path)
         await releasing_reconciler.tick(now=NOW)
         assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
         assert (await db.get_agent("a1")).state is AgentState.BUSY
+
+    async def test_missing_session_delegates_to_fenced_recovery(
+        self, db, releasing_reconciler, tmp_path
+    ):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        recover = AsyncMock(return_value={"success": True, "outcome": "not_orphaned"})
+        releasing_reconciler.test_orch._command_handler = SimpleNamespace(
+            recover_missing_session_task=recover,
+        )
+        await releasing_reconciler.tick(now=NOW)
+        recover.assert_awaited_once_with("t1", now=NOW)
+        recover.reset_mock()
+        releasing_reconciler.test_orch._running_tasks["t1"] = object()
+        await releasing_reconciler.tick(now=NOW)
+        recover.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -3847,10 +4392,29 @@ async def test_short_timer_cascade_wakes_current_pool_holder_once(
         provider.sessions[row.name].activity = NOW - 10000
         orch._last_delivery_pass = 0
         await orch._deliver_messages()
+        if delivery == "not_submitted":
+            # Failed submission reserves an attempt too; retry after its backoff.
+            assert provider.sent_nudges == []
+            message = await db.get_message(result["result_message_id"])
+            assert message.last_notified_at == clock and message.notification_attempts == 1
+            clock += 60
+            orch._last_delivery_pass = 0
+            await orch._deliver_messages()
     assert provider.sent_nudges == [
         (row.name, f"Handle `aq wait show {wait['id']} --consume --json`."),
     ]
-    assert (await db.get_message(result["result_message_id"])).delivered_at == clock
+    message = await db.get_message(result["result_message_id"])
+    assert message.delivered_at is None and message.read_at is None
+    assert message.last_notified_at == clock
+    assert message.notification_attempts == (2 if delivery == "not_submitted" else 1)
+    consumed = await orch._command_handler.execute("wait_get", dict(
+        wait_id=wait["id"], consume=True, session_id=row.id, project_id="p1",
+        claim_epoch=row.last_claim_epoch,
+    ))
+    assert consumed["success"], consumed
+    assert consumed["wait"] == result
+    message = await db.get_message(result["result_message_id"])
+    assert message.delivered_at == clock and message.via == "wait_consume"
     await orch._reconcile_sessions()
     orch._last_delivery_pass = 0
     await orch._deliver_messages()
@@ -4107,7 +4671,15 @@ async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_pat
         assert received.read_text() == expected
         result = await db.get_agent_wait(wait["id"])
         assert result["state"] == "satisfied" and result["result_ref"] == f"timer:{due}"
-        assert (await db.get_message(result["result_message_id"])).delivered_at is not None
+        message = await db.get_message(result["result_message_id"])
+        assert message.delivered_at is None and message.last_notified_at is not None
+        consumed = await orch._command_handler.execute("wait_get", dict(
+            wait_id=wait["id"], consume=True, session_id=row.id, project_id="p1",
+            claim_epoch=task.claim_epoch,
+        ))
+        assert consumed["success"], consumed
+        message = await db.get_message(result["result_message_id"])
+        assert message.delivered_at is not None and message.via == "wait_consume"
         await orch._reconcile_sessions()
         orch._last_delivery_pass = 0
         await orch._deliver_messages()
@@ -4263,3 +4835,32 @@ async def test_opt_in_real_harness_wait_idle(db, config, tmp_path, monkeypatch):
         await asyncio.wait_for(process.wait(), timeout=10)
         socket_root = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
         (socket_root / config.sessions.tmux_socket).unlink(missing_ok=True)
+
+
+async def test_reconciler_stops_repeating_claims_despite_fresh_activity(
+    db, provider, pool_reconciler
+):
+    row = await _session(
+        db, provider, sid="refusing", task_id=None, lifecycle="pool",
+        last_activity=NOW, desired_state="stopped", end_reason="claim_refusals",
+        claim_failure_count=3, claim_failure_reason="own branch handoff is unproven",
+    )
+    await pool_reconciler._step_claim_refusals([row], NOW)
+    assert pool_reconciler.test_orch.terminations == [(row.id, "claim_refusals")]
+    assert (await db.get_session(row.id)).state == "stopped"
+    await pool_reconciler._step_claim_refusals([row], NOW + 1)
+    assert len(pool_reconciler.test_orch.terminations) == 1
+
+
+@pytest.mark.parametrize("changed", [
+    {"instance_token": "successor"}, {"desired_state": "running"},
+    {"claim_phase": "active"}, {"claim_failure_count": 0},
+])
+async def test_refusal_reconciliation_revalidates_instance(db, provider, pool_reconciler, changed):
+    row = await _session(
+        db, provider, sid="refusing", task_id=None, lifecycle="pool",
+        desired_state="stopped", end_reason="claim_refusals", claim_failure_count=3,
+    )
+    await db.update_session(row.id, **changed)
+    await pool_reconciler._step_claim_refusals([row], NOW)
+    assert not pool_reconciler.test_orch.terminations

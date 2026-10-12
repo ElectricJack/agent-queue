@@ -18,10 +18,10 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import insert, select, text
 
+from src.task_templates import render_task_template
 from src.database.tables import (
     events,
     task_metadata,
-    tasks,
 )
 from src.git.manager import GitError, GitManager
 from src.integration.delivery_branches import (
@@ -35,6 +35,7 @@ from src.integration.delivery_branches import (
     live_branch_references,
     released_integration_refs,
     remote_heads,
+    repository_protected_branches,
 )
 from src.integration.delivery_truth import (
     SETTLEMENT_KEY,
@@ -70,9 +71,6 @@ BRANCH_CLEANUP_RETRY_SECONDS = 300.0
 BRANCH_CLEANUP_RETRY_MAX_SECONDS = 6 * 3600.0
 #: Journal rows cleaned per project per tick; a backlog drains over ticks.
 BRANCH_CLEANUP_ROWS_PER_TICK = 10
-#: Runs whose full evidence a deferral streak row keeps (the count is kept
-#: for every run; older runs' output is dropped).
-DEFERRAL_RUNS_KEPT = 5
 #: Task metadata key holding what a repair's parked batch recorded.
 REPAIR_EVIDENCE_KEY = "development_repair_evidence"
 #: Chained repairs of one parked batch before the rest is left to an operator.
@@ -102,28 +100,9 @@ GENERATED_MERGE_CONFIG = (
 REGENERATION_OUTPUT_TAIL_CHARS = 4000
 
 
-def armed_for_branch_cleanup(evidence):
-    """*evidence* with branch cleanup armed, for a row that just landed on main."""
-    return {**evidence, BRANCH_CLEANUP_KEY: {"state": "pending", "attempts": 0}}
-
-
 #: Operation states whose action is still in flight and owns its manifest.
 #: ``finished`` and ``cancelled`` actions are over; neither answers delivery.
 OPEN_OPERATION_STATES = ("prepared", "publishing", "parked")
-
-#: A held dependency's skip reason, as its dependent's warning names it.  A
-#: dependent repeats any of these reasons, so its stall carries the dependency's
-#: own recovery advice; every other reason is an ``undelivered_dependency``.
-_DEPENDENCY_SKIP_DETAIL = {
-    "dependency_cycle": "dependency cycle with",
-    "missing_ref": "missing ref for dependency",
-    "missing_provenance": "missing git provenance for dependency",
-    "invalid_parent_completion": "invalid parent completion for dependency",
-    "parent_provenance_mismatch": "parent provenance mismatch for dependency",
-    "parent_adoption_provenance_mismatch": "parent adoption provenance mismatch for dependency",
-    "missing_or_ambiguous_source": "unresolvable source for dependency",
-    "undelivered_dependency": "undelivered dependency",
-}
 
 
 async def operation_rows_on(conn, project_ids=None, *, states=None):
@@ -177,41 +156,6 @@ async def revise_operation_on(conn, identity, revise):
 
 def _manifest_members(manifest):
     return [m for m in manifest or [] if isinstance(m, dict) and m.get("task_id")]
-
-
-def _dependency_cycles(dependencies, task_ids):
-    """Return strongly connected components that actually contain a cycle."""
-    index = 0
-    indices, lowlinks, stack, on_stack, cycles = {}, {}, [], set(), []
-
-    def visit(task_id):
-        nonlocal index
-        indices[task_id] = lowlinks[task_id] = index
-        index += 1
-        stack.append(task_id)
-        on_stack.add(task_id)
-        for dependency_id in sorted(dependencies.get(task_id, set()) & task_ids):
-            if dependency_id not in indices:
-                visit(dependency_id)
-                lowlinks[task_id] = min(lowlinks[task_id], lowlinks[dependency_id])
-            elif dependency_id in on_stack:
-                lowlinks[task_id] = min(lowlinks[task_id], indices[dependency_id])
-        if lowlinks[task_id] != indices[task_id]:
-            return
-        component = set()
-        while True:
-            member = stack.pop()
-            on_stack.remove(member)
-            component.add(member)
-            if member == task_id:
-                break
-        if len(component) > 1 or task_id in dependencies.get(task_id, set()):
-            cycles.append(component)
-
-    for task_id in sorted(task_ids):
-        if task_id not in indices:
-            visit(task_id)
-    return cycles
 
 
 def _carried_sources(repair_id, contracts):
@@ -341,28 +285,6 @@ def repair_chain(manifest, history, statuses, *, repository_id, target_ref, iden
     )
 
 
-def describe_repair_chain(result):
-    """One line naming each repair in *result*'s chain and its status."""
-    return " -> ".join(
-        f"{link['task_id']} ({link['status'] or 'not filed'})" for link in result["chain"]
-    )
-
-
-async def repair_statuses(conn, project_ids):
-    """Every development repair's status in *project_ids*, live table over archive."""
-    from src.database.tables import archived_tasks
-
-    statuses = {}
-    for table in (archived_tasks, tasks):
-        statuses.update((await conn.execute(
-            select(table.c.id, table.c.status).where(
-                table.c.id.like("development-repair-%"),
-                table.c.project_id.in_(list(project_ids)),
-            )
-        )).all())
-    return statuses
-
-
 @dataclass(frozen=True)
 class ResolvedTask:
     """The publisher's view of a task, wherever the task currently lives.
@@ -385,23 +307,6 @@ class ResolvedTask:
     @property
     def terminal(self) -> bool:
         return self.status in TERMINAL_STATUSES
-
-
-@dataclass(frozen=True)
-class MergeOutcome:
-    """What merging one source into the candidate produced.
-
-    ``conflicting_files`` names the conflicts a person has to resolve; generated
-    files are never among them under a ``regenerate`` policy.  ``regenerated``
-    names the generated files rebuilt after the merge, and ``regeneration`` is
-    the evidence of a rebuild that failed.
-    """
-
-    ok: bool
-    detail: str = ""
-    conflicting_files: tuple[str, ...] = ()
-    regenerated: tuple[str, ...] = ()
-    regeneration: dict | None = None
 
 
 class DevelopmentPolicy(BaseModel):
@@ -730,6 +635,11 @@ class DevelopmentPrimitives:
                 store = await self.store(repo)
                 heads = await remote_heads(self.run_git, store)
                 holds = await self.branch_holds(heads)
+                async with self.db._engine.connect() as conn:
+                    protected = await repository_protected_branches(
+                        conn, repo.id, default_branch=repo.default_branch,
+                    )
+                holds.update({branch: "protected promotion target" for branch in protected})
                 plans = {
                     row["id"]: await self._plan_branch_cleanup(
                         repo, store, row, history, heads, holds
@@ -746,6 +656,7 @@ class DevelopmentPrimitives:
                     default_branch=repo.default_branch,
                     main_head=heads.get(repo.default_branch),
                     backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                    protected=protected,
                 )
             except Exception as exc:  # noqa: BLE001 - one attempt, recorded, retried
                 error = f"{type(exc).__name__}: {exc}"
@@ -991,9 +902,13 @@ class DevelopmentPrimitives:
             async with self.db._engine.connect() as conn:
                 released = await released_integration_refs(conn)
                 expired = await expired_task_branches(conn, now=now)
+                protected = await repository_protected_branches(
+                    conn, repo.id, default_branch=repo.default_branch,
+                )
             report = await find_stale_branches(
                 self.run_git, store, default_branch=repo.default_branch, holds=holds,
                 released=released, expired=expired,
+                protected=protected,
             )
             report.update(project_id=project_id, repository_id=repo.id)
             if not delete or not report["stale"]:
@@ -1003,6 +918,7 @@ class DevelopmentPrimitives:
                 {e["branch"]: {"head": e["head"], "reason": e["reason"]} for e in report["stale"]},
                 default_branch=repo.default_branch, main_head=report["main_head"],
                 backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                protected=protected,
             )
         outcomes = deletion["outcomes"]
         deleted = [e for e in report["stale"] if outcomes.get(e["branch"]) == "deleted"]
@@ -1132,15 +1048,9 @@ class DevelopmentPrimitives:
         )
         conflict = parked is not None and parked.get("evidence", {}).get("kind") == "merge_conflict"
         recovery = (
-            f"Fetch origin and, in your own task branch (it starts from origin/{target_branch}), "
-            "merge each listed source revision by its exact SHA (`git merge <sha>`). Resolve "
-            "the named conflicting files and preserve the intended source changes; where a "
-            "conflicting file is generated, regenerate it from the merged sources instead of "
-            "hand-merging it. Do not rebase, squash or cherry-pick: every listed source "
-            "revision must stay an ancestor of your branch, so delivering the repair delivers "
-            f"the source too. If origin/{target_branch} moves before you push, merge it again. "
+            render_task_template("development-conflict-recovery", target_branch=target_branch)
             if conflict else
-            f"Preserve their intended changes and resolve against current origin/{target_branch}. "
+            render_task_template("development-source-recovery", target_branch=target_branch)
         ) + self._regeneration_text(parked)
         repair = Task(
                 id=identity,
@@ -1148,17 +1058,19 @@ class DevelopmentPrimitives:
                 repo_id=repository_id,
                 title="Repair development integration: " + reason,
                 description=(
-                    f"Development repair generation: {generation}\nThe development batch parked these source revisions:\n{sources}\n"
-                    f"Candidate/base: {candidate_sha}.\nSource branches:\n{branches}\n"
-                    f"Publication target: refs/heads/{target_branch}.\n"
-                    + recovery
-                    + "Publish the repair on your own task branch. Ordinary merge commits are allowed. "
-                    "Run focused local checks and close with actual evidence; no parent verifier or PR is required. "
-                    "A passing close attests that every listed source revision is resolved; once your repair "
-                    f"is delivered to {target_branch}, that delivery also satisfies those sources for their successors. "
-                    f"Do not push {target_branch}. The development publisher will collect your branch. "
-                    "This is one resumable repair task; queue and provider waits do not expire it."
-                    + self._repair_failure_text(project_id, parked)
+                    # The retry budget reads this factual marker, so wording edits
+                    # must not remove or change it.
+                    f"Development repair generation: {generation}\n"
+                    + render_task_template(
+                        "development-repair",
+                        generation=generation,
+                        sources=sources,
+                        candidate_sha=candidate_sha,
+                        branches=branches,
+                        target_branch=target_branch,
+                        recovery=recovery,
+                        failure_details=self._repair_failure_text(project_id, parked),
+                    )
                 ),
                 branch_name="aq/" + identity,
                 status=TaskStatus.READY,
@@ -1303,9 +1215,9 @@ class DevelopmentPrimitives:
         if not command:
             return ""
         return (
-            f"Files marked merge={GENERATED_MERGE_DRIVER} in .gitattributes are generated: never "
-            "hand-merge them. Take either side (`git checkout --ours -- <path>`), resolve the "
-            f"source files, then run `{command}` and commit what it writes. "
+            render_task_template(
+                "development-regeneration", generated_merge_driver=GENERATED_MERGE_DRIVER, command=command
+            )
         )
 
 

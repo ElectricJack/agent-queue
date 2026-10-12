@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -58,6 +59,7 @@ from src.state_machine import (
     validate_dag_with_new_edge,
     validate_waits_for,
 )
+from src.task_graph.activity import attach_activity, load_activity, task_activity
 from src.task_names import (
     MAX_NAMING_DEPTH,
     MAX_STRUCTURAL_DEPTH,
@@ -717,6 +719,7 @@ class TaskCommandsMixin:
         cap = max(0, 200 - len(active))
         capped_tasks = active + finished[:cap]
         task_dicts = [self._task_to_dict(t) for t in capped_tasks]
+        await attach_activity(self.db, task_dicts)
 
         if show_dependencies:
             await self._enrich_with_dependencies(task_dicts, capped_tasks)
@@ -785,9 +788,9 @@ class TaskCommandsMixin:
             }
             if include_project:
                 d["project_id"] = t.project_id
-            return d
+            return {**d, **activity.get(t.id, {})}
 
-        # Group by project_id for readability.
+        activity = await load_activity(self.db, [t.id for t in tasks])
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
             by_project.setdefault(t.project_id, []).append(_entry(t))
@@ -970,6 +973,7 @@ class TaskCommandsMixin:
             # Count root + all its subtasks
             total_tasks += 1 + subtask_total
 
+        await attach_activity(self.db, [entry["root"] for entry in trees])
         # Enrich root task dicts with dependency info when requested.
         if show_dependencies:
             root_dicts = [entry["root"] for entry in trees]
@@ -1008,7 +1012,7 @@ class TaskCommandsMixin:
     # -- shared helpers ------------------------------------------------------
 
     async def _emit_task_graph_change(
-        self, event_type: str, task: Task, *, project_id: str | None = None
+        self, event_type: str, task: Task, *, project_id: str | None = None, **details
     ) -> None:
         """Publish a committed graph edit; subscriber failures cannot undo it.
 
@@ -1025,7 +1029,9 @@ class TaskCommandsMixin:
                 "Could not persist graph change %s for %s", event_type, task.id, exc_info=True
             )
         try:
-            await self.orchestrator._emit_task_event(event_type, task, project_id=pid, seq=seq)
+            await self.orchestrator._emit_task_event(
+                event_type, task, project_id=pid, seq=seq, **details,
+            )
         except Exception:
             logger.warning(
                 "Could not publish graph change %s for %s", event_type, task.id, exc_info=True
@@ -1263,7 +1269,7 @@ class TaskCommandsMixin:
         )
 
         result: dict = {
-            "root": self._task_to_dict(root_task),
+            "root": {**self._task_to_dict(root_task), **await task_activity(self.db, root_task.id)},
             "formatted": formatted,
             "subtask_completed": completed,
             "subtask_total": subtask_total,
@@ -1313,7 +1319,7 @@ class TaskCommandsMixin:
         if out_of_scope:
             return out_of_scope
         progress = await self.db.get_group_progress(task_id)
-        return {"success": True, **progress}
+        return {"success": True, **progress, **await task_activity(self.db, task_id)}
 
     async def _cmd_reparent_task(self, args: dict) -> dict:
         """Move a task under another container, or to root.  Backs ``aq task reparent``.
@@ -2321,7 +2327,10 @@ class TaskCommandsMixin:
         project = await self.db.get_project(project_id)
         if project is None:
             return {"error": f"Project '{project_id}' not found"}
-        hierarchy_enabled = project.hierarchical_integration_mode in {"hierarchy", "train"}
+        hierarchy_enabled = project.hierarchical_integration_mode in {"hierarchy", "train"} or (
+            project.hierarchical_integration_mode == "development"
+            and bool(args.get("_integration_root_ref"))
+        )
         if hierarchy_enabled and not project.integration_repository_id:
             return {"error": "hierarchical integration requires a designated repository"}
         deliverables, deliverables_error = normalize_deliverables(args.get("deliverables"))
@@ -2342,6 +2351,8 @@ class TaskCommandsMixin:
         # Resolve optional task_type from string to enum.
         raw_task_type = args.get("task_type")
         task_type: TaskType | None = None
+        if raw_task_type in {"promotion", "backmerge"}:
+            return {"success": False, "error": "Promotion and backmerge tasks are daemon-authored."}
         if raw_task_type:
             if raw_task_type in TASK_TYPE_VALUES:
                 task_type = TaskType(raw_task_type)
@@ -2697,8 +2708,9 @@ class TaskCommandsMixin:
         created_by_id = creator_session_id
         # An internal creator names its origin so the routing policy can match
         # it (``origins.<created_by_kind>``, mandatory-routing spec §6.3) —
-        # review dispatch is the one that files through here.  Underscore
-        # arguments never pass a command contract, so no caller can claim one.
+        # review dispatch files through here, source-CI repair through
+        # ``ensure_task``.  No playbook contract admits underscore arguments,
+        # and a worker session's filing ignores them, so no worker can claim one.
         if args.get("_created_by_kind") and filing_session is None:
             created_by_kind = str(args["_created_by_kind"])
             created_by_id = str(args.get("_created_by_id") or "") or created_by_id
@@ -2806,6 +2818,7 @@ class TaskCommandsMixin:
                             edges=edges,
                             labels=labels,
                             routing_policy=routing_policy,
+                            target_ref=args.get("_integration_root_ref"),
                         )
                     # Every other creation path runs the internal post-create
                     # writer in its own transaction; a hierarchy/train filing
@@ -3710,12 +3723,13 @@ class TaskCommandsMixin:
         info["children"] = await self.db.get_children_summary(task.id)
         # Implementation progress kept apart from delivery (a read-only
         # projection; it never changes the stored status shown above).
-        info["delivery_status"] = None
+        info.update(await task_activity(self.db, task.id), delivery_status=None)
         if info["children"]:
             from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 
             projection = EpicDeliveryProjection(
-                self.db, lease_ttl=lease_ttl_from(getattr(self.orchestrator, "config", None))
+                self.db, lease_ttl=lease_ttl_from(getattr(self.orchestrator, "config", None)),
+                cached_only=True,
             )
             info["delivery_status"] = (await projection.for_tasks([task.id])).get(task.id)
 
@@ -3896,8 +3910,11 @@ class TaskCommandsMixin:
                 }
 
         try:
+            scope = self._current_scope or {}
+            worker = scope.get("kind") == "session" and not scope.get("elevated")
             await self.db.add_dependency(
-                task_id, depends_on, dep_type, description=reason
+                task_id, depends_on, dep_type, description=reason,
+                reject_container_target=worker,
             )
         except HierarchyError as exc:
             return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
@@ -4037,6 +4054,8 @@ class TaskCommandsMixin:
             updates["priority"] = args["priority"]
         if "task_type" in args:
             raw_tt = args["task_type"]
+            if raw_tt in {"promotion", "backmerge"} or task.task_type in {TaskType.PROMOTION, TaskType.BACKMERGE}:
+                return {"success": False, "error": "Promotion and backmerge task types are daemon-owned."}
             if raw_tt is None:
                 updates["task_type"] = None  # allow clearing task_type
             elif raw_tt in TASK_TYPE_VALUES:
@@ -4283,6 +4302,63 @@ class TaskCommandsMixin:
             return {"error": error}
         return {"stopped": args["task_id"]}
 
+    async def recover_missing_session_task(self, task_id: str, *, now: float) -> dict:
+        """Internal orphan-sweep command; never use operator restart's budget reset.
+
+        The task lock excludes preparation/close/pause while Git is checkpointed.
+        Database revalidation then fences every observed assignment and resource.
+        """
+        from src.git.manager import commit_identity
+        from src.orchestrator.task_checkpoint import capture_checkpoint
+        from src.sessions.provider import SessionHandle
+
+        orch = self.orchestrator
+        if task_id in orch._running_tasks or orch._task_control_held(task_id):
+            return {"success": True, "outcome": "launch_in_flight"}
+        grace = max(120.0, float(self.config.sessions.lease_ttl_seconds))
+        async with orch._task_control_lock(task_id):
+            observed = await self.db.missing_session_recovery_candidate(
+                task_id, now=now, grace=grace,
+            )
+            if observed is None:
+                return {"success": True, "outcome": "not_orphaned"}
+            task = await self.db.get_task(task_id)
+            if task.assigned_agent_id in orch._adapters:
+                return {"success": True, "outcome": "adapter_present"}
+            previous = observed["session"]
+            if previous:
+                provider = orch.session_providers.create(previous["provider"], self.config)
+                stopped = await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
+                    previous["name"], previous["provider"], previous["instance_token"],
+                )), timeout=10)
+                if stopped is not True:
+                    return {"success": False, "outcome": "writer_unproven"}
+            workspace = observed["workspace"]
+            if workspace:
+                path = workspace["workspace_path"]
+                if await orch.git.avalidate_checkout(path):
+                    branch = await orch.git.aget_current_branch(path, strict=True)
+                    if not task.branch_name or branch != task.branch_name.removeprefix("refs/heads/"):
+                        return {"success": False, "outcome": "workspace_branch_changed"}
+                project = await self.db.get_project(task.project_id)
+                with commit_identity(orch.git.resolve_commit_identity(project)):
+                    await capture_checkpoint(self.db, orch.git, task_id, path)
+            status = await self.db.recover_missing_session_task(observed, now=now, grace=grace)
+            if status is None:
+                return {"success": True, "outcome": "changed"}
+            orch._task_exec_start.pop(task_id, None)
+            orch._task_pre_exec_sha.pop(task_id, None)
+            orch._task_attachments.pop(task_id, None)
+            current = await self.db.get_task(task_id)
+            await self._emit_task_graph_change(
+                "task.restarted" if status is TaskStatus.READY else "task.failed", current,
+                **({"reason": "session_missing"} if status is TaskStatus.READY
+                   else {"context": "session_missing"}),
+            )
+            if status is TaskStatus.FAILED:
+                await self.db.notify_task_recovery(task_id, project_id=task.project_id)
+            return {"success": True, "outcome": "recovered", "status": status.value}
+
     async def _confirm_recovery_worker_stopped(self, incident: dict) -> dict:
         from src.sessions.provider import SessionHandle
 
@@ -4429,7 +4505,12 @@ class TaskCommandsMixin:
 
                 reservation = await reserve_canonical_task_branch(self.db, task.id)
                 if reservation["outcome"] not in {"acquired", "already_reserved"}:
-                    return {"error": f"Cannot restart integration task: {reservation['reason']}"}
+                    return {"error": (
+                        f"Cannot restart integration task: {reservation['reason']}. "
+                        "For a stopped writer, preview "
+                        f"aq integration release-owner --task-id {task.id} --dry-run; "
+                        "apply only after its provider-backed proof succeeds, then retry restart."
+                    )}
         old_status = task.status.value
         await self.db.transition_task(
             args["task_id"],
@@ -4463,6 +4544,7 @@ class TaskCommandsMixin:
         it; nothing claims a READY delegate whose fence was never restored.
         """
         previous = (task.status, task.retry_count, task.assigned_agent_id)
+        previous_streak = await self.db.get_task_meta(task.id, "worker_failure_streak")
         await self.db.transition_task(
             task.id,
             TaskStatus.READY,
@@ -4479,6 +4561,8 @@ class TaskCommandsMixin:
                 "reservation": reservation["outcome"],
             }
         await self._undo_refused_restart(task, previous)
+        if previous_streak is not None:
+            await self.db.set_task_meta(task.id, "worker_failure_streak", previous_streak)
         detail = reservation.get("dispatch", {}).get("reason") or reservation.get("reason")
         return {
             "error": (
@@ -4509,6 +4593,11 @@ class TaskCommandsMixin:
                 force=True,
                 retry_count=previous[1],
                 assigned_agent_id=previous[2],
+                profile_id=task.profile_id,
+                intelligence_class=task.intelligence_class,
+                provider_intent=task.provider_intent,
+                route_source=task.route_source,
+                route=task.route,
             )
         except StaleClaim as exc:
             logger.warning(
@@ -4553,11 +4642,11 @@ class TaskCommandsMixin:
             session = await self.db.get_session(session_id) if session_id else None
             if review_task is not None and review_task.profile_id in REVIEW_PROFILE_IDS:
                 from src.database.queries.hierarchy_queries import HierarchyError
-                from src.integration.review_evidence import ReviewEvidenceProducer
+                from src.integration.reviews import ReviewEvidenceProducer
 
                 try:
                     review_evidence_snapshot = await ReviewEvidenceProducer(
-                        self.db, self._integration_promotion_service()
+                        self.db, self._integration_repository_git()
                     ).snapshot(
                         review_task,
                         session,
@@ -4588,7 +4677,7 @@ class TaskCommandsMixin:
         if review_evidence_snapshot is None:
             await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
         else:
-            from src.integration.review_evidence import ReviewEvidenceProducer
+            from src.integration.reviews import ReviewEvidenceProducer
 
             async with self.db.immediate() as conn:
                 transition = await ReviewEvidenceProducer(
@@ -4690,89 +4779,60 @@ class TaskCommandsMixin:
             "cancelled_reviews": cancelled_reviews,
         }
 
+    async def _cmd_remove_task(self, args: dict) -> dict:
+        """Deprecated alias for the unified delete action."""
+        result = await self._cmd_delete_task(args)
+        return {**result, "deprecated_alias": "remove_task", "removed": result.get("deleted")}
+
     async def _cmd_delete_task(self, args: dict) -> dict:
+        from src.commands.supervisor_authority import operator_or_supervisor
+        from src.integration.task_deletion import deletion_actor, deletion_plan, execute_deletion
+
         task_id = args["task_id"]
         task = await self.db.get_task(task_id)
-        if not task:
-            return {"error": f"Task '{task_id}' not found"}
-        if task.status == TaskStatus.IN_PROGRESS:
-            error = await self.orchestrator.stop_task(task_id)
-            if error:
-                return {"error": f"Could not stop task before deleting: {error}"}
-        cascade = bool(args.get("cascade", False))
-        branch_policy = args.get("branches")
-        if branch_policy not in (None, "keep", "delete"):
+        if task is None:
+            return {"success": False, "error": f"Task '{task_id}' not found"}
+        actor, refusal = await operator_or_supervisor(
+            self.db, task.project_id, subject="task deletion"
+        )
+        if refusal:
+            return {"success": False, "code": "deletion.forbidden", "error": refusal}
+        branches = args.get("branches") or "keep"
+        if branches not in {"keep", "delete"}:
             return {
                 "success": False,
                 "code": "invalid_branches",
                 "error": "branches must be 'keep' or 'delete'",
             }
-        # The wire word is "delete" — it reads correctly next to the task being
-        # deleted.  The guard's vocabulary is "discard", because it is naming
-        # what happens to the origin rather than to the task.
-        guard_policy = {"keep": "keep", "delete": "discard"}.get(branch_policy)
-        discarded: list[dict] = []
-        if guard_policy == "discard":
-            discarded = await self._materialized_branches_under(task_id)
-
-        if cascade:
-            # A cascade delete removes the whole subtree; refuse rather than
-            # pull a live session out from under a grandchild (spec §7).
-            # Check and delete in the same transaction so no session can
-            # start holding a descendant between the check and the delete.
-            # Both the refusal and the HierarchyError are handled OUTSIDE the
-            # transaction: returning from inside ``async with`` would commit
-            # it, and swallowing the error inside would commit a half-done
-            # cascade instead of rolling it back.
-            live: list = []
-            result = None
-            try:
-                async with self.db.immediate() as conn:
-                    live = await self.db.live_descendant_sessions(task_id, conn=conn)
-                    if not live:
-                        result = await self.db.delete_task(
-                            task_id, cascade=True, conn=conn, branch_policy=guard_policy
-                        )
-            except HierarchyError as exc:
-                return self._hierarchy_failure(exc)
-            if live:
-                return {
-                    "success": False,
-                    "code": "hierarchy.live_descendants",
-                    "error": (
-                        f"Cannot delete task '{task_id}': "
-                        f"{len(live)} live descendant session(s) must stop first"
-                    ),
-                    "sessions": [{"session_id": s, "task_id": t} for s, t in live],
-                }
-            # Post-commit, same sequencing as delete_task's own single-
-            # transaction path — a listener failure must not roll back the
-            # delete.
-            await self.db.log_blocked_flips(result.flipped)
-            await self.db._notify_settled(result.settled)
-            await self.db._notify_ready(result.ready)
-        else:
-            try:
-                await self.db.delete_task(
-                    task_id, cascade=False, branch_policy=guard_policy
-                )
-            except HierarchyError as exc:
-                return self._hierarchy_failure(exc)
-        await self._emit_task_graph_change("task.deleted", task)
-        return {
-            "deleted": task_id,
-            "title": task.title,
-            "discarded_branches": discarded,
-        }
+        plan, captured = await deletion_plan(
+            self.db,
+            self.orchestrator,
+            task_id,
+            recursive=bool(args.get("recursive") or args.get("cascade")),
+            branches=branches,
+            stop_running=bool(args.get("stop_running", False)),
+        )
+        if not args.get("confirmed", False):
+            return plan
+        result = await execute_deletion(
+            self.db,
+            self.orchestrator,
+            plan,
+            captured,
+            actor=deletion_actor.get() or actor,
+            reason=args.get("reason"),
+        )
+        try:
+            await self.orchestrator._emit_task_event(
+                "task.deleted", task, seq=captured["deletion_event_id"]
+            )
+        except Exception as exc:
+            result["warnings"].append({"code": "notification_failed", "message": str(exc)})
+        return result
 
     @staticmethod
     def _hierarchy_failure(exc: HierarchyError) -> dict:
-        """Render a HierarchyError, carrying any structured context it holds.
-
-        ``branch_discard_required`` is the one refusal a surface is expected to
-        act on rather than just report, so its branch list has to survive the
-        trip out.
-        """
+        """Render a hierarchy refusal with its structured context."""
         failure = {
             "success": False,
             "error": f"hierarchy.{exc.code}: {exc.detail}",
@@ -4780,44 +4840,6 @@ class TaskCommandsMixin:
         }
         failure.update(getattr(exc, "context", {}) or {})
         return failure
-
-    async def _materialized_branches_under(self, task_id: str) -> list[dict]:
-        """The branches a discard is about to queue, read before the rows go.
-
-        Snapshotted for the response only: the delete transaction is what
-        actually marks them, and it re-reads under its own lock.
-        """
-        from sqlalchemy import select
-
-        from src.database.tables import task_branch_origins
-
-        async with self.db._engine.connect() as conn:
-            ids = await self.db.subtree_ids(task_id, conn=conn)
-            if not ids:
-                return []
-            rows = (
-                (
-                    await conn.execute(
-                        select(task_branch_origins)
-                        .where(
-                            task_branch_origins.c.task_id.in_(ids),
-                            task_branch_origins.c.retired_at.is_(None),
-                            task_branch_origins.c.materialized.is_(True),
-                        )
-                        .order_by(task_branch_origins.c.task_id)
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        return [
-            {
-                "task_id": row["task_id"],
-                "branch": row["branch_name"],
-                "base_sha": row["base_sha"],
-            }
-            for row in rows
-        ]
 
     # -- Archive commands -----------------------------------------------------
     # Archive moves completed tasks out of the active view into the
@@ -4828,8 +4850,8 @@ class TaskCommandsMixin:
     async def _cmd_archive_task(self, args: dict) -> dict:
         """Archive tasks — single task by ID or bulk by project.
 
-        **Single mode** (``task_id``): archives one task.  Must be in a
-        terminal status (COMPLETED, FAILED, or BLOCKED).
+        **Single mode** (``task_id``): archives the subtree. Terminal tasks
+        need no reason; DEFINED/READY/PAUSED tasks require a reason.
 
         **Bulk mode** (``project_id``): archives all completed tasks in a
         project.  Set ``include_failed=True`` to also archive FAILED and
@@ -4841,13 +4863,28 @@ class TaskCommandsMixin:
             ``task_id`` – archive a single task by ID.
             ``project_id`` – bulk-archive completed tasks in this project.
             ``include_failed`` – (bulk only) also archive FAILED/BLOCKED.
+            ``disposition`` – (single only) ``deliver``, ``obsolete`` or
+            ``retire``: the decision for completed work that has not reached
+            the default branch. ``obsolete`` and ``retire`` abandon it and
+            archive; ``deliver`` keeps the task and reports its delivery.
         """
+        from src.integration.removal_guard import DELIVERY_DISPOSITIONS
+
         task_id = args.get("task_id")
         project_id = args.get("project_id")
         abandon_undelivered = bool(args.get("abandon_undelivered"))
         abandon_reason = args.get("reason")
+        disposition = args.get("disposition") or None
+        if disposition is not None and disposition not in DELIVERY_DISPOSITIONS:
+            return {
+                "error": f"--disposition must be one of {', '.join(DELIVERY_DISPOSITIONS)}.",
+            }
+        if disposition == "deliver" and abandon_undelivered:
+            return {"error": "--disposition deliver keeps the work; drop --abandon-undelivered."}
+        if disposition in {"obsolete", "retire"}:
+            abandon_undelivered = True
 
-        if abandon_undelivered:
+        if abandon_undelivered or disposition:
             scope = self._current_scope or {}
             if scope.get("kind") == "session" and not scope.get("elevated"):
                 return {
@@ -4857,8 +4894,23 @@ class TaskCommandsMixin:
                 }
             if not task_id:
                 return {"error": "--abandon-undelivered is available only with task_id."}
+        if abandon_undelivered:
             if not isinstance(abandon_reason, str) or not abandon_reason.strip():
                 return {"error": "--abandon-undelivered requires --reason."}
+            if disposition is None:
+                return {
+                    "success": False,
+                    "code": "hierarchy.disposition_required",
+                    "error": (
+                        "Abandoning undelivered work needs a disposition: "
+                        "`--disposition deliver` keeps it for the train, "
+                        "`--disposition obsolete` archives it with --reason as the note, "
+                        "`--disposition retire` archives it; both retire its branches "
+                        "after a backup bundle."
+                    ),
+                }
+        if disposition == "deliver":
+            return await self._keep_for_delivery(task_id, reason=abandon_reason)
 
         if task_id:
             # --- Single-task mode ---
@@ -4867,11 +4919,14 @@ class TaskCommandsMixin:
                 return {"error": f"Task '{task_id}' not found"}
 
             terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
+            if isinstance(abandon_reason, str) and abandon_reason.strip():
+                terminal.update({TaskStatus.PAUSED, TaskStatus.DEFINED, TaskStatus.READY})
             if task.status not in terminal:
                 return {
                     "error": (
                         f"Cannot archive task in {task.status.value} status. "
-                        "Only COMPLETED, FAILED, or BLOCKED tasks can be archived."
+                        "Archive PAUSED, DEFINED, or READY tasks with --reason, "
+                        "or stop running work with Remove."
                     ),
                 }
 
@@ -4885,6 +4940,8 @@ class TaskCommandsMixin:
                     abandon_undelivered=abandon_undelivered,
                     abandon_reason=abandon_reason,
                     abandoned_by=(self._current_scope or {}).get("session_id") or "operator",
+                    archive_reason=abandon_reason,
+                    disposition=disposition,
                 )
             except HierarchyError as exc:
                 # Same renderer as delete: an ``integration_owned`` refusal
@@ -4904,12 +4961,14 @@ class TaskCommandsMixin:
                     "task.delivery_abandoned",
                     project_id=task.project_id,
                     task_id=task_id,
+                    payload=json.dumps({"disposition": disposition}),
                 )
             await self._emit_task_graph_change("task.archived", task)
             return {
                 "archived": task_id,
                 "title": task.title,
                 "status": task.status.value,
+                "disposition": disposition or "",
             }
 
         if not project_id and not task_id:
@@ -5123,6 +5182,16 @@ class TaskCommandsMixin:
                     "code": "hierarchy.open_children",
                     "open_children": open_children,
                 }
+            project = await self.db.get_project(task.project_id)
+            repo_id = task.repo_id or (project.integration_repository_id if project else None)
+            origin = await self.db.get_task_branch_origin_for_promotion(task.id, repo_id or "")
+            if task.branch_name or origin:
+                return {
+                    "error": "A task with a Git branch or origin needs completion provenance. "
+                    "Use task close for held work, or integration record-root-noop for an "
+                    "unheld no-change root whose published head equals its recorded base.",
+                    "code": "integration.completion_provenance_required",
+                }
         await self.db.transition_task(task_id, TaskStatus(new_status), context="admin_set_status")
         return {
             "task_id": task_id,
@@ -5140,6 +5209,60 @@ class TaskCommandsMixin:
             "skipped": args["task_id"],
             "unblocked_count": len(unblocked),
             "unblocked": [{"id": t.id, "title": t.title} for t in unblocked],
+        }
+
+    async def _keep_for_delivery(self, task_id: str, *, reason: str | None) -> dict:
+        """Record the ``deliver`` disposition: keep the task and say what delivers it.
+
+        Nothing is archived or retired. The decision is written on the task as a
+        comment and a ``task.delivery_disposition`` event; a root also gets its
+        authorize-root dry run, which names what its delivery waits on.
+        """
+        task = await self.db.get_task(task_id)
+        if not task:
+            return {"error": f"Task '{task_id}' not found"}
+        if task.status != TaskStatus.COMPLETED:
+            return {
+                "error": (
+                    f"--disposition deliver applies to completed work; {task_id} is "
+                    f"{task.status.value}."
+                ),
+            }
+        _branch, undelivered = await self.db.undelivered_holders(task_id)
+        delivery = None
+        if task.parent_task_id is None:
+            delivery = await self._cmd_integration_authorize_root(
+                {"task_id": task_id, "dry_run": True}
+            )
+        actor = (self._current_scope or {}).get("session_id") or "operator"
+        holders = ", ".join(
+            f"{row['task_id']} ({row['holder']})" for row in undelivered
+        ) or "none"
+        note = f": {reason.strip()}" if isinstance(reason, str) and reason.strip() else ""
+        waits = ""
+        if delivery is not None:
+            waits = f"\nRoot delivery: {delivery.get('outcome')}: {delivery.get('reason', '')}"
+        await self.db.add_task_comment(
+            task_id,
+            f"Delivery disposition by {actor}: deliver{note}\n"
+            f"Kept for the train; undelivered holders: {holders}{waits}",
+            author_kind="supervisor",
+            author_id=actor,
+        )
+        await self.db.log_event(
+            "task.delivery_disposition",
+            project_id=task.project_id,
+            task_id=task_id,
+            payload=json.dumps({"disposition": "deliver", "undelivered": len(undelivered)}),
+        )
+        return {
+            "archived": "",
+            "kept": task_id,
+            "title": task.title,
+            "status": task.status.value,
+            "disposition": "deliver",
+            "undelivered": undelivered,
+            "delivery": delivery,
         }
 
     async def _write_archive_note(
@@ -5371,13 +5494,43 @@ class TaskCommandsMixin:
         reasons.extend(await self.db.claim_frontier_exclusions(
             str(task_id),
             router_ready=await orchestrator_router_ready(self.orchestrator, task.project_id),
+            cached_only=True,
         ))
 
         from src.integration.admission import observe_admission
         admission = await observe_admission(
-            self.db, [str(task_id)], self._development_integration()
+            self.db, [str(task_id)], self._development_integration(), cached_only=True,
         )
-        reasons.extend(admission.reasons.get(str(task_id), []))
+        from src.integration.delivery_engine import project_delivery_issue
+
+        delivery_issues = {}
+        project = await self.db.get_project(task.project_id)
+        if project is not None:
+            delivery_issues[project.id] = await project_delivery_issue(
+                self.db, project, self.config, orchestrator=self.orchestrator,
+            )
+        for delivery_reason in admission.reasons.get(str(task_id), []):
+            prerequisite = await self.db.get_task(delivery_reason["ref"])
+            prerequisite_project_id = prerequisite.project_id if prerequisite else None
+            if prerequisite is None:
+                archived = await self.db.get_archived_task(delivery_reason["ref"])
+                prerequisite_project_id = archived["project_id"] if archived else None
+            if prerequisite_project_id and prerequisite_project_id not in delivery_issues:
+                prerequisite_project = await self.db.get_project(prerequisite_project_id)
+                delivery_issues[prerequisite_project_id] = (
+                    await project_delivery_issue(
+                        self.db, prerequisite_project, self.config, orchestrator=self.orchestrator,
+                    ) if prerequisite_project is not None else None
+                )
+            issue = delivery_issues.get(prerequisite_project_id)
+            reasons.append(
+                Reason(code="delivery_engine_unavailable", detail=issue["detail"],
+                       ref=delivery_reason["ref"]) if issue else delivery_reason
+            )
+        issue = delivery_issues.get(task.project_id)
+        if issue and not any(reason.get("code") == "delivery_engine_unavailable" for reason in reasons):
+            reasons.append(Reason(code="delivery_engine_unavailable", detail=issue["detail"],
+                                  ref=task.project_id))
         if str(task_id) not in admission.allowed and not admission.reasons.get(str(task_id)):
             reasons.append(Reason(
                 code="development_snapshot_changed",
@@ -5506,11 +5659,19 @@ class TaskCommandsMixin:
         # 5. Pool-routed work never reaches the push scheduler at all, so the
         # capacity reasons below (which describe *that* path) would answer a
         # question this task never asks. Say what it is actually waiting on.
-        pool_reason = await self._pool_wait_reason(task)
+        measurement = None
+
+        async def measure_pools():
+            nonlocal measurement
+            if measurement is None:
+                measurement = await self.orchestrator._measure_pools(for_display=True)
+            return measurement
+
+        pool_reason = await self._pool_wait_reason(task, measure_pools=measure_pools)
         if pool_reason is not None:
             reroute = getattr(self.orchestrator, "provider_reroute", None)
             if pool_reason["code"] == "awaiting_pool_session" and reroute is not None:
-                spill = await reroute.spill_state(task)
+                spill = await reroute.spill_state(task, pool_measure=measure_pools)
                 if spill is not None:
                     pool_reason["detail"] += (
                         f"; capacity spill: {spill['kind']} — {spill['detail']}"
@@ -5555,6 +5716,7 @@ class TaskCommandsMixin:
             self.db,
             git_first=getattr(self.config.integration, "git_first", "shadow"),
             train=getattr(self.orchestrator, "integration_train", None),
+            cached_only=True,
         ).task_blockers(str(task_id))
         if integration is not None and integration["integration_active"]:
             reasons.extend(
@@ -5708,7 +5870,7 @@ class TaskCommandsMixin:
             task.id, router=router, run=run, emitted_at=emitted.get(task.id), now=now,
         ))
 
-    async def _pool_wait_reason(self, task):
+    async def _pool_wait_reason(self, task, *, measure_pools=None):
         """``awaiting_pool_session`` for a task routed to a ``lifecycle: pool`` profile.
 
         ``Orchestrator._schedule`` filters these tasks out and
@@ -5805,7 +5967,8 @@ class TaskCommandsMixin:
                 detail += f": {quarantine_reason}"
             return Reason(code="awaiting_pool_session", detail=detail, ref=profile_id)
 
-        measurement = await orchestrator._measure_pools()
+        measurement = await (measure_pools() if measure_pools is not None
+                             else orchestrator._measure_pools(for_display=True))
         from src.scheduler import PoolKey
 
         # The cap is fleet-wide. Keep the project slice for context, but
@@ -5939,6 +6102,8 @@ class TaskCommandsMixin:
         dedup_key = args.get("dedup_key")
         if not dedup_key:
             return {"success": False, "error": "dedup_key is required"}
+        if args.get("task_type") in {"promotion", "backmerge"}:
+            return {"success": False, "error": "Promotion and backmerge task types are daemon-owned."}
         title = args.get("title")
         if not title:
             return {"success": False, "error": "title is required"}
@@ -6049,6 +6214,12 @@ class TaskCommandsMixin:
         # touches (or revives) a container.
         for key in ("parent_id", "root", "reason", "discovered_from", "parent_key",
                     "parent_title"):
+            if key in args:
+                create_args[key] = args[key]
+        # An internal filer's origin (source-CI repair) reaches the creation
+        # that applies ``_cmd_create_task``'s own worker-session guard, so it
+        # admits no origin that command would refuse.
+        for key in ("_created_by_kind", "_created_by_id"):
             if key in args:
                 create_args[key] = args[key]
         # Presentation tasks such as playbook-run roots must be born in their

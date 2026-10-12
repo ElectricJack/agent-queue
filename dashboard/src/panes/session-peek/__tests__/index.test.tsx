@@ -3,12 +3,13 @@ import { act, render, screen } from "@testing-library/react";
 import SessionPeekPane from "../index";
 import { manifest, sessionPeekArgsSchema } from "../manifest";
 
-const mockUsePaneStream = vi.fn();
 const mockUseSession = vi.fn();
 const mockUseSessionKill = vi.fn();
 
-vi.mock("../../../ws/usePaneStream", () => ({
-  usePaneStream: (...args: unknown[]) => mockUsePaneStream(...args),
+// The pane renders the host shell page's terminal, so the xterm and its socket
+// are the test's, not a capture-pane stream.
+vi.mock("../../../components/InteractiveTerminal", () => ({
+  default: ({ sessionId, name }: { sessionId: string; name: string }) => <p>Terminal {name} ({sessionId})</p>,
 }));
 vi.mock("../../../api/hooks", () => ({
   useSession: (...args: unknown[]) => mockUseSession(...args),
@@ -37,224 +38,101 @@ function lastCallArg0<T>(mockFn: { mock: { calls: T[][] } }): T | undefined {
   return calls[calls.length - 1]?.[0];
 }
 
-describe("SessionPeekPane component", () => {
+const actionsOf = (props: ReturnType<typeof baseProps>) =>
+  (lastCallArg0(props.setToolbar) as { id: string; label: string; onClick: () => void; disabled?: boolean }[]);
+const shortcutsOf = (props: ReturnType<typeof baseProps>) =>
+  (lastCallArg0(props.setShortcuts) as { key: string; onFire: () => void }[]);
+
+describe("SessionPeekPane", () => {
   beforeEach(() => {
     mockNavigate.mockReset();
-    mockUsePaneStream.mockReset();
     mockUseSession.mockReset();
     mockUseSessionKill.mockReset();
     mockUseSessionKill.mockReturnValue({ mutate: vi.fn() });
-    mockUseSession.mockReturnValue({ data: { lifecycle: "running" } });
-    mockUsePaneStream.mockReturnValue({
-      screen: "hello",
-      status: "open",
-      error: null,
-      seq: 1,
-    });
+    mockUseSession.mockReturnValue({ data: { id: "sess-1", name: "worker-a", state: "running", lifecycle: "running" } });
   });
 
-  it("renders without crashing given valid args", () => {
+  it("draws the host shell page's terminal for a live session", () => {
     render(<SessionPeekPane {...baseProps()} />);
-    expect(screen.getByText(/hello/)).toBeInTheDocument();
+    expect(screen.getByText("Terminal worker-a (sess-1)")).toBeInTheDocument();
+    expect(screen.queryByText(/waiting for pane/i)).toBeNull();
   });
 
-  it("shows a waiting state while connecting with no screen yet", () => {
-    mockUsePaneStream.mockReturnValue({
-      screen: null,
-      status: "connecting",
-      error: null,
-      seq: 0,
-    });
+  it("does not crash while the session record is still loading", () => {
+    mockUseSession.mockReturnValue({ data: undefined });
     render(<SessionPeekPane {...baseProps()} />);
-    expect(screen.getByText(/waiting for pane/i)).toBeInTheDocument();
+    expect(screen.getByText(/not attached/)).toHaveTextContent("unknown");
+    expect(screen.queryByText(/^Terminal /)).toBeNull();
   });
 
-  it("renders the stream error banner", () => {
-    mockUsePaneStream.mockReturnValue({
-      screen: null,
-      status: "error",
-      error: "stream error (EventSource will retry)",
-      seq: 0,
-    });
+  it("says why a session that is not live has no terminal", () => {
+    mockUseSession.mockReturnValue({ data: { id: "sess-1", name: "worker-a", state: "sleeping", lifecycle: "running" } });
     render(<SessionPeekPane {...baseProps()} />);
-    expect(screen.getByText("stream error (EventSource will retry)")).toBeInTheDocument();
+    expect(screen.getByText(/its terminal is not attached/)).toHaveTextContent("sleeping");
+    expect(screen.queryByText(/^Terminal /)).toBeNull();
   });
 
-  // --- Task 7: toolbar actions ---
-
-  it("registers three toolbar actions on mount", () => {
+  it("registers the toolbar actions on mount and clears them on unmount", () => {
     const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const lastCall = lastCallArg0(props.setToolbar);
-    const ids = lastCall.map((a: { id: string }) => a.id);
-    expect(ids).toEqual(["copy-scrollback", "open-full", "kill-session"]);
+    const { unmount } = render(<SessionPeekPane {...props} />);
+    expect(actionsOf(props).map((action) => action.id)).toEqual(["open-full", "kill-session"]);
+    unmount();
+    expect(props.setToolbar).toHaveBeenLastCalledWith([]);
+    expect(props.setShortcuts).toHaveBeenLastCalledWith([]);
   });
 
-  it("copy-scrollback writes the current screen to the clipboard", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      writable: true,
-      value: { writeText },
-    });
+  it("opens full session detail, closing the pane and keeping the workspace source", () => {
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
-    const actions = lastCallArg0(props.setToolbar);
-    const copy = actions.find((a: { id: string }) => a.id === "copy-scrollback");
-    copy.onClick();
-    expect(writeText).toHaveBeenCalledWith("hello");
-  });
-
-  it("copy-scrollback is disabled with no screen yet", () => {
-    mockUsePaneStream.mockReturnValue({ screen: null, status: "open", error: null, seq: 0 });
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const actions = lastCallArg0(props.setToolbar);
-    const copy = actions.find((a: { id: string }) => a.id === "copy-scrollback");
-    expect(copy.disabled).toBe(true);
-  });
-
-  it("open-full closes the pane and retains its workspace source", () => {
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const actions = lastCallArg0(props.setToolbar);
-    const open = actions.find((a: { id: string }) => a.id === "open-full");
-    open.onClick();
+    actionsOf(props).find((action) => action.id === "open-full")!.onClick();
     expect(props.close).toHaveBeenCalledOnce();
     expect(mockNavigate).toHaveBeenCalledWith("/sessions/sess-1", {
       state: { from: "/projects/demo/sessions?q=active" },
     });
   });
 
-  it("kill-session arms on first click, commits on second", () => {
+  it("kill-session arms on first click, commits on second, and the keyboard shares that state", () => {
     const mutate = vi.fn();
     mockUseSessionKill.mockReturnValue({ mutate });
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
-    let actions = lastCallArg0(props.setToolbar);
-    let kill = actions.find((a: { id: string }) => a.id === "kill-session");
-    expect(kill.label).toBe("Kill session");
-    act(() => kill.onClick());
+    act(() => actionsOf(props).find((action) => action.id === "kill-session")!.onClick());
+    expect(actionsOf(props).find((action) => action.id === "kill-session")!.label).toBe("Confirm kill?");
     expect(mutate).not.toHaveBeenCalled();
-
-    actions = lastCallArg0(props.setToolbar);
-    kill = actions.find((a: { id: string }) => a.id === "kill-session");
-    expect(kill.label).toBe("Confirm kill?");
-    act(() => kill.onClick());
+    act(() => actionsOf(props).find((action) => action.id === "kill-session")!.onClick());
     expect(mutate).toHaveBeenCalledWith({ session_id: "sess-1" });
+
+    mockUseSessionKill.mockReturnValue({ mutate: vi.fn() });
+    act(() => shortcutsOf(props).find((binding) => binding.key === "k")!.onFire());
+    expect(mutate).toHaveBeenCalledTimes(1);
   });
 
-  it("kill-session is disabled when exited", () => {
-    mockUseSession.mockReturnValue({ data: { lifecycle: "exited" } });
+  it("kill-session is disabled once the session has exited", () => {
+    mockUseSession.mockReturnValue({ data: { id: "sess-1", name: "worker-a", state: "stopped", lifecycle: "exited" } });
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
-    const actions = lastCallArg0(props.setToolbar);
-    const kill = actions.find((a: { id: string }) => a.id === "kill-session");
-    expect(kill.disabled).toBe(true);
+    expect(actionsOf(props).find((action) => action.id === "kill-session")!.disabled).toBe(true);
+    expect(actionsOf(props).find((action) => action.id === "open-full")!.disabled).toBeFalsy();
   });
 
-  it("unmount clears the toolbar", () => {
-    const props = baseProps();
-    const { unmount } = render(<SessionPeekPane {...props} />);
-    unmount();
-    expect(props.setToolbar).toHaveBeenLastCalledWith([]);
-  });
-
-  // --- Task 8: keyboard shortcuts ---
-
-  it("registers three shortcuts on mount", () => {
+  it("registers the two keyboard shortcuts", () => {
     const props = baseProps();
     render(<SessionPeekPane {...props} />);
-    const lastCall = lastCallArg0(props.setShortcuts);
-    const keys = lastCall.map((b: { key: string }) => b.key);
-    expect(keys).toEqual(["k", "o", "c"]);
+    expect(shortcutsOf(props).map((binding) => binding.key)).toEqual(["o", "k"]);
+    expect(() => shortcutsOf(props).find((binding) => binding.key === "o")!.onFire()).not.toThrow();
   });
 
-  it("k shares kill's arm/confirm state with the toolbar", () => {
-    const mutate = vi.fn();
-    mockUseSessionKill.mockReturnValue({ mutate });
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    let bindings = lastCallArg0(props.setShortcuts);
-    act(() => bindings.find((b: { key: string }) => b.key === "k").onFire());
-    expect(mutate).not.toHaveBeenCalled();
-
-    bindings = lastCallArg0(props.setShortcuts);
-    act(() => bindings.find((b: { key: string }) => b.key === "k").onFire());
-    expect(mutate).toHaveBeenCalledWith({ session_id: "sess-1" });
-  });
-
-  it("o opens full session detail", () => {
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const bindings = lastCallArg0(props.setShortcuts);
-    expect(() => bindings.find((b: { key: string }) => b.key === "o").onFire()).not.toThrow();
-  });
-
-  it("c copies the current screen", () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      writable: true,
-      value: { writeText },
-    });
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const bindings = lastCallArg0(props.setShortcuts);
-    bindings.find((b: { key: string }) => b.key === "c").onFire();
-    expect(writeText).toHaveBeenCalledWith("hello");
-  });
-
-  it("unmount clears shortcuts", () => {
-    const props = baseProps();
-    const { unmount } = render(<SessionPeekPane {...props} />);
-    unmount();
-    expect(props.setShortcuts).toHaveBeenLastCalledWith([]);
-  });
-
-  // --- Task 9: session-exited banner ---
-
-  it("shows the exited banner and keeps the last screen visible when lifecycle is exited", () => {
-    mockUseSession.mockReturnValue({ data: { lifecycle: "exited" } });
+  it("says a session that has exited is not attached, and does not draw a terminal", () => {
+    mockUseSession.mockReturnValue({ data: { id: "sess-1", name: "worker-a", state: "stopped", lifecycle: "terminated" } });
     render(<SessionPeekPane {...baseProps()} />);
-    expect(screen.getByText("Session exited — showing last scrollback.")).toBeInTheDocument();
-    expect(screen.getByText(/hello/)).toBeInTheDocument();
+    expect(screen.getByText("Session exited — open full session detail for its transcript.")).toBeInTheDocument();
+    expect(screen.queryByText(/^Terminal /)).toBeNull();
   });
 
-  it("shows the exited banner for terminated lifecycle too", () => {
-    mockUseSession.mockReturnValue({ data: { lifecycle: "terminated" } });
+  it("shows no notice while the session is running", () => {
     render(<SessionPeekPane {...baseProps()} />);
-    expect(screen.getByText("Session exited — showing last scrollback.")).toBeInTheDocument();
-  });
-
-  it("does not show the exited banner while running", () => {
-    mockUseSession.mockReturnValue({ data: { lifecycle: "running" } });
-    render(<SessionPeekPane {...baseProps()} />);
-    expect(
-      screen.queryByText("Session exited — showing last scrollback."),
-    ).not.toBeInTheDocument();
-  });
-
-  it("does not show the exited banner on a transient stream error alone", () => {
-    mockUseSession.mockReturnValue({ data: { lifecycle: "running" } });
-    mockUsePaneStream.mockReturnValue({
-      screen: "hello",
-      status: "error",
-      error: "stream error (EventSource will retry)",
-      seq: 1,
-    });
-    render(<SessionPeekPane {...baseProps()} />);
-    expect(
-      screen.queryByText("Session exited — showing last scrollback."),
-    ).not.toBeInTheDocument();
-  });
-
-  it("open-full stays enabled while exited", () => {
-    mockUseSession.mockReturnValue({ data: { lifecycle: "exited" } });
-    const props = baseProps();
-    render(<SessionPeekPane {...props} />);
-    const actions = lastCallArg0(props.setToolbar);
-    expect(actions.find((a: { id: string }) => a.id === "open-full").disabled).toBeFalsy();
+    expect(screen.queryByText(/Session exited/)).toBeNull();
+    expect(screen.queryByText(/not attached/)).toBeNull();
   });
 });
 

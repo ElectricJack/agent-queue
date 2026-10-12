@@ -43,7 +43,7 @@ from src.routing.sources import LEGACY, ROUTER, UNROUTED
 from src.sessions.harness_parser import Harness
 from tests.assignment_routing_helpers import route_source_for
 from tests.db_fixtures import lease_dsn
-from tests.test_routing_planner import SHIPPED_POLICY, routine_policy
+from tests.test_routing_planner import NARROW_NO, SHIPPED_POLICY, routine_policy
 
 ROUTER_ID = "default-assignment-routing"
 CLASSES = {
@@ -159,6 +159,79 @@ async def test_plan_reads_the_live_catalog_and_writes_nothing(handler, orch):
     assert plan["policy_sha256"].startswith("sha256:")
     task = await orch.db.get_task("t")
     assert (task.profile_id, task.route_source) == (None, UNROUTED)
+
+
+async def test_system_filing_without_ordinary_input_keeps_its_routing_origin(handler, orch):
+    await _create(orch.db, "repair-looking", task_type=TaskType.BUGFIX,
+                  created_by_kind="system")
+    task = await orch.db.get_task("repair-looking")
+    facts = await handler._routing_task_facts(task, await orch.db.get_project("p"))
+    assert facts.created_by_kind == "system"
+
+
+@pytest.mark.parametrize("task_type", [TaskType.TEST, TaskType.BUGFIX])
+async def test_integration_writers_route_like_repairs_off_every_opencode_lane(
+    handler, orch, task_type,
+):
+    from tests.test_routing_planner import NARROW_YES, _rung, _snapshot
+
+    await _create(orch.db, "writer", task_type=task_type,
+                  created_by_kind="integration_writer", created_by_id="subject-1")
+    task = await orch.db.get_task("writer")
+    project = await orch.db.get_project("p")
+    facts = await handler._routing_task_facts(task, project)
+    assert facts.created_by_kind == "integration_repair"
+    fleet = [
+        _rung("standard-high", harness)
+        for harness in ("codex", "claude", "opencode", "opencode-zen",
+                        "opencode-zen-nemotron", "opencode-zen-new-preview")
+    ]
+    observed = await handler._routing_snapshot(task, project, ("standard-high",))
+    snapshot = _snapshot(fleet, busy={
+        "standard-high-codex": 2, "standard-high-claude": 2,
+    })
+    handler._routing_snapshot = AsyncMock(return_value=replace(snapshot, context=observed.context))
+    plan = await _plan(handler, "writer", {**NARROW_YES, "task_type": task_type.value})
+    assert plan["success"] and plan["outcome"] == "planned", plan
+    assert plan["rule"] == f"kinds.{task_type.value}+origins.integration_repair"
+    assert {candidate["harness"] for candidate in plan["candidates"]} == {"codex", "claude"}
+    assert (await orch.db.get_task("writer")).created_by_kind == "integration_writer"
+
+
+@pytest.mark.parametrize("stamped", [True, False], ids=["stamped", "record-only"])
+async def test_a_source_ci_repair_routes_as_an_integration_repair(handler, orch, stamped):
+    from sqlalchemy import insert
+
+    from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN
+    from src.database.tables import integration_source_ci
+    from src.models import RepoConfig, RepoSourceType
+
+    await _create(orch.db, "source", task_type=TaskType.FEATURE)
+    await _create(orch.db, "ci-fix", task_type=TaskType.BUGFIX,
+                  created_by_kind=SOURCE_CI_REPAIR_ORIGIN if stamped else None)
+    await _create(orch.db, "plain-fix", task_type=TaskType.BUGFIX)
+    # Every repair carries its record; one filed before the origin was stamped
+    # is known only by it.
+    await orch.db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE, url="/private/repo.git",
+    ))
+    async with orch.db.immediate() as conn:
+        await conn.execute(insert(integration_source_ci).values(
+            task_id="source", repository_id="repo", source_base="a" * 40,
+            source_head="b" * 40, generation=0, policy_generation=0, state="red",
+            evidence={}, repair_task_id="ci-fix", observed_at=1000.0,
+        ))
+
+    project = await orch.db.get_project("p")
+    facts = await handler._routing_task_facts(await orch.db.get_task("ci-fix"), project)
+    assert facts.created_by_kind == "integration_repair"
+    plan = await _plan(handler, "ci-fix")
+    assert plan["success"] and plan["outcome"] == "planned", plan
+    # ``origins.integration_repair`` is ``narrow: false``: no OpenCode lane at all.
+    assert plan["rule"] == "kinds.bugfix+origins.integration_repair"
+
+    facts = await handler._routing_task_facts(await orch.db.get_task("plain-fix"), project)
+    assert facts.created_by_kind is None
 
 
 def _context_profile(context, profile_id="standard-high-codex"):
@@ -467,18 +540,20 @@ async def test_plan_honours_exclude_providers_from_the_route_constraints(handler
 async def test_task_facts_carry_the_local_model_gate_inputs(handler, orch):
     from src.models import DepType
 
+    # A task's priority is not a gate input (rev-wise-impact): it never routes.
     await _create(orch.db, "fix", task_type=TaskType.BUGFIX, priority=290)
     await _create(orch.db, "waiter", task_type=TaskType.RESEARCH)
     await orch.db.add_dependency("waiter", "fix", DepType.BLOCKS.value)
     facts = await handler._routing_task_facts(
         await orch.db.get_task("fix"), await orch.db.get_project("p"),
     )
-    assert (facts.priority, facts.on_train, facts.blocks_work) == (290, False, True)
+    assert (facts.on_train, facts.blocks_work) == (False, True)
+    assert not hasattr(facts, "priority")
 
     # ``train`` needs an integration repository; the builder reads only the mode.
     train = replace(await orch.db.get_project("p"), hierarchical_integration_mode="train")
     facts = await handler._routing_task_facts(await orch.db.get_task("waiter"), train)
-    assert (facts.priority, facts.on_train, facts.blocks_work) == (100, True, False)
+    assert (facts.on_train, facts.blocks_work) == (True, False)
 
 
 # -- task_route_apply: only the bound router ----------------------------------------
@@ -539,6 +614,14 @@ def test_granted_aq_commands_reads_command_steps_and_tool_use() -> None:
 # -- task_route_apply: the write ------------------------------------------------------
 
 
+#: A routine feature classified medium risk. The shipped policy's ``risk``
+#: table could raise a feature, so its plan needs the risk answer; a medium
+#: floor (``standard-high`` on Claude or Codex) leaves a standard-high feature
+#: where the hosted preference puts it.
+ROUTINE_MEDIUM = {**NARROW_NO, "task_type": "feature", "risk": "medium",
+                  "risk_reason": "touches the scheduler"}
+
+
 async def _route(handler, task_id: str, classification=None) -> dict:
     plan = await _plan(handler, task_id, classification)
     assert plan["outcome"] == "planned", plan
@@ -591,6 +674,39 @@ async def test_apply_writes_the_classified_kind_and_keeps_constraints(handler, o
     assert task.task_type == TaskType.RESEARCH
     assert task.route["constraints"] == {"exclude_providers": ["claude"]}
     assert task.route["classification"]["intelligence_class"] == "deep-high"
+
+
+async def test_apply_records_a_class_a_risk_floor_raised(handler, orch):
+    from tests.test_routing_planner import RISK_POLICY
+
+    classification = {
+        "task_type": "research", "intelligence_class": "standard-high", "narrow": False,
+        "test_verified": False, "independent_verifier": False, "reason": "schema change",
+        "risk": "very_high", "risk_reason": "migrates the claims table",
+    }
+    for task_id, risk in (("raised", "very_high"), ("kept", "low")):
+        await _create(orch.db, task_id, task_type=TaskType.RESEARCH, class_hint="standard-high")
+        plan = await handler.execute("task_route_plan", {
+            "task_id": task_id, "policy": RISK_POLICY,
+            "classification": {**classification, "risk": risk},
+        })
+        assert plan["outcome"] == "planned", plan
+        with _as_playbook():
+            applied = await handler.execute("task_route_apply", {"task_id": task_id, "plan": plan})
+        assert applied["outcome"] == "routed", applied
+
+    raised = await orch.db.get_task("raised")
+    assert raised.intelligence_class == "deep-high"
+    assert raised.route["class_raised_for_risk"] == {
+        "from": "standard-high", "to": "deep-high", "risk": "very_high",
+    }
+    assert raised.route["classification"]["risk"] == "very_high"
+    assert raised.route["classification"]["risk_reason"] == "migrates the claims table"
+
+    # No raise: the route record has no such key.
+    kept = await orch.db.get_task("kept")
+    assert kept.intelligence_class == "standard-high"
+    assert "class_raised_for_risk" not in kept.route
 
 
 async def test_apply_reroutes_a_legacy_route(handler, orch):
@@ -840,6 +956,7 @@ async def test_hosted_preference_apply_refreshes_capacity_and_ignores_caller_con
     policy, _digest = routine_policy()
     plan = await handler.execute("task_route_plan", {
         "task_id": "routine", "policy": policy.canonical_json(),
+        "classification": ROUTINE_MEDIUM,
     })
     assert plan["profile_id"] == "standard-high-codex"
     assert plan["decision"]["mode"] == "hosted_preference"
@@ -872,6 +989,8 @@ async def test_hosted_preference_apply_refreshes_capacity_and_ignores_caller_con
     assert "bypassed" in route["reason"]
     assert "snapshot age" in route["reason"]
     assert route["decision"]["snapshot_as_of"] == route["live_context"]["as_of"]
+    # The apply-time re-plan keeps the plan's classification.
+    assert route["classification"]["risk"] == "medium"
 
 
 async def test_concurrent_routine_routes_fill_codex_headroom_then_fall_back(handler, orch):
@@ -882,6 +1001,7 @@ async def test_concurrent_routine_routes_fill_codex_headroom_then_fall_back(hand
                       class_hint="standard-high")
     plans = [await handler.execute("task_route_plan", {
         "task_id": f"routine-{i}", "policy": policy.canonical_json(),
+        "classification": ROUTINE_MEDIUM,
     }) for i in range(3)]
     assert {p["profile_id"] for p in plans} == {"standard-high-codex"}
     with _as_playbook():
@@ -1133,3 +1253,128 @@ async def test_a_worker_filing_may_name_a_preference(handler, orch):
     assert result["success"], result
     task = await orch.db.get_task(result["task_id"])
     assert (task.prefer_target, task.prefer_mode) == ("claude", "strict")
+
+
+# -- retries and durable escalation evidence ------------------------------------
+
+@pytest.mark.parametrize("context", [
+    "session_close_hard_failure", "verification_failed", "verification_reopen",
+    "retry", "reopen_with_feedback",
+])
+async def test_work_failure_retry_routes_to_deep_with_durable_evidence(handler, orch, context):
+    from tests.test_routing_planner import ESCALATING_POLICY
+
+    previous = TaskStatus.COMPLETED if context == "reopen_with_feedback" else TaskStatus.IN_PROGRESS
+    await _create(orch.db, "escalate", status=previous, task_type=TaskType.BUGFIX,
+                  profile_id="standard-high-codex", intelligence_class="standard-high",
+                  route_source=ROUTER, route={"constraints": {"exclude_providers": ["claude"]}})
+    if context in {"session_close_hard_failure", "verification_failed"}:
+        await orch.db.transition_task("escalate", TaskStatus.BLOCKED, context=context)
+        restarted = await handler.execute("restart_task", {"task_id": "escalate"})
+        assert "error" not in restarted, restarted
+    elif context == "reopen_with_feedback":
+        reopened = await handler.execute("reopen_with_feedback", {
+            "task_id": "escalate", "feedback": "Reviewer found a missed race condition",
+        })
+        assert "error" not in reopened, reopened
+    else:
+        await orch.db.transition_task("escalate", TaskStatus.READY, context=context)
+    task = await orch.db.get_task("escalate")
+    assert (task.route_source, task.profile_id, task.intelligence_class) == (UNROUTED, None, None)
+    failures = await orch.db.get_task_meta("escalate", "routing_failed_attempts")
+    assert len(failures) == 1
+    assert failures[0]["intelligence_class"] == "standard-high"
+    assert failures[0]["reason"] == context
+    plan = await handler.execute("task_route_plan", {
+        "task_id": "escalate", "policy": ESCALATING_POLICY,
+        "classification": {**NARROW_NO, "risk": "very_high"},
+    })
+    assert plan["outcome"] == "planned", plan
+    assert plan["intelligence_class"] == "deep-high"
+    assert plan["escalated_after_failure"]["failed_attempts"] == failures
+    with _as_playbook():
+        applied = await handler.execute("task_route_apply", {"task_id": "escalate", "plan": plan})
+    assert applied["outcome"] == "routed", applied
+    routed = await orch.db.get_task("escalate")
+    assert routed.route["escalated_after_failure"] == plan["escalated_after_failure"]
+    assert routed.route["constraints"] == {"exclude_providers": ["claude"]}
+    # A later infrastructure failure and restart preserve the earlier failure.
+    await orch.db.transition_task("escalate", TaskStatus.IN_PROGRESS, force=True)
+    await orch.db.transition_task("escalate", TaskStatus.BLOCKED,
+                                  context="session_close_failed", force=True)
+    await handler.execute("restart_task", {"task_id": "escalate"})
+    replanned = await handler.execute("task_route_plan", {
+        "task_id": "escalate", "policy": ESCALATING_POLICY,
+        "classification": {**NARROW_NO, "risk": "high"},
+    })
+    assert replanned["intelligence_class"] == "deep-high"
+    assert replanned["escalated_after_failure"]["failed_attempts"] == failures
+
+
+@pytest.mark.parametrize("context", [
+    "session_close_failed", "session_exited_without_close_exhausted",
+    "session_launch_failed", "provider_outage", "session_close_pipeline_stop",
+])
+async def test_infrastructure_failure_restart_does_not_escalate(handler, orch, context):
+    from tests.test_routing_planner import ESCALATING_POLICY
+
+    await _create(orch.db, "infra", status=TaskStatus.IN_PROGRESS, task_type=TaskType.BUGFIX,
+                  profile_id="standard-high-codex", intelligence_class="standard-high",
+                  route_source=ROUTER)
+    await orch.db.transition_task("infra", TaskStatus.BLOCKED, context=context, force=True)
+    await handler.execute("restart_task", {"task_id": "infra"})
+    plan = await handler.execute("task_route_plan", {
+        "task_id": "infra", "policy": ESCALATING_POLICY,
+        "classification": {**NARROW_NO, "intelligence_class": "deep-high", "risk": "very_high"},
+    })
+    assert plan["outcome"] == "planned", plan
+    assert plan["intelligence_class"] == "standard-high"
+    assert not plan.get("escalated_after_failure")
+    assert await orch.db.get_task_meta("infra", "routing_failed_attempts") is None
+
+
+async def test_explicit_transient_close_does_not_record_a_work_failure(handler, orch):
+    await _create(orch.db, "transient", status=TaskStatus.IN_PROGRESS, task_type=TaskType.BUGFIX,
+                  profile_id="standard-high-codex", intelligence_class="standard-high",
+                  route_source=ROUTER)
+    await orch.db.set_task_meta("transient", "failure_class", "transient")
+    await orch.db.transition_task("transient", TaskStatus.READY, context="retry")
+    assert await orch.db.get_task_meta("transient", "routing_failed_attempts") is None
+    assert (await orch.db.get_task("transient")).route_source == UNROUTED
+
+
+async def test_stale_failure_transition_cannot_journal_or_invalidate_a_route(handler, orch):
+    from src.database.queries.task_queries import StaleClaim
+
+    await _create(orch.db, "stale-retry", status=TaskStatus.IN_PROGRESS,
+                  profile_id="standard-high-codex", intelligence_class="standard-high",
+                  route_source=ROUTER)
+    with pytest.raises(StaleClaim):
+        await orch.db.transition_task("stale-retry", TaskStatus.READY, context="retry",
+                                      expect_claim_epoch=999)
+    assert (await orch.db.get_task("stale-retry")).route_source == ROUTER
+    assert await orch.db.get_task_meta("stale-retry", "routing_failed_attempts") is None
+
+
+async def test_failure_journal_uses_launch_identity_and_deduplicates_reopen(handler, orch):
+    task = await _create(orch.db, "attempt", status=TaskStatus.IN_PROGRESS,
+                         profile_id="deep-high-codex", intelligence_class="deep-high",
+                         route_source=ROUTER)
+    await orch.db.create_session(SessionRecord(
+        id="failed-standard", project_id="p", task_id=task.id,
+        profile_id="standard-high-codex", intelligence_class="standard-high",
+        harness="codex", provider="fake", name="standard attempt", lifecycle="task",
+        work_dir="/disposable", epoch="epoch", instance_token="token", state="stopped",
+        started_at=time.time(),
+    ))
+    await orch.db.transition_task(task.id, TaskStatus.BLOCKED,
+                                  context="session_close_hard_failure")
+    await orch.db.transition_task(task.id, TaskStatus.READY, context="reopen_with_feedback",
+                                  force=True)
+    failures = await orch.db.get_task_meta(task.id, "routing_failed_attempts")
+    (attempt,) = await orch.db.list_task_session_attempts(task.id)
+    assert len(failures) == 1
+    assert failures[0]["attempt_id"] == attempt["id"]
+    assert failures[0]["session_id"] == "failed-standard"
+    assert failures[0]["intelligence_class"] == "standard-high"
+    assert failures[0]["profile_id"] == "standard-high-codex"

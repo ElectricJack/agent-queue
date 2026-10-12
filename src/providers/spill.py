@@ -44,6 +44,7 @@ from src.providers.reroute import (
     _hold,
     _policy,
     _rung_rank,
+    compatible_worker_role,
     provider_order,
 )
 
@@ -346,6 +347,8 @@ def _target_rungs(
     candidates (a legacy route) keeps the same-class search.
     """
     out: list[Rung] = []
+    source = ctx.rungs.get(source_id)
+    operator = bool(source and source.operator)
     if route_candidates:
         allowed = set(providers)
         for profile_id, candidate_class in route_candidates:
@@ -358,6 +361,7 @@ def _target_rungs(
                 or rung.provider not in allowed
                 or ctx.state(rung.provider) != AVAILABLE
                 or (candidate_class and rung.class_id != candidate_class)
+                or not compatible_worker_role(operator, rung)
             ):
                 continue
             pool = view.pools.get(profile_id)
@@ -379,6 +383,7 @@ def _target_rungs(
                 and rung.enabled
                 and rung.lifecycle == "pool"
                 and rung.profile_id != source_id
+                and compatible_worker_role(operator, rung)
             ),
             key=_rung_rank,
         )

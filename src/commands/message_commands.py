@@ -155,6 +155,29 @@ class MessageCommandsMixin:
             return session.project_id if session else None
         return None
 
+    async def _message_in_project(self, message: Message, project_id: str) -> bool:
+        """Whether *message* is in *project_id*'s view.
+
+        A row keeps its sender's project: CHAT-1 keeps ``supervisor-<another
+        project>`` verbatim, and an elevated sender's token pins its own
+        project.  So the view is the project's own rows plus those addressed
+        to its mailboxes — its supervisor's (``supervisor-<project>`` or
+        ``n-supervisor--<project>``, the addresses ``message_inbox`` reads), or
+        one of its sessions or tasks — the mailboxes the delivery engine nudges
+        with this row's id.  The global supervisor's mailbox is no project's.
+        """
+        if message.project_id == project_id:
+            return True
+        if (
+            message.to_kind == "session"
+            and message.to_id != _GLOBAL_SUPERVISOR_ADDRESS
+            and message.to_id
+            in (_SUPERVISOR_ADDRESS_PREFIX + project_id, f"n-supervisor--{project_id}")
+            and project_id != "global"
+        ):
+            return True
+        return await self._recipient_project_id(message.to_kind, message.to_id) == project_id
+
     async def _supervisor_mailbox(self, to_id: str, project_id: str | None) -> str | None:
         """The supervisor address to store for *to_id*, or None if it names none.
 
@@ -216,7 +239,7 @@ class MessageCommandsMixin:
 
         # A task, or a session addressed by id, belongs to one project, and its
         # readers are fenced to that project: a durable message wait matches
-        # only same-project rows and ``message_status`` hides the rest.  When
+        # only same-project rows.  When
         # the caller names no project the recipient supplies it, so the global
         # supervisor's reply lands where the waiting worker can see it.
         requested_project_id = args.get("project_id") or (
@@ -554,7 +577,14 @@ class MessageCommandsMixin:
         }
 
     async def _cmd_message_inbox(self, args: dict) -> dict:
-        """List a recipient's pending messages, optionally marking them delivered."""
+        """List a recipient's pending messages, optionally marking them delivered.
+
+        ``include_consumed`` additionally returns rows this recipient already
+        consumed, so a worker whose inject consumed delivery before it could
+        render the bodies can read them again.  It never changes delivery
+        state: the extra rows are read-only, and ``inject`` still claims only
+        the pending ones.
+        """
         disabled = self._messages_disabled_error()
         if disabled:
             return disabled
@@ -578,7 +608,12 @@ class MessageCommandsMixin:
         if mailbox_error:
             return mailbox_error
 
+        supervisor_mailbox = (to_kind == "profile" and to_id == "supervisor") or (
+            to_kind == "session" and to_id.startswith(("supervisor-", "n-supervisor--"))
+        )
+
         inject = bool(args.get("inject", False))
+        include_consumed = bool(args.get("include_consumed", False))
         limit = args.get("limit")
         if limit is None:
             limit = self.config.messages.max_inject_per_prompt if inject else 50
@@ -592,6 +627,7 @@ class MessageCommandsMixin:
         ):
             session = await self.db.get_session(to_id)
             if session is not None and session.lifecycle == "named" and session.profile_id == "supervisor":
+                supervisor_mailbox = True
                 suffix = session.project_id or "global"
                 if session.name == f"n-supervisor--{suffix}":
                     if suffix == "global":
@@ -599,6 +635,8 @@ class MessageCommandsMixin:
                         if scope_error:
                             return scope_error
                     recipients.extend([session.name, f"supervisor-{suffix}"])
+        if supervisor_mailbox:
+            await self.db.redirect_disabled_supervisor_messages()
         pending = []
         for recipient in recipients:
             pending.extend(await self.db.get_pending_messages(to_kind, recipient, limit=limit))
@@ -608,12 +646,42 @@ class MessageCommandsMixin:
             scope_error = self._system_message_scope_error()
             if scope_error:
                 return scope_error
+
+        # Read-only backstop for a crashed inject. Fetched before the branch
+        # below so both the plain read and the inject path report it, and it
+        # never joins ``pending``: injecting must keep claiming exactly the
+        # undelivered rows it would have claimed before this option existed.
+        consumed: list[Message] = []
+        if include_consumed:
+            claimed_ids = {m.id for m in pending}
+            for recipient in recipients:
+                for msg in await self.db.get_consumed_messages(
+                    to_kind, recipient, limit=limit
+                ):
+                    if msg.id not in claimed_ids:
+                        consumed.append(msg)
+                        claimed_ids.add(msg.id)
+            consumed.sort(key=lambda message: (message.priority, message.created_at, message.id))
+            consumed = consumed[:limit]
+            if any(message.project_id is None for message in consumed):
+                scope_error = self._system_message_scope_error()
+                if scope_error:
+                    return scope_error
+
         if not inject:
             return {
                 "to_kind": to_kind,
                 "to_id": to_id,
                 "count": len(pending),
                 "messages": [message_to_dict(m) for m in pending],
+                **(
+                    {
+                        "consumed": len(consumed),
+                        "consumed_messages": [message_to_dict(m) for m in consumed],
+                    }
+                    if include_consumed
+                    else {}
+                ),
             }
 
         # Inject path: compare-and-set each row so a racing nudge (Phase 3)
@@ -648,6 +716,14 @@ class MessageCommandsMixin:
             "injected": len(rendered),
             "archived": archived,
             "messages": rendered,
+            **(
+                {
+                    "consumed": len(consumed),
+                    "consumed_messages": [message_to_dict(m) for m in consumed],
+                }
+                if include_consumed
+                else {}
+            ),
         }
 
     async def _cmd_message_list(self, args: dict) -> dict:
@@ -689,6 +765,7 @@ class MessageCommandsMixin:
             include_archived=bool(args.get("include_archived", False)),
             since=since,
             limit=limit,
+            session_addresses=args.get("session_addresses"),
         )
         return {
             "count": len(rows),
@@ -707,13 +784,17 @@ class MessageCommandsMixin:
         project_id = args.get("project_id")
         if (
             message is None
-            or (project_id is not None and message.project_id != project_id)
+            or (project_id is not None and not await self._message_in_project(message, project_id))
             # A plain session reads only what was addressed to it — the
             # message a nudge pointed it at.  Answered as "not found" so the
             # fence does not confirm another recipient's id exists.
             or await self._inbox_mailbox_scope_error(message.to_kind, message.to_id)
         ):
             return {"error": f"Message '{message_id}' not found"}
+        # Reading a pointer as its actual recipient consumes the durable body.
+        # Operator diagnostics and another supervisor's inspection stay read-only.
+        await self._acknowledge_message_read(message)
+        message = await self.db.get_message(message.id)
         state = "acknowledged" if message.read_at is not None else (
             "delivered" if message.delivered_at is not None else "queued"
         )
@@ -725,3 +806,36 @@ class MessageCommandsMixin:
             "acknowledged_at": message.read_at,
             "message": message_to_dict(message),
         }
+
+    async def _acknowledge_message_read(self, message: Message) -> None:
+        if not await self._is_message_recipient(message):
+            return
+        delivered = await self.db.mark_delivered(message.id, via="read")
+        await self.db.mark_read(message.id)
+        if delivered:
+            await self._emit_message_event("message.delivered", {
+                "message_id": message.id, "project_id": message.project_id, "method": "read",
+            })
+
+    async def _is_message_recipient(self, message: Message) -> bool:
+        scope = self._current_scope
+        if not scope or scope.get("kind") != "session" or not scope.get("session_id"):
+            return False
+        session_id = scope["session_id"]
+        if message.to_kind == "session" and message.to_id == session_id:
+            return True
+        if message.to_kind == "task" and message.to_id == scope.get("task_id"):
+            return True
+        session = await self.db.get_session(session_id)
+        if session is None:
+            return False
+        if message.to_kind == "session" and session.lifecycle == "named":
+            addresses = {session.name}
+            if session.profile_id == "supervisor":
+                addresses.add(f"supervisor-{session.project_id or 'global'}")
+            return message.to_id in addresses
+        if message.to_kind == "task":
+            return message.to_id == (scope.get("task_id") or session.task_id)
+        if message.to_kind == "profile":
+            return message.to_id == session.profile_id
+        return False

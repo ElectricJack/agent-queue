@@ -1,6 +1,8 @@
 # Knowledge records
 
 Keep durable findings as versioned knowledge, and cite them from executable tasks.
+Agents use the [aq-knowledge skill](../../src/skills/aq-knowledge/SKILL.md);
+[aq-cli](../../src/skills/aq-cli/SKILL.md) provides command discovery.
 
 ## Why it exists
 
@@ -21,32 +23,58 @@ Its compatibility fence survives flag rollback and deletion of the original file
 
 ## A realistic example
 
-Prerequisites: a running daemon and access to the `agent-queue` project. This is a
-read-only discovery command, run while writing this guide; it activates nothing:
+Prerequisites: a running daemon and grants for the intended project. Choose that
+project explicitly for every operation; `agent-queue` below is an example. A
+global supervisor can target a project without changing its session scope.
+Global records require `--global-scope`, separate enablement and grants; omitting
+a project does not select global scope. Discover current capabilities and search
+for an existing record before creating a duplicate:
 
 ```bash
 aq record capabilities --project-id agent-queue --json
+aq record search --project-id agent-queue --kind knowledge --query 'External tool' --json
 ```
 
-The observed capability response had `enabled: false`, `writes_enabled: false`,
-`enabled_projects: []`, `legacy_memory_mode: disabled`, and every feature disabled.
-Read `data.capabilities.granted_operations` as well: configuration and principal
-grants are independent. Replace the project ID with your own when following this
-example. There is no state to clean up.
+Read `data.capabilities.enabled`, `writes_enabled`, the feature flags and
+`granted_operations`: configuration and principal grants are independent.
+Capabilities describe the current installation, not the shipped defaults or a
+historical observation. Discovery activates nothing. If storage or writes are
+disabled or refused, report the limitation; a save request does not authorize
+feature enablement or a silent fallback to a legacy note.
 
-After an operator approves the core pilot and grants project writes, the following
-is an **operator template**, not an operation performed for this guide:
+With core writes enabled for the scope and the required grants, create a
+reference. This is a template; substitute the actual researched body, URL,
+observation time and a stable idempotency key for the request:
 
 ```bash
-aq knowledge create --project-id demo --title 'Restore drill finding' \
-  --body 'The disposable restore retained exact revision hashes.' \
-  --category incident --idempotency-key restore-drill-finding-1 --json
+aq --json knowledge create --project-id agent-queue \
+  --title 'External tool reference' \
+  --body 'What the tool does, why it may help this project, limitations, and source links.' \
+  --category reference --tags '["external-tools"]' \
+  --sources '[{"source_id":"upstream","kind":"url","url":"https://github.com/owner/repo","observed_at":"2026-10-07T00:00:00Z","retained":false}]' \
+  --idempotency-key 'reference-owner-repo-2026-10-07'
 ```
 
-The create receipt supplies the identity and revision. Reuse the key only to replay
-the same request. Use `knowledge show --revision-id` for an exact historical read,
-and `knowledge update --if-revision --idempotency-key` for a guarded edit. A stale
-base returns a conflict; read it and reconcile the edit. Knowledge starts
+URL sources require `source_id`, `kind: url`, `url`, a timezone-bearing
+`observed_at` (use UTC), and an explicit `retained` boolean. `retained: false`
+records a consulted URL without claiming an archived artifact; `true` requires
+the retained `artifact_id`. Other source kinds have different required fields.
+The CLI's generic `ARRAY` label does not describe this deeper source contract;
+see [Source](../../src/knowledge/models.py).
+
+The create receipt supplies `record_id`, `knowledge_alias` and `revision_id`.
+Reuse the key only to replay the same request. Read back the title, body, sources
+and revision before reporting the save:
+
+```bash
+aq --json knowledge show --project-id agent-queue --identity 'record:<returned record_id>'
+```
+
+Use `record:<UUID>` or `knowledge:<kn-alias>`; a bare `kn-...` alias or
+`knowledge:<UUID>` is invalid. Cite the identity and revision, not an export
+path. Use `knowledge show --revision-id` for an exact historical read, and
+`knowledge update --if-revision --idempotency-key` for a guarded edit. A stale
+base returns a conflict; reread and reconcile before updating. Knowledge starts
 unverified. A worker can propose a protected correction, while verification,
 authority, proposal acceptance and erasure require stronger grants. See
 [src/records/auth.py](../../src/records/auth.py) and
@@ -78,6 +106,13 @@ Back up the database and the vault together. See
 [src/records/export.py](../../src/records/export.py) and
 [src/knowledge/imports/apply.py](../../src/knowledge/imports/apply.py).
 
+Legacy project notes, memory files and edited exports are not canonical graph
+records and do not prove ingestion. Search for the canonical record before
+assuming a file was imported. For a requested reference, create the missing
+record with sources and verify its receipt/readback. Keep existing files;
+bulk import remains an explicit operator workflow. Optional semantic retrieval
+and extraction are separate from the core store and lexical search.
+
 [src/config.py](../../src/config.py) ships core, writes, UI, import, export,
 context, semantic retrieval, extraction and consolidation disabled. The project
 allowlist is empty; global scope requires explicit enablement. Core storage
@@ -85,6 +120,36 @@ works with `memory.enabled: false`. Context and provider paths require the
 memory master as well as their own feature flags and approved scope. An
 operator crosses the applicable release gate before enabling each one. Plan
 approval, completed tasks and a passing test never activate these controls.
+
+## Refreshing agent guidance
+
+`src.vault.ensure_default_aq_skills` scans `src/skills/*/SKILL.md` and installs
+missing skills into Claude, Codex, npm Gemini and Snap Gemini discovery paths
+on daemon startup. Claude is seeded unconditionally; the other targets require
+their harness homes to exist. Existing copies are write-if-absent and preserve
+customizations. After deploying the source change, an operator can inspect and
+deliberately repair drift without restarting the daemon:
+
+```bash
+aq doctor --check skills.installed_drift
+aq doctor --check skills.installed_drift --fix
+```
+
+The repair backs each differing copy up as `SKILL.md.bak` and copies shipped
+text. Review drift first and reconcile desired custom edits from the backups.
+Missing copies are seeded on normal startup; the drift check reports differences
+in existing copies, not missing installations. Workers do not repair shared
+harness directories or manage the daemon.
+
+Profiles are also seeded write-if-absent. `aq doctor --check profiles.system_drift`
+reports installed worker-template and supervisor differences. Preserve customized
+profiles by merging the relevant role/rules text into the vault copy; for an
+intentional full replacement use `aq agent profile-reseed --profile-id <id>`,
+which backs up the file and syncs the replacement. `--grants-only` merges
+capabilities but does **not** refresh role/rules. The supervisor's automatic
+capability sync is additive and likewise does not refresh prose. Do not edit
+derived worker rungs or expand grants to repair discovery. Prime tool guidance
+comes from the current source template rather than a copied profile.
 
 ## Common failures and recovery
 

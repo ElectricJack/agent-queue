@@ -77,7 +77,7 @@ async def test_pr_merge_uses_the_shared_client(monkeypatch):
     result = await gm.amerge_pr("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert result == {"success": True, "sha": None, "error": None}
     client.merge_pull_request.assert_awaited_once_with(
-        _PR_URL, method="squash", expected_head_oid="b" * 40,
+        _PR_URL, method="merge", expected_head_oid="b" * 40,
         expected_base_ref="main",
     )
     gm._arun_subprocess.assert_not_awaited()
@@ -134,7 +134,7 @@ async def test_pr_merge_returns_client_sha_and_pins_validated_head(monkeypatch):
     assert result["success"] is True
     assert result["sha"] == sha
     client.merge_pull_request.assert_awaited_once_with(
-        _PR_URL, method="squash", expected_head_oid="b" * 40,
+        _PR_URL, method="merge", expected_head_oid="b" * 40,
         expected_base_ref="main",
     )
 
@@ -776,7 +776,7 @@ async def test_pr_merge_proceeds_when_only_the_base_moved_after_ci_validation(mo
     )
     assert result["success"] is True, result
     client.merge_pull_request.assert_awaited_once_with(
-        _PR_URL, method="squash", expected_head_oid="b" * 40,
+        _PR_URL, method="merge", expected_head_oid="b" * 40,
         expected_base_ref="main",
     )
 
@@ -811,7 +811,7 @@ async def test_direct_manager_merge_validates_and_pins_identity(monkeypatch):
         "/some/checkout", _PR_URL, repository=REPOSITORY
     )
     client.merge_pull_request.assert_awaited_once_with(
-        _PR_URL, method="squash", expected_head_oid="b" * 40,
+        _PR_URL, method="merge", expected_head_oid="b" * 40,
         expected_base_ref="main",
     )
 
@@ -867,7 +867,7 @@ async def test_cmd_pr_merge_routes_through_git_manager(monkeypatch, handler):
     async def fake_amerge(
         checkout_path,
         pr_url,
-        method="squash",
+        method="merge",
         *,
         expected_head_oid=None,
         expected_base_ref=None,

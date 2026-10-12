@@ -546,6 +546,38 @@ every binding for recovery rather than unlocking a checkout an integration
 fence still names; see
 [development integration](development-integration.md).
 
+## `stack_prerequisites_conflict`: child preparation needs a merge repair
+
+An existing child can conflict with its parent even after the prerequisite
+overlay was built successfully. AQ retains the exact child, parent and overlay
+commits, records the conflicting paths, and reserves one isolated ordinary
+repair task. The child remains READY with admission withheld. Repeated claims
+do not consume the slot-reset failure ladder or duplicate the repair. A repair
+must publish a passing descendant containing every retained input before normal
+child preparation resumes. Generated-only overlaps use the canonical generator.
+
+For the existing E3 incident on `vivid-stone-39.3`, deploy this fix through the
+normal integration train first. A supervisor or operator then reads the task's
+existing recovery incident and its diagnosis; a worker must not recover another
+task. Retry that exact incident through the supported recovery command:
+
+```bash
+aq task recover --task-id vivid-stone-39.3 --incident-id <existing-incident-id> \
+  --decision retry --reason "Child/parent preparation repair is deployed; preserve E3 history"
+```
+
+If the incident was held, include `--expected-hold-at <prior-decided-at>` from
+that same hold. The command rechecks ownership and remaining recovery budgets.
+A refusal must remain held with its diagnosis; do not substitute a restart,
+status edit, branch reset, new incident or gate bypass. If an attachment cannot
+be proved released, resolve it through the supported ownership recovery flow
+before retrying, retaining its checkout and commits.
+
+The next normal preparation reserves the repair and withholds E3. Let the
+ordinary router and worker publish and close that repair. AQ verifies its exact
+head and ancestry, then retries E3 with its original review feedback and filing
+history. E4/G2/G3 continue through their existing dependencies and gates.
+
 ## `branch_fenced`: the branch is not yours yet
 
 **Symptom.** A claim comes back `prepare_failed`, and the task carries

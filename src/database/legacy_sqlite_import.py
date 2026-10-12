@@ -193,6 +193,13 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "integration_subject_journal",
         # Shared operator decisions shipped in PostgreSQL revision 77.
         "operator_decisions",
+        # Session-owned recurring prompts shipped in PostgreSQL revision 86;
+        # legacy SQLite files predate schedules and their delivery diagnostics.
+        "agent_cron",
+        # Branch deletion audits (revision 88) and explicit branch retirement
+        # requests (revision 89) shipped after SQLite removal.
+        "branch_deletion_audit",
+        "branch_retirements",
         # Durable record/knowledge tables shipped after SQLite removal in
         # revision 55. Legacy files have no record identities, revisions,
         # informational links or outbox state; backfill/import is explicit.

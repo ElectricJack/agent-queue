@@ -1,0 +1,1 @@
+Generated files are regenerated, never hand-merged: resolve a conflict in a path carrying the merge=aq-generated attribute in .gitattributes by taking either side while merging the sources, then running the repository's regeneration command ({{regeneration_command}} by default) once after every remaining member is merged. Never resolve generated conflict markers by hand.

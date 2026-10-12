@@ -190,6 +190,11 @@ class SessionCommandsMixin:
             "started_at": session.started_at,
             "last_activity": session.last_activity,
             "restarts": session.restarts,
+            "claims": session.claims,
+            "claim_phase": session.claim_phase,
+            "claim_failure_count": session.claim_failure_count,
+            "claim_failure_reason": session.claim_failure_reason,
+            "claim_failure_at": session.claim_failure_at,
             "quarantined_at": session.quarantined_at,
             "sleep_reason": session.sleep_reason,
             "epoch": session.epoch,
@@ -517,7 +522,7 @@ class SessionCommandsMixin:
         if provider is None:
             return {"error": "Provider unavailable; cannot confirm session is inactive"}
         try:
-            if not await provider.confirm_stopped(self._session_handle(session)):
+            if not await provider.confirm_instance_stopped(self._session_handle(session)):
                 return {"error": "Session still has a live terminal; stop it before pruning"}
             from src.sessions.proctable import scan_by_env_marker
 
@@ -541,6 +546,57 @@ class SessionCommandsMixin:
             "session_id": session.id, "project_id": session.project_id,
         })
         return {"success": True, "session_id": session.id}
+
+    async def _cmd_session_cleanup(self, args: dict) -> dict:
+        """Stop and forget taskless sleeping named sessions in one operator action."""
+        project_id = (self._current_scope or {}).get("project_id")
+        requested_project = args.get("project_id")
+        if project_id is not None and requested_project not in (None, project_id):
+            return {"error": "out of scope: project mismatch"}
+        rows = await self.db.list_sessions(
+            state="sleeping", lifecycle="named", project_id=project_id or requested_project,
+        )
+        candidates = [row for row in rows if row.desired_state in {"sleeping", "stopped"}
+                      and row.task_id is None and row.claim_phase is None]
+        if args.get("dry_run"):
+            return {"success": True, "dry_run": True, "count": len(candidates),
+                    "sessions": [self._session_dict(row) for row in candidates]}
+
+        pruned = []
+        skipped = []
+        for row in candidates:
+            # The instance and stop intent are fenced before touching the terminal.
+            # A concurrent wake makes this update fail, leaving that session alone.
+            current = await self.db.get_session(row.id)
+            if (current is None or current.instance_token != row.instance_token
+                    or current.state != "sleeping" or current.task_id is not None
+                    or current.claim_phase is not None):
+                skipped.append({"session_id": row.id, "reason": "session changed"})
+                continue
+            provider = self._provider_for_session(current)
+            if provider is None:
+                skipped.append({"session_id": row.id, "reason": "provider unavailable"})
+                continue
+            changed = await self.db.update_session_instance(
+                row.id, row.instance_token, require_desired_state=current.desired_state,
+                desired_state="stopped",
+            )
+            if not changed:
+                skipped.append({"session_id": row.id, "reason": "session changed"})
+                continue
+            try:
+                await provider.stop(self._session_handle(current), grace=2.0)
+            except Exception as exc:  # noqa: BLE001 - report this row and continue the batch
+                skipped.append({"session_id": row.id, "reason": f"stop failed: {exc}"})
+                continue
+            result = await self._cmd_session_prune({"session_id": row.id})
+            if result.get("success"):
+                pruned.append(row.id)
+            else:
+                skipped.append({"session_id": row.id,
+                                "reason": result.get("error", "prune failed")})
+        return {"success": True, "count": len(candidates), "pruned": pruned,
+                "skipped": skipped}
 
     async def _cmd_session_kill(self, args: dict) -> dict:
         """Fenced kill.  The task then goes through the exit classifier.
@@ -639,7 +695,9 @@ class SessionCommandsMixin:
         The new token carries the session's own scope — ``session_id``,
         ``project_id``, and ``task_id`` **only for a task session**.  A
         pool worker's scope pins no task (its task changes with every
-        claim), matching what ``_launch_pool_session`` mints.
+        claim), matching what ``_launch_pool_session`` mints. A live named
+        supervisor retains its launch elevation and project/global scope;
+        this also supports operator recovery from an expired credential.
         """
         session, err = await self._resolve_session(args)
         if err:
@@ -649,12 +707,22 @@ class SessionCommandsMixin:
         token_store = getattr(self.orchestrator, "token_store", None)
         if token_store is None:
             return {"success": False, "error": "no token store on this daemon"}
+        supervisor = session.profile_id == "supervisor" and session.lifecycle == "named"
+        if supervisor and (
+            session.state not in {"starting", "running"}
+            or session.desired_state != "running"
+            or session.ended_at is not None
+            or session.task_id is not None
+            or not session.instance_token
+        ):
+            return {"success": False, "error": "a live named supervisor session is required"}
         task_id = session.task_id if session.lifecycle == "task" else None
         token = await token_store.mint(
             session_id=session.id,
             session_instance_token=session.instance_token,
             task_id=task_id,
             project_id=session.project_id,
+            elevated=supervisor,
         )
         return {
             "success": True,
@@ -667,10 +735,9 @@ class SessionCommandsMixin:
     async def _cmd_session_sleep(self, args: dict) -> dict:
         """Record that a session is not wanted running.
 
-        Intent only — this does not signal the process.  The reconciler's
-        idle-drain branch takes it down on a later tick, or ``session kill``
-        does it now.  Setting intent first is what stops the up-convergence
-        branch from restarting it a tick after the kill.
+        This cancels the instance's cron schedules with the intent write.
+        The reconciler stops named sessions on the next tick, independently
+        of idle timeout. Pool sessions drain through their claim lifecycle.
         """
         return await self._set_desired_state(args, "sleeping")
 
@@ -1050,7 +1117,9 @@ class SessionCommandsMixin:
                         "claim remain open. Read and handle the messages before closing: "
                         + "; ".join(inbox_commands)
                         + ". Recheck any affected evidence, then retry close with the "
-                        "same claim and an updated summary."
+                        "same claim and an updated summary. If an earlier "
+                        "`--inject` consumed a body you never got to read, "
+                        "`--include-consumed` on the same mailbox returns it."
                     ),
                 }
 
@@ -1259,8 +1328,8 @@ class SessionCommandsMixin:
         # pipeline explodes, because it is the record of what the agent
         # claimed happened.
         await self.db.set_task_meta(task_id, "outcome", outcome)
-        if failure_class:
-            await self.db.set_task_meta(task_id, "failure_class", failure_class)
+        # This describes this close, not a previous attempt's transient error.
+        await self.db.set_task_meta(task_id, "failure_class", failure_class or None)
         if work_outcome:
             await self.db.set_task_meta(task_id, "work_outcome", work_outcome)
         if args.get("commit"):
@@ -1293,11 +1362,11 @@ class SessionCommandsMixin:
         review_evidence_snapshot = None
         if outcome == "pass" and task.profile_id in {"reviewer", "final-reviewer"}:
             from src.database.queries.hierarchy_queries import HierarchyError
-            from src.integration.review_evidence import ReviewEvidenceProducer
+            from src.integration.reviews import ReviewEvidenceProducer
 
             try:
                 review_evidence_snapshot = await ReviewEvidenceProducer(
-                    self.db, self._integration_promotion_service()
+                    self.db, self._integration_repository_git()
                 ).snapshot(
                     task,
                     session,
@@ -1430,7 +1499,13 @@ class SessionCommandsMixin:
             escalated = bool(result.get("escalated"))
             retired = result.get("retired")
             bullets = "\n".join(f"- {msg}" for msg in issues)
-            if retired:
+            if result.get("close_deferred"):
+                lead = "close deferred: the workspace is still in use by a managed job"
+                tail = (
+                    "Your task, claim and repair reservation remain open. Wait for the job "
+                    "to settle, then retry close with the same claim."
+                )
+            elif retired:
                 # The integration operation no longer needs this delegate:
                 # nothing in this workspace can make the close acceptable,
                 # and "fix these and close again" is what kept a worker
@@ -1470,7 +1545,7 @@ class SessionCommandsMixin:
                 )
             return {
                 "success": False,
-                "result": "verification_failed",
+                "result": result.get("close_deferred") or "verification_failed",
                 "task_id": task_id,
                 "status": result.get("status"),
                 "escalated": escalated,
@@ -1553,7 +1628,7 @@ class SessionCommandsMixin:
                 tests=_string_list(args.get("tests")),
                 commands=_string_list(args.get("commands")),
                 branch=(final_task.branch_name if final_task else task.branch_name),
-                commits=[commit] if commit else [],
+                commits=result.get("completion_commits", [commit] if commit else []),
                 pr_url=(
                     (final_task.pr_url if final_task else None)
                     or result.get("pr_url")

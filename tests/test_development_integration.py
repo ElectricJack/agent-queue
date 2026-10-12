@@ -934,6 +934,44 @@ async def test_the_delete_primitive_refuses_anything_outside_aq(setup, tmp_path)
     assert "main" in remote_branches(remote)
 
 
+async def test_flow_target_in_aq_namespace_is_never_stale_or_deleted(setup, tmp_path):
+    from src.database.tables import projects, repos
+    from src.integration.delivery_branches import delete_branches, protected_branches
+
+    db, service, _source, remote, repo = setup
+    head = git(remote, "rev-parse", "main")
+    target = "aq/production"
+    git(remote, "branch", "dev", "main")
+    git(remote, "branch", target, "main")
+    flow = [{"id": "release", "source": "dev", "target": target}]
+    async with db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == repo.id).values(default_branch="dev"))
+        await conn.execute(update(projects).where(projects.c.id == "p").values(promotion_flow=flow))
+    report = await service.stale_branches("p", delete=True)
+    assert target not in {item["branch"] for item in report["stale"]}
+    assert target in remote_branches(remote)
+    backups = tmp_path / "protected-backups"
+    store = await service.store(repo)
+    with pytest.raises(ValueError, match="refusing to delete"):
+        await delete_branches(
+            service.git, service.run_git, store, {target: {"head": head, "reason": "landed"}},
+            default_branch="dev", main_head=head, backup_dir=backups, repository_id=repo.id,
+            protected=protected_branches("dev", flow),
+        )
+    assert not backups.exists()
+
+
+@pytest.mark.parametrize("flow", [42, "invalid", {"unexpected": True}, [None]])
+async def test_malformed_flow_does_not_block_ordinary_branch_cleanup(setup, flow):
+    from src.database.tables import projects
+
+    db, service, _source, _remote, _repo = setup
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(promotion_flow=flow))
+    report = await service.stale_branches("p", delete=True)
+    assert report["stale"] == []
+
+
 # -- validation outcomes: "tests failed" is not "could not finish validating" --
 #
 # See tests/test_development_validation.py for the runner and classifier.

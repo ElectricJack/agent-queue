@@ -128,7 +128,7 @@ the generated client's base URL.
 | `/api` | generated client (`api/client.ts`), `api/legacy-fetch.ts`, `api/chat.ts`, `pages/settings/ProjectRoots.tsx`, `panes/console-stream/` | JSON; multipart upload (task attachments, 10 MiB daemon cap); **SSE** on `/api/sessions/{id}/stream`, `/api/sessions/{id}/pane`, `/api/streams/{id}/subscribe` |
 | `/health` | `api/hooks.ts` | JSON |
 | `/ready` | none today; kept for parity with [`dashboard/vite.config.ts`](../../dashboard/vite.config.ts) and for probes | JSON |
-| `/ws` | `/ws/events?after_seq=` (`ws/useEventStream.ts`), `/ws/terminal/{session}?cols=&rows=` and the phone's input-only `/ws/terminal/{session}/input` (`ws/terminalSocket.ts`) | WebSocket |
+| `/ws` | `/ws/events?after_seq=` (`ws/useEventStream.ts`), `/ws/terminal/{session}?cols=&rows=`, with `&history=&restore_size=1` from a phone (`ws/terminalSocket.ts`); the daemon's input-only `/ws/terminal/{session}/input` is proxied the same way | WebSocket |
 
 A prefix matches on a segment boundary (`/api` and `/api/…`, never `/apix`).
 Nothing else is forwarded. The daemon's non-dashboard prefixes and retired

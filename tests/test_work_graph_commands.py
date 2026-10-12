@@ -61,6 +61,82 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
 
 
 class TestAddDependency:
+    @pytest.mark.parametrize("dep_type", ["blocks", "waits-for", "conditional-blocks"])
+    @pytest.mark.parametrize("container_kind", ["declared", "children", "missing_flag"])
+    async def test_worker_rejects_container_targets(self, handler, db, dep_type, container_kind):
+        await mktask(db, "container", TaskStatus.IN_PROGRESS)
+        await mktask(db, "worker", TaskStatus.IN_PROGRESS)
+        if container_kind == "declared":
+            async with db._engine.begin() as conn:
+                await db.declare_container("container", conn=conn)
+        else:
+            await mktask(db, "leaf")
+            await db.add_dependency("leaf", "container", "parent-child")
+            if container_kind == "missing_flag":
+                await db.delete_task_meta("container", "container")
+        handler._current_scope = {"kind": "session", "elevated": False}
+        try:
+            result = await handler._cmd_add_dependency({
+                "task_id": "worker", "depends_on": "container", "dep_type": dep_type,
+            })
+        finally:
+            handler._current_scope = None
+        assert result["code"] == "hierarchy.dependency_on_container"
+        assert "container" in result["error"] and "leaf task" in result["error"]
+        assert await db.get_typed_dependencies("worker") == []
+        assert not (await db.get_task("worker")).is_blocked
+
+    @pytest.mark.parametrize("dep_type", ["blocks", "waits-for", "conditional-blocks"])
+    async def test_worker_accepts_leaf_targets(self, handler, db, dep_type):
+        await mktask(db, "leaf")
+        await mktask(db, "worker")
+        await db.set_task_meta("leaf", "container", False)
+        handler._current_scope = {"kind": "session", "elevated": False}
+        try:
+            result = await handler._cmd_add_dependency({
+                "task_id": "worker", "depends_on": "leaf", "dep_type": dep_type,
+            })
+        finally:
+            handler._current_scope = None
+        assert result["ok"] is True
+        assert await db.get_typed_dependencies("worker") == [("leaf", dep_type)]
+
+    @pytest.mark.parametrize("scope", [None, {"kind": "session", "elevated": True}])
+    async def test_operator_and_supervisor_keep_container_fan_in(self, handler, db, scope):
+        await mktask(db, "container", TaskStatus.IN_PROGRESS)
+        await mktask(db, "leaf")
+        await mktask(db, "finalize")
+        await db.add_dependency("leaf", "container", "parent-child")
+        handler._current_scope = scope
+        try:
+            result = await handler._cmd_add_dependency({
+                "task_id": "finalize", "depends_on": "container", "dep_type": "waits-for",
+            })
+        finally:
+            handler._current_scope = None
+        assert result["ok"] is True
+        assert (await db.get_task("finalize")).is_blocked
+
+    @pytest.mark.parametrize("dep_type", [
+        "parent-child", "related", "discovered-from", "duplicates", "supersedes",
+    ])
+    async def test_worker_membership_and_provenance_still_accept_containers(
+        self, handler, db, dep_type,
+    ):
+        await mktask(db, "container", TaskStatus.IN_PROGRESS)
+        await mktask(db, "worker")
+        async with db._engine.begin() as conn:
+            await db.declare_container("container", conn=conn)
+        handler._current_scope = {"kind": "session", "elevated": False}
+        try:
+            result = await handler._cmd_add_dependency({
+                "task_id": "worker", "depends_on": "container", "dep_type": dep_type,
+            })
+        finally:
+            handler._current_scope = None
+        assert result["ok"] is True
+        assert await db.get_typed_dependencies("worker") == [("container", dep_type)]
+
     async def test_defaults_to_blocks(self, handler, db):
         await mktask(db, "a")
         await mktask(db, "b")

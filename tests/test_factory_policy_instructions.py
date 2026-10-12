@@ -85,6 +85,8 @@ POLICY_ROLES = (
 #: ``-medium`` rung) and the worker entries are the per-harness templates.
 SHIPPED_ROUTES = {
     "final-reviewer": ("claude", "standard-high"),
+    "operator-claude": ("claude", "standard-high"),
+    "operator-codex": ("codex", "deep-high"),
     "planner": ("claude", None),
     "playbook-compiler": ("claude", "fast-low"),
     "pr-merger": ("codex", "deep-high"),

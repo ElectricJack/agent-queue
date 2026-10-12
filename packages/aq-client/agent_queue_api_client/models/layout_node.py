@@ -6,10 +6,13 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.layout_node_display_state_type_0 import LayoutNodeDisplayStateType0
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.epic_delivery_status import EpicDeliveryStatus
+    from ..models.layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
+    from ..models.layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
     from ..models.phase_hold_detail import PhaseHoldDetail
     from ..models.review_wait import ReviewWait
 
@@ -30,6 +33,10 @@ class LayoutNode:
         h (float):
         depth (int):
         kind (str):
+        display_state (LayoutNodeDisplayStateType0 | None | Unset):
+        display_reason (None | str | Unset):
+        child_state_counts (LayoutNodeChildStateCountsType0 | None | Unset):
+        descendant_state_counts (LayoutNodeDescendantStateCountsType0 | None | Unset):
         priority (int | Unset):  Default: 100.
         is_blocked (bool | Unset):  Default: False.
         profile_id (None | str | Unset):
@@ -38,6 +45,7 @@ class LayoutNode:
         branch_name (None | str | Unset):
         pr_url (None | str | Unset):
         playbook_run_id (None | str | Unset):
+        parent_task_id (None | str | Unset):
         container_id (None | str | Unset):
         context_only (bool | Unset):  Default: False.
         agg_children (int | Unset):  Default: 0.
@@ -64,6 +72,10 @@ class LayoutNode:
     h: float
     depth: int
     kind: str
+    display_state: LayoutNodeDisplayStateType0 | None | Unset = UNSET
+    display_reason: None | str | Unset = UNSET
+    child_state_counts: LayoutNodeChildStateCountsType0 | None | Unset = UNSET
+    descendant_state_counts: LayoutNodeDescendantStateCountsType0 | None | Unset = UNSET
     priority: int | Unset = 100
     is_blocked: bool | Unset = False
     profile_id: None | str | Unset = UNSET
@@ -72,6 +84,7 @@ class LayoutNode:
     branch_name: None | str | Unset = UNSET
     pr_url: None | str | Unset = UNSET
     playbook_run_id: None | str | Unset = UNSET
+    parent_task_id: None | str | Unset = UNSET
     container_id: None | str | Unset = UNSET
     context_only: bool | Unset = False
     agg_children: int | Unset = 0
@@ -91,6 +104,8 @@ class LayoutNode:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
+        from ..models.layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
         from ..models.phase_hold_detail import PhaseHoldDetail
 
         id = self.id
@@ -110,6 +125,36 @@ class LayoutNode:
         depth = self.depth
 
         kind = self.kind
+
+        display_state: None | str | Unset
+        if isinstance(self.display_state, Unset):
+            display_state = UNSET
+        elif isinstance(self.display_state, LayoutNodeDisplayStateType0):
+            display_state = self.display_state.value
+        else:
+            display_state = self.display_state
+
+        display_reason: None | str | Unset
+        if isinstance(self.display_reason, Unset):
+            display_reason = UNSET
+        else:
+            display_reason = self.display_reason
+
+        child_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.child_state_counts, Unset):
+            child_state_counts = UNSET
+        elif isinstance(self.child_state_counts, LayoutNodeChildStateCountsType0):
+            child_state_counts = self.child_state_counts.to_dict()
+        else:
+            child_state_counts = self.child_state_counts
+
+        descendant_state_counts: dict[str, Any] | None | Unset
+        if isinstance(self.descendant_state_counts, Unset):
+            descendant_state_counts = UNSET
+        elif isinstance(self.descendant_state_counts, LayoutNodeDescendantStateCountsType0):
+            descendant_state_counts = self.descendant_state_counts.to_dict()
+        else:
+            descendant_state_counts = self.descendant_state_counts
 
         priority = self.priority
 
@@ -150,6 +195,12 @@ class LayoutNode:
             playbook_run_id = UNSET
         else:
             playbook_run_id = self.playbook_run_id
+
+        parent_task_id: None | str | Unset
+        if isinstance(self.parent_task_id, Unset):
+            parent_task_id = UNSET
+        else:
+            parent_task_id = self.parent_task_id
 
         container_id: None | str | Unset
         if isinstance(self.container_id, Unset):
@@ -225,6 +276,14 @@ class LayoutNode:
                 "kind": kind,
             }
         )
+        if display_state is not UNSET:
+            field_dict["display_state"] = display_state
+        if display_reason is not UNSET:
+            field_dict["display_reason"] = display_reason
+        if child_state_counts is not UNSET:
+            field_dict["child_state_counts"] = child_state_counts
+        if descendant_state_counts is not UNSET:
+            field_dict["descendant_state_counts"] = descendant_state_counts
         if priority is not UNSET:
             field_dict["priority"] = priority
         if is_blocked is not UNSET:
@@ -241,6 +300,8 @@ class LayoutNode:
             field_dict["pr_url"] = pr_url
         if playbook_run_id is not UNSET:
             field_dict["playbook_run_id"] = playbook_run_id
+        if parent_task_id is not UNSET:
+            field_dict["parent_task_id"] = parent_task_id
         if container_id is not UNSET:
             field_dict["container_id"] = container_id
         if context_only is not UNSET:
@@ -277,6 +338,8 @@ class LayoutNode:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.epic_delivery_status import EpicDeliveryStatus
+        from ..models.layout_node_child_state_counts_type_0 import LayoutNodeChildStateCountsType0
+        from ..models.layout_node_descendant_state_counts_type_0 import LayoutNodeDescendantStateCountsType0
         from ..models.phase_hold_detail import PhaseHoldDetail
         from ..models.review_wait import ReviewWait
 
@@ -298,6 +361,66 @@ class LayoutNode:
         depth = d.pop("depth")
 
         kind = d.pop("kind")
+
+        def _parse_display_state(data: object) -> LayoutNodeDisplayStateType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                display_state_type_0 = LayoutNodeDisplayStateType0(data)
+
+                return display_state_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(LayoutNodeDisplayStateType0 | None | Unset, data)
+
+        display_state = _parse_display_state(d.pop("display_state", UNSET))
+
+        def _parse_display_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        display_reason = _parse_display_reason(d.pop("display_reason", UNSET))
+
+        def _parse_child_state_counts(data: object) -> LayoutNodeChildStateCountsType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                child_state_counts_type_0 = LayoutNodeChildStateCountsType0.from_dict(data)
+
+                return child_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(LayoutNodeChildStateCountsType0 | None | Unset, data)
+
+        child_state_counts = _parse_child_state_counts(d.pop("child_state_counts", UNSET))
+
+        def _parse_descendant_state_counts(data: object) -> LayoutNodeDescendantStateCountsType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                descendant_state_counts_type_0 = LayoutNodeDescendantStateCountsType0.from_dict(data)
+
+                return descendant_state_counts_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(LayoutNodeDescendantStateCountsType0 | None | Unset, data)
+
+        descendant_state_counts = _parse_descendant_state_counts(d.pop("descendant_state_counts", UNSET))
 
         priority = d.pop("priority", UNSET)
 
@@ -356,6 +479,15 @@ class LayoutNode:
             return cast(None | str | Unset, data)
 
         playbook_run_id = _parse_playbook_run_id(d.pop("playbook_run_id", UNSET))
+
+        def _parse_parent_task_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_task_id = _parse_parent_task_id(d.pop("parent_task_id", UNSET))
 
         def _parse_container_id(data: object) -> None | str | Unset:
             if data is None:
@@ -455,6 +587,10 @@ class LayoutNode:
             h=h,
             depth=depth,
             kind=kind,
+            display_state=display_state,
+            display_reason=display_reason,
+            child_state_counts=child_state_counts,
+            descendant_state_counts=descendant_state_counts,
             priority=priority,
             is_blocked=is_blocked,
             profile_id=profile_id,
@@ -463,6 +599,7 @@ class LayoutNode:
             branch_name=branch_name,
             pr_url=pr_url,
             playbook_run_id=playbook_run_id,
+            parent_task_id=parent_task_id,
             container_id=container_id,
             context_only=context_only,
             agg_children=agg_children,

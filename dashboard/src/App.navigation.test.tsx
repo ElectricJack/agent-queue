@@ -492,6 +492,28 @@ describe("Roaming shell preferences", () => {
     expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
   });
 
+  it("resolves the system theme and follows operating-system changes", async () => {
+    const originalMatchMedia = window.matchMedia;
+    const media = Object.assign(new EventTarget(), {
+      matches: true,
+      media: "(prefers-color-scheme: light)",
+    });
+    const matchMedia = vi.spyOn(window, "matchMedia").mockImplementation((query) =>
+      query === media.media ? media as unknown as MediaQueryList : originalMatchMedia(query));
+    try {
+      server.write("shell_preferences", saved({ theme: "system" }));
+      renderApp("/projects/p1/graph");
+      await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+      act(() => {
+        media.matches = false;
+        media.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
+      });
+      await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    } finally {
+      matchMedia.mockRestore();
+    }
+  });
+
   it("shows the defaults and keeps navigating when preferences are unavailable", async () => {
     server.failWith(new Error("API 503: daemon unavailable"));
     renderApp("/command-center");

@@ -219,7 +219,12 @@ SUPERVISOR_PATROL_PROMPT = (
     "background inbox poll or shell sleep loop. The patrol only lives as long "
     "as this session; re-establish it after any restart. If your harness has "
     "no scheduler, say so once in your first reply and fall back to sweeping "
-    "at the start of every turn.\n"
+    "at the start of every turn. If the sweep reports SWEEP-AUTH, stop the patrol's "
+    "remaining checks and report that single error with its recovery command. "
+    "Do not retry denied calls or remove AQ_API_TOKEN to bypass authentication. "
+    "An expired credential needs local-operator recovery with "
+    "`aq session token <session-id> --json` and replacement of this session's "
+    "AQ_API_TOKEN with .data.token.\n"
 )
 
 #: Bootstrap for a pool worker session (swarm-work-model §11.3) — no task in
@@ -230,8 +235,17 @@ POOL_BOOTSTRAP_PROMPT = (
     "Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the\n"
     "work, then `aq task close --outcome pass|fail --summary \"...\" --claim-next --wait 60`.\n"
     "On `no_ready_work`, claim again. On `session_exhausted` or `drain_requested`, exit 0.\n"
-    "On `not_admissible`, wait as instructed and claim again. Never touch tasks you do not\n"
-    "hold; .aq/claim.json in your workspace is the proof of what you hold.\n"
+    "On `prepare_failed` or `not_admissible`, respect `retry_after` and the returned instructions.\n"
+    "The daemon quarantines the workspace after three identical preparation refusals.\n"
+    "On a repeated identical refusal, report the blocker ONCE to the project supervisor.\n"
+    "If idle (no held claim or preparation), run `aq session drain-ack` and exit 0.\n"
+    "If preparation is retained, preserve it and end the turn awaiting the supervisor's\n"
+    "inbox delivery. With an active claim, use ONE durable message wait for the reply.\n"
+    "Do not poll claims or inboxes, reread unchanged context, or repeat the report.\n"
+    "A refusal_count >= 2 or a\n"
+    "drain_requested with blocker instructions also requires that one report.\n"
+    "Never touch tasks you do not hold; .aq/claim.json in your workspace is the proof\n"
+    "of what you hold.\n"
     "Daemon restarts are temporary: on daemon_unreachable / exit code 3, keep retrying "
     "`aq task claim --next --wait 60`. Do not start the daemon or end your pool loop. "
     "After an ambiguous close response, inspect your claim and task status before retrying close."
@@ -1030,7 +1044,9 @@ class SessionSpecBuilder:
             logger.warning("Harness %r has no effort_flag; effort %r not applied", harness.id, effort)
         return effort
 
-    def _resolve_class_config(self, profile, harness, task_intelligence_class) -> dict:
+    def _resolve_class_config(
+        self, profile, harness, task_intelligence_class, *, for_display: bool = False,
+    ) -> dict:
         """Resolve the whole provider slice without dropping its thinking fields.
 
         Worker class > task class > profile default. Unknown classes, providers,
@@ -1046,6 +1062,8 @@ class SessionSpecBuilder:
             return {}
         cls = self._intelligence_classes.get(class_id)
         if cls is None:
+            if for_display:
+                return {}
             logger.warning(
                 "intelligence-class '%s' not found; no launch model resolved",
                 class_id,

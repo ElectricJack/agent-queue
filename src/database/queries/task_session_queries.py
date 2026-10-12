@@ -9,6 +9,7 @@ from sqlalchemy import and_, exists, func, insert, literal, or_, select, update
 
 from src.database.tables import (
     agents,
+    integration_batch_members,
     integration_source_ci,
     sessions,
     task_dependencies,
@@ -391,6 +392,16 @@ class TaskSessionQueryMixin:
         original = await OrdinaryRepairService(self).input(task_id)
         if original is not None:
             heads.append(original["starting_sha"])
+            # All frozen members are published inputs the batch repair owns,
+            # including sources after its first conflicting merge. Their
+            # existing commit identities must not be judged as new repair work.
+            async with self._engine.connect() as conn:
+                heads.extend((await conn.execute(select(
+                    integration_batch_members.c.source_sha,
+                ).where(
+                    integration_batch_members.c.batch_id == original["batch_id"],
+                    integration_batch_members.c.repository_id == original["repository_id"],
+                ).order_by(integration_batch_members.c.ordinal))).scalars())
         return list(dict.fromkeys(heads))
 
     async def list_publish_prerequisite_branches(self, task_id: str) -> list[str]:

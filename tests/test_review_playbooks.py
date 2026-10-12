@@ -44,7 +44,7 @@ async def env(command_handler_factory):
     db = handler.db
     handler.config.playbooks.enabled = True
     handler.orchestrator.bus = EventBus(env="dev")
-    await db.create_project(Project(id="p", name="Project P"))
+    await db.create_project(Project(id="p", name="Project P", supervisor_enabled=True))
     source = Path(handler.config.vault_root) / "system" / "playbooks" / "morning-report.md"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text((MORNING / "source.md").read_text(encoding="utf-8"), encoding="utf-8")
@@ -183,6 +183,23 @@ async def test_a_plain_review_is_unchanged(env):
 
 
 # -- revisions ------------------------------------------------------------------
+
+
+async def test_reopening_keeps_the_original_playbook_pin(env):
+    handler, db = env
+    first = await _submit(handler, activate_on_approval=True)
+    rid = first["review_id"]
+    original = await db.get_review_revision(rid, 1)
+    assert (await handler.execute("review_withdraw", {"review_id": rid}))["success"]
+    # Recovery must not recompile policy from a changed source file.
+    source = Path(handler.config.vault_root) / "system/playbooks/morning-report.md"
+    source.write_text("invalid policy", encoding="utf-8")
+    reopened = await handler.execute("review_reopen", {"review_id": rid, "revision": 1})
+    assert reopened["success"], reopened
+    current = await db.get_review_revision(rid, 2)
+    assert current["playbook"] == original["playbook"]
+    assert current["playbook_artifact"] == original["playbook_artifact"]
+    assert current["content"] == original["content"]
 
 
 async def _request_changes_directly(db, review_id: str, revision: int = 1) -> None:

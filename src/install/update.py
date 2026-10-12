@@ -71,6 +71,9 @@ from .dashboard import (
     source_fingerprint,
     stamp_path,
 )
+from .deploy import (
+    DeployRefused, DeploySelection, DeploySelector, read_record, save_record, write_record,
+)
 from .onboarding import HttpProbe, _read_config, api_base_url, http_status
 from .redaction import redact
 
@@ -134,10 +137,14 @@ class UpdatePlan:
     shallow: bool
     changed: tuple[str, ...] = ()
     subjects: tuple[str, ...] = ()
+    selection: DeploySelection | None = None
+    previous_record: dict | None = None
+    rollback: bool = False
+    needs_activation: bool = False
 
     @property
     def up_to_date(self) -> bool:
-        return self.current == self.target
+        return self.current == self.target and not self.needs_activation
 
     @property
     def migrations(self) -> bool:
@@ -186,6 +193,11 @@ def plan_update(
     *,
     execute: CommandRunner = run_command,
     environ: Mapping[str, str] | None = None,
+    state_dir: Path | None = None,
+    ref: str | None = None,
+    tag_glob: str | None = None,
+    promotion_target: str = "main",
+    allow_rollback: bool = False,
 ) -> UpdatePlan:
     """Decide whether and how *checkout* can be updated; raise UpdateRefused if not."""
     env = os.environ if environ is None else environ
@@ -195,6 +207,18 @@ def plan_update(
             "Run `aq update` as the operator, from your own terminal. Workers never restart "
             "or migrate the daemon they work for.",
         )
+
+    try:
+        record = read_record(state_dir) if state_dir is not None else None
+        if ref or tag_glob or record:
+            return _plan_deploy(
+                checkout, execute=execute, ref=ref, tag_glob=tag_glob,
+                promotion_target=promotion_target, record=record, allow_rollback=allow_rollback,
+            )
+    except DeployRefused as error:
+        raise UpdateRefused(
+            str(error), "Fix the deploy selector or release tag, then rerun aq update."
+        ) from error
 
     branch = _git(execute, checkout, "symbolic-ref", "--short", "-q", "HEAD")
     if not branch.ok or not branch.out.strip():
@@ -270,6 +294,72 @@ def plan_update(
         subjects=tuple(line for line in subjects.out.splitlines() if line.strip())
         if subjects.ok
         else (),
+    )
+
+
+def _plan_deploy(
+    checkout: Path, *, execute: CommandRunner, ref: str | None, tag_glob: str | None,
+    promotion_target: str, record: dict | None, allow_rollback: bool,
+) -> UpdatePlan:
+    selector = DeploySelector(checkout, execute=execute, target=promotion_target)
+    dirty = selector.git("status", "--porcelain", "--untracked-files=no")
+    if dirty:
+        raise UpdateRefused(
+            f"{checkout} has local changes to tracked files",
+            "Commit, stash or discard them before updating.",
+        )
+    current = selector.git("rev-parse", "HEAD")
+    branch_result = _git(execute, checkout, "symbolic-ref", "--short", "-q", "HEAD")
+    branch = branch_result.out
+    if record is not None:
+        if current != record["commit"]:
+            raise UpdateRefused(
+                "checkout has local commits or moved away from deploy.json",
+                "Restore the recorded deployment before updating; local commits are never discarded.",
+            )
+        if not ref and not tag_glob:
+            ref = record["selector"]
+    elif not branch:
+        raise UpdateRefused(
+            "detached HEAD has no deploy.json record",
+            "Restore the installation's branch before its first tag deployment.",
+        )
+    else:
+        upstream = selector.git("rev-parse", "--abbrev-ref", "@{u}")
+        selector.git("fetch", "--quiet", upstream.split("/", 1)[0])
+        if not _git(execute, checkout, "merge-base", "--is-ancestor", current, "@{u}").ok:
+            # Depth-one installs need history to distinguish missing ancestry
+            # from a locally committed patch.
+            if selector.git("rev-parse", "--is-shallow-repository") == "true":
+                selector.git("fetch", "--quiet", "--unshallow", upstream.split("/", 1)[0])
+            if not _git(execute, checkout, "merge-base", "--is-ancestor", current, "@{u}").ok:
+                raise UpdateRefused(
+                    f"{branch} has local commits its upstream does not",
+                    "Push or remove those commits before deploying a release.",
+                )
+    selection = selector.resolve(ref=ref, tag_glob=tag_glob)
+    forward = _git(execute, checkout, "merge-base", "--is-ancestor", current, selection.commit).ok
+    backward = _git(execute, checkout, "merge-base", "--is-ancestor", selection.commit, current).ok
+    rollback = not forward and backward
+    if not forward and not backward:
+        raise UpdateRefused(
+            "deploy_not_related: selected commit is sideways from the installed code",
+            "Select a release on the installed history.",
+        )
+    if rollback and not allow_rollback:
+        raise UpdateRefused(
+            "selected release is older than the installed code",
+            "Rerun with --allow-rollback to roll back code while keeping the database.",
+        )
+    changed = selector.git("diff", "--name-only", current, selection.commit)
+    subjects = selector.git("log", "--format=%h %s", f"{current}..{selection.commit}")
+    return UpdatePlan(
+        checkout=checkout, branch=branch, upstream=selection.selector, current=current,
+        target=selection.commit, shallow=False, changed=tuple(changed.splitlines()),
+        subjects=tuple(subjects.splitlines()), selection=selection, previous_record=record,
+        rollback=rollback, needs_activation=(
+            bool(branch) or record is None or record.get("selector") != selection.selector
+        ),
     )
 
 
@@ -423,6 +513,12 @@ def apply_update(
     with os.fdopen(descriptor, "w") as handle:
         handle.write(f"{os.getpid()}\n")
     try:
+        if plan.selection:
+            if _git(host.execute, plan.checkout, "rev-parse", "HEAD").out != plan.current:
+                raise UpdateRefused("checkout changed after preflight", "Rerun aq update.")
+            dirty = _git(host.execute, plan.checkout, "status", "--porcelain", "--untracked-files=no")
+            if not dirty.ok or dirty.out:
+                raise UpdateRefused("checkout has local changes after preflight", "Rerun aq update.")
         return _apply_locked(plan, host, report, step, backup=backup)
     finally:
         lock.unlink(missing_ok=True)
@@ -532,13 +628,17 @@ def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool)
     handed_off = False
     try:
         # -- 3. move the code forward -------------------------------------
-        if plan.shallow:
+        if plan.selection:
+            moved = _git(host.execute, checkout, "checkout", "--quiet", "--detach", plan.target)
+        elif plan.shallow:
             moved = _git(host.execute, checkout, "reset", "--hard", "--quiet", plan.target)
         else:
             moved = _git(host.execute, checkout, "merge", "--ff-only", "--quiet", plan.target)
         if not moved.ok:
             raise _StepFailed("Update the code", moved.message())
         step("Update the code", True, f"{plan.current[:9]} -> {plan.target[:9]}")
+        if plan.selection:
+            write_record(host.state_dir, plan.selection, plan.current, rollback=plan.rollback)
 
         # -- 4-6. dependencies, dashboard, daemon: the new code's job ------
         handed_off = True
@@ -829,6 +929,12 @@ def _recover(
         return report
     step("Roll back the code", True, f"back at {plan.current[:9]}")
     try:
+        if plan.selection:
+            if plan.branch:
+                restored = _git(host.execute, checkout, "checkout", "--quiet", plan.branch)
+                if not restored.ok:
+                    raise _StepFailed("Restore the previous branch", restored.message())
+            save_record(host.state_dir, plan.previous_record)
         if plan.dependencies:
             _install_dependencies(host, checkout)
         _rebuild_dashboard(host, checkout, step)
@@ -870,6 +976,12 @@ def describe(
         f"{len(plan.subjects) or 'new'} commit(s) from {plan.upstream} "
         f"({plan.current[:9]} -> {plan.target[:9]})"
     ]
+    if plan.selection:
+        installed = (plan.previous_record or {}).get("selector", plan.current[:9])
+        lines.insert(
+            0, f"Installed {installed}; selected {plan.selection.selector} "
+            f"({'rollback' if plan.rollback else plan.selection.kind})",
+        )
     if plan.migrations:
         lines.append(
             "Includes database migrations: "

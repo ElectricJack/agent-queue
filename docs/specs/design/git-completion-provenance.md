@@ -50,7 +50,7 @@ reachable from the fetched target: an abbreviated SHA, a substring, one commit o
 multi-commit source and the previous generation of a reopened task are each a
 different identity and prove nothing.
 
-The namespace is `refs/heads/aq-provenance/completions/<subject-hash>/<generation-hash>`.
+The namespace is `refs/aq/provenance/completions/<subject-hash>/<generation-hash>`.
 The subject hash covers project/repository/task; the generation hash covers the
 completion ID. The metadata commit has exactly one parent (the final source),
 the source's tree, and a bounded JSON body:
@@ -62,17 +62,83 @@ the source's tree, and a bounded JSON body:
 Metadata objects are deterministic, immutable and independently published with
 an exact absent-ref lease. Conflicting bindings fail closed. They retain source
 objects through archive and deletion of `aq/<task-id>`; cleanup must preserve
-the `aq-provenance/` namespace. Normal clone/fetch head refspecs fetch the evidence.
+the `refs/aq/provenance/` namespace. Authorized origin fetches explicitly import
+`+refs/aq/provenance/*:refs/aq/provenance/*`, including isolated authenticated
+fetches. Fetched delivery snapshots pin these refs alongside remote branch tips.
+Provenance writers never create branch refs or remote-tracking branch refs.
+Readers accept the old `refs/heads/aq-provenance/` namespace during migration.
 No DB delivery flag or new Git mapping is introduced.
+
+`aq integration migrate-provenance-refs PROJECT` previews migration of existing Git
+provenance refs; `--apply` is restricted to the local operator. It inventories and
+validates records in a temporary checkout, copies the exact metadata OID into the
+new namespace with an absent-ref lease, verifies it remotely, and only then deletes
+the old branch with its exact old-OID lease. A conflicting destination, invalid
+record, changed source ref or failed copy leaves the old ref intact and reports a
+blocked row. Repeating apply resumes safely after partial transfers. Dry-run changes
+no durable local/remote refs, configuration, index or database rows. Optional
+`--checkout PATH` also migrates that checkout's local legacy heads with the same
+copy-before-delete rule; attached worktree branches are held. Fetch with pruning
+removes obsolete remote-tracking copies after the remote migration.
+
+The daily per-project branch backstop also runs this bounded namespace migration.
+It rechecks live tasks, owners, protected targets and attached worktrees under
+the shared ref exclusion before deleting an old branch, records a pre-delete
+audit entry and reports migrated/blocked counts to the project supervisor. It
+does not infer completion bindings for unlabelled sources.
 
 Close allocates its completion ID before verification, verifies the clean,
 exactly pushed final task source, publishes the provenance ref, verifies that
 exact remote OID, and rechecks the source before terminal transition. It refuses
 an explicit `--commit` naming an older or abbreviated commit. A publication error
 or changed source retains the task/session/workspace for retry. Already pushed
-history is never amended. Code-free outcomes retain existing validation: a
-proven empty, explicitly code-free Git source has `artifact:false`; branchless,
-non-Git and vault-only outcomes keep their existing completion behavior.
+history is never amended. A final head equal to the recorded origin base records
+an empty completion commit list while retaining that exact head. A proven empty,
+explicitly code-free Git source has `artifact:false`. Explicit vault-only outcomes
+also retain their clean owned source slot at its exact recorded origin base,
+without requiring a published task branch. Missing base, changed source or failed
+provenance publication refuses close with the claim and workspace retained.
+Branchless and non-Git outcomes keep their existing completion behavior.
+
+For an unheld Git root, `aq integration record-root-noop TASK_ID` previews an
+explicit no-artifact completion. A local operator or a live named supervisor of
+the owning project can apply it with the exact previewed `--head` and a nonblank
+`--reason`. The published source must equal its recorded, materialized branch origin base.
+An empty commit or a reverted change with the same tree still differs from
+that base and requires the normal completion path. No live writer, claimed
+workspace, branch owner, child, required deliverable or open batch may be bypassed.
+Apply retains an immutable `artifact:false` Git completion and records a passing
+`no-op` completion atomically with COMPLETED status, preserving the branch/origin.
+It also repairs a COMPLETED root with no completion record, or retains an existing
+passing no-op generation; it never replaces an artifact completion. Repeating
+apply is idempotent. Unknown or changed evidence refuses without terminal writes.
+Administrative `set-status COMPLETED` refuses a new completion of every task
+with a branch or an active recorded origin, including children and projects
+outside train modes, and names normal close or this explicit no-op control.
+Clearing a branch name does not remove its origin or supply completion evidence.
+
+For work delivered by an external operator, `integration_record_delivered` is
+local-operator-only and defaults to preview. Apply requires an explicit project,
+task, full source and base OIDs, and a nonblank reason. The source must differ
+from and descend from the base, and be contained in the fetched designated
+repository's actual default branch. An existing materialized origin must match
+that repository, canonical branch and base; a legacy task without an origin gets
+an explicit materialized origin from these verified inputs. Required deliverables,
+open children or checklist subtasks, live sessions, claims, workspaces, active
+batches and manual holds must first be resolved through their supported controls.
+A detached reservation belonging to this task may be released atomically, with a
+fresh fence and audit event, after proving no writer or external mutation relies
+on it. Another task's reservation or an attached writer is refused. Apply publishes
+immutable `artifact:true` provenance, rechecks the remote default tip, and records
+a passing shipped completion with the supplied checks and source commit in the
+same transaction as COMPLETED. Existing different completion generations remain
+intact; repeating this exact operator completion is idempotent. A failed proof or
+publication leaves task state and ownership unchanged. This command records
+observed delivery without starting an integration runtime.
+
+Unknown delivery evidence withholds that source and work depending on it. Its
+task-scoped blocker remains visible while unrelated eligible sources can seal,
+check and publish, including an already sealed batch on the same root target.
 
 This close contract applies to Git-using passing completions in every train mode:
 `train`, `hierarchy` and `development`. Under `integration.git_first: active`, an
@@ -81,6 +147,25 @@ reports `blocked` and projects the delivery reason, including
 `missing_git_provenance`, with its task and target in integration status. Legacy
 generations still require explicit provenance migration; branch observation is
 never substituted for immutable completion evidence.
+
+The git-first evaluator reports an explicit `no_change` state for a passing
+completion whose recorded commit list is empty, whose immutable retained Git
+source equals its recorded branch-origin base, and whose base is an ancestor of
+the fetched target. This proves the completion added no work owed to that
+target; `COMPLETED` alone never proves it. The completion outcome and commit
+list, exact source generation, recorded base and target OID are all part of
+the observation and guarded recheck. A missing completion or provenance record
+remains unknown with a named blocker. A no-change base absent from the target
+remains pending. Every completion that does not meet the no-change conditions,
+including an empty commit list with a different head or missing base, uses the
+existing exact whole-source delivery proof. An empty descriptive commit list
+cannot override Git containment of its retained source.
+
+Cross-epic prerequisites use this same `no_change` answer against the default
+branch in scheduler readiness, pool demand, explain and claim activation. Root
+train admission treats it as satisfied, so it creates neither a batch member nor
+a `missing_git_provenance` blocker. Epic collection also treats such children as
+satisfied without attempting to merge an artifact they did not produce.
 
 Failed required Git delivery probes remain `unknown`. The blocker detail and daemon log
 name the failing proof step, exception class and a bounded safe message; raw
@@ -123,7 +208,7 @@ tested for containment. Multi-commit work, another generation's trailer, a
 partial cherry-pick and an empty copied marker therefore cannot prove delivery.
 
 An explicit replacement record lives under
-`refs/heads/aq-provenance/replacements/<record-content-hash>`. It retains the
+`refs/aq/provenance/replacements/<record-content-hash>`. It retains the
 replacement source as its sole parent, with the same tree, and records:
 
 ```json
@@ -156,10 +241,9 @@ an unlabelled source the bridge cannot bind refuses close as an operator blocker
 (`precondition:provenance_migration`). Completion recording uses the same
 delivery-refusal path as pipeline verification: it retains the live task, claim,
 session and workspace, sets `needs_attention:delivery_provenance_migration`, and
-emits `task.needs_attention`. The refusal names the operator remedy
-`aq integration migrate-provenance <project-id> --apply`, scoped with
-`--task-id <repair>` for an unlabelled source; inventory can report ambiguous
-evidence that still needs operator resolution.
+emits `task.needs_attention`. The refusal names a task-scoped read for operator
+diagnosis. The current namespace migration moves existing Git records; it does
+not infer bindings for an unlabelled source.
 
 `authority:operator` additionally requires an authorized operator/equivalence
 operation and a reason. Git cannot establish semantic equivalence of arbitrary
@@ -171,6 +255,11 @@ evidence through an authorized operation; copying trailers is insufficient.
 Ancestry-preserving external merges need no replacement record.
 
 ## Legacy migration primitive
+
+The completion-generation backfill described below is historical: its command
+and implementation were retired. The current `migrate-provenance-refs` command only
+moves existing Git refs, as specified under [Identity and retention](#identity-and-retention).
+These rules describe retained legacy records and their original admission checks.
 
 `aq integration migrate-provenance <project-id>` inventories legacy completion
 generations and exact repair bindings. Add `--apply` to publish verified Git
@@ -244,3 +333,49 @@ events, marks live branchless tasks a manifest named with an unrecorded source
 rather than organizational), and records a `development.legacy_retirement`
 summary per project naming those tasks, archived tasks of the same shape and
 malformed rows.
+
+## Local train quiesce
+
+`integration_quiesce` is a separate local-operator-only control for an unfrozen
+reconciler root in admission. It requires the explicit project integration
+generation, root subject id/version and every reservation id/fence to release.
+It refuses frozen sources, live writers, claims, workspaces, active operations,
+unresolved remote mutations, another live subject, or a changed sweep request.
+Task reservations require an explicitly PAUSED or finished task in that project;
+collector reservations require a completed or cancelled operation in the project.
+Attached or foreign ownership is refused. Preview writes nothing. Apply disables
+that project's train schedule, clears its idle request/catchup, closes the root
+with a journal action and releases the explicitly selected detached reservations
+with fresh fences and an operator audit event. Tasks, refs and retained work stay
+intact. It changes no integration mode and does not authorize completion; the
+normal generation-fenced configuration control still governs the later cutover.
+
+Historical claim records remain provenance when their exact named session is
+stopped in both observed and desired state. Unknown or revivable holders still
+block. An ended operation's pushed resolution remains audit history only when
+its terminal batch and exact applied ref mutation acknowledge the resolved SHA.
+
+Rollout may retain unfinished legacy cleanup fences without treating them as
+active train writers. This exception requires a detached collector on its exact
+`refs/heads/aq/integration/*` branch, a promoted legacy batch with no target ref,
+a completed or cancelled owning batch operation, and no reserved ref mutation
+or unsettled root intent. It applies only to rollout checks. The owner, fence,
+cleanup backlog and publication evidence remain intact; cleanup still gates
+owner release. This classification establishes ended authority and does not
+assert delivery, completed cleanup, or permission to delete any ref.
+
+## Expired mutation read-back recovery
+
+The local operator may use `integration_reconcile_expired_mutation` to preview or
+settle one expired candidate/ref mutation after its owning operation completed or
+was cancelled. It requires an explicit project, mutation id, exact nonce, recorded
+branch and lease fences, and a reason. The designated repository, operation
+episode, detached branch authority and absence of live project writers, claims
+and integration leases are re-proved. Two actual remote target reads must agree,
+with unchanged durable bindings under the project/repository locks. The desired
+OID records `applied`; a confirmed different or absent target records `superseded`.
+An unavailable remote or changed binding refuses without writes. `prewrite_at`
+is not proof of an unstarted candidate mutation. This control writes only the
+mutation observation and operator audit; it never publishes, deletes Git work,
+closes a task or restarts the old operation. Root-main mutations retain their
+original specialized recovery control.

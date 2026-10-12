@@ -152,6 +152,33 @@ async def test_import_refuses_a_bundle_outside_the_vault(db, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rebuilt_router_bundle_and_shared_fleet_alias_activate_ready(db, tmp_path):
+    handler = _Handler(tmp_path, db)
+    relative = _copy_bundle(tmp_path, "default-assignment-routing")
+    shared = Path("reviewed/default-assignment-routing-shared-fleet/default-assignment-routing")
+    shutil.copytree(Path("docs/playbooks/shared-fleet/default-assignment-routing"),
+                    tmp_path / "vault" / shared)
+    imported = await _import(handler, relative)
+    shared_import = await _import(handler, shared)
+    assert imported["success"] is True, imported
+    assert shared_import["success"] is True, shared_import
+    assert imported["artifact_sha256"] == shared_import["artifact_sha256"]
+    activated = await handler._cmd_playbook_activate({
+        "playbook_id": "default-assignment-routing",
+        "artifact_sha256": imported["artifact_sha256"],
+    })
+    assert not activated.get("blocked"), activated
+    assert activated["activation"]["health"] == "ready", activated
+    health = await handler._cmd_playbook_activation_health({
+        "playbook_id": "default-assignment-routing", "scope": "system",
+    })
+    assert health["count"] == 1, health
+    assert health["activations"][0]["enabled"] is True
+    assert health["activations"][0]["active_artifact_sha256"] == imported["artifact_sha256"]
+    assert health["activations"][0]["health"] == "ready"
+
+
+@pytest.mark.asyncio
 async def test_import_refuses_a_bundle_file_symlinked_outside_the_vault(db, tmp_path):
     """Resolving only the parent directory would let child symlinks escape."""
     handler = _Handler(tmp_path, db)

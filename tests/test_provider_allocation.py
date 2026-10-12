@@ -252,6 +252,10 @@ async def test_non_workers_are_diagnostics_never_selected(orch):
     for role in ("reviewer", "final-reviewer", "triage", "spec-ingest", "playbook-compiler",
                  "planner", "pr-merger"):
         assert diagnostics[role] == "role", role
+    # Operator rungs are scoped setup capacity, never ordinary worker supply.
+    for operator in ("operator-standard-high-claude", "operator-deep-high-claude",
+                     "operator-standard-high-codex", "operator-deep-high-codex"):
+        assert diagnostics[operator] == "role", operator
     assert diagnostics["classless-worker"] == "malformed"
     assert diagnostics["mystery-worker"] == "unknown_provider"
     selected = {

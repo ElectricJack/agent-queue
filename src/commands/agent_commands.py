@@ -7,6 +7,7 @@ import logging
 import os
 import time
 
+from src.task_templates import render_task_template
 from src.models import RepoSourceType, Task, TaskStatus, TaskType, Workspace
 from src.task_names import generate_task_id
 from src.workspace_names import generate_workspace_id
@@ -65,6 +66,21 @@ class AgentCommandsMixin(FlockCommandsMixin):
             # message wait it registered there; a threadless answer cannot.
             original = await self.db.get_message(reply_to.strip())
             if original is None or original.project_id != session.project_id:
+                # A message the caller can read — another project's report to
+                # its supervisor mailbox — is refused for what it is, not as
+                # missing (clear-zenith-84).  Anything else stays "not found"
+                # so the refusal never confirms a foreign id exists.
+                if original is not None and (
+                    project_id is None or await self._message_in_project(original, project_id)
+                ):
+                    return {
+                        "error": (
+                            f"Message '{reply_to}' is not a message of the target's project "
+                            f"'{session.project_id}': reply_to threads guidance onto that "
+                            f"worker's own message. Send without reply_to, and answer "
+                            f"'{reply_to}' with `aq message reply {reply_to}`."
+                        )
+                    }
                 return {"error": f"Message '{reply_to}' not found"}
         result = await self._queue_supervisor_message(session, body, wait, reply_to=original)
         if "error" not in result:
@@ -846,35 +862,13 @@ class AgentCommandsMixin(FlockCommandsMixin):
             f"  - {ws.workspace_path} (id: {ws.id}, name: {ws.name or '—'})" for ws in workspaces
         )
 
-        description = f"""## Sync Workspaces — {project_id}
-
-    **Task Type:** Orchestrator-managed sync workflow (handled automatically by the orchestrator)
-
-    ### Workflow Steps (executed by the orchestrator, NOT the agent):
-    1. **Pause Project** — Prevent new tasks from being queued for `{project_id}`
-    2. **Wait for Active Tasks** — Monitor all running tasks and wait for completion
-    3. **Merge Feature Branches** — Launch a Claude Code agent to merge all feature work
-    4. **Cleanup & Resume** — Unlock workspaces and resume the project
-
-    ### Project Details:
-    - **Project ID:** {project_id}
-    - **Default Branch:** {default_branch}
-    - **Workspace Root:** {workspace_root}
-
-    ### Workspaces:
-    {workspace_paths}
-
-    ### Merge Strategy:
-    - Merge and push one workspace at a time
-    - Pull updates before working on subsequent workspaces
-    - Preserve ALL feature work unless it's duplicated or made irrelevant by subsequent changes
-    - Resolve conflicts intelligently, preferring to preserve feature functionality
-    - Ensure each workspace ends up on `{default_branch}` with no remaining feature branches from agent-queue
-
-    ### Why This Exists:
-    This synchronizes workspaces that have drifted from the default branch, consolidating
-    feature work stuck on feature branches across multiple workspaces.
-    """
+        description = render_task_template(
+            "workspace-sync",
+            project_id=project_id,
+            default_branch=default_branch,
+            workspace_root=workspace_root,
+            workspace_paths=workspace_paths,
+        )
 
         task_id = await generate_task_id(self.db)
         task = Task(

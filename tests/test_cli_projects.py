@@ -31,6 +31,21 @@ def runner():
     return CliRunner()
 
 
+@pytest.mark.parametrize("flag,enabled", [
+    ("--supervisor-enabled", True), ("--no-supervisor-enabled", False),
+])
+def test_project_edit_supervisor_flag(runner, flag, enabled):
+    from src.cli.app import cli
+
+    client = _client({"edit_project": {"success": True}})
+    with patch("src.cli.app._get_client", return_value=client):
+        result = runner.invoke(cli, ["project", "edit", "--project-id", "p1", flag])
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with(
+        "edit_project", {"project_id": "p1", "supervisor_enabled": enabled},
+    )
+
+
 def test_project_details_and_set_forward_correct_args_and_render_client_errors(runner):
     """Plan 17: exact arg forwarding, not-found exit, key coercion, JSON errors."""
     from src.cli.app import cli
@@ -73,6 +88,10 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
          ("edit_project", {"project_id": "p1", "budget_limit": None})),
         (["project", "set", "p1", "router", "project-router"],
          ("edit_project", {"project_id": "p1", "assignment_playbook_id": "project-router"})),
+        (["project", "set", "p1", "supervisor-enabled", "on"],
+         ("edit_project", {"project_id": "p1", "supervisor_enabled": True})),
+        (["project", "set", "p1", "supervisor-enabled", "off"],
+         ("edit_project", {"project_id": "p1", "supervisor_enabled": False})),
     ):
         client = _client({expected[0]: {"success": True}})
         with patch("src.cli.projects._get_client", return_value=client):
@@ -100,6 +119,28 @@ def test_project_details_and_set_forward_correct_args_and_render_client_errors(r
     assert envelope["error"]["code"] == "command_error"
     assert "No project found" in envelope["error"]["message"]
     assert envelope["data"] is None
+
+
+def test_project_bind_repository_requires_and_forwards_exact_cas(runner):
+    from src.cli.app import cli
+
+    client = _client({"bind_project_repository": {
+        "success": True, "project_id": "p1", "repo_url": "https://github.com/acme/widgets.git",
+        "changed": True, "event_id": 17,
+    }})
+    argv = ["--json", "project", "bind-repository", "p1", "--repo-url",
+            "https://github.com/acme/widgets.git", "--reason", "authorize created repository"]
+    with patch("src.cli.projects._get_client", return_value=client):
+        missing = runner.invoke(cli, argv)
+        assert missing.exit_code == 2 and "--expected-repo-url" in missing.output
+        client.execute.assert_not_awaited()
+        result = runner.invoke(cli, [*argv, "--expected-repo-url", ""])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["event_id"] == 17
+    client.execute.assert_awaited_once_with("bind_project_repository", {
+        "project_id": "p1", "repo_url": "https://github.com/acme/widgets.git",
+        "expected_repo_url": "", "reason": "authorize created repository",
+    })
 
 
 def test_project_set_forwards_guarded_integration_configuration(runner):
@@ -394,3 +435,46 @@ def test_project_onboard_forwards_request_fields_and_prints_result(
     assert "example" in result.output
     assert "example-primary" in result.output
     assert "/srv/dev/example" in result.output
+
+
+@pytest.mark.parametrize("remote_flags,expected", [
+    (["--repo-url", "acme/widgets"], {"repo_url": "acme/widgets", "create_github": False}),
+    (["--create-repo", "acme/widgets", "--private"], {
+        "github_owner": "acme", "github_repo": "widgets", "github_visibility": "private",
+        "create_github": True,
+    }),
+])
+def test_project_onboard_remote_options(runner, remote_flags, expected):
+    from src.cli.app import cli
+
+    client = _client({"onboard_project": {"success": True, "project_id": "widgets"}})
+    with patch("src.cli.projects._get_client", return_value=client):
+        result = runner.invoke(cli, [
+            "--json", "project", "onboard", "--source-mode", "init", "--root-id", "dev",
+            "--relative-path", "widgets", "--project-name", "Widgets", "--project-id", "widgets",
+            *remote_flags,
+        ])
+    assert result.exit_code == 0, result.output
+    actual = client.execute.await_args.args[1]
+    assert expected.items() <= actual.items()
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("--repo-url", "https://github.com/acme/widgets"),
+    ("--create-repo", "acme/widgets"),
+])
+def test_project_create_remote_flags_reach_server(runner, flag, value):
+    from src.cli.app import cli
+
+    client = _client({"create_project": {"success": True, "created": "widgets", "name": "Widgets"}})
+    with patch("src.cli.app._get_client", return_value=client):
+        result = runner.invoke(cli, [
+            "--json", "project", "create", "--name", "Widgets", flag, value,
+            "--private", "--root-id", "dev", "--request-id", "widgets-create",
+        ])
+    assert result.exit_code == 0, result.output
+    args = client.execute.await_args.args[1]
+    assert args[flag[2:].replace("-", "_")] == value
+    assert args["private"] is True
+    assert args["request_id"] == "widgets-create"
+    assert "default_branch" not in args

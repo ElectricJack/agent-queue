@@ -2,7 +2,6 @@
 
 from sqlalchemy import cast, literal, select
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.sql.elements import ColumnElement
 
 #: Historical publisher observation of an absent, commit-less source. It is no
 #: longer written or read: an absent ref is never an empty artifact.
@@ -38,14 +37,3 @@ def legacy_artifact(task):
         marker.c.key == LEGACY_ARTIFACT_KEY,
         fact["completion_id"].as_string().is_not_distinct_from(latest_id),
     ).correlate(task).exists()
-
-
-def has_publishable_artifact(branch_name):
-    """A branch identity can name a publishable source.
-
-    Accept a SQLAlchemy column for readiness predicates or a loaded value for
-    the publisher.
-    """
-    if isinstance(branch_name, ColumnElement):
-        return branch_name.is_not(None)
-    return branch_name is not None

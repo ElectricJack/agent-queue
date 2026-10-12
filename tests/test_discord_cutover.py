@@ -4,9 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import delete, update
 
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
+from src.database.tables import escalation_deliveries, escalations
 from src.discord.cutover import LegacyBinding, LegacyConversationMigrator, run_discord_cutover
 from src.models import Project, Task
 from tests.db_fixtures import lease_dsn
@@ -98,7 +100,8 @@ async def test_pending_conversations_migrate_once_and_old_state_is_unchanged(db)
         requires_human=False,
     )
     gate_id, _ = await db.create_gate(
-        "p", "human", "Approve rollout", question="Proceed?", await_id="legacy-gate"
+        "p", "human", "Approve rollout", question="Proceed?", await_id="legacy-gate",
+        waiter_task_ids=["t"],
     )
     await db.create_gate("p", "timer", "Wait", await_id="machine-gate")
     binding = LegacyBinding("question", "q-open", "123", "456")
@@ -130,6 +133,16 @@ async def test_pending_conversations_migrate_once_and_old_state_is_unchanged(db)
     assert await db.list_escalation_deliveries("escalation-q-answered") == []
     assert await db.get_pending_messages("session", "supervisor-p") == []
 
+    gate_incident = await db.get_escalation(f"escalation-gate-{gate_id}")
+    assert gate_incident["task_title"] == "Needs a decision"
+    assert "Project p" in gate_incident["summary"]
+    assert "Proceed?" in gate_incident["investigation"]
+    assert "blocks 1 task(s): Needs a decision" in gate_incident["investigation"]
+    assert gate_incident["deep_link"] == f"/focus/escalations/escalation-gate-{gate_id}"
+    [gate_root] = await db.list_escalation_deliveries(gate_incident["id"])
+    assert gate_root["status"] == "pending"
+    assert gate_root["attempt_count"] == 0
+
     open_question = await db.get_agent_question("q-open")
     answered_question = await db.get_agent_question("q-answered")
     assert open_question["state"] == "human"
@@ -146,7 +159,54 @@ async def test_a_legacy_root_is_adopted_only_in_the_selected_channel(db):
 
     assert report.migrated_questions == 1
     assert report.adopted_roots == 0
-    assert await db.list_escalation_deliveries("escalation-q-other-channel") == []
+    [root] = await db.list_escalation_deliveries("escalation-q-other-channel")
+    assert root["status"] == "pending"
+    assert root["channel_id"] is None
+
+
+async def test_accepted_legacy_answer_failure_cannot_expose_a_new_delivery(db, monkeypatch):
+    await add_question(db, "q-answered", state="answered", answer="Use option B")
+    append = db.append_escalation_message
+
+    async def fail_after_append(*args, **kwargs):
+        await append(*args, **kwargs)
+        raise RuntimeError("answer preservation failed")
+
+    monkeypatch.setattr(db, "append_escalation_message", fail_after_append)
+    with pytest.raises(RuntimeError, match="answer preservation failed"):
+        await LegacyConversationMigrator(db, clock=lambda: 10.0).run(channel_id="123")
+    assert await db.get_escalation("escalation-q-answered") is None
+    assert await db.list_escalation_deliveries("escalation-q-answered") == []
+    assert await db.list_escalation_messages("escalation-q-answered") == []
+
+
+async def test_existing_contextless_gate_is_repaired_before_missing_delivery_is_queued(db):
+    gate_id, _ = await db.create_gate(
+        "p", "human", "Approve task batch?", question="Proceed with the producer tasks?",
+        waiter_task_ids=["t"],
+    )
+    migrator = LegacyConversationMigrator(db, clock=lambda: 10.0)
+    await migrator.run(channel_id="123")
+    incident_id = f"escalation-gate-{gate_id}"
+    # Simulate the exact snapshot and missing outbox produced before the fix.
+    async with db.immediate() as conn:
+        await conn.execute(update(escalations).where(escalations.c.id == incident_id).values(
+            task_title=None, summary="Approve task batch?",
+            investigation="Migrated from a pending legacy Discord gate card.",
+        ))
+        await conn.execute(delete(escalation_deliveries).where(
+            escalation_deliveries.c.escalation_id == incident_id,
+        ))
+    await migrator.run(channel_id="123")
+    repaired = await db.get_escalation(incident_id)
+    assert repaired["task_title"] == "Needs a decision"
+    assert "blocks 1 task(s)" in repaired["investigation"]
+    assert repaired["revision"] == 1
+    [root] = await db.list_escalation_deliveries(incident_id)
+    assert root["status"] == "pending"
+    await migrator.run(channel_id="123")
+    assert await db.get_escalation(incident_id) == repaired
+    assert len(await db.list_escalation_deliveries(incident_id)) == 1
 
 
 async def test_one_legacy_destination_name_maps_to_its_unique_channel_id():

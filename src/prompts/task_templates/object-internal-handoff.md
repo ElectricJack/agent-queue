@@ -1,0 +1,1 @@
+This is an internal object experiment, with no implicit human-review deliverable. Record evidence in the held task's notes and retained artifacts. Any necessary score, probe, capture or continuation review goes only to the project supervisor. Send blockers and technical detail to that supervisor. Jack needs a single plain-English sentence only if he must act.

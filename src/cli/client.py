@@ -91,6 +91,7 @@ _DEFAULT_TIMEOUT = 30.0
 # Per-command read timeouts (seconds) for commands that run an LLM or other
 # long operations server-side. Anything not listed uses _DEFAULT_TIMEOUT.
 _COMMAND_TIMEOUTS: dict[str, float] = {
+    "session_cleanup": 600.0,
     # Both long-poll (clamped to swarm.claim_wait_max, default well under
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
     "task_claim": 180.0,
@@ -100,7 +101,26 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     "integration_trust_manifest": 90.0,
     # Binding, token mint, and a bounded set of reads (variables, workflow files).
     "integration_app_verify": 180.0,
-    # A page stops starting Git batches after 45s (provenance_migration).
+    # A namespace-migration page validates, copies and leases each old head's deletion.
+    "integration_migrate_provenance_refs": 600.0,
+    # Doctor runs every check concurrently, each under its own timeout (the
+    # longest, git.stale_branches, integration.legacy_deliveries and
+    # integration.completed_undelivered, allow 300s);
+    # the read timeout must outlast them or a
+    # full `aq doctor` reports "no complete response" while checks still run.
+    "doctor": 330.0,
+    # Train controls observe the root target first: a git fetch plus a PR
+    # check read for every pending root, which on a busy install outlasts 30s
+    # (seal-now's preview, refresh-epic --apply, retire-origin all timed out
+    # live on 2026-10-06). The daemon finishes the command either way, so a
+    # short read timeout only hides the answer from the operator.
+    "integration_seal_now": 300.0,
+    "integration_refresh_epic": 300.0,
+    "integration_retire_origin": 300.0,
+    "integration_pause_batch": 180.0,
+    "integration_resume_batch": 180.0,
+    "integration_abort_batch": 180.0,
+    "integration_eject": 180.0,
 }
 
 
@@ -544,8 +564,18 @@ class PluginClient:
     async def connect(self) -> None:
         if is_postgres_url(self._db_url):
             from src.database.adapters.postgresql import PostgreSQLDatabaseAdapter
+            from src.database.migration_guard import SchemaAheadPolicy
 
-            self._db = PostgreSQLDatabaseAdapter(self._db_url, pool_min=1, pool_max=2)
+            db_config = _resolve_db_config() or {}
+            self._db = PostgreSQLDatabaseAdapter(
+                self._db_url,
+                pool_min=1,
+                pool_max=2,
+                schema_ahead_policy=SchemaAheadPolicy(
+                    db_config.get("schema_ahead_migrations", ""),
+                    db_config.get("schema_ahead_max_revisions"),
+                ),
+            )
         else:
             from src.database import Database
 

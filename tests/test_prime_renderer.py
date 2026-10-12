@@ -18,7 +18,7 @@ import pytest
 from tests.db_fixtures import lease_dsn
 
 from src.config import AppConfig, DatabaseConfig
-from src.models import AgentProfile, Project, SessionRecord, Task, TaskType
+from src.models import AgentProfile, Project, ProjectStatus, SessionRecord, Task, TaskType
 from src.prime import PrimeRenderer
 from src.prime.models import PrimeDocument, PrimeSection
 from src.profiles.parser import parse_profile
@@ -65,6 +65,21 @@ def _write(path, content: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+@pytest.mark.parametrize("override", [False, True])
+async def test_paused_project_instruction_survives_local_override(db, config, task, tmp_path, override):
+    await db.update_project(task.project_id, status=ProjectStatus.PAUSED)
+    if override:
+        _write(str(tmp_path / ".aq" / "PRIME.md"), "Local task instructions.")
+    renderer = PrimeRenderer(db, config)
+    markdown = (await renderer.render_for_task(task.id, work_dir=str(tmp_path))).to_markdown()
+    assert "## Project paused" in markdown
+    assert "next safe point" in markdown
+    assert "pending wait completing" in markdown
+    await db.update_project(task.project_id, status=ProjectStatus.ACTIVE)
+    resumed = (await renderer.render_for_task(task.id, work_dir=str(tmp_path))).to_markdown()
+    assert "## Project paused" not in resumed
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +318,52 @@ class TestGoldenAssembly:
 
 
 class TestTaskContextSection:
+    async def test_worker_previews_bound_description_and_context_but_keep_protocol(
+        self, db, config, task
+    ):
+        from src.prime.budgets import CONTEXT_BYTES, DESCRIPTION_BYTES
+        from src.sessions.worker_recovery import CONTINUATION_KEY
+
+        description = "Requested work.\n" + "big brief " * 5000 + "EXACT ACCEPTANCE AT END"
+        await db.update_task(task.id, description=description)
+        await db.add_task_context(task.id, type="note", label="huge", content="context " * 10000)
+        await db.set_task_meta(task.id, CONTINUATION_KEY, {"cause": "context_thrash",
+            "count": 1, "progress": [{"body": "parser implemented; verify next"}]})
+        doc = await PrimeRenderer(db, config).render_for_task(task.id)
+        sections = {s.key: s.body for s in doc.sections}
+        assert len(sections["task_context"].encode()) <= CONTEXT_BYTES
+        assert "parser implemented" in sections["task_context"]
+        assert "--field prime_context" in sections["task_context"]
+        assert "--field description" in sections["task"]
+        assert len(sections["task"].encode()) < DESCRIPTION_BYTES + 500
+        assert "aq task close" in sections["completion_protocol"]
+        assert (await db.get_task(task.id)).description == description
+        full = await PrimeRenderer(db, config).render_for_task(task.id, bounded_worker=False)
+        assert "EXACT ACCEPTANCE AT END" in full.to_markdown()
+
+    async def test_oversized_spec_context_keeps_current_repair_authority(
+        self, db, config, task, monkeypatch
+    ):
+        from dataclasses import replace
+        from unittest.mock import AsyncMock
+        from src.prime.sections import build_task_context_section
+        from src.prime.budgets import CONTEXT_BYTES
+
+        spec_rel = "projects/proj-1/specs/large.md"
+        _write(os.path.join(config.vault_root, spec_rel), "## Contract\n" + "schema " * 10000)
+        await db.add_task_context(task.id, type="spec_ref", label="contract",
+                                  content=json.dumps({"path": spec_rel, "section": "Contract"}))
+        snapshot = {"intent_id": "live-intent", "operation_id": "live-operation", "fence": 7}
+        monkeypatch.setattr(db, "get_parent_repair_prime_context", AsyncMock(return_value=snapshot))
+        section = await build_task_context_section(
+            db, config, replace(task, created_by_kind="integration_repair"),
+            session_id="worker", bounded_worker=True,
+        )
+        assert '"intent_id": "live-intent"' in section.body
+        assert '"fence": 7' in section.body
+        assert "--field prime_context" in section.body
+        assert len(section.body.encode()) < CONTEXT_BYTES + 1000
+
     async def test_note_context_row_is_inlined(self, db, config, task):
         await db.add_task_context("task-1", type="note", label="note", content="hello there")
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
@@ -533,12 +594,41 @@ class TestMemoryPausedSlots:
 
 
 class TestStaticSections:
-    async def test_tool_guidance_mentions_cli_and_nine_tools(self, db, config, task):
+    async def test_tool_guidance_mentions_cli_and_canonical_tools(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = {s.key: s.body for s in doc.sections}["tool_guidance"]
         assert "aq " in body
-        for name in ("task_show", "task_set", "memory_search"):
+        for name in ("task_show", "task_set", "aq knowledge", "aq record", "aq-knowledge"):
             assert name in body
+
+    async def test_tool_guidance_authorizes_local_commits_and_guards_publication(
+        self, db, config, task
+    ):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = " ".join({s.key: s.body for s in doc.sections}["tool_guidance"].split())
+        for required in (
+            "Commit with plain `git` in your own worktree",
+            "`aq git commit` is a daemon-side command unavailable to worker scope",
+            "`out of scope: git_commit` is expected",
+            "A local `git commit` is authorized and is not a bypass",
+            "For a first publication of a new task branch or a later fast-forward update",
+            "`aq git push --expected-remote-oid <your-last-observed-remote-oid>`",
+            "must name the remote OID you last observed for your own branch, never another",
+            "never guess a lease or use plain `git push`",
+            "Never bypass any other AQ rejection",
+            "The daemon injects",
+            "into task and pool worker sessions",
+            "project override, else installation default, else",
+            "`Agent Queue <agent-queue@localhost>` (`src/git/identity.py`)",
+            "do not set an identity yourself or change Git config",
+            "If they are absent, report the launch bug",
+            "Never pass `--no-verify` or amend a pushed commit",
+        ):
+            assert required in body, required
+        for variable in (
+            "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"
+        ):
+            assert variable in body, variable
 
     async def test_tool_guidance_carries_test_scope_and_baseline_policy(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
@@ -651,7 +741,7 @@ class TestStaticSections:
             assert "--expected-remote-oid" not in body
         else:
             assert "## Prepare feature history before review" in body
-            assert "aq git push --expected-remote-oid <pushed-oid>" in body
+            assert "aq git push --expected-remote-oid <your-last-observed-remote-oid>" in body
 
     @pytest.mark.parametrize("lifecycle", [None, "pool"])
     async def test_completion_protocol_renders_emergent_work_guidance(
@@ -997,6 +1087,7 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq test": None,
     # The ``[aq question answered]`` marker AQ itself types, not a command.
     "aq question answered": None,
+    "aq git commit": "git_commit",
     "aq git push": "git_push",
     "aq git create-pr": "git_create_pr",
     "aq agent profile-reseed": "profile_reseed",
@@ -1027,6 +1118,11 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq message inbox": "message_inbox",
     "aq message reply": "message_reply",
     "aq message send": "message_send",
+    "aq knowledge create": "knowledge_create",
+    "aq knowledge show": "knowledge_show",
+    "aq knowledge update": "knowledge_update",
+    "aq record capabilities": "record_capabilities",
+    "aq record search": "record_search",
     "aq memory save": "memory_save",
     "aq memory search": "memory_search",
     "aq project ready": "project_ready",
@@ -1108,12 +1204,17 @@ class TestStaticGuidanceStaysOnTheAgentSurface:
         assert _CLI_TO_COMMAND["aq task list"] not in AGENT_COMMAND_SET
         assert "out of scope" not in stale
 
-    async def test_a_refused_command_named_with_its_refusal_is_allowed(self):
+    @pytest.mark.parametrize(
+        ("phrase", "command"), [("aq doctor", "doctor_run"), ("aq git commit", "git_commit")]
+    )
+    async def test_a_refused_command_named_with_its_refusal_is_allowed(self, phrase, command):
         """Naming an operator command as a counterexample stays legal."""
-        from src.api.scope import AGENT_COMMAND_SET
+        from src.api.scope import AGENT_COMMAND_SET, _WORKER_GIT_COMMANDS
 
-        marked = "Operator surfaces (`aq doctor`) answer `out of scope: <command>`."
-        assert _CLI_TO_COMMAND["aq doctor"] not in AGENT_COMMAND_SET
+        marked = f"Worker scope refuses `{phrase}` with `out of scope: {command}`."
+        assert _aq_phrases(marked) == {phrase}
+        assert _CLI_TO_COMMAND[phrase] == command
+        assert command not in AGENT_COMMAND_SET | _WORKER_GIT_COMMANDS
         assert "out of scope" in marked
 
 
@@ -1229,7 +1330,7 @@ async def test_compact_protocol_preserves_shared_rules_and_role_specific_close(l
         "held-1", lifecycle=lifecycle, development=development,
     ).body
     assert body.count("aq task close held-1") == 1
-    assert ("aq session drain-ack" in body) == (lifecycle == "task")
+    assert "aq session drain-ack" in body
     assert "aq task heartbeat held-1" in body
     assert "aq task comment held-1" in body
     assert "--expected-description" in body
@@ -1237,7 +1338,8 @@ async def test_compact_protocol_preserves_shared_rules_and_role_specific_close(l
         assert rule in body
     if lifecycle == "pool":
         for rule in ("--claim-next", ".aq/claim.json", "stale_claim", "daemon_unreachable",
-                     "ambiguous close", "drain_requested/session_exhausted"):
+                     "ambiguous close", "drain_requested/session_exhausted", "retry_after",
+                     "report the blocker ONCE", "If preparation is retained, preserve it"):
             assert rule in body
     guidance = build_tool_guidance_section().body
     for rule in ("AGENTS.md/CLAUDE.md", "directory instructions", "SKILL.md", "catalogue",

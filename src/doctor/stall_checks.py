@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from collections import Counter
@@ -25,11 +26,17 @@ from src.database.tables import (
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import ProjectStatus, TaskStatus
 
+logger = logging.getLogger(__name__)
+
 CHECK_ID = "stall.sweep"
 _STUCK_CHILD_AFTER_SECONDS = 5 * 60
 _MAX_PR_PROBES = 20
 _PARENT_PR_PROBE_SECONDS = 2.0
 _PARENT_PR_PROBE_BUDGET_SECONDS = 10.0
+#: The completed-undelivered read shares one repository snapshot per project;
+#: past this the sweep leaves it to ``aq doctor --check integration.completed_undelivered``.
+_COMPLETED_UNDELIVERED_BUDGET_SECONDS = 30.0
+_CONTINUOUS_PROMOTION_BUDGET_SECONDS = 15.0
 _READY_AGE = 20 * 60
 _DEFINED_AGE = 30 * 60
 _DELIVERY_LAG = 45 * 60
@@ -199,6 +206,28 @@ async def _session_findings(ctx: DoctorContext, active: set[str], tasks: list, n
     sessions = await ctx.db.list_sessions()
     ready = Counter(t.profile_id for t in tasks if t.status is TaskStatus.READY)
     findings: list[dict] = []
+    for session in sessions:
+        failures = getattr(session, "claim_failure_count", 0)
+        phase = getattr(session, "claim_phase", None)
+        matching_ready = sum(
+            t.status is TaskStatus.READY and t.project_id == session.project_id
+            and t.profile_id == session.profile_id for t in tasks
+        )
+        if (session.project_id in active and session.lifecycle == "pool"
+                and session.state in {"running", "starting"}
+                and getattr(session, "claims", None) == 0
+                and phase not in {"active", "claiming"}
+                and (phase != "preparing" or failures)
+                and now - session.started_at >= _SESSION_IDLE
+                and (matching_ready or failures)):
+            findings.append(_finding(
+                "pool_without_claim", session.project_id,
+                f"{session.name} has activated no claim in "
+                f"{int((now-session.started_at)/60)}m; {matching_ready} READY on "
+                f"{session.profile_id}; {failures} identical preparation refusals"
+                + (f": {(session.claim_failure_reason or '')[:200]}" if failures else ""),
+                session_name=session.name, ready=matching_ready, claim_failure_count=failures,
+            ))
     idle_sessions = [
         session for session in sessions
         if session.project_id in active
@@ -357,51 +386,11 @@ async def _provider_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
     return findings
 
 
-async def _local_model_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
-    """Unfinished work at or above the local-model priority threshold on a local profile.
-
-    The router keeps such work off a self-hosted model (``local_models``); a
-    hit is an override or a route that predates the gate.  The threshold is
-    the policy default, since the project's policy lives in its playbook.
-    """
-    from src.commands.routing_commands import profile_provider
-    from src.routing.planner import LOCAL_MODEL_PROVIDERS
-    from src.routing.policy import LocalModels
-
-    threshold = LocalModels().below_priority
-    flagged = [
-        task for task in tasks
-        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}
-        and task.profile_id and (task.priority or 0) >= threshold
-    ]
-    if not flagged:
-        return []
-    registry = getattr(getattr(ctx.handler, "orchestrator", None), "harness_registry", None)
-    profiles = {profile.id: profile for profile in await ctx.db.list_profiles()}
-    findings = []
-    for task in flagged:
-        profile = profiles.get(task.profile_id)
-        if profile is None or (
-            profile_provider(profile, registry, task.project_id) not in LOCAL_MODEL_PROVIDERS
-        ):
-            continue
-        # ``task route`` refuses claimed and running work: stop it first.
-        queued = task.status in {TaskStatus.READY, TaskStatus.DEFINED}
-        findings.append(_finding(
-            "high_priority_local_model", task.project_id,
-            f"{task.id} [{task.status.value}] priority {task.priority} sits on local "
-            f"{task.profile_id} (local models take priority < {threshold}); "
-            + ("" if queued else "stop it, then ") + f"aq task route --task-id {task.id}",
-            task_id=task.id, profile_id=task.profile_id, priority=task.priority,
-        ))
-    return findings
-
-
 async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
     checkpoint = task_integration_checkpoints
     origin = task_branch_origins
     async with ctx.db._engine.connect() as conn:
-        rows = (await conn.execute(
+        rows = await _mapping_rows(conn,
             select(task_table.c.id, task_table.c.project_id, task_table.c.pr_url)
             .select_from(
                 task_table.join(project_table, project_table.c.id == task_table.c.project_id)
@@ -419,13 +408,50 @@ async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> l
                 or_(checkpoint.c.task_id.is_(None), origin.c.id.is_(None)),
             )
             .order_by(task_table.c.id).limit(100)
-        )).mappings().all()
+        )
     return [
         _finding("unmaterialized_train_pr", row["project_id"],
                  f"{row['id']} has a PR but is missing a train checkpoint or live origin; "
                  f"run aq integration materialize-root {row['id']}",
                  task_id=row["id"], pr_url=row["pr_url"])
         for row in rows
+    ]
+
+
+async def _completed_undelivered_findings(
+    ctx: DoctorContext, active: set[str], now: float,
+) -> list[dict]:
+    """COMPLETED tasks whose branch holds work nothing will deliver or retire.
+
+    The same read as ``integration.completed_undelivered``; only its findings
+    surface here.  A repository that cannot be read in the budget, or at all,
+    is that check's to report, not a stall.
+    """
+    from src.doctor.integration_checks import completed_undelivered
+
+    try:
+        inventory = await asyncio.wait_for(
+            completed_undelivered(ctx, project_ids=active, now=now),
+            _COMPLETED_UNDELIVERED_BUDGET_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning("stall sweep: completed-undelivered read exceeded %ss",
+                       _COMPLETED_UNDELIVERED_BUDGET_SECONDS)
+        return []
+    except Exception:
+        # The only sweep line that fetches a repository: its failure is the
+        # doctor check's to report, never a reason to lose every other line.
+        logger.warning("stall sweep: completed-undelivered read failed", exc_info=True)
+        return []
+    return [
+        _finding(
+            "completed_undelivered", entry["project_id"],
+            f"{entry['task_id']} is COMPLETED but {entry['branch']} holds work the default "
+            f"branch cannot reach: {entry['reason']}; {entry['remedy']}",
+            **{key: value for key, value in entry.items() if key != "project_id"},
+        )
+        for entry in inventory["entries"]
+        if not entry["accounted"] and entry["rule"] != "unknown"
     ]
 
 
@@ -476,14 +502,27 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     now = time.time()
     projects = await ctx.db.list_projects(status=ProjectStatus.ACTIVE)
     active = {project.id for project in projects}
-    from src.doctor.session_checks import _check_flock
+    from src.integration.delivery_engine import project_delivery_issues
 
-    flock = await _check_flock(ctx)
+    delivery_engines = [
+        _finding("delivery_engine_unavailable", severity="error", **issue)
+        for issue in await project_delivery_issues(
+            ctx.db, projects, ctx.config,
+            orchestrator=getattr(ctx.handler, "orchestrator", None),
+        )
+    ]
+    from src.doctor.session_checks import _check_flock, session_authentication_findings
+
     flock_findings = [
         _finding("flock_untracked", entry.get("project_id"), entry["detail"],
                  evidence=entry, severity="error")
-        for entry in flock.data.get("findings", [])
+        for entry in (await _check_flock(ctx)).data.get("findings", [])
     ]
+    flock_findings.extend(
+        _finding("session_authentication", item["project_id"], item["detail"],
+                 severity="error", evidence=item, session_id=item["session_id"])
+        for item in await session_authentication_findings(ctx, now=now)
+    )
     # An unowned conversation input is a stall whether or not a project is
     # active, so this line is read before the empty-install return.
     conversation = await _conversation_findings(ctx, now)
@@ -498,12 +537,13 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     # additionally capped at eight to keep the complete sweep under a minute.
     groups = await asyncio.gather(
         _work_findings(ctx, tasks, now, explains),
+        _container_dependency_findings(ctx, active),
         _branch_findings(ctx, active, explains),
         _session_findings(ctx, active, tasks, now),
         _delivery_findings(ctx, active, tasks, now),
         _provider_findings(ctx, tasks),
-        _local_model_findings(ctx, tasks),
         _unmaterialized_pr_findings(ctx, active),
+        _completed_undelivered_findings(ctx, active, now),
         _unadmitted_parent_findings(ctx, active),
         _stranded_child_findings(ctx, now),
         _reviewed_file_guard_findings(ctx, active),
@@ -512,12 +552,89 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _validation_findings(),
         _subject_unknown_findings(ctx, active, now),
         _object_bootstrap_findings(ctx, active, now),
+        _worker_relaunch_findings(ctx, tasks),
+        _continuous_promotion_findings(ctx, active, now),
+        _escalation_delivery_findings(ctx, active, now),
     )
-    findings = (
-        [item for group in groups for item in group]
-        + _route_findings(tasks) + flock_findings + conversation
-    )
+    findings = [item for group in groups for item in group]
+    findings.extend(_route_findings(tasks) + flock_findings + conversation + delivery_engines)
     return _sweep_result(ctx, findings, len(active))
+
+
+async def _container_dependency_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    from src.doctor.task_checks import container_dependency_report
+
+    report = await container_dependency_report(ctx, project_ids=active)
+    findings = [
+        _finding(
+            "container_dependency", edge["project_id"],
+            f"{edge['task_id']} [{edge['status']}] has a {edge['dep_type']} edge to container "
+            f"{edge['depends_on']}; retarget to the prerequisite leaf or confirm operator fan-in",
+            **{key: value for key, value in edge.items() if key != "project_id"},
+        )
+        for edge in report["edges"]
+    ]
+    if report["truncated"]:
+        findings.append(_finding(
+            "container_dependencies_truncated", None,
+            "container dependency report capped at 50 edges; resolve findings and rerun",
+        ))
+    return findings
+
+
+async def _escalation_delivery_findings(ctx, active, now):
+    from src.doctor.escalation_checks import undelivered_escalations
+
+    return [
+        _finding("escalation_undelivered", item["project_id"], item["detail"],
+                 **{key: value for key, value in item.items() if key not in {"project_id", "detail"}})
+        for item in await undelivered_escalations(ctx, now=now, project_ids=active)
+    ]
+
+
+async def _continuous_promotion_findings(ctx, active, now):
+    from src.doctor.integration_checks import continuous_promotion_lag
+
+    try:
+        async with asyncio.timeout(_CONTINUOUS_PROMOTION_BUDGET_SECONDS):
+            report = await continuous_promotion_lag(ctx, project_ids=active, now=now)
+    except Exception as exc:
+        return [_finding("continuous_promotion_observation_unavailable", None,
+                         f"continuous promotion branch read unavailable: {type(exc).__name__}; "
+                         "run aq doctor --check integration.continuous_promotion_lag")]
+    return [
+        _finding("continuous_promotion_lag", item["project_id"], item["detail"],
+                 **{key: value for key, value in item.items() if key not in {"project_id", "detail"}})
+        for item in report["findings"]
+    ] + [
+        _finding("continuous_promotion_observation_unavailable", item["project_id"],
+                 item["reason"], evidence=item)
+        for item in report["unavailable"]
+    ]
+
+
+async def _worker_relaunch_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
+    """Persistent cause streaks outlive the discarded pool session rows."""
+    from src.sessions.worker_recovery import STREAK_KEY
+
+    read = getattr(ctx.db, "get_task_meta_bulk", None)
+    records = await read([task.id for task in tasks], STREAK_KEY) if callable(read) else {}
+    findings = []
+    for task in tasks:
+        record = records.get(task.id)
+        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+            continue
+        if (not isinstance(record, dict) or type(record.get("count")) is not int
+                or record["count"] < 2):
+            continue
+        findings.append(_finding(
+            "worker_relaunch_loop", task.project_id,
+            f"Task {task.id}: {record['count']} consecutive {record.get('cause')} incidents; "
+            f"status {task.status.value}. Inspect its recovery note before restarting.",
+            task_id=task.id, cause=record.get("cause"), count=record["count"],
+            session_id=record.get("session_id"), observed_at=record.get("observed_at"),
+        ))
+    return findings
 
 
 async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
@@ -595,28 +712,24 @@ async def _stranded_child_findings(ctx: DoctorContext, now: float) -> list[dict]
     )
 
     async with ctx.db._engine.connect() as conn:
-        rows = (
-            await conn.execute(
-                stranded_child_statement(
-                    completed_before=now - STRANDED_CHILD_AFTER_SECONDS
-                )
-            )
-        ).mappings().all()
-    findings = []
-    for row in rows:
-        minutes = int((now - row["updated_at"]) / 60)
-        findings.append(_finding(
+        rows = await _mapping_rows(conn, stranded_child_statement(
+            completed_before=now - STRANDED_CHILD_AFTER_SECONDS,
+        ))
+    return [
+        _finding(
             "stranded_child",
             row["project_id"],
-            f"{row['task_id']} completed {minutes}m ago on branch {row['branch']} with "
+            f"{row['task_id']} completed {int((now - row['updated_at']) / 60)}m ago "
+            f"on branch {row['branch']} with "
             f"no pull request and no delivery, and its container {row['parent_task_id']} "
             f"is {row['parent_status']} "
             f"(checkpoint {_row(row, 'parent_state')}, operation "
             f"{_row(row, 'operation_state')}, Subject {_row(row, 'subject_phase')}); "
             "no collector will carry it",
             **{key: value for key, value in row.items() if key != "project_id"},
-        ))
-    return findings
+        )
+        for row in rows
+    ]
 
 
 def _row(row, key: str) -> str:
@@ -658,7 +771,7 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
         _ACTIVE_BATCH_LIFECYCLES,
         _root_delivery_receipt_conditions,
     )
-    from src.integration.review_evidence import ReviewEvidenceProducer
+    from src.integration.reviews import ReviewEvidenceProducer
 
     child, archived = t.tasks.alias("unadmitted_child"), t.archived_tasks.alias("unadmitted_archived")
     statement = select(
@@ -744,104 +857,53 @@ async def _find_stranded_dependents(
     *,
     candidate_statuses: tuple[TaskStatus, ...] = (TaskStatus.COMPLETED,),
 ) -> list[dict]:
-    """Find candidates held behind a cleaned-up commits-less delivery.
+    """Find candidates blocked by a cleaned-up delivery and empty latest completion.
 
-    A delivered manifest normally makes its source durable enough to survive
-    branch cleanup. Older publisher builds consulted an empty completion first,
-    however, and silently marked that blocker unavailable. The cleanup record
-    is the durable evidence that this is that specific failure mode; a merely
-    completed task with no commits is not enough to warrant an alarm.  Whether
-    the dependent itself is already delivered is git's answer.
+    Older publishers treated such blockers as unavailable despite the durable
+    manifest. Cleanup proves this specific failure; a completed task with no
+    commits alone warrants no alarm. Git decides if the dependent is delivered.
     """
 
-    from src.database.tables import (
-        projects,
-        task_completion_records,
-        task_dependencies,
-        tasks,
-    )
+    from src.database.tables import projects, task_completion_records, task_dependencies, tasks
 
     async with ctx.db._engine.connect() as conn:
-        development = set(
-            (
-                await conn.execute(
-                    select(projects.c.id).where(
-                        projects.c.hierarchical_integration_mode == "development"
-                    )
-                )
-            ).scalars()
-        )
+        development = set((await conn.execute(select(projects.c.id).where(
+            projects.c.hierarchical_integration_mode == "development",
+        ))).scalars())
         if not development:
             return []
-        candidates = (
-            (
-                await conn.execute(
-                    select(tasks.c.id, tasks.c.project_id)
-                    .where(
-                        tasks.c.project_id.in_(development),
-                        tasks.c.status.in_(tuple(status.value for status in candidate_statuses)),
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+        candidates = await _mapping_rows(conn, select(tasks.c.id, tasks.c.project_id).where(
+            tasks.c.project_id.in_(development),
+            tasks.c.status.in_(tuple(status.value for status in candidate_statuses)),
+        ))
         candidate_projects = {row["id"]: row["project_id"] for row in candidates}
         if not candidate_projects:
             return []
-        links = (
-            (
-                await conn.execute(
-                    select(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id)
-                    .where(
-                        task_dependencies.c.task_id.in_(candidate_projects),
-                        task_dependencies.c.dep_type.in_(("blocks", "waits-for", "conditional-blocks")),
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+        links = await _mapping_rows(conn, select(
+            task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id,
+        ).where(
+            task_dependencies.c.task_id.in_(candidate_projects),
+            task_dependencies.c.dep_type.in_(("blocks", "waits-for", "conditional-blocks")),
+        ))
         blocker_ids = {link["depends_on_task_id"] for link in links}
         if not blocker_ids:
             return []
         blockers = {
-            row["id"]: row
-            for row in (
-                (
-                    await conn.execute(
-                        select(tasks.c.id, tasks.c.project_id, tasks.c.status)
-                        .where(tasks.c.id.in_(blocker_ids))
-                    )
-                )
-                .mappings()
-                .all()
-            )
+            row["id"]: row for row in await _mapping_rows(conn, select(
+                tasks.c.id, tasks.c.project_id, tasks.c.status,
+            ).where(tasks.c.id.in_(blocker_ids)))
         }
         completions = {}
-        for row in (
-            (
-                await conn.execute(
-                    select(
-                        task_completion_records.c.task_id,
-                        task_completion_records.c.id,
-                        task_completion_records.c.commits,
-                    )
-                    .where(task_completion_records.c.task_id.in_(blocker_ids))
-                    .order_by(
-                        task_completion_records.c.task_id,
-                        task_completion_records.c.completed_at.desc(),
-                        task_completion_records.c.id.desc(),
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        ):
+        for row in await _mapping_rows(conn, select(
+            task_completion_records.c.task_id, task_completion_records.c.id,
+            task_completion_records.c.commits,
+        ).where(task_completion_records.c.task_id.in_(blocker_ids)).order_by(
+            task_completion_records.c.task_id, task_completion_records.c.completed_at.desc(),
+            task_completion_records.c.id.desc(),
+        )):
             completions.setdefault(row["task_id"], row)
         from src.integration.development import operation_rows_on
         rows = await operation_rows_on(conn, development)
-
 
     stranded = {}
     for row in rows:
@@ -870,16 +932,11 @@ async def _find_stranded_dependents(
                 if candidate_projects.get(dependent_id) != row["project_id"]:
                     continue
                 key = (dependent_id, blocker_id)
-                stranded.setdefault(
-                    key,
-                    {
-                        "project_id": row["project_id"],
-                        "dependent_task_id": dependent_id,
-                        "blocker_task_id": blocker_id,
-                        "delivery_id": row["id"],
-                        "source_sha": source_sha,
-                    },
-                )
+                stranded.setdefault(key, {
+                    "project_id": row["project_id"], "dependent_task_id": dependent_id,
+                    "blocker_task_id": blocker_id, "delivery_id": row["id"],
+                    "source_sha": source_sha,
+                })
     # A dependent whose own work git already finds on its target is not
     # stranded, whatever its blocker's history.  Git answers that, not a
     # delivery row; without an observer nothing is proven and all are listed.
@@ -914,37 +971,18 @@ async def _find_reviewed_file_blocked_batches(ctx: DoctorContext) -> list[dict]:
         integration_repair_stages,
     )
     async with ctx.db._engine.connect() as conn:
-        rows = (
-            (
-                await conn.execute(
-                    select(
-                        batch.c.id.label("batch_id"),
-                        batch.c.project_id,
-                        batch.c.current_revision,
-                        operation.c.id.label("operation_id"),
-                        stage.c.repair_task_id,
-                        stage.c.dossier,
-                    )
-                    .select_from(
-                        batch.join(operation, operation.c.batch_id == batch.c.id).join(
-                            stage,
-                            (stage.c.operation_id == operation.c.id)
-                            & (stage.c.ordinal == operation.c.active_stage),
-                        )
-                    )
-                    .where(
-                        batch.c.lifecycle.in_(("repairing", "human_blocked")),
-                        operation.c.state.in_(("active", "escalated", "human_required")),
-                        stage.c.dossier["reviewed_file_guard"]["invariant"]
-                        .as_string()
-                        .in_(REVIEWED_FILE_GUARDS),
-                    )
-                    .order_by(batch.c.id)
-                )
-            )
-            .mappings()
-            .all()
-        )
+        rows = await _mapping_rows(conn, select(
+            batch.c.id.label("batch_id"), batch.c.project_id, batch.c.current_revision,
+            operation.c.id.label("operation_id"), stage.c.repair_task_id, stage.c.dossier,
+        ).select_from(batch.join(operation, operation.c.batch_id == batch.c.id).join(
+            stage, (stage.c.operation_id == operation.c.id)
+            & (stage.c.ordinal == operation.c.active_stage),
+        )).where(
+            batch.c.lifecycle.in_(("repairing", "human_blocked")),
+            operation.c.state.in_(("active", "escalated", "human_required")),
+            stage.c.dossier["reviewed_file_guard"]["invariant"].as_string()
+            .in_(REVIEWED_FILE_GUARDS),
+        ).order_by(batch.c.id))
     findings = []
     for row in rows:
         guard = row["dossier"]["reviewed_file_guard"]
@@ -957,6 +995,11 @@ async def _find_reviewed_file_blocked_batches(ctx: DoctorContext) -> list[dict]:
     return findings
 
 
+async def _mapping_rows(conn, statement):
+    """Materialize diagnostic SELECT results on the caller's connection."""
+    return (await conn.execute(statement)).mappings().all()
+
+
 async def _find_orphaned_prs(ctx, project_ids=None, *, now=None):
 
     from src.database.tables import projects
@@ -966,7 +1009,7 @@ async def _find_orphaned_prs(ctx, project_ids=None, *, now=None):
 
     if ctx.db is None or not hasattr(ctx.db, "_engine"):
         return [], []
-    factory = getattr(ctx.handler, "_integration_promotion_service", None)
+    factory = getattr(ctx.handler, "_integration_repository_git", None)
     if factory is not None:
         git = factory().git
     else:

@@ -97,6 +97,7 @@ class TaskCommentQueriesMixin:
         author_id: str,
         kind: str = "note",
         fence: dict | None = None,
+        conn=None,
     ) -> dict:
         """Append a server-authored comment; the caller derives identity from scope."""
         if not isinstance(body, str) or not body.strip() or len(body) > MAX_COMMENT_BODY:
@@ -116,7 +117,7 @@ class TaskCommentQueriesMixin:
             "kind": kind,
             "created_at": time.time(),
         }
-        async with self._engine.begin() as conn:
+        async def write(conn):
             # This UPDATE locks the task, fences a reclaimed claim, and shares
             # the insert transaction so deletion cannot strand a comment.
             await self._write_task_findings(conn, task_id, {}, fence=fence)
@@ -124,6 +125,11 @@ class TaskCommentQueriesMixin:
                 select(tasks.c.project_id).where(tasks.c.id == task_id)
             )).scalar_one()
             await conn.execute(insert(task_comments).values(**comment, project_id=project_id))
+        if conn is not None:
+            await write(conn)
+        else:
+            async with self._engine.begin() as owned:
+                await write(owned)
         return comment
 
     async def _locked_comment(self, conn, comment_id: str, task_id: str, project_id: str):

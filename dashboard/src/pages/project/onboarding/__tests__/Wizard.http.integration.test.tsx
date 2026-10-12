@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProjectOnboardingWizard, { type ProjectRootsSource } from "..";
 import { browseProjectRoot } from "../projectRootsClient";
 import { client } from "../../../../api/client";
@@ -58,12 +59,24 @@ function installHttpServer() {
       }
       return response({ ...success, source_type: request.body.source_mode === "github_clone" ? "clone" : request.body.source_mode });
     }
+    if (request.path === "/api/policy/diff") return response({
+      success: true, name: "Onboarding policy", project_id: request.body.project_id,
+      placeholders: [], values: {}, items: [{
+        id: "template:project:spec.base", name: "spec.base", type: "template",
+        original_scope: "project", scope: "project", status: "new", selected: true,
+        requires_scope_choice: false, current_checksum: null, diff: "", state: "copy",
+      }],
+    });
+    if (request.path === "/api/policy/apply") return response({
+      success: true, applied: ["template:project:spec.base"], reviews: [],
+      pending_configuration: [], activated: false,
+    });
     throw new Error(`Unexpected HTTP request: ${request.path}`);
   }));
 }
 
 function Harness({ onSuccess = vi.fn() }: { onSuccess?: (result: { project_id: string }) => void }) {
-  return <MemoryRouter><ProjectOnboardingWizard open onClose={() => {}} roots={roots} onSuccess={onSuccess} /></MemoryRouter>;
+  return <QueryClientProvider client={new QueryClient()}><MemoryRouter><ProjectOnboardingWizard open onClose={() => {}} roots={roots} onSuccess={onSuccess} /></MemoryRouter></QueryClientProvider>;
 }
 
 async function chooseSource(user: ReturnType<typeof userEvent.setup>, name: RegExp) {
@@ -110,6 +123,44 @@ describe("project onboarding wizard against generated-client HTTP commands", () 
     await user.click(screen.getByRole("button", { name: "Link project" }));
     await waitFor(() => expect(requests.some((request) => request.path === "/api/project/onboard")).toBe(true));
     expect(requests.find((request) => request.path === "/api/project/onboard")?.body).toMatchObject({ source_mode: "link", root_id: "dev", relative_path: "widgets", project_name: "widgets", project_id: "widgets", default_branch: "main" });
+  });
+
+  it.each(["none", "exported", "default"] as const)("retains the created project with %s policy and navigates after dismissal", async (profile) => {
+    const user = userEvent.setup();
+    const onSuccess = vi.fn();
+    render(<Harness onSuccess={onSuccess} />);
+    await chooseSource(user, /Existing local repository/);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Project root" }), "dev");
+    await user.click(await screen.findByText("widgets"));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await completeIdentity(user);
+    expect(Array.from(screen.getByRole("combobox", { name: "Policy profile" }).querySelectorAll("option"), option => option.value)).toEqual(["none", "default", "exported"]);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Policy profile" }), profile);
+    await user.click(screen.getByRole("button", { name: "Link project" }));
+    if (profile === "none") {
+      await waitFor(() => expect(onSuccess).toHaveBeenCalledWith(expect.objectContaining({ project_id: "widgets" })));
+      expect(screen.queryByRole("dialog", { name: "Import policy profile" })).not.toBeInTheDocument();
+      expect(requests.some(request => request.path.startsWith("/api/policy/"))).toBe(false);
+      expect(requests.filter(request => request.path === "/api/project/onboard")).toHaveLength(1);
+      return;
+    }
+    expect(await screen.findByRole("dialog", { name: "Import policy profile" })).toBeInTheDocument();
+    if (profile === "exported") {
+      await user.upload(screen.getByLabelText("Policy archive"), new File(["exported policy"], "policy.aqpolicy", { type: "application/zip" }));
+    } else {
+      await user.click(screen.getByRole("button", { name: "Preview default policy" }));
+    }
+    await screen.findByText("Onboarding policy");
+    expect(requests.find(request => request.path === "/api/policy/diff")?.body).toEqual(
+      profile === "default" ? { project_id: "widgets", builtin: "default" } : { project_id: "widgets", archive: btoa("exported policy") },
+    );
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(requests.filter(request => request.path === "/api/project/onboard")).toHaveLength(1);
+    await user.keyboard("{Escape}");
+    expect(onSuccess).toHaveBeenCalledWith(expect.objectContaining({ project_id: "widgets" }));
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(requests.some(request => request.path === "/api/policy/apply")).toBe(false);
+    expect(requests.filter(request => request.path === "/api/project/onboard")).toHaveLength(1);
   });
 
   it("preserves init values after the backend's structured retry error", async () => {

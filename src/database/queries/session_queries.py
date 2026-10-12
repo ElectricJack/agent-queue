@@ -43,7 +43,7 @@ from sqlalchemy import and_, delete, func, insert, or_, select, update
 
 from src.database.tables import (
     agent_profiles, agents, gates, integration_batches, playbook_v2_runs,
-    projects, sessions, task_session_attempts, tasks,
+    projects, sessions, task_session_attempts, tasks, workspaces,
 )
 from src.database.queries.task_session_queries import TERMINAL_SESSION_STATES, open_attempts
 from src.models import AgentState, ProjectStatus, SessionRecord, TaskStatus
@@ -140,6 +140,10 @@ def _row_to_session(row) -> SessionRecord:
         claim_phase_at=row.get("claim_phase_at"),
         last_claim_epoch=row.get("last_claim_epoch"),
         last_claim_result=row.get("last_claim_result"),
+        claim_failure_count=int(row.get("claim_failure_count") or 0),
+        claim_failure_reason=row.get("claim_failure_reason"),
+        claim_failure_at=row.get("claim_failure_at"),
+        claim_refusal=row.get("claim_refusal"),
         hooks_provisioned=bool(row.get("hooks_provisioned")),
         git_identity_digest=row.get("git_identity_digest"),
     )
@@ -225,6 +229,10 @@ class SessionQueryMixin:
                 claim_phase_at=session.claim_phase_at,
                 last_claim_epoch=session.last_claim_epoch,
                 last_claim_result=session.last_claim_result,
+                claim_failure_count=session.claim_failure_count,
+                claim_failure_reason=session.claim_failure_reason,
+                claim_failure_at=session.claim_failure_at,
+                claim_refusal=session.claim_refusal,
                 hooks_provisioned=session.hooks_provisioned,
                 git_identity_digest=session.git_identity_digest,
             )
@@ -358,6 +366,38 @@ class SessionQueryMixin:
             result = await conn.execute(query)
             return [_row_to_session(r) for r in result.mappings().fetchall()]
 
+    async def record_claim_refusal(
+        self, session_id: str, *, result: str, reason: str, now: float,
+    ) -> SessionRecord | None:
+        """Count actual identical failures, never cooldown replays or an active claim.
+
+        Serialize concurrent callers on the session row. An idle worker with a repeated
+        blocker drains; a retained preparation keeps all ownership evidence intact.
+        """
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == session_id,
+            ).with_for_update())).mappings().one_or_none()
+            if row is None:
+                return None
+            if row["claim_phase"] == "active" or row["desired_state"] != "running":
+                return _row_to_session(row)
+            prior = row["claim_refusal"] or {}
+            identical = (prior.get("result"), prior.get("reason")) == (result, reason)
+            if identical and prior["retry_at"] > now:
+                return _row_to_session(row)
+            count = prior["count"] + 1 if identical else 1
+            delay = min(1800, 300 * 2 ** min(count - 2, 3)) if count > 1 else 60
+            fields = {"claim_refusal": {
+                "result": result, "reason": reason, "count": count, "retry_at": now + delay,
+            }}
+            if count >= 2 and row["task_id"] is None and row["claim_phase"] is None:
+                fields["desired_state"] = "stopped"
+            updated = (await conn.execute(update(sessions).where(
+                sessions.c.id == session_id,
+            ).values(**fields).returning(*sessions.c))).mappings().one()
+            return _row_to_session(updated)
+
     async def publish_session_running(
         self, session_id: str, instance_token: str, *, conn=None,
         release_agent_reservation: bool = False,
@@ -451,6 +491,8 @@ class SessionQueryMixin:
         requested = fields.get("state", row["state"])
         if requested != row["state"] and requested not in _SESSION_TRANSITIONS.get(row["state"], ()):
             raise InvalidSessionTransition(session_id, row["state"], requested)
+        if fields.get("desired_state") == "sleeping" or fields.get("state") == "sleeping":
+            await self._cancel_sleeping_session_cron(conn, row, time.time())
         terminal_transition = requested in TERMINAL_SESSION_STATES and requested != row["state"]
         if terminal_transition:
             fields.setdefault("ended_at", time.time())
@@ -578,6 +620,50 @@ class SessionQueryMixin:
             return
         async with self._engine.begin() as owned:
             await self.touch_session_activity(session_id, ts, conn=owned)
+
+    async def record_pool_claim_failure(
+        self, session_id: str, *, instance_token: str, claim_epoch: int,
+        reason: str, now: float,
+    ) -> SessionRecord | None:
+        """Count a refused preparation and atomically fence a repeating worker.
+
+        Called under the preparation's task control lock after its ordinary
+        release/retention decision. A newer or active claim invalidates the
+        write. Disabling only this instance's held checkout prevents reuse
+        while leaving all branch-owner and claim bindings intact for recovery.
+        """
+        from src.pool_claims import CLAIM_FAILURE_DRAIN_REASON, MAX_IDENTICAL_CLAIM_FAILURES
+
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == session_id,
+            ).with_for_update())).mappings().one_or_none()
+            if (row is None or row["instance_token"] != instance_token
+                    or row["lifecycle"] != "pool" or row["state"] != "running"
+                    or row["desired_state"] != "running"
+                    or row["last_claim_epoch"] != claim_epoch
+                    or row["claim_phase"] not in (None, "preparing")):
+                return None
+            count = (
+                int(row["claim_failure_count"] or 0) + 1
+                if row["claim_failure_reason"] == reason else 1
+            )
+            fields = {
+                "claim_failure_count": count, "claim_failure_reason": reason,
+                "claim_failure_at": now,
+            }
+            if count >= MAX_IDENTICAL_CLAIM_FAILURES:
+                fields.update(desired_state="stopped", end_reason=CLAIM_FAILURE_DRAIN_REASON)
+                if row["agent_id"]:
+                    await conn.execute(update(workspaces).where(
+                        workspaces.c.project_id == row["project_id"],
+                        workspaces.c.workspace_path == row["work_dir"],
+                        workspaces.c.locked_by_agent_id == row["agent_id"],
+                    ).values(enabled=False))
+            result = await conn.execute(update(sessions).where(
+                sessions.c.id == session_id,
+            ).values(**fields).returning(*sessions.c))
+            return _row_to_session(result.mappings().one())
 
     async def request_idle_pool_recycle(
         self, session_id: str, *, instance_token: str, stale_before: float

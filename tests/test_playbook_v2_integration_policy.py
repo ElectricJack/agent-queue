@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.integration.models import BranchKey, Fence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     CIEvidence,
     CIState,
     GateArgs,
@@ -187,7 +187,14 @@ def test_compiler_reads_author_block_and_rejects_invented_table(artifact, tmp_pa
     source_path = tmp_path / "source.md"
     source_path.write_text((BUNDLE / "source.md").read_text())
     source = PlaybookSource.load(source_path, vault_root=tmp_path)
-    body = {name: artifact.model_dump(mode="json")[name] for name in ("rules", "steps")}
+    # Test author-policy ingestion with a retained executable command. The
+    # historical sealing/build/promotion rules are no longer activatable.
+    dumped = artifact.model_dump(mode="json")
+    body = {
+        "rules": [rule for rule in dumped["rules"] if rule["id"] == "cleanup-promoted"],
+        "steps": {name: step for name, step in dumped["steps"].items()
+                  if name.startswith("cleanup-promoted--")},
+    }
     lookups = dict(
         contracts=RegistryContractLookup(),
         profiles=NullProfileLookup(),
@@ -270,7 +277,7 @@ def test_unclaimed_queue_time_is_not_repair_failure(artifact):
 
 
 def test_a_table_can_eject_the_earliest_conflicting_member_by_derived_path(raw_policy, artifact):
-    from src.integration.subjects import ConflictFacts, EjectArgs
+    from src.integration.runtime_contracts import ConflictFacts, EjectArgs
 
     table = copy.deepcopy(raw_policy)
     root = table["tables"]["root_batch"]

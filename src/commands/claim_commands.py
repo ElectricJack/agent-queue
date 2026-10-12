@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import replace
 
@@ -243,6 +244,8 @@ class ClaimCommandsMixin:
         # worker is finishing current work.  The conversion marks each live
         # worker stopped; reject a fresh claim before it can take new work.
         if session.lifecycle == "pool" and session.desired_state == "stopped":
+            if session.claim_refusal and session.claim_refusal["count"] >= 2:
+                return self._refusal_response(session, None)
             return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is draining", session)
         if not want_id and not args.get("next"):
             return {"success": False, "error": "task_id or next=true is required"}
@@ -256,14 +259,6 @@ class ClaimCommandsMixin:
         # false, but it does not hand out work -- otherwise the flag that
         # stops ``_reconcile_pools`` from launching pool workers would still
         # let an already-running one keep pulling tasks.
-        if not getattr(self.config.swarm, "enabled", True):
-            return {
-                "success": False,
-                "result": ClaimResult.NOT_ADMISSIBLE.value,
-                "reason": "swarm_disabled",
-                "task": None,
-                "claim_epoch": None,
-            }
         scope = self._current_scope or {}
         session_id = scope.get("session_id") or (
             args.get("session_id") if scope.get("elevated", True) else None
@@ -304,6 +299,8 @@ class ClaimCommandsMixin:
         deadline = time.monotonic() + wait
 
         if session.lifecycle == "task":
+            if not getattr(self.config.swarm, "enabled", True):
+                return self._simple(ClaimResult.NOT_ADMISSIBLE, "swarm_disabled", session)
             if session.task_id and want_id in (None, session.task_id):
                 task = await self.db.get_task(session.task_id)
                 return await self._claimed_response(task, task.claim_epoch, session)
@@ -317,6 +314,10 @@ class ClaimCommandsMixin:
         refresh_routing = False
 
         while True:
+            if session.desired_state == "stopped":
+                if session.claim_refusal and session.claim_refusal["count"] >= 2:
+                    return self._refusal_response(session, cap)
+                return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is draining", session, cap)
             if refresh_routing:
                 # Long-poll wakes may follow profile/class edits. Keep the
                 # session's frozen launch settings but refresh its
@@ -349,16 +350,34 @@ class ClaimCommandsMixin:
             # blocks for the full wait even though it could have woken up.
             admission_waiter = self.orchestrator.bus.waiter(_ADMISSION_EVENTS)
             try:
-                reason = self._admission_reason(project)
+                reason = (
+                    "swarm_disabled" if not getattr(self.config.swarm, "enabled", True)
+                    else self._admission_reason(project)
+                )
+                refusal = session.claim_refusal
+                if refusal and refusal["result"] == ClaimResult.NOT_ADMISSIBLE.value and (
+                    refusal["reason"] != reason
+                ):
+                    await self.db.update_session(session.id, claim_refusal=None)
+                    session = replace(session, claim_refusal=None)
+                    refusal = None
+                if refusal and session.claim_phase != "active":
+                    remaining = refusal["retry_at"] - time.time()
+                    if remaining > 0:
+                        if time.monotonic() >= deadline:
+                            return self._refusal_response(session, cap)
+                        await admission_waiter.wait(min(
+                            remaining, max(0.0, deadline - time.monotonic())
+                        ))
+                        session = await self.db.get_session(session.id) or session
+                        project = await self.db.get_project(session.project_id)
+                        continue
                 if reason:
                     if time.monotonic() >= deadline:
-                        return {
-                            "success": False,
-                            "result": ClaimResult.NOT_ADMISSIBLE.value,
-                            "reason": reason,
-                            "task": None,
-                            "claim_epoch": None,
-                        }
+                        return await self._record_claim_refusal(
+                            self._simple(ClaimResult.NOT_ADMISSIBLE, reason, session, cap),
+                            session, cap,
+                        )
                     await admission_waiter.wait(max(0.0, deadline - time.monotonic()))
                     project = await self.db.get_project(session.project_id)
                     continue
@@ -409,8 +428,9 @@ class ClaimCommandsMixin:
                     )
                     if settled is None:
                         return outcome
+                    session = await self.db.get_session(session.id) or session
                     continue  # re-run: active → claimed; released → new attempt
-                return outcome
+                return await self._record_claim_refusal(outcome, session, cap)
             finally:
                 waiter.close()
 
@@ -534,7 +554,7 @@ class ClaimCommandsMixin:
         attempt rather than a stranded repair.  Withholding is never worth a
         failed claim, so nothing here raises into the claim path.
         """
-        from src.integration.source_delivery import (
+        from src.integration.source_repairs import (
             delivered_queued_repairs,
             retire_delivered_queued_repairs,
         )
@@ -614,6 +634,7 @@ class ClaimCommandsMixin:
                     ClaimResult.NO_READY_WORK, "source_ci_repair_already_delivered", None, cap
                 )
         prerequisite_view = None
+        stack_view = None
         from src.integration.delivery_observer import prerequisite_observer
 
         observer = prerequisite_observer(self.db)
@@ -621,9 +642,15 @@ class ClaimCommandsMixin:
             prerequisite_view = await observer.prerequisite_view(project.id, task_id=want_id)
             if not await prerequisite_view.fresh():
                 return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", None, cap)
-            hierarchy_mode = replace(hierarchy_mode, delivered_prerequisite_ids=frozenset(
-                tid for tid, proof in prerequisite_view.evidence.items() if proof.satisfied
-            ))
+            hierarchy_mode = await prerequisite_view.mode(hierarchy_mode)
+        if hierarchy_mode and hierarchy_mode.hierarchical and hierarchy_mode.stacked and observer:
+            from src.integration.stacked_branches import observe_stacks
+
+            stack_view = await observe_stacks(observer, project.id, task_id=want_id)
+            if not await stack_view.fresh():
+                return self._simple(ClaimResult.NO_READY_WORK, "stack_snapshot_changed", None, cap)
+            hierarchy_mode = replace(hierarchy_mode,
+                                     stackable_prerequisite_ids=frozenset(stack_view.proofs))
         # What to do once the transaction has committed — set inside the
         # block, acted on outside it.
         active_claim: tuple | None = None  # (task, epoch, row) — already active
@@ -632,6 +659,8 @@ class ClaimCommandsMixin:
         conflict_task_id: str | None = None  # a specific task_id held by someone else
         async with self.db.immediate() as conn:
             kind, row = await self.db.take_claim_slot(conn, session.id, now=now, cap=cap)
+            if kind == "claim_refusal":
+                return self._refusal_response(row, cap)
             if kind == "active":
                 if want_id and want_id != row.task_id:
                     return self._simple(
@@ -714,14 +743,20 @@ class ClaimCommandsMixin:
 
                     from src.database.tables import tasks
 
-                    proof_ids = sorted(prerequisite_view.evidence)
+                    proof_ids = sorted(prerequisite_view.all_ids)
                     if proof_ids:
                         await conn.execute(select(tasks.c.id).where(
                             tasks.c.id.in_(proof_ids),
                         ).order_by(tasks.c.id).with_for_update())
-                    verified = await prerequisite_view.verified_on(conn, proof_ids)
-                    hierarchy_mode = replace(hierarchy_mode, delivered_prerequisite_ids=frozenset(
-                        tid for tid, proof in verified.items() if proof.satisfied
+                    hierarchy_mode = await prerequisite_view.mode(hierarchy_mode, conn=conn)
+                if stack_view is not None:
+                    proof_ids = sorted(stack_view.proofs)
+                    if proof_ids:
+                        await conn.execute(select(tasks.c.id).where(
+                            tasks.c.id.in_(proof_ids),
+                        ).order_by(tasks.c.id).with_for_update())
+                    hierarchy_mode = replace(hierarchy_mode, stackable_prerequisite_ids=frozenset(
+                        await stack_view.verified_on(conn, proof_ids)
                     ))
                 tid = await self.db.select_ready_for_profile(
                     conn,
@@ -949,9 +984,32 @@ class ClaimCommandsMixin:
                         return self._simple(
                             ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap
                         )
-                    return await self._prepare_and_activate_locked(
+                    outcome = await self._prepare_and_activate_locked(
                         session, row, task, cap, slot=slot, project=project, admission=admission
                     )
+                    if outcome["result"] == ClaimResult.PREPARE_FAILED.value:
+                        failed = await self.db.record_pool_claim_failure(
+                            session.id, instance_token=session.instance_token,
+                            claim_epoch=task.claim_epoch, reason=outcome.get("reason") or "",
+                            now=time.time(),
+                        )
+                        if failed is not None:
+                            outcome["claim_failure_count"] = failed.claim_failure_count
+                            if failed.desired_state == "stopped":
+                                logger.error(
+                                    "Pool session %s: %s identical claim refusals (%s); "
+                                    "draining and quarantining workspace %s",
+                                    failed.id, failed.claim_failure_count,
+                                    failed.claim_failure_reason, failed.work_dir,
+                                )
+                                return self._simple(
+                                    ClaimResult.DRAIN_REQUESTED,
+                                    f"{failed.claim_failure_count} identical claim refusals: "
+                                    f"{failed.claim_failure_reason}; workspace quarantined. "
+                                    "Run `aq session drain-ack` and exit 0.",
+                                    failed, cap,
+                                )
+                    return outcome
                 except Exception as exc:
                     if not _retryable_preparation_error(exc):
                         raise
@@ -1092,6 +1150,17 @@ class ClaimCommandsMixin:
                     reset_kwargs["target_branch"] = target_branch
                 if preserve_branch:
                     reset_kwargs["preserve_branch"] = True
+                if hierarchy_enabled and origin.get("stack_store"):
+                    await self.orchestrator.git._arun(
+                        ["fetch", "--no-tags", str(origin["stack_store"]), base_branch],
+                        cwd=slot.workspace_path,
+                    )
+                if hierarchy_enabled and origin.get("stack_repair_inputs"):
+                    inputs = origin["stack_repair_inputs"]
+                    await self.orchestrator.git._arun(
+                        ["fetch", "--no-tags", inputs["store"], *inputs["heads"]],
+                        cwd=slot.workspace_path,
+                    )
                 branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
@@ -1120,7 +1189,11 @@ class ClaimCommandsMixin:
                     task.id not in admission.allowed or not await admission.is_fresh(task.id)
                 ):
                     return None
-                return await self.db.activate_claim(
+                if hierarchy_enabled:
+                    from src.integration.stacked_branches import verify_preparation
+
+                    await verify_preparation(origin, conn=conn)
+                activated = await self.db.activate_claim(
                     session.id,
                     task.id,
                     epoch=epoch,
@@ -1135,13 +1208,17 @@ class ClaimCommandsMixin:
                     clear_preparation_metadata=True,
                     admission=admission,
                 )
+                if activated and hierarchy_enabled:
+                    await verify_preparation(origin, conn=conn, finalize=True)
+                return activated
 
             if hierarchy_enabled:
                 from src.integration.ownership import BranchOwnership
                 from src.integration.repair import RepairService
 
                 origin, fence, owner_role = await self.orchestrator._hierarchy_origin_and_fence(
-                    task, project, preparing_session_id=session.id, preparing_workspace_id=slot.id
+                    task, project, preparing_session_id=session.id, preparing_workspace_id=slot.id,
+                    preparation_workspace=slot.workspace_path,
                 )
                 ownership = BranchOwnership(self.db)
                 previous_owner = await ownership.get_owner(fence.target)
@@ -1214,6 +1291,55 @@ class ClaimCommandsMixin:
                 # Retry only after the failed transaction unwinds; never run
                 # permanent failure cleanup for a database conflict.
                 raise
+            from src.git.manager import ChildPreparationConflict, GitError
+            from src.integration.stacked_branches import (
+                EpicRefreshPending, StackedBranches, StackPrerequisitesConflict,
+                StackPreparationChanged,
+            )
+
+            if isinstance(exc, ChildPreparationConflict):
+                try:
+                    await StackedBranches(self.db).reserve_child_conflict(
+                        task.id, exc, slot.workspace_path,
+                    )
+                except StackPrerequisitesConflict as conflict:
+                    exc = conflict
+                except (GitError, StackPreparationChanged) as changed:
+                    exc = changed
+
+            if isinstance(exc, (StackPrerequisitesConflict, StackPreparationChanged)):
+                if hierarchy_attached and not await (
+                    self.orchestrator.arelease_integration_writer_for_retry(
+                        task, reason=exc.code, pool=True,
+                        retained_preparation=(
+                            {"head": exc.detail["child_head"], "store": exc.detail["stack_store"]}
+                            if isinstance(exc, StackPrerequisitesConflict)
+                            and exc.detail.get("stack_store") else
+                            {"head": origin["base_sha"], "store": str(origin["stack_store"])}
+                            if isinstance(exc, StackPreparationChanged) and origin.get("stack_store")
+                            else None
+                        ),
+                    )
+                ):
+                    await self.db.set_task_meta(task.id, "needs_attention", exc.code)
+                    self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                    return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
+                remove_claim_file_if_matches(row.work_dir, task.id, epoch)
+                await self.db.release_claim(
+                    session.id, task_status=TaskStatus.READY, context=exc.code,
+                    now=time.time(), result="no_ready_work", needs_attention=exc.code,
+                    prepare_backoff=True,
+                )
+                self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
+                return self._simple(ClaimResult.NO_READY_WORK, str(exc), row, cap)
+            if isinstance(exc, EpicRefreshPending):
+                remove_claim_file_if_matches(row.work_dir, task.id, epoch)
+                await self.db.release_claim(
+                    session.id, task_status=TaskStatus.READY, context="epic_refresh_pending",
+                    now=time.time(), result="no_ready_work",
+                )
+                self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
+                return self._simple(ClaimResult.NO_READY_WORK, str(exc), row, cap)
             logger.warning("claim %s/%s: prepare failed: %s", session.id, task.id, exc)
             remove_claim_file(row.work_dir)
             from src.integration.repair import UnpublishedRepairTarget
@@ -1366,6 +1492,36 @@ class ClaimCommandsMixin:
         return await self._claimed_response(task, epoch, fresh, cap)
 
     # -- helpers -------------------------------------------------------------------
+
+    async def _record_claim_refusal(self, outcome, session, cap):
+        if outcome["result"] not in {
+            ClaimResult.PREPARE_FAILED.value, ClaimResult.NOT_ADMISSIBLE.value,
+        }:
+            return outcome
+        current = await self.db.record_claim_refusal(
+            session.id, result=outcome["result"], reason=outcome.get("reason", ""), now=time.time(),
+        )
+        if current is None or current.claim_refusal is None or current.claim_phase == "active":
+            return outcome
+        return self._refusal_response(current, cap)
+
+    def _refusal_response(self, session, cap):
+        refusal = session.claim_refusal
+        draining = session.desired_state == "stopped"
+        result = ClaimResult.DRAIN_REQUESTED if draining else ClaimResult(refusal["result"])
+        outcome = self._simple(result, refusal["reason"], session, cap)
+        outcome["retry_after"] = max(0, math.ceil(refusal["retry_at"] - time.time()))
+        outcome["refusal_count"] = refusal["count"]
+        outcome["instructions"] = (
+            "Repeated claim blocker: report it once to the project supervisor. "
+            "Run `aq session drain-ack` and exit; do not claim again."
+            if draining else
+            "Respect retry_after before another claim attempt. If refusal_count >= 2, "
+            "report this blocker once to the project supervisor and end the turn "
+            "awaiting the supervisor's inbox delivery. Preserve any held preparation; "
+            "do not keep polling claims or inboxes."
+        )
+        return outcome
 
     def _session_block(self, row, cap=None) -> dict:
         if row is None:

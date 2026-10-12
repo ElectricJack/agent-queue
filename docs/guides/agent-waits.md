@@ -162,6 +162,8 @@ resource controls. Do not emulate notifications with background shell loops.
 If close refuses with `messages.pending_before_close`, handle every mailbox
 named in the refusal using `--inject --json`, then reconsider the evidence and
 retry with the same claim. Plain inbox/status reads leave delivery pending.
+If an earlier `--inject` consumed a body you never got to read, re-read it with
+`--include-consumed` on the same mailbox; it is read-only and never re-claims.
 After an accepted close, follow its next-claim result and stop on a drain or
 exhausted session; do not keep polling the closed task.
 

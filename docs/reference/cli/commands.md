@@ -120,20 +120,25 @@ leaves are generated from the dashboard-state commands.
 
 ### `aq db`
 
-The operator's migration door, and nothing else. `aq db current` is the
+The operator's database administration door. `aq db current` is the
 read-only "am I behind?" answer and is always safe to run. `aq db upgrade`
 runs Alembic against the configured database and is **daemon-host only** — a
 worker inside a worktree slot is refused by
 [`src/database/migration_guard.py`](../../../src/database/migration_guard.py)
 and must report the refusal rather than upgrade around it. The whole group
 refuses `--json`: it owns interactive safeguards and multi-step progress. See
-[migrations](../../guides/migrations.md).
-
+[migrations](../../guides/migrations.md). `aq db backup [destination.dump]`
+produces one private PostgreSQL custom archive; `aq db restore <dump>` verifies
+its schema, checks daemon/session quiescence and takes a recovery backup before
+restoring. Restore requires `--accept-data-loss <dump-timestamp>`; `--force`
+overrides only the live-daemon check. Both are local operator commands.
 
 | Command | Daemon command | Kind | What it does |
 |---|---|---|---|
+| `aq db backup` | `—` | hand | Write a private PostgreSQL custom archive of the configured database (operator only). |
 | `aq db current` | `—` | hand | Show the stamped revision(s) and this checkout's head. |
 | `aq db import-sqlite` | `—` | hand | Copy a pre-PostgreSQL SQLite database into the configured PostgreSQL one. |
+| `aq db restore` | `—` | hand | Validate a custom archive, report data loss, and take a recovery backup before restoring (operator only). |
 | `aq db upgrade` | `—` | hand | Run Alembic migrations against the configured database (operator only). |
 
 ### `aq digest`

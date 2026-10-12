@@ -78,6 +78,26 @@ beforeEach(() => {
 });
 
 describe("ProposalPreviewPane — header + graph + list", () => {
+  it("shows existing-task diff, controls, removed dependencies and comments for approval", () => {
+    mockUseProposal.mockReturnValue({
+      data: {
+        ...fixtureProposal,
+        tasks: [],
+        edges: [],
+        edits: [{ task_id: "existing", action: "pause" }],
+        remove_edges: [{ from: "existing", to: "old", dep_type: "blocks" }],
+        comments: [{ task_id: "existing", body: "Review this finding" }],
+        diff: { tasks: [{ task_id: "existing", before: { status: "READY" }, after: { status: "PAUSED" } }] },
+      },
+      isPending: false, isError: false, refetch: vi.fn(),
+    });
+    renderPane();
+    expect(screen.getByTestId("proposal-change-diff")).toHaveTextContent('"READY" → "PAUSED"');
+    expect(screen.getByText(/existing:.*pause/)).toBeInTheDocument();
+    expect(screen.getByTestId("proposal-edge-changes")).toHaveTextContent("Remove existing → old (blocks)");
+    expect(screen.getByTestId("proposal-comments")).toHaveTextContent("Review this finding");
+  });
+
   it("renders header (id, status pill, source line) for a ready proposal", () => {
     mockUseProposal.mockReturnValue({
       data: fixtureProposal,

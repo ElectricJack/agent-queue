@@ -9,6 +9,8 @@ prove the same rules are enforced by the schema itself.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import insert, select, text, update
@@ -21,7 +23,7 @@ from src.database.tables import (
     playbook_artifacts,
 )
 from src.integration.models import BranchKey, Fence
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     DEFAULT_MAX_WAIT_SECONDS,
     OUTCOME_DETAILS,
     PHASE1_ADAPTED_COMMANDS,
@@ -159,7 +161,7 @@ def test_ports_wrap_existing_command_contracts_unchanged():
     adapted = {name for names in PHASE1_ADAPTED_COMMANDS.values() for name in names}
     assert adapted <= DESIGN_INTEGRATION_COMMANDS
     # No primitive name shadows an existing command except the seal it adapts.
-    assert {p.value for p in Primitive} & DESIGN_INTEGRATION_COMMANDS == {"integration_seal"}
+    assert not {p.value for p in Primitive} & DESIGN_INTEGRATION_COMMANDS
 
 
 def test_outcomes_outside_the_closed_set_are_refused():
@@ -501,6 +503,65 @@ async def test_creation_is_idempotent_and_never_overwrites(db):
     assert by_key == again
 
 
+@pytest.mark.parametrize("same_id", [True, False])
+async def test_concurrent_creation_returns_one_unchanged_subject(db, same_id):
+    for round_number in range(10):
+        barrier = asyncio.Barrier(8)
+
+        async def create(index):
+            values = _row(
+                _subject(
+                    id=f"race-{round_number}-{0 if same_id else index}",
+                    subject_key=f"root_batch:repo:race-{round_number}",
+                    phase=SubjectPhase.BUILDING if index % 2 else SubjectPhase.TESTING,
+                    policy=PIN if index % 2 else PIN.model_copy(
+                        update={"artifact_sha256": NEW_ARTIFACT}
+                    ),
+                )
+            )
+            async with db._engine.begin() as conn:
+                await barrier.wait()
+                return await db.ensure_integration_subject_on(conn, values)
+
+        results = await asyncio.gather(*(create(index) for index in range(8)))
+        assert sum(created for _, created in results) == 1
+        winner = next(row for row, created in results if created)
+        assert all(row == winner for row, _ in results)
+        assert await db.get_integration_subject(winner["id"]) == winner
+
+    async with db._engine.connect() as conn:
+        assert len((await conn.execute(select(integration_subjects))).all()) == 10
+
+
+@pytest.mark.parametrize(
+    "overrides, other_id, constraint",
+    [
+        ({}, "subject-1", "integration_subjects_pkey"),
+        ({"phase": SubjectPhase.ADMITTING}, "subject-2", "uq_integration_subjects_admitting_root"),
+        ({"batch_id": "batch-1"}, "subject-2", "uq_integration_subjects_batch"),
+    ],
+)
+async def test_creation_refuses_a_collision_with_a_different_natural_key(
+    db, overrides, other_id, constraint
+):
+    original, created = await db.ensure_integration_subject(_row(_subject(**overrides)))
+    assert created
+    with pytest.raises(IntegrityError, match=constraint):
+        await db.ensure_integration_subject(
+            _row(
+                _subject(
+                    **overrides,
+                    id=other_id,
+                    subject_key="root_batch:repo:other-request",
+                )
+            )
+        )
+    assert await db.get_integration_subject(original["id"]) == original
+    assert await db.get_integration_subject_by_key(
+        project_id="p", kind="root_batch", subject_key="root_batch:repo:other-request"
+    ) is None
+
+
 @pytest.mark.parametrize(
     "overrides, constraint",
     [
@@ -604,41 +665,6 @@ async def test_due_pages_are_keyset_ordered_and_skip_done_and_future(db):
         await db.due_integration_subject_page(now=NOW, after=None, limit=0)
 
 
-async def test_runtime_mode_scope_filters_before_paging_shared_root_batches(db):
-    from src.integration.reconciler import ScopedIntegrationDB
-
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            insert(tables.projects),
-            [
-                {
-                    "id": mode, "name": mode, "hierarchical_integration_mode": mode,
-                    "created_at": NOW,
-                }
-                for mode in ("train", "hierarchy", "development")
-            ],
-        )
-    for index, mode in enumerate(("development", "train", "hierarchy", "development")):
-        await _insert_raw(
-            db,
-            id=f"mode-{index}",
-            project_id=mode,
-            subject_key=f"root_batch:repo:mode-{index}",
-            engine="reconciler",
-            next_due_at=NOW - 10 + index,
-            due_set_at=NOW - 10 + index,
-        )
-    root_db = ScopedIntegrationDB(db, ("train", "hierarchy"))
-    first = await root_db.due_integration_subject_page(now=NOW, after=None, limit=1)
-    assert [row["id"] for row in first] == ["mode-1"]
-    second = await root_db.due_integration_subject_page(
-        now=NOW, after=(first[0]["next_due_at"], first[0]["id"]), limit=1
-    )
-    assert [row["id"] for row in second] == ["mode-2"]
-    development_db = ScopedIntegrationDB(db, ("development",))
-    rows = await development_db.due_integration_subject_page(now=NOW, after=None, limit=10)
-    assert [row["id"] for row in rows] == ["mode-0", "mode-3"]
-    assert await root_db.get_integration_subject("mode-1") == first[0]
 
 
 async def test_versioned_writes_refuse_a_stale_visit(db):

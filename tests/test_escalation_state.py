@@ -31,7 +31,7 @@ from sqlalchemy import update
 from src.config import DiscordConfig, DiscordEscalationConfig, DiscordEscalationsConfig
 from src.database import Database
 from src.database.queries.escalation_queries import ESCALATION_OUTCOMES
-from src.database.tables import messages
+from src.database.tables import escalation_deliveries, messages
 from src.escalations import (
     AUTO_OBSOLETE_TASK_STATUSES,
     STALE_OBSOLETE_SECONDS,
@@ -50,7 +50,7 @@ from src.escalations import (
 from src.escalations.dispatch import EDIT_COALESCE_SECONDS
 from src.escalations.plan import DEFER_SECONDS, MAX_ATTEMPTS
 from src.escalations.render import render_collapsed_root, render_state_root
-from src.models import Project, SessionRecord, Task, TaskStatus
+from src.models import Project, ProjectStatus, SessionRecord, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
 BASE_URL = "https://queue.example.test"
@@ -62,7 +62,7 @@ async def env():
     db = Database(lease_dsn("escalation_state"))
     await db.initialize()
     for project in ("p", "other"):
-        await db.create_project(Project(id=project, name=project))
+        await db.create_project(Project(id=project, name=project, supervisor_enabled=True))
     bus = SimpleNamespace(emit=AsyncMock())
     config = SimpleNamespace(discord=DiscordConfig())
     yield SimpleNamespace(db=db, bus=bus, config=config)
@@ -109,6 +109,99 @@ async def supervisor(env, *, started_at, desired_state="running"):
 
 def watchdog(env):
     return SupervisorDeliveryWatchdog(env.db, env.bus, env.config)
+
+
+async def answered_for_owner(env):
+    await env.db.create_escalation(
+        id="answered", project_id="p", source_kind="supervisor_decision",
+        source_identity="authorization", incident_key="authorization",
+        supervisor_owner="supervisor-p", summary="Authorization needed",
+        task_title="Authorize the deployment",
+        investigation="Inspected policy", decision_requested="Authorize?", severity="high", now=100,
+    )
+    reply = await env.db.accept_escalation_reply(
+        "answered", transport="dashboard", external_message_id="answer",
+        verified_actor="human:jack", text="Authorization granted", received_at=110,
+    )
+    await env.db.mark_delivered(reply["reply"]["supervisor_message_id"])
+    return reply
+
+
+@pytest.mark.parametrize("state", ["reply_received", "resolving"])
+async def test_unresolved_answers_remind_only_the_owner_at_the_configured_interval(env, state):
+    reply = await answered_for_owner(env)
+    if state == "resolving":
+        await env.db.transition_escalation(
+            "answered", expected_revision=1, new_state=state, now=120,
+        )
+    before = await env.db.get_escalation("answered")
+    before_deliveries = await env.db.list_escalation_deliveries("answered")
+    env.config.discord.escalation.supervisor_delivery_timeout_minutes = 5
+    env.config.discord.escalation.enabled = False  # core reminders don't depend on Discord
+    await watchdog(env).tick(409)
+    assert await env.db.get_pending_messages("session", "supervisor-p") == []
+    await watchdog(env).tick(410)
+    pending = await env.db.get_pending_messages("session", "supervisor-p")
+    assert len(pending) == 1
+    reminder = pending[0]
+    assert reminder.from_kind == "system" and reminder.body_kind == "escalation_owner_reminder"
+    assert reminder.project_id == "p" and reminder.thread_id == "answered"
+    assert reply["reply"]["id"] in reminder.body
+    assert "do not ask or notify the human again" in reminder.body
+    # A new watchdog after restart cannot duplicate the pending reminder.
+    await watchdog(env).tick(700)
+    assert len(await env.db.get_pending_messages("session", "supervisor-p")) == 1
+    await env.db.mark_delivered(reminder.id)
+    await watchdog(env).tick(709)
+    assert await env.db.get_pending_messages("session", "supervisor-p") == []
+    await watchdog(env).tick(710)
+    assert len(await env.db.get_pending_messages("session", "supervisor-p")) == 1
+    assert await env.db.get_escalation("answered") == before
+    assert len(await env.db.list_escalation_messages("answered")) == 1
+    # Creation owns the initial root intent; owner reminders add no deliveries.
+    assert await env.db.list_escalation_deliveries("answered") == before_deliveries
+
+
+async def test_owner_reminder_ticks_serialize_and_stop_after_a_new_answer_or_terminal_state(env):
+    await answered_for_owner(env)
+    results = await asyncio.gather(*[
+        env.db.queue_escalation_owner_reminder("answered", now=1010, interval_seconds=900)
+        for _ in range(2)
+    ])
+    assert sum(results) == 1
+    reminder = (await env.db.get_pending_messages("session", "supervisor-p"))[0]
+    await env.db.mark_delivered(reminder.id)
+    await env.db.accept_escalation_reply(
+        "answered", transport="dashboard", external_message_id="answer-2",
+        verified_actor="human:jack", text="Additional context", received_at=1900,
+    )
+    assert not await env.db.queue_escalation_owner_reminder(
+        "answered", now=2000, interval_seconds=900,
+    )
+    incident = await env.db.get_escalation("answered")
+    await env.db.transition_escalation(
+        "answered", expected_revision=incident["revision"], new_state="cancelled",
+        terminal_outcome="No further action", now=2001,
+    )
+    assert not await env.db.queue_escalation_owner_reminder(
+        "answered", now=3000, interval_seconds=900,
+    )
+
+
+async def test_undelivered_answers_and_paused_projects_do_not_accumulate_owner_reminders(env):
+    reply = await answered_for_owner(env)
+    async with env.db.immediate() as conn:
+        await conn.execute(update(messages).where(
+            messages.c.id == reply["reply"]["supervisor_message_id"]
+        ).values(delivered_at=None))
+    assert not await env.db.queue_escalation_owner_reminder(
+        "answered", now=1010, interval_seconds=900,
+    )
+    await env.db.mark_delivered(reply["reply"]["supervisor_message_id"])
+    await env.db.update_project("p", status=ProjectStatus.PAUSED)
+    assert not await env.db.queue_escalation_owner_reminder(
+        "answered", now=1010, interval_seconds=900,
+    )
 
 
 async def test_delivery_notices_coalesce_by_project_and_body_kind_and_reach_inboxes(env):
@@ -420,6 +513,7 @@ async def incident(world, **overrides):
         "incident_key": "q:q-1",
         "supervisor_owner": "supervisor-p",
         "summary": "Nobody can tell which branch to cut from",
+        "task_title": "Choose a release branch",
         "investigation": "Two release branches both claim the fix",
         "decision_requested": "Cut from main or from the release branch?",
         "severity": "medium",
@@ -730,8 +824,8 @@ async def test_a_burst_of_state_changes_is_coalesced_then_sent_in_order(world):
 
 async def test_a_coalesced_edit_is_deferred_to_the_window_edge_and_still_claimable(world):
     row = await incident(world, now=world.clock() - 3600)
-    world.config.discord.escalation.reminder_minutes = 30
     await post_once(world, row)
+    world.config.discord.escalation.reminder_minutes = 30
 
     # One edit goes out...
     await world.service().reconcile(await world.db.get_escalation(row["id"]))
@@ -765,8 +859,8 @@ async def test_a_coalesced_edit_is_deferred_to_the_window_edge_and_still_claimab
 
 async def test_latest_state_wins_when_an_overtaken_edit_is_still_queued(world):
     row = await incident(world, now=world.clock() - 3600)
-    world.config.discord.escalation.reminder_minutes = 30
     await post_once(world, row)
+    world.config.discord.escalation.reminder_minutes = 30
     root = next(iter(world.transport.messages))
     stale_row, _ = await world.db.enqueue_escalation_delivery(
         row["id"],
@@ -794,6 +888,11 @@ async def test_latest_state_wins_when_an_overtaken_edit_is_still_queued(world):
 
 async def test_a_state_edit_waits_for_the_post_it_is_going_to_rewrite(world):
     row = await incident(world)
+    # Hold the atomically queued root outside this probe's delivery window.
+    async with world.db.immediate() as conn:
+        await conn.execute(update(escalation_deliveries).where(
+            escalation_deliveries.c.escalation_id == row["id"],
+        ).values(next_attempt_at=world.clock() + 3600))
     await world.db.enqueue_escalation_delivery(
         row["id"],
         dedup_key=state_dedup_key(row["id"], 0, "answered"),
@@ -815,6 +914,10 @@ async def test_a_state_edit_waits_for_the_post_it_is_going_to_rewrite(world):
 
 async def test_a_state_edit_whose_post_never_arrives_is_abandoned_not_forever(world):
     row = await incident(world)
+    async with world.db.immediate() as conn:
+        await conn.execute(update(escalation_deliveries).where(
+            escalation_deliveries.c.escalation_id == row["id"],
+        ).values(next_attempt_at=world.clock() + 3600))
     await world.db.enqueue_escalation_delivery(
         row["id"],
         dedup_key=state_dedup_key(row["id"], 0, "answered"),
@@ -1100,13 +1203,13 @@ def test_the_flag_off_plan_is_byte_for_byte_the_pre_phase_plan():
                 ["state"] if live_edit else []
             )
 
-    # An unposted incident gets the same plan either way: the root post carries
-    # whatever form the incident is in when it is first created.
+    # An answer overtaking an unposted incident suppresses the human question
+    # independently of the stateful display flag.
     for stateful in (False, True):
         plan = plan_deliveries(
             facts_for("reply_received"), deliveries=[], messages=[], stateful=stateful
         )
-        assert [row.kind for row in plan.deliveries] == ["root"]
+        assert plan.deliveries == ()
 
 
 async def test_with_the_flag_off_no_post_is_edited_in_place_and_nothing_closes(world):

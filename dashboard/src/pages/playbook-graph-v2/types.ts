@@ -122,6 +122,20 @@ export function selectedEdgeStyle(base: CSSProperties): CSSProperties {
   };
 }
 
+/** Edges touching the selected step draw at full opacity above the faded
+ *  default edges. A run overlay dims the untraversed ones to
+ *  `UNTRAVERSED_EDGE_OPACITY`, and a connected edge nobody can see is not
+ *  connected either. The dash pattern still carries the kind, and the weight
+ *  stays the edge's own — `selectedEdgeStyle` is reserved for the edge the
+ *  operator picked themselves, which is a mutually exclusive selection. */
+export function connectedEdgeStyle(base: CSSProperties): CSSProperties {
+  return {
+    ...base,
+    strokeOpacity: 1,
+    filter: `drop-shadow(0 0 4px ${String(base.stroke ?? "#e2e8f0")})`,
+  };
+}
+
 export const EDGE_KIND_LABELS: Record<string, string> = {
   success: "success",
   failure: "failure",

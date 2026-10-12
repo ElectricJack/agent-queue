@@ -1,0 +1,30 @@
+[
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'request_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "advance-source",
+    "severity": "info",
+    "step_id": "advance-source--cancel"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'source_sha' could not be determined statically, so the check against string was silenced",
+    "rule_id": "advance-source",
+    "severity": "info",
+    "step_id": "advance-source--request"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'source_sha' could not be determined statically, so the check against string was silenced",
+    "rule_id": "explicit-request",
+    "severity": "info",
+    "step_id": "explicit-request--request"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'source_sha' could not be determined statically, so the check against string was silenced",
+    "rule_id": "hotfix-completed",
+    "severity": "info",
+    "step_id": "hotfix-completed--request"
+  }
+]

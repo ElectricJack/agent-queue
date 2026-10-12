@@ -1,13 +1,13 @@
 import { useId, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, PlusIcon } from "@heroicons/react/24/outline";
-import { useAgentFlock, useEditAgent, useFlockSubagents, type FlockAgent } from "../api/agents";
+import { useAgentFlock, useEditAgent, useFlockSessions, useFlockSubagents, type FlockAgent } from "../api/agents";
 import { usePoolSetEnabled } from "../api/hooks";
 import EnableToggle from "../pages/agents/EnableToggle";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
-import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
+import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents, SupervisorHealth, supervisorScope } from "../pages/agents/AgentMetadata";
 import { OutsidePoolBadge, PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
-import { isPoolAgent, outsideSessionAgent, useDebouncedBusyPoolEntries, usePoolFlock, type PoolEntry } from "../pages/agents/pools";
+import { isPoolAgent, outsideSessionAgent, outsideSessionName, poolDisplayName, useDebouncedBusyPoolEntries, usePoolFlock, type PoolEntry } from "../pages/agents/pools";
 import { useShellPreferences } from "./useShellPreferences";
 
 export default function AgentFlock() {
@@ -21,6 +21,17 @@ export default function AgentFlock() {
   // agent on a pool profile running a task-lifecycle session is not a member,
   // but it is filtered here too: its pool entry lists it as an outside row.
   const agents = roster.filter((agent) => !isPoolAgent(agent, poolIds));
+  // Every running execution spends usage, so every one is listed. Sessions an
+  // agent row or a busy pool entry already shows are not repeated; the rest
+  // (project supervisors, named and ad-hoc sessions, idle pool workers) are.
+  const { data: sessions = [] } = useFlockSessions();
+  const shownSessionIds = new Set(agents.map((agent) => agent.session_id).filter(Boolean));
+  const busyPoolIds = new Set(pools.map((entry) => entry.profileId));
+  const otherSessions = sessions
+    .filter((session) => ["starting", "running", "draining"].includes(session.state))
+    .filter((session) => !shownSessionIds.has(session.session_id))
+    .filter((session) => !(session.lifecycle === "pool" && busyPoolIds.has(session.profile_id ?? "")))
+    .sort((a, b) => (a.project_id ?? "").localeCompare(b.project_id ?? "") || a.name.localeCompare(b.name));
   // The user's roaming preference on the daemon, not this browser's.
   const { prefs, update: updatePreferences } = useShellPreferences();
   const collapsed = prefs.agent_flock_collapsed;
@@ -55,7 +66,7 @@ export default function AgentFlock() {
           <span>Agent flock</span>
           <span className="ml-auto flex items-center gap-1.5">
             <FlockSubagents rollup={subagents} />
-            <span className="font-mono text-[10px] text-gray-500">{agents.length + pools.length}</span>
+            <span className="font-mono text-[10px] text-gray-500">{agents.length + pools.length + otherSessions.length}</span>
           </span>
         </button>
         <button type="button" data-listnav="1" aria-label="Create agent or pool"
@@ -114,8 +125,10 @@ export default function AgentFlock() {
                   </span>
                   <AgentEligibility agent={agent} />
                   <AgentWaitingQuestion agent={agent} />
-                  <span className="block truncate text-gray-400" title={agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? "Supervises all AQ projects" : "Idle — no assigned task")}>
-                    {agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? "Supervises all AQ projects" : "Idle — no assigned task")}
+                  <SupervisorHealth agent={agent} />
+                  {agent.role === "supervisor" && <span className="block">Harness: {agent.harness || "unknown"}</span>}
+                  <span className="block truncate text-gray-400" title={agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? supervisorScope(agent) : "Idle — no assigned task")}>
+                    {agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? supervisorScope(agent) : "Idle — no assigned task")}
                   </span>
                   {agent.enabled === false && (
                     <span className="block text-amber-300">
@@ -124,13 +137,13 @@ export default function AgentFlock() {
                   )}
                 </span>
               </button>
-              <EnableToggle
+              {!agent.session_backed && <EnableToggle
                 enabled={agent.enabled !== false}
                 subject={agent.name}
                 pending={pending}
                 error={failed ? failed.message : null}
                 onChange={(next) => editAgent.mutate({ agent_id: agent.id, enabled: next })}
-              />
+              />}
               </div>
             );
           })}
@@ -148,14 +161,14 @@ export default function AgentFlock() {
               <button
                 type="button"
                 data-listnav="1"
-                aria-label={"Open " + entry.profileId + " pool"}
+                aria-label={"Open " + poolDisplayName(entry.pool) + " pool"}
                 aria-describedby={descriptionId}
                 aria-pressed={selected}
                 onClick={(event) => setLimitAt(selection.select(entry.key, event.shiftKey) ? null : selection.locationKey)}
                 className="block min-w-0 flex-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400"
               >
                 <span className="mb-0.5 flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium text-gray-200">{entry.profileId}</span>
+                  <span className="truncate text-sm font-medium text-gray-200" title={entry.profileId}>{poolDisplayName(entry.pool)}</span>
                   <PoolBadge />
                 </span>
                 <span id={descriptionId} className="block space-y-0.5 text-[10px] leading-tight text-gray-500">
@@ -174,7 +187,7 @@ export default function AgentFlock() {
               </button>
               <EnableToggle
                 enabled={entry.pool.enabled !== false}
-                subject={entry.profileId + " pool"}
+                subject={poolDisplayName(entry.pool) + " pool"}
                 pending={pending}
                 error={failed ? failed.message : null}
                 onChange={(next) => setPoolEnabled.mutate({ profile_id: entry.profileId, enabled: next })}
@@ -189,6 +202,28 @@ export default function AgentFlock() {
               </div>
             );
           })}
+          {otherSessions.length > 0 && (
+            <div aria-label="Other running sessions" role="group" className="space-y-1">
+              <p className="px-3 pt-1 text-[10px] uppercase tracking-wide text-gray-500">Running sessions</p>
+              {otherSessions.map((session) => (
+                <Link key={session.session_id} to={"/sessions/" + session.session_id} data-listnav="1"
+                  className="block rounded-lg border border-transparent px-3 py-1.5 hover:border-gray-700 hover:bg-gray-800/70">
+                  <span className="mb-0.5 flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-medium text-gray-200">{session.name}</span>
+                    <span className={"shrink-0 text-[10px] " + (session.task_id ? "text-emerald-400" : "text-gray-500")}>{session.state}</span>
+                  </span>
+                  <span className="block space-y-0.5 text-[10px] leading-tight text-gray-500">
+                    <span className="block truncate text-gray-400">
+                      {[session.harness || session.provider, session.model, session.intelligence_class].map((value) => value || "unknown").join(" · ")}
+                    </span>
+                    <span className="block truncate">
+                      {(session.project_id || "all projects") + " · " + (session.task_id || (session.role === "supervisor" ? "supervisor" : "no task"))}
+                    </span>
+                  </span>
+                </Link>
+              ))}
+            </div>
+          )}
           {hiddenCount > 0 && (
             <Link to="/agents" data-listnav="1" data-primary-control className="flex items-center px-3 py-1 text-xs text-gray-500 hover:text-gray-300">
               {hiddenCount} idle {hiddenCount === 1 ? "pool" : "pools"}
@@ -208,9 +243,11 @@ export default function AgentFlock() {
 /**
  * Task-lifecycle sessions running on a pool's route, nested under the pool.
  *
- * They are not pool members — typically tasks launched on the profile before
- * it switched to ``lifecycle: pool`` — so the pool's supply does not count
- * them and the roster hides their agents with the pool's. Listed here, each
+ * They are not pool members — tasks launched on the profile before it
+ * switched to ``lifecycle: pool``, or a dedicated profile's task (spec-ingest)
+ * on the same harness and class, often on a reused pool worker's agent row —
+ * so the pool's supply does not count them and the roster hides their agents
+ * with the pool's. Each is named by ``outsideSessionName``. Listed here, each
  * one opens its agent's window like any other row, so its progress can be
  * watched. A session no roster agent is running is still listed, without a
  * click target: there is no agent window to open for it.
@@ -223,16 +260,16 @@ function OutsidePoolRows({ entry, roster, selectedIds, onSelect }: {
 }) {
   if (entry.outside.length === 0) return null;
   return (
-    <ul aria-label={"Sessions outside the " + entry.profileId + " pool"} className="ml-4 mt-1 space-y-1 border-l border-gray-800 pl-2">
+    <ul aria-label={"Sessions outside the " + poolDisplayName(entry.pool) + " pool"} className="ml-4 mt-1 space-y-1 border-l border-gray-800 pl-2">
       {entry.outside.map((session) => {
         const agent = outsideSessionAgent(session, roster);
-        const name = agent?.name || session.name;
+        const name = outsideSessionName(session, agent);
         const task = session.task_title || session.task_id || agent?.current_task_title || "No task";
         const selected = !!agent && selectedIds.includes(agent.id);
         const body = (
           <>
             <span className="mb-0.5 flex items-center justify-between gap-2">
-              <span className="truncate text-xs font-medium text-gray-200">{name}</span>
+              <span className="truncate text-xs font-medium text-gray-200" title={session.name}>{name}</span>
               <span className={"shrink-0 text-[10px] capitalize "
                 + (agent?.waiting_question ? "text-amber-300" : (agent?.state ?? session.state) === "busy" ? "text-emerald-400" : "text-gray-500")}>
                 {agent ? <AgentState agent={agent} /> : session.state}

@@ -754,7 +754,7 @@ async def test_github_clone_normalizes_source_and_registers_real_clone(
     assert _git(destination, "remote", "get-url", "origin").stdout.strip() == clone_url
     project = await database.get_project("widgets")
     workspaces = await database.list_workspaces("widgets")
-    assert project is not None and project.repo_url == clone_url
+    assert project is not None and project.repo_url == "https://github.com/acme/widgets.git"
     assert len(workspaces) == 1 and workspaces[0].source_type is RepoSourceType.CLONE
     assert not list(root.glob(".*aq-onboard*"))
 
@@ -1357,3 +1357,176 @@ async def test_create_github_existing_name_maps_to_repository_conflict(onboardin
     assert "recovery_action" not in failure.value.details
     assert not (root / "taken").exists()
     assert not list(root.glob(".*aq-onboard*"))
+
+
+async def test_adopt_empty_remote_authorizes_before_push_and_replays(onboarding, tmp_path, monkeypatch):
+    _, database, config, root, _ = onboarding
+    remote = _make_bare_remote(tmp_path / "adopted.git", with_commit=False)
+    git = _git_with_local_remote(remote)
+    original = git._arun
+    pushed = []
+
+    async def authorized_push(args, **kwargs):
+        if args and args[0] == "push":
+            project = await database.get_project("example-project")
+            assert project.repo_url == "https://github.com/acme/widgets.git"
+            audit = await database.get_recent_events(
+                event_type="project.repository_bound", project_id=project.id,
+            )
+            assert len(audit) == 1
+            pushed.append(True)
+        return await original(args, **kwargs)
+
+    monkeypatch.setattr(git, "_arun", authorized_push)
+    service = ProjectOnboardingService(database, config, git)
+    request = _request(source_mode="init", repo_url="acme/widgets")
+    result = await service.onboard_project(request)
+    assert "branch_pushed" in result.actions
+    assert await service.onboard_project(request) == result
+    assert pushed == [True]
+    assert _git(root / "repo", "rev-parse", "HEAD").stdout == _git(
+        remote, "rev-parse", "refs/heads/main",
+    ).stdout
+
+
+async def test_failed_repository_access_rolls_back_before_push(onboarding, monkeypatch):
+    from src.projects.github import GitHubError, GitHubErrorCode
+
+    service, database, _, root, _ = onboarding
+    denied = AsyncMock(side_effect=GitHubError(
+        GitHubErrorCode.REPOSITORY_INACCESSIBLE, "App installation cannot access repository",
+    ))
+    monkeypatch.setattr(service.gh, "validate_repository", denied)
+    with pytest.raises(ProjectOnboardingError, match="App installation"):
+        await service.onboard_project(_request(source_mode="init", repo_url="acme/widgets"))
+    assert await database.get_project("example-project") is None
+    assert not (root / "repo").exists()
+    assert not list(root.glob(".repo.aq-onboard-*"))
+
+
+@pytest.mark.parametrize("create", [False, True])
+async def test_create_command_onboards_authorized_repository(onboarding, tmp_path, monkeypatch, create):
+    _, database, config, root, _ = onboarding
+    remote = _make_bare_remote(tmp_path / "command.git", with_commit=not create)
+    gh, _ = _fake_gh(tmp_path)
+    orchestrator = Orchestrator(config)
+    orchestrator.db = database
+    orchestrator.git = _git_with_local_remote(remote)
+    handler = CommandHandler(orchestrator, config)
+    monkeypatch.setattr(handler, "_github_client", lambda: gh)
+    args = {"name": "Widgets", "request_id": "command-remote"}
+    args.update({"create_repo": "acme/widgets", "private": True} if create else {
+        "repo_url": "https://github.com/acme/widgets",
+    })
+    result = await handler.execute("create_project", args)
+    assert result.get("success"), result
+    assert result["created"] == "widgets"
+    project = await database.get_project("widgets")
+    assert project.repo_url == "https://github.com/acme/widgets.git"
+    assert project.repo_default_branch == ("main" if create else "trunk")
+    assert (root / "widgets" / ".git").is_dir()
+    assert len(await database.get_recent_events(
+        event_type="project.repository_bound", project_id="widgets",
+    )) == 1
+    verified = await handler.execute("integration_app_verify", {
+        "project_id": "widgets", "repository_access_only": True,
+    })
+    assert verified.get("ready"), verified
+    replay = await handler.execute("create_project", args)
+    assert replay == result
+
+
+async def test_local_first_doctor_offers_audited_binding(onboarding, monkeypatch):
+    service, database, config, root, _ = onboarding
+    repository = _make_repo(root / "repo")
+    await service.onboard_project(_request())
+    _git(repository, "remote", "add", "origin", "https://github.com/acme/widgets.git")
+    orchestrator = Orchestrator(config)
+    orchestrator.db = database
+    handler = CommandHandler(orchestrator, config)
+    diagnosis = await handler.execute("project_doctor", {"project_id": "example-project"})
+    assert diagnosis["code"] == "repository_authorization_missing"
+    assert "bind-repository example-project" in diagnosis["recovery_command"]
+    assert "--expected-repo-url ''" in diagnosis["recovery_command"]
+    bound = await handler.execute("bind_project_repository", {
+        "project_id": "example-project", "repo_url": "acme/widgets",
+        "expected_repo_url": "", "reason": "Authorize local-first init",
+    })
+    assert bound.get("success"), bound
+    assert (await handler.execute("project_doctor", {"project_id": "example-project"}))["ready"]
+
+
+async def test_retained_remote_recovery_command_creates_initial_commit(onboarding, tmp_path):
+    import shlex
+
+    _, database, config, root, _ = onboarding
+    remote = _make_bare_remote(tmp_path / "resume.git", with_commit=False)
+    gh, _ = _fake_gh(tmp_path)
+    failed = ProjectOnboardingService(
+        database, config, _FailingGitManager(fail_command="push"), gh_client=gh,
+    )
+    with pytest.raises(ProjectOnboardingError) as failure:
+        await failed.onboard_project(_request(
+            source_mode="init", create_github=True, github_owner="acme", github_repo="widgets",
+        ))
+    command = shlex.split(failure.value.details["recovery_command"])
+    assert command[:3] == ["aq", "project", "onboard"]
+    flags = dict(zip(command[3::2], command[4::2], strict=True))
+    assert flags["--github-url"] == "https://github.com/acme/widgets"
+    assert await database.get_project("example-project") is None
+    assert not (root / "repo").exists()
+    recovered = ProjectOnboardingService(database, config, _git_with_local_remote(remote))
+    result = await recovered.onboard_project(_request(
+        request_id="recovered", source_mode="github_clone",
+        github_url=flags["--github-url"],
+    ))
+    assert "branch_pushed" in result.actions
+    assert await database.get_project("example-project") is not None
+    assert _git(remote, "rev-parse", f"refs/heads/{result.default_branch}").returncode == 0
+
+
+@pytest.mark.parametrize("after_binding", [False, True])
+async def test_resume_after_registration_or_binding_crash(onboarding, tmp_path, monkeypatch, after_binding):
+    _, database, config, root, _ = onboarding
+    remote = _make_bare_remote(tmp_path / "crash.git", with_commit=False)
+    git = _git_with_local_remote(remote)
+    request = _request(source_mode="init", repo_url="acme/widgets")
+    original = database.bind_project_repository
+
+    async def crash(*args, **kwargs):
+        if after_binding:
+            await original(*args, **kwargs)
+        raise _SimulatedCrash
+
+    monkeypatch.setattr(database, "bind_project_repository", crash)
+    with pytest.raises(_SimulatedCrash):
+        await ProjectOnboardingService(database, config, git).onboard_project(request)
+    assert await database.get_project("example-project") is not None
+    assert (root / "repo").is_dir()
+    monkeypatch.setattr(database, "bind_project_repository", original)
+    result = await ProjectOnboardingService(database, config, git).onboard_project(request)
+    assert "branch_pushed" in result.actions
+    assert len(await database.get_recent_events(
+        event_type="project.repository_bound", project_id="example-project",
+    )) == 1
+    record = await database.get_onboarding_request(request.request_id)
+    assert record["status"] == "succeeded"
+
+
+async def test_app_verify_refusal_prevents_initial_publication(onboarding, tmp_path, monkeypatch):
+    _, database, config, root, _ = onboarding
+    remote = _make_bare_remote(tmp_path / "unverified.git", with_commit=False)
+    verification = AsyncMock(return_value={"ready": False, "error": "Installation access denied"})
+    service = ProjectOnboardingService(
+        database, config, _git_with_local_remote(remote), verify_repository=verification,
+    )
+    push = AsyncMock()
+    monkeypatch.setattr(service, "_push_initial_branch", push)
+    with pytest.raises(ProjectOnboardingError, match="Installation access denied"):
+        await service.onboard_project(_request(source_mode="init", repo_url="acme/widgets"))
+    verification.assert_awaited_once_with({
+        "project_id": "example-project", "repository_access_only": True,
+    })
+    push.assert_not_awaited()
+    assert await database.get_project("example-project") is None
+    assert not (root / "repo").exists()

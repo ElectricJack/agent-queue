@@ -140,7 +140,7 @@ class DigestCommandsMixin:
         open_escalations = len(
             await self.db.list_escalations(
                 project_ids=list(scope) if scope is not None else None,
-                states=["needs_human", "reply_received"],
+                states=["needs_human"],
                 limit=500,
             )
         )

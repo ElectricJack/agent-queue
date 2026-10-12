@@ -47,6 +47,7 @@ from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialIdentity,
     GitHubCredentialMode,
+    GitHubRepositoryBinding,
     credential_identity_from_client,
 )
 from src.integration.ci import is_numeric_producer_id
@@ -58,6 +59,61 @@ APP_BYPASS = "app_bypass"
 INCOMPATIBLE = "incompatible"
 ATTESTED_ONLY = "attested_only"
 UNPROTECTED = "unprotected"
+
+
+class LocalRulesetReader:
+    """Explicit operator login, limited to reading one bound ruleset's detail.
+
+    The App's administration:read token hides bypass actors. A LOCAL command
+    may supply this reader to observe those actors with the operator's gh login.
+    The App remains the authority for all writes and its own bypass ability.
+    """
+
+    def __init__(self, client: Any):
+        if credential_identity_from_client(client).mode is not GitHubCredentialMode.EXISTING_LOGIN:
+            raise ValueError("ruleset admin reader requires the existing operator login")
+        if not isinstance(client.repository, GitHubRepositoryBinding):
+            raise ValueError("ruleset admin reader requires a repository binding")
+        self.client = client
+
+    async def detail(self, binding: GitHubRepositoryBinding, ruleset_id: int) -> dict:
+        if binding != self.client.repository or type(ruleset_id) is not int or ruleset_id <= 0:
+            raise ValueError("ruleset admin reader repository or ruleset does not match")
+        document = await self.client.request_json(
+            "GET", f"/repositories/{binding.repository_id}/rulesets/{ruleset_id}",
+        )
+        if (type(document.get("id")) is not int or document["id"] != ruleset_id
+                or not isinstance(document.get("bypass_actors"), list)):
+            raise ValueError("github_ruleset_unverifiable: operator bypass actors are hidden")
+        return document
+
+
+async def read_ruleset_detail(
+    client: Any, binding: GitHubRepositoryBinding, ruleset_id: int, *,
+    admin_reader: LocalRulesetReader | None = None,
+) -> dict:
+    """Supplement hidden actors only after both readers agree on the live policy."""
+    if client.repository != binding or type(ruleset_id) is not int or ruleset_id <= 0:
+        raise ValueError("ruleset reader repository or ruleset does not match")
+    document = await client.request_json(
+        "GET", f"/repositories/{binding.repository_id}/rulesets/{ruleset_id}",
+    )
+    if type(document.get("id")) is not int or document["id"] != ruleset_id:
+        raise ValueError("github_ruleset_unverifiable: ruleset answered another id")
+    if isinstance(document.get("bypass_actors"), list) or admin_reader is None:
+        return document
+    operator_document = await admin_reader.detail(binding, ruleset_id)
+    fields = ("id", "name", "target", "enforcement", "conditions", "rules", *(
+        field for field in ("source", "source_type")
+        if field in document or field in operator_document
+    ))
+    if any(field not in document or field not in operator_document
+           or document[field] != operator_document[field] for field in fields):
+        raise ValueError("github_ruleset_unverifiable: App and operator policy observations differ")
+    # In particular, current_user_can_bypass belongs to the App observation.
+    return {**document, "bypass_actors": operator_document["bypass_actors"]}
+
+
 CLASSIFICATIONS = (UNVERIFIABLE, APP_BYPASS, INCOMPATIBLE, ATTESTED_ONLY, UNPROTECTED)
 
 MISSING_CODE = "main_protection_missing"
@@ -240,6 +296,7 @@ def _status_checks(
     app_id: int | None,
     producer: int | None,
     names: frozenset[str],
+    attestation_name: str = ATTESTATION_NAME,
 ) -> tuple[str | None, bool]:
     """``(refusal, requires_attestation)`` for one set of required checks.
 
@@ -257,7 +314,7 @@ def _status_checks(
         if not isinstance(context, str):
             raise ProtectionUnreadable("a required status check has no context")
         pinned = _pinned(check.get(pin_key))
-        if context == ATTESTATION_NAME and app_id is not None and pinned == app_id:
+        if context == attestation_name and app_id is not None and pinned == app_id:
             requires_attestation = True
         elif context in names and producer is not None and pinned == producer:
             continue
@@ -280,6 +337,7 @@ def _ruleset_rule(
     app_id: int | None,
     producer: int | None,
     names: frozenset[str],
+    attestation_name: str = ATTESTATION_NAME,
 ) -> ProtectionRule:
     if not isinstance(entry, dict):
         raise ProtectionUnreadable("an effective rule is malformed")
@@ -306,7 +364,8 @@ def _ruleset_rule(
             raise ProtectionUnreadable("a required status check rule has no parameters")
         checks = parameters.get("required_status_checks")
         refusal, requires_attestation = _status_checks(
-            checks, pin_key="integration_id", app_id=app_id, producer=producer, names=names
+            checks, pin_key="integration_id", app_id=app_id, producer=producer, names=names,
+            attestation_name=attestation_name,
         )
         return ProtectionRule(
             **fields,
@@ -339,6 +398,7 @@ def _classic_rules(
     app_id: int | None,
     producer: int | None,
     names: frozenset[str],
+    attestation_name: str = ATTESTATION_NAME,
 ) -> list[ProtectionRule]:
     """Classic branch protection as rules; ``None`` (a 404) is none."""
     if classic is None:
@@ -362,7 +422,8 @@ def _classic_rules(
                 raise ProtectionUnreadable("classic required contexts are malformed")
             checks = [{"context": context} for context in contexts]
         refusal, requires_attestation = _status_checks(
-            checks, pin_key="app_id", app_id=app_id, producer=producer, names=names
+            checks, pin_key="app_id", app_id=app_id, producer=producer, names=names,
+            attestation_name=attestation_name,
         )
         if checks:
             rules.append(
@@ -398,6 +459,7 @@ def classify(
     app_id: int | None,
     policy: HierarchicalIntegrationPolicy | None = None,
     ruleset_names: Mapping[int, str] | None = None,
+    attestation_name: str = ATTESTATION_NAME,
 ) -> ProtectionReading:
     """Classify the three reads for the App's promotion push (spec §8.3).
 
@@ -417,11 +479,15 @@ def classify(
                 )
         rules = [
             _ruleset_rule(
-                entry, bypass, ruleset_names or {}, app_id=app_id, producer=producer, names=names
+                entry, bypass, ruleset_names or {}, app_id=app_id, producer=producer, names=names,
+                attestation_name=attestation_name,
             )
             for entry in effective
         ]
-        rules += _classic_rules(classic, app_id=app_id, producer=producer, names=names)
+        rules += _classic_rules(
+            classic, app_id=app_id, producer=producer, names=names,
+            attestation_name=attestation_name,
+        )
     except ProtectionUnreadable as exc:
         return ProtectionReading(UNVERIFIABLE, reason=str(exc))
 
@@ -469,6 +535,7 @@ async def read_protection(
     *,
     app_id: int | None,
     policy: HierarchicalIntegrationPolicy | None = None,
+    attestation_name: str = ATTESTATION_NAME,
 ) -> ProtectionReading:
     """Read and classify the default branch's protection through *client*.
 
@@ -518,7 +585,8 @@ async def read_protection(
     except Exception as exc:  # noqa: BLE001 - every failed read is unverifiable
         return ProtectionReading(UNVERIFIABLE, reason=f"{stage} not read: {_describe(exc)}")
     return classify(
-        effective, bypass, classic, app_id=app_id, policy=policy, ruleset_names=ruleset_names
+        effective, bypass, classic, app_id=app_id, policy=policy, ruleset_names=ruleset_names,
+        attestation_name=attestation_name,
     )
 
 

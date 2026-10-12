@@ -65,6 +65,25 @@ the member result is recorded. Reserved AQ bookkeeping paths are refused by
 the shared port using the existing Git boundary; callers retain their admission and
 reviewed-file guards.
 
+The recorded base remains immutable source provenance. For each member merge,
+compute the natural merge base of the running target and the frozen source head.
+Use that commit as the effective base only when it is unique, descends from the
+recorded base, is proved an ancestor of both merge inputs, and lies on the
+running target's first-parent chain. A source ancestor reachable only through
+a member's second parent may have contributed no content to the target;
+advancing to it would silently drop that source's earlier changes. Otherwise keep
+the recorded base, so a source contributes only its own delta even when its
+origin is outside the target's history. Probe errors fail closed. This applies
+to train batches and candidate construction, including accepted repair replay.
+Merge results and conflict evidence name the recorded and effective bases;
+generated merge commits also retain the effective base for later Git audits.
+Reserved-path checks inspect both the recorded source delta and the effective
+delta being merged whenever they differ, including a restoration of bookkeeping
+that the target deleted. Migration collisions use the effective base.
+Reviewers retain the pinned (recorded base, reviewed head, reviewed tree) view;
+review diffs use the recorded base, and effective merge bases do not rewrite
+source identity or review evidence.
+
 Alembic collisions are detected by reusing `migration_heads.declaration` on
 literal source declarations; branch migration code is never executed. Duplicate
 revisions and sibling heads return member conflicts. Generated overlaps use

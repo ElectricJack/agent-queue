@@ -35,6 +35,29 @@ def test_git_first_selector_rejects_other_modes(value):
     assert any(error.field == "git_first" for error in IntegrationConfig(git_first=value).validate())
 
 
+def test_deploy_selection_is_opt_in_and_loads_the_promotion_target(config_dir):
+    from src.config import AppConfig
+
+    assert AppConfig().deploy.tag_glob is None
+    assert AppConfig().deploy.target == "main"
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "deploy": {"tag_glob": "production-v*", "target": "production"},
+        "discord": {"bot_token": "x", "guild_id": "1"},
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    config = load_config(str(config_file))
+    assert config.deploy.tag_glob == "production-v*"
+    assert config.deploy.target == "production"
+
+
+@pytest.mark.parametrize("value", ["", False, 3, [], {}])
+def test_deploy_selection_rejects_invalid_tag_globs(value):
+    from src.config import DeployConfig
+
+    assert any(error.field == "tag_glob" for error in DeployConfig(tag_glob=value).validate())
+
+
 class TestConfigLoading:
     def test_load_minimal_config(self, config_dir):
         config_file = config_dir / "config.yaml"

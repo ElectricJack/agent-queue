@@ -19,6 +19,7 @@ from collections import Counter
 from dataclasses import replace
 from typing import Any
 
+from src.commands.integration_commands import SOURCE_CI_REPAIR_ORIGIN
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.database.queries.routing_queries import ROUTABLE_STATUSES, RoutingBusyError
 from src.models import TASK_TYPE_VALUES, TaskStatus
@@ -256,7 +257,10 @@ class RoutingCommandsMixin:
             except Exception:  # noqa: BLE001 - a missing cap is "one slot"
                 global_cap = None
 
+        from src.routing.policy import is_opencode_family
+
         facts: list[ProfileFacts] = []
+        from src.commands.operator_authority import is_operator_profile
         keys: set[str] = set()
         for profile in await self.db.list_profiles(conn=conn):
             harness = str(getattr(profile, "harness", "") or "")
@@ -278,6 +282,14 @@ class RoutingCommandsMixin:
                 id=profile.id,
                 harness=harness,
                 provider=key,
+                harness_family=(
+                    "opencode" if registry is not None and (
+                        is_opencode_family(
+                            harness, profile_provider(profile, registry, project_id),
+                            getattr(registry.get(harness, project_id), "command", ""),
+                        )
+                    ) else ""
+                ),
                 lifecycle=lifecycle,
                 default_class=str(getattr(profile, "default_class", "") or ""),
                 classes=frozenset(
@@ -286,6 +298,7 @@ class RoutingCommandsMixin:
                 ),
                 slots=int(slots or 0),
                 enabled=bool(getattr(profile, "enabled", True)),
+                operator=is_operator_profile(profile),
                 template=bool(getattr(profile, "template", False)),
                 read_only=bool(getattr(profile, "read_only", False)),
                 runtime=str(getattr(profile, "runtime", "") or ""),
@@ -398,7 +411,13 @@ class RoutingCommandsMixin:
             global_cap=self.orchestrator._pool_global_cap(),
             workspace_capacity=workspace_capacity, quarantine=quarantine, headroom_out=headroom,
         )
-        return replace(snapshot, context=context, headroom=headroom)
+        registry = getattr(self.orchestrator, "harness_registry", None)
+        installed = {profile.harness for profile in profiles if profile.harness}
+        if registry is not None:
+            installed |= {h.id for h in registry.list_for_scope(task.project_id) if h.id}
+        return replace(
+            snapshot, context=context, headroom=headroom, harnesses=frozenset(installed)
+        )
 
     async def _preferred_provider_serves(
         self, project_id: str, provider: str, class_id: str | None
@@ -427,6 +446,23 @@ class RoutingCommandsMixin:
         labels = await self.db.get_task_labels(task.id)
         exclude = route_constraints(task).get("exclude_providers") or []
         task_type = getattr(task.task_type, "value", task.task_type)
+        origin = getattr(task, "created_by_kind", None)
+        if origin == "system":
+            from src.integration.repair import OrdinaryRepairService
+
+            # Ordinary train repairs are system filings, not legacy stage
+            # delegates. Their immutable, identity-checked input supplies the
+            # routing origin without changing their claim/restart lifecycle.
+            if await OrdinaryRepairService(self.db).input(task.id) is not None:
+                origin = "integration_repair"
+        elif origin in {SOURCE_CI_REPAIR_ORIGIN, "integration_writer"} or (
+            origin is None and await self.db.list_source_ci_inherited_oids(task.id)
+        ):
+            # Source-CI repairs and integration writers (including verifier
+            # test tasks) use the repair policy, keeping every OpenCode lane
+            # excluded without changing their stored identity or lifecycle.
+            # The record lookup covers repairs filed before origin stamping.
+            origin = "integration_repair"
         class_hint = (getattr(task, "class_hint", None) or "").strip() or None
         if class_hint is None and (getattr(task, "route_source", None) or UNROUTED) == UNROUTED:
             # Rows filed before creation recorded the filer's class as
@@ -441,7 +477,7 @@ class RoutingCommandsMixin:
             description=task.description or "",
             task_type=str(task_type) if task_type else None,
             class_hint=class_hint,
-            created_by_kind=getattr(task, "created_by_kind", None),
+            created_by_kind=origin,
             exclude_providers=frozenset(str(p) for p in exclude if p),
             prefer_target=getattr(task, "prefer_target", None) or None,
             prefer_mode=getattr(task, "prefer_mode", None) or PREFER_SOFT,
@@ -454,11 +490,13 @@ class RoutingCommandsMixin:
             needs_task_lifecycle=any(
                 row.kind_id not in POOL_WORKSPACE_KINDS for row in requirements
             ),
-            priority=getattr(task, "priority", None),
             on_train=project is not None and getattr(
                 project, "hierarchical_integration_mode", None
             ) in TRAIN_INTEGRATION_MODES,
             blocks_work=await self.db.has_waiting_dependents(task.id),
+            failed_attempts=tuple(await self.db.get_task_meta(
+                task.id, "routing_failed_attempts",
+            ) or ()),
         )
 
     async def _cmd_task_route_plan(self, args: dict) -> dict:
@@ -707,6 +745,12 @@ class RoutingCommandsMixin:
                     "routed_at": time.time(),
                     "live_context": dict(snapshot.context),
                 }
+                if raised := plan.get("class_raised_for_risk"):
+                    # Only a plan whose risk floor raised the class carries it,
+                    # so every other route record is unchanged.
+                    route["class_raised_for_risk"] = raised
+                if escalated := plan.get("escalated_after_failure"):
+                    route["escalated_after_failure"] = escalated
                 prior = getattr(fresh, "route", None)
                 if constraints := route_constraints(fresh):
                     route["constraints"] = constraints

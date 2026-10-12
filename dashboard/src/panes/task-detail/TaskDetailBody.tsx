@@ -13,7 +13,6 @@ import {
   useTask,
   useGates,
   useResolveGate,
-  useDeleteTask,
   useReopenWithFeedback,
   useTaskAttachments,
   useUploadTaskAttachment,
@@ -22,12 +21,12 @@ import {
   type TaskCompletionDetail,
   type TaskRef,
 } from "../../api/hooks";
-import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../../api/branchDiscard";
-import { integrationRemovalRefusal } from "../../api/deleteRefusals";
-import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
 import { EpicDeliveryPanel, EpicStatus } from "../../components/EpicDelivery";
+import TaskDisplayStatus, { EpicActivitySummary } from "../../components/TaskDisplayStatus";
+import { rolledState } from "../../components/epicActivityFormat";
 import TaskActions from "../../components/TaskActions";
+import DeleteTaskModal from "../../components/DeleteTaskModal";
 import TaskCollaboration from "../../components/TaskCollaboration";
 import TaskComments from "../../components/TaskComments";
 import TaskSubtaskList from "../../components/TaskSubtaskList";
@@ -107,27 +106,18 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
     enabled: !!task?.project_id,
   });
   const resolveGate = useResolveGate();
-  const deleteTask = useDeleteTask();
   const reopenWithFeedback = useReopenWithFeedback();
   const attachments = useTaskAttachments(taskId, !!task);
   const uploadAttachment = useUploadTaskAttachment();
   const deleteAttachment = useDeleteTaskAttachment();
 
   const [modal, setModal] = useState<LocalModal>(null);
-  // Branches a refused delete is asking about; see api/branchDiscard.
-  const [branchPrompt, setBranchPrompt] = useState<DiscardBranch[] | null>(null);
-  const [branchChoice, setBranchChoice] = useState<BranchChoice>("keep");
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ complete: number; total: number } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const location = useLocation();
-
-  // An integration refusal is not worth another attempt: history is a permanent
-  // record (explained in plain words), and any other hold names the command that
-  // clears it. Either way the dialog says so instead of offering the button.
-  const integrationRefusal = deleteTask.isError ? integrationRemovalRefusal(deleteTask.error) : null;
 
   const loose = task as TaskWithLooseFields | undefined;
   // Until the full read lands, the header shows what the row or card showed.
@@ -253,10 +243,10 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
           {task?.title ?? preview?.title ?? "Loading…"}
         </h2>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          {task?.delivery_status ? (
+          {task?.delivery_status && !rolledState(task, task.delivery_status) ? (
             <EpicStatus delivery={task.delivery_status} status={task.status} />
           ) : (
-            status && <StatusBadge status={status} />
+            status && <TaskDisplayStatus task={task ?? { status, display_state: preview?.display_state, display_reason: preview?.display_reason }} />
           )}
           {projectId && <span className="text-gray-400">{projectId}</span>}
           {priority != null && (
@@ -286,6 +276,7 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
             </span>
           )}
         </div>
+        {task && <EpicActivitySummary task={task} />}
       </header>
 
       {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={onClose} onOpenTerminal={onLeave} />}
@@ -530,63 +521,8 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, onLeave = 
         <TaskRefSection title="Blocks" items={task!.blocks!} onOpen={onOpenTask} />
       )}
 
-      <Modal open={modal === "close"} onClose={() => setModal(null)} title="Delete Task">
-        <div className="space-y-4">
-          <p className="text-sm text-gray-300">
-            Delete <strong>{task?.title}</strong> and any descendant tasks? This cannot be undone.
-          </p>
-          {branchPrompt && (
-            <BranchDiscardPrompt
-              branches={branchPrompt}
-              choice={branchChoice}
-              onChoose={setBranchChoice}
-            />
-          )}
-          {integrationRefusal && (
-            <p role="alert" className="text-sm text-amber-200">{integrationRefusal}</p>
-          )}
-          {deleteTask.isError && !branchPrompt && !integrationRefusal && (
-            <p role="alert" className="text-sm text-red-300">
-              Could not delete task. {deleteTask.error.message}
-            </p>
-          )}
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => { setBranchPrompt(null); setModal(null); }}
-              className="rounded-md border border-gray-600 bg-gray-800 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() =>
-                deleteTask.mutate(
-                  {
-                    task_id: taskId,
-                    cascade: true,
-                    ...(branchPrompt ? { branches: branchChoice } : {}),
-                  },
-                  {
-                    onSuccess: () => { setBranchPrompt(null); setModal(null); },
-                    onError: (error) => {
-                      const awaiting = branchesAwaitingChoice(error);
-                      if (awaiting) setBranchPrompt(awaiting);
-                    },
-                  },
-                )
-              }
-              disabled={deleteTask.isPending || !!integrationRefusal}
-              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
-            >
-              {deleteTask.isPending
-                ? "Deleting..."
-                : branchPrompt && branchChoice === "delete"
-                  ? "Delete task and branches"
-                  : "Delete task and descendants"}
-            </button>
-          </div>
-        </div>
-      </Modal>
-
+      {modal === "close" && task && <DeleteTaskModal task={task}
+        onClose={() => setModal(null)} onDeleted={onClose} />}
       <Modal open={modal === "reopen"} onClose={() => setModal(null)} title="Reopen with Feedback">
         <div className="space-y-4">
           <textarea

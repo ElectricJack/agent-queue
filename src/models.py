@@ -102,13 +102,23 @@ class TaskType(Enum):
     TEST = "test"
     DOCS = "docs"
     CHORE = "chore"
+    OPERATOR = "operator"
     RESEARCH = "research"
     PLAN = "plan"
     SYNC = "sync"
+    # Completed daemon sources and pinned intents never enter worker routing.
+    PROMOTION = "promotion"
+    BACKMERGE = "backmerge"
     # Design kinds the router sends to the design lanes (mandatory-routing
     # spec §6.3): ``design`` is code or system design, ``art`` is art-heavy.
     DESIGN = "design"
     ART = "art"
+
+
+#: Task types the daemon authors and drives itself (the train owns them).
+#: No agent ever holds one, so recovery must not reset one to READY and the
+#: router must never route one to a worker pool.
+DAEMON_AUTHORED_TASK_TYPES = frozenset({TaskType.PROMOTION.value, TaskType.BACKMERGE.value})
 
 
 # Convenience set for validation without constructing enum members.
@@ -431,6 +441,7 @@ class Project:
     # installation default ``git_identity``; see ``src/git/identity.py``).
     git_identity_name: str | None = None
     git_identity_email: str | None = None
+    supervisor_enabled: bool = False
 
 
 @dataclass
@@ -1057,6 +1068,8 @@ class Message:
     body_kind: str | None = None
     pane_open: str | None = None  # JSON-encoded {view, args}
     created_seq: int | None = None  # server sequence for typed message waits
+    last_notified_at: float | None = None
+    notification_attempts: int = 0
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).
@@ -1379,8 +1392,11 @@ class PipelineContext:
     #: stays IN_PROGRESS under its claim and the close is refused with
     #: feedback.
     verification_retry_in_session: bool = False
-    #: The fixable issues behind ``verification_retry_in_session``.
+    #: Issues observed by Git verification, including blocked delivery.
     verification_issues: list[str] = field(default_factory=list)
+    #: A failed probe, authorization or push prevented a work verdict. Such
+    #: infrastructure failures must not count toward router escalation.
+    verification_infrastructure_failure: bool = False
     #: True when the refused close is blocked on daemon-side delivery state
     #: the closing workspace cannot change (no integration workspace, a
     #: workspace locked by another task, a repository mismatch).  The task is
@@ -1463,6 +1479,12 @@ class SessionRecord:
     claim_phase_at: float | None = None
     last_claim_epoch: int | None = None
     last_claim_result: str | None = None  # claimed | prepare_failed | released
+    #: Consecutive identical preparation refusals; activation clears the streak.
+    claim_failure_count: int = 0
+    claim_failure_reason: str | None = None
+    claim_failure_at: float | None = None
+    #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
+    claim_refusal: dict | None = None
 
     llm_provider: str | None = None
     model: str | None = None

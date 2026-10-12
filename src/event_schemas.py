@@ -189,9 +189,10 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
         # ``no_code``: set by the session close path when the task left no
-        # commits behind — by construction (``read_only`` profile or
-        # ``--work-outcome no-op``) or in fact (the task branch carried no
-        # commits ahead of its base when the completion pipeline asked).
+        # commits behind — by construction (``read_only`` or
+        # ``needs_workspace: false`` profile, or ``--work-outcome no-op``)
+        # or in fact (the task branch carried no commits ahead of its base
+        # when the completion pipeline asked).
         # The default pipeline's review rules skip such tasks; emitters that
         # omit it are treated as code-bearing.
         # ``review_task``: set by every emitter when either the task's dedup
@@ -297,6 +298,12 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title", "reason"],
         "optional": ["session_id"],
     },
+    # A worker stopped on its provider (usage limit, outage): its work was
+    # checkpointed and the task handed on; ``aq prime`` carries the note.
+    "task.handoff": {
+        "required": ["task_id", "project_id", "title", "reason", "disposition", "checkpoint"],
+        "optional": ["session_id", "provider", "harness", "branch", "head"],
+    },
     "task.closed": {
         "required": ["task_id", "project_id", "title", "outcome", "status"],
         "optional": ["work_outcome", "pr_url", "retry_count"],
@@ -338,7 +345,14 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 _ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {}
 
 CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset(
-    {"task.completed", "spec.approved", "proposal.ready", "gate.resolved", "digest.window_ready"}
+    {
+        "task.completed",
+        "spec.approved",
+        "proposal.ready",
+        "gate.resolved",
+        "digest.window_ready",
+        "report.morning_due",
+    }
 )
 
 _REPORT_SCHEMAS: dict[str, EventSchema] = {
@@ -350,7 +364,22 @@ _REPORT_SCHEMAS: dict[str, EventSchema] = {
             "window_id": {"type": "string", "description": "reserved digest window"},
             "request_id": {"type": "string", "description": "durable report request"},
         },
-    }
+    },
+    # Emitted by MorningDueEmitter once per local day at or after the
+    # configured morning time; event_id is keyed by schedule and local date,
+    # so the playbook dispatch dedup makes it one run per day across restarts.
+    "report.morning_due": {
+        "required": ["local_date", "report_id"],
+        "optional": [],
+        "types": {"local_date": str, "report_id": str},
+        "fields": {
+            "local_date": {
+                "type": "string",
+                "description": "report-timezone calendar day (YYYY-MM-DD)",
+            },
+            "report_id": {"type": "string", "description": "durable morning report id"},
+        },
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -951,6 +980,7 @@ _REVIEW_SCHEMAS: dict[str, EventSchema] = {
         "optional": [
             "title", "kind", "revision", "author_task_id", "reason", "withdrawn_by",
             "flagged_task_ids", "seq", "decider",
+            "withdrawn_via", "withdrawn_at", "gate_id", "gate_status",
         ],
     },
     "review.commented": {
@@ -1482,6 +1512,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         "required": ["tick"],
         "optional": [],
     },
+    "project.paused": {
+        "required": ["project_id"],
+        "optional": [],
+    },
     "project.resumed": {
         "required": ["project_id"],
         "optional": [],
@@ -1562,6 +1596,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     "pool.enabled_changed": {
         "required": ["project_id", "profile_id", "enabled"],
         "optional": ["request_id"],
+    },
+    "pool.renamed": {
+        "required": ["profile_id", "old_name", "name", "backup_path"],
+        "optional": ["seq"],
     },
 }
 
@@ -2007,6 +2045,19 @@ Keys are event type strings (e.g., ``"task.completed"``).  Values are dicts
 with ``"required"`` and ``"optional"`` field lists.  Used by the validation
 layer (Phase 0.2.2) to check payloads at emit time.
 """
+
+
+for _promotion_event in ("promotion.source_settled", "promotion.request_due", "promotion.hotfix_completed",
+                         "promotion.intent_due", "promotion.delivered"):
+    EVENT_SCHEMAS[_promotion_event] = {
+        "required": ["project_id", "step_id"],
+        "optional": ["batch_id", "source_sha", "from_task", "notes_reviewed", "event_id"],
+        "types": {"project_id": str, "step_id": str, "batch_id": str, "source_sha": str,
+                  "from_task": str, "notes_reviewed": bool},
+        "fields": {key: {"type": "boolean" if key == "notes_reviewed" else "string",
+                         "description": "promotion " + key}
+                   for key in ("project_id", "step_id", "batch_id", "source_sha", "from_task", "notes_reviewed")},
+    }
 
 
 def get_schema(event_type: str) -> EventSchema | None:

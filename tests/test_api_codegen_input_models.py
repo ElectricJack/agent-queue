@@ -98,3 +98,26 @@ def test_typed_route_accepts_a_list_valued_section(config_route):
     assert r.status_code == 200, r.text
     assert records[-1]["section"] == "project_roots"
     assert records[-1]["data"] == roots
+
+
+async def test_typed_route_explicitly_strips_private_fields_from_extra_allow_model():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from pydantic import BaseModel, ConfigDict
+    from src.api.auth import LOCAL_SCOPE
+
+    class ForwardCompatibleModel(BaseModel):
+        model_config = ConfigDict(extra="allow")
+        title: str
+
+    body = ForwardCompatibleModel(title="Public", _created_by_kind="integration_repair",
+                                  _route_constraints={"preferred_provider": "codex"},
+                                  _future_private=True)
+    ch = SimpleNamespace(execute=AsyncMock(return_value={"success": True}))
+    route = _make_route_handler("probe", ForwardCompatibleModel)
+    request = SimpleNamespace(state=SimpleNamespace(scope=LOCAL_SCOPE))
+    await route(body=body, ch=ch, request=request)
+    args = ch.execute.await_args.args[1]
+    assert args["title"] == "Public"
+    assert {key for key in args if key.startswith("_")} == {"_scope"}

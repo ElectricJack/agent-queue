@@ -1,26 +1,32 @@
 name: Tests
 
-# The full suite runs before a change reaches `main`, never after:
+# The full suite runs on candidate work before branch promotion:
 #
-# * `pull_request` into `main` tests the PR's merge with its base.
+# * `pull_request` into `dev`, `staging` or `main` tests the PR merge with its base.
 # * A push to `aq/integration/**` tests the train's assembled candidate, and
-#   the train promotes that exact tested SHA to `main`.
+#   the root train promotes that exact tested SHA to `dev`.
 # * A push to `aq/batches/**` tests the git-first train's batch candidate
 #   (`src/integration/batches.py:candidate_ref`) the same way.
+# * A push to `aq/promote/**` tests the exact promotion source SHA.
+# * A push to `aq/backmerge/**` tests an immutable backmerge source SHA.
 # * A push to `aq/parent/**` tests an immutable parent snapshot ref that
 #   `src/integration/parent_ci.py` publishes and then reads the run from.
 #
-# `main` itself is not a trigger. Everything that reaches it was validated
+# The delivery branches themselves are not push triggers. Their work is validated
 # first, by one of the runs above or by the development publisher's
 # pre-publish validation, so a run per `main` commit only repeated that work.
 # `workflow_dispatch` runs the suite by hand on any branch, `main` included.
 # `workflow_call` is the break-glass audit: `main-attestation.yml` calls this
-# workflow for a push to `main` that carries no valid integration attestation.
+# workflow for a delivery-branch push that carries no valid branch attestation.
 # Its checks are named `unattested-ci / Tests (...)`, so they never collide
-# with the required check names the train observes on a candidate.
+# with the required check names the train observes on a candidate. A committed
+# promotion-source-audit check set may trust these names for source admission;
+# candidate CI and publication attestations still require the canonical names.
 on:
   pull_request:
     branches:
+      - dev
+      - staging
       - main
     types: [opened, synchronize, reopened, ready_for_review]
   push:
@@ -28,6 +34,8 @@ on:
       - 'aq/parent/**'
       - 'aq/integration/**'
       - 'aq/batches/**'
+      - 'aq/promote/**'
+      - 'aq/backmerge/**'
   workflow_dispatch:
   workflow_call:
 
@@ -129,14 +137,33 @@ jobs:
 
       # Service containers cannot pass server arguments. Preserve PR #640's
       # connection headroom and disable durability only for disposable CI data.
+      # The image comes from Google's Docker Hub mirror: anonymous Docker Hub
+      # pulls are rate limited per runner IP (run 37990643989 failed every
+      # Postgres job with `toomanyrequests`), and a login secret would not
+      # reach pull requests from forks.
       - name: Start PostgreSQL
         run: |
-          docker run --detach --name ci-postgres \
+          # A mirror can fail mid-pull with `unknown blob` (run 38157010908).
+          # Retry image fetching separately so a container-start error is fatal.
+          for pull_attempt in 1 2 3; do
+            if docker pull mirror.gcr.io/library/postgres:18; then
+              break
+            else
+              pull_status=$?
+            fi
+            if (( pull_attempt == 3 )); then
+              echo "::error::PostgreSQL image pull failed after $pull_attempt attempts"
+              exit "$pull_status"
+            fi
+            echo "::warning::PostgreSQL image pull failed (attempt $pull_attempt/3); retrying in 5s"
+            sleep 5
+          done
+          docker run --pull=never --detach --name ci-postgres \
             --publish 127.0.0.1:5432:5432 \
             --env POSTGRES_USER=agent_queue \
             --env POSTGRES_PASSWORD=agent_queue \
             --env POSTGRES_DB=agent_queue \
-            postgres:18 \
+            mirror.gcr.io/library/postgres:18 \
             -c max_connections=300 \
             -c fsync=off \
             -c synchronous_commit=off \
@@ -284,7 +311,8 @@ jobs:
 
     services:
       postgres:
-        image: postgres:18
+        # The same Docker Hub mirror as the test job's `Start PostgreSQL`.
+        image: mirror.gcr.io/library/postgres:18
         env:
           POSTGRES_USER: agent_queue
           POSTGRES_PASSWORD: agent_queue

@@ -535,6 +535,28 @@ class TestInboxCLI:
         assert result.exit_code == 0
         get_client.assert_not_called()
 
+    def test_bare_hook_never_asks_for_consumed_mail(self, runner):
+        """The consumed re-read is opt-in: without the flag the hook asks for
+        exactly what it always asked for, so consumed bodies cannot re-enter
+        the context on every later prompt (fair-impact-65)."""
+        from src.cli.app import cli
+
+        with patch("src.cli.messages._get_client") as get_client:
+            result = runner.invoke(cli, ["inbox", "--inject"])
+        assert result.exit_code == 0
+        assert get_client.call_count == 0
+
+    def test_include_consumed_survives_hook_safety(self, runner):
+        """The flag is accepted on the hook form and still exits 0 with no
+        recipient — a stale hook file passing it must not break the prompt."""
+        from src.cli.app import cli
+
+        with patch("src.cli.messages._get_client") as get_client:
+            result = runner.invoke(cli, ["inbox", "--include-consumed"])
+        assert result.exit_code == 0
+        assert result.output == ""
+        get_client.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # aq subagent event — the SubagentStart / SubagentStop receiver
@@ -712,7 +734,7 @@ def pool_handoff_api(tmp_path, monkeypatch):
     from fastapi import FastAPI
 
     from src.api import dependencies
-    from src.api.auth import RequestScope
+    from src.api.auth import RequestScope, SessionTokenStore
     from src.api.execute import router
     from src.api.middleware import TokenAuthMiddleware
     from src.cli.client import CLIClient
@@ -751,7 +773,8 @@ def pool_handoff_api(tmp_path, monkeypatch):
     scope = RequestScope(
         kind="session", session_id=session.id, project_id=session.project_id, task_id=None,
     )
-    token_store = SimpleNamespace(validate=AsyncMock(return_value=scope))
+    token_store = SessionTokenStore(db)
+    monkeypatch.setattr(token_store, "validate", AsyncMock(return_value=scope))
     monkeypatch.setattr(dependencies, "_token_store", token_store)
     monkeypatch.setattr(dependencies, "_command_handler", handler)
     monkeypatch.setattr(dependencies, "_require_session_token", True)

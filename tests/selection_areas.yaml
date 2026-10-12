@@ -11,6 +11,12 @@
 # tests/selection_catalogue.json.
 version: 1
 areas:
+  - id: operator-workers
+    description: "Scoped operator worker authority, human decisions, auditing and setup preflight."
+    match: [tests/test_operator_workers.py]
+  - id: policy-profiles
+    description: "Portable policy archives, selective imports and guarded preview/review flows."
+    match: [tests/test_policy_profiles.py, tests/test_cli_policy.py]
   - id: knowledge-records
     description: "Durable record identities, knowledge schema and immutable revision integrity."
     match: [tests/test_record*.py, tests/test_knowledge*.py, tests/test_api_knowledge.py]
@@ -18,11 +24,14 @@ areas:
   - id: task-lifecycle
     description: "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events, destructive-command authorization, and lifecycle cleanup (stale BLOCKED/PAUSED containers and tasks, obsolete closes, dangling-state doctor)."
     match:
+      - tests/test_stall_watch.py
       - tests/test_lifecycle_cleanup.py
       - tests/test_state_machine.py
       - tests/test_ensure_task.py
       - tests/test_task_context.py
       - tests/test_task_controls.py
+      - tests/test_task_deletion.py
+      - tests/test_discord_task_delete.py
       - tests/test_task_controls_api.py
       - tests/test_task_command_authorization.py
       - tests/test_task_close_summary_enforcement.py
@@ -38,7 +47,7 @@ areas:
       - tests/test_models.py
   - id: task-archive
     description: "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work."
-    match: [tests/test_archive.py, tests/test_hierarchy_archive_delete.py]
+    match: [tests/test_archive.py, tests/test_hierarchy_archive_delete.py, tests/test_task_removal.py, tests/test_cli_task_remove.py]
   - id: task-dependencies
     description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection."
     match:
@@ -47,6 +56,7 @@ areas:
       - tests/test_get_downstream_tasks.py
       - tests/test_get_stuck_tasks_command.py
       - tests/test_task_batch_commands.py
+      - tests/test_cli_task_change_sets.py
   - id: work-graph
     description: "Work graph: typed edges and labels, the persisted is_blocked projection, gates, the promotion cascade, the ready frontier and explain, outcomes, hierarchical ids and event replay."
     match:
@@ -70,12 +80,13 @@ areas:
     description: "Task comments and findings: authored comments with ownership fences, description writes, the comment CLI and fresh-session context."
     match: [tests/test_task_comments.py, tests/test_task_comments_api.py, tests/test_cli_task_comments.py]
   - id: task-graph-creation
-    description: "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, and live graph events after commands."
+    description: "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants."
     match:
       - tests/test_task_graph.py
       - tests/test_create_task_graph_command.py
       - tests/test_hierarchy_graph_creator.py
       - tests/test_task_graph_live_events.py
+      - tests/test_task_graph_activity.py
   - id: object-loop
     description: "Object evaluation loop contracts: typed evidence, budget reservations, durable intents, checkpoint approvals, fan-in and publication exclusion."
     match: [tests/test_object_loop.py, tests/test_object_loop_playbook.py]
@@ -133,6 +144,9 @@ areas:
   - id: agent-waits
     description: "Durable typed agent waits: ownership and claim fencing, producer snapshots, deadlines, CAS results, outbox retries and wait commands."
     match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py]
+  - id: agent-cron
+    description: "Session-owned recurring prompts: recurrence, durable delivery, scope, lifecycle and CLI."
+    match: [tests/test_agent_cron.py]
   - id: agent-roster
     description: "The global worker roster: durable agent identity, liveness from session activity, soft deletion and fresh supply, sub-agent counts, the busy-agent reconciler, names and explicit terminal starts."
     match:
@@ -356,7 +370,7 @@ areas:
 
   # ------------------------------------------------------------ integration and delivery
   - id: integration-trains
-    description: "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup."
+    description: "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup, plus the end-to-end regression scenarios for incidents that needed a hand fix."
     match:
       - tests/test_integration_size.py
       - tests/test_integration_state.py
@@ -366,9 +380,14 @@ areas:
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_batch_settlement.py
       - tests/test_integration_batches.py
+      - tests/test_integration_root_noop.py
+      - tests/test_integration_record_delivered.py
       - tests/test_integration_operator_decisions.py
+      - tests/test_integration_cli_controls_present.py
       - tests/test_integration_train.py
       - tests/test_integration_train_sources.py
+      - tests/perf/test_train_selection.py
+      - tests/test_integration_stacked_branches.py
       - tests/test_integration_candidate_baseline.py
       - tests/test_integration_cutover.py
       - tests/test_integration_settling.py
@@ -386,6 +405,7 @@ areas:
       - tests/test_integration_reconciler.py
       - tests/test_integration_root_adapters.py
       - tests/test_integration_root_scenarios.py
+      - tests/test_integration_train_regressions.py
       - tests/test_integration_gitops.py
       - tests/test_integration_git_truth.py
       - tests/test_integration_replay.py
@@ -401,6 +421,7 @@ areas:
       - tests/test_integration_ci_producers.py
       - tests/test_integration_checks.py
       - tests/test_integration_cleanup.py
+      - tests/test_branch_sweep.py
       - tests/test_attestation_check_run_id.py
       - tests/test_hosted_attestation.py
   - id: integration-ownership
@@ -421,9 +442,16 @@ areas:
       - tests/test_integration_eject.py
       - tests/test_doctor_stranded_fences_fix.py
   - id: integration-promotion
-    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs."
-    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries."
+    description: "Promotion-flow validation, child-to-parent and root-to-main promotion, parent assembly and completion, root PRs and authorization, bounded repairs, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs."
     match:
+      - tests/test_promotion_flow.py
+      - tests/test_promotion_rulesets.py
+      - tests/test_promotion_steps.py
+      - tests/test_promotion_backmerge.py
+      - tests/test_promotion_policy.py
+      - tests/test_promote_commands.py
+      - tests/test_promotion_notes_input.py
+      - tests/test_integration_train_promotion.py
       - tests/test_integration_promotion.py
       - tests/test_integration_child_delivery.py
       - tests/test_integration_cancelled_collection.py
@@ -447,6 +475,7 @@ areas:
   - id: integration-controls
     description: "Integration operator controls: rollout and operational controls, supervisor authority over them, the integration CLI, integration doctor alarms and the troubleshooting guide."
     match:
+      - tests/test_integration_legacy_park_retirement.py
       - tests/test_integration_controls.py
       - tests/test_integration_operational_controls.py
       - tests/test_integration_operator_controls.py
@@ -471,6 +500,7 @@ areas:
       - tests/test_development_*.py
       - tests/test_delivery_*.py
       - tests/test_branch_discard.py
+      - tests/test_branch_retirement.py
       - tests/test_close_unpushed_work.py
       - tests/test_stranded_work.py
       - tests/test_slot_report.py
@@ -780,6 +810,8 @@ areas:
     description: "Projects and onboarding: project CLI, onboarding commands, contract and saga, configured project roots and browsing, durable onboarding requests and GitHub identity normalisation."
     match:
       - tests/test_project_onboarding_*.py
+      - tests/test_project_repository_binding.py
+      - tests/test_project_supervisors.py
       - tests/test_onboarding_queries.py
       - tests/test_project_roots_config.py
       - tests/test_project_github.py
@@ -820,6 +852,7 @@ areas:
     description: "aq doctor: the check registry and runner, exit codes, built-in checks, platform health diagnostics, the operator stall sweep, sustained event-loop lag reports and installed-skill drift."
     match:
       - tests/test_doctor.py
+      - tests/test_doctor_cli_timeout.py
       - tests/test_doctor_stall_checks.py
       - tests/test_doctor_skill_checks.py
       - tests/test_doctor_perf_checks.py
@@ -833,6 +866,9 @@ areas:
       - tests/test_install_*.py
       - tests/test_uninstall_cli.py
       - tests/test_update.py
+      - tests/test_additive_migrations.py
+      - tests/test_update_rollback.py
+      - tests/test_db_cli.py
       - tests/test_setup_script.py
       - tests/test_windows_bootstrap.py
       - tests/test_known_tools.py

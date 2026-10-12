@@ -255,6 +255,7 @@ def test_e2e_config_enables_jobs_with_a_separate_test_database(tmp_path, test_ds
         check=True, env=env, capture_output=True, text=True,
     )
     config = load_config(str(tmp_path / "config.yaml"))
+    assert config.integration.git_first == "active"
     assert config.resources.jobs.enabled
     assert config.resources.jobs.test_database_url == (
         test_dsn or
@@ -441,6 +442,113 @@ def test_pool_worker_close_reports_a_no_op_work_outcome(monkeypatch):
 
 
 @pytest.fixture
+def s2_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    worker = smoke.Worker(session_id="holder", token="holder-token")
+    responses = [{"result": "claimed", "task": {"id": "s1-2"}, "claim_epoch": 7}]
+    calls = []
+    replacement = {"id": "replacement", "state": "running"}
+    sessions = [{"id": "holder", "state": "running"}, replacement]
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        if args[:2] == ("task", "heartbeat") and kwargs.get("check_ok") is False:
+            return {"_error": smoke.CliError({"error": {
+                "message": "stale epoch", "details": {"result": "stale_claim"},
+            }}, "")}
+        if args[:2] == ("task", "close"):
+            sessions[:] = [replacement]
+            return {"success": True, "next": {
+                "result": "drain_requested", "session": {"claims": 1},
+            }}
+        return {"success": True}
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "idle_worker", lambda: worker)
+    monkeypatch.setattr(smoke, "pool_sessions", lambda: list(sessions))
+    monkeypatch.setattr(smoke, "_open_pool_tasks", lambda: [
+        {"id": "s1-1", "title": "S1 worker task 1"},
+        {"id": "s1-2", "title": "S1 worker task 2"},
+        {"id": "unrelated", "title": "unrelated fixture"},
+    ])
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "COMPLETED" if not worker.task_id else "READY",
+        "profile_id": smoke.POOL_PROFILE, "route_source": "router", "is_blocked": False,
+    })
+    monkeypatch.setattr(smoke, "api_checked", lambda command, args: {
+        "session": {"state": "stopped", "end_reason": "drained"},
+    })
+    monkeypatch.setattr(smoke, "_swarm_checks", lambda: {
+        "pools.orphan_agents": {"severity": "ok"},
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    monkeypatch.setattr(smoke, "wait_for_pool_session", lambda predicate, **kwargs: predicate())
+    # The replacement must appear only after close to exercise its identity check.
+    sessions.pop()
+    return smoke, responses, calls, clock
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s2_retries_empty_claims_then_proves_fencing_and_retirement(s2_surfaces, empty_attempts):
+    smoke, responses, calls, _clock = s2_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    result = smoke.s2_claim_loop({})
+
+    assert "claimed 1/1 then drain_requested; holder retired, replaced by replacement" == result
+    assert sum(args[:2] == ("task", "claim") for args, _ in calls) == empty_attempts + 1
+    heartbeats = [args for args, _ in calls if args[:2] == ("task", "heartbeat")]
+    assert heartbeats == [
+        ("task", "heartbeat", "--claim-epoch", "48"),
+        ("task", "heartbeat", "--claim-epoch", "7"),
+    ]
+    assert any(args[:2] == ("task", "close") and "--claim-next" in args for args, _ in calls)
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s2_does_not_retry_other_claim_failures(s2_surfaces, result):
+    smoke, responses, calls, clock = s2_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke.s2_claim_loop({})
+
+    assert len(calls) == 1
+    assert clock.now == 0
+
+
+def test_s2_rejects_a_claim_outside_its_s1_fixtures(s2_surfaces):
+    smoke, responses, calls, _clock = s2_surfaces
+    responses[0]["task"]["id"] = "unrelated"
+
+    with pytest.raises(smoke.Failure, match="s1-1.*s1-2.*unrelated"):
+        smoke.s2_claim_loop({})
+
+    assert len(calls) == 1
+
+
+def test_s2_empty_claim_timeout_reports_every_fixture(s2_surfaces):
+    smoke, responses, calls, clock = s2_surfaces
+    responses[:] = [{"result": "no_ready_work", "session": {"id": "holder", "claims": 0}}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s2_claim_loop({})
+
+    assert clock.now == 1
+    assert all(args[:2] == ("task", "claim") for args, _ in calls)
+    for detail in ("s1-1", "s1-2", "no_ready_work", "holder", "router"):
+        assert detail in str(error.value)
+
+
+@pytest.fixture
 def s5_surfaces(monkeypatch):
     smoke = _load_smoke()
     holder = smoke.Worker(session_id="holder", token="holder-token")
@@ -533,8 +641,8 @@ def test_s5_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s5_surfaces
         assert detail in str(error.value)
 
 
-@pytest.fixture
-def s18_surfaces(monkeypatch):
+@pytest.fixture(params=[False, True], ids=["global-supervisor", "project-supervisor"])
+def s18_surfaces(monkeypatch, request):
     smoke = _load_smoke()
     worker = smoke.Worker(session_id="triage-worker", token="triage-token")
     responses = [{"result": "claimed", "task": {"id": "triage-task"}, "claim_epoch": 7}]
@@ -547,6 +655,9 @@ def s18_surfaces(monkeypatch):
         return {"success": True}
 
     def fake_api(command, args):
+        if command == "get_project":
+            assert args == {"project_id": smoke.PROJECT}
+            return {"supervisor_enabled": request.param}
         if command == "list_playbook_runs":
             return {"runs": [{"run_id": "triage-run"}]}
         if command == "inspect_playbook_run":
@@ -555,8 +666,11 @@ def s18_surfaces(monkeypatch):
                 "lifecycle": "completed",
             }}
         if command == "message_list":
-            assert args["to_id"] == f"supervisor-{smoke.PROJECT}"
-            return {"messages": [{"id": "triage-notice", "body": "Failed triage-task"}]}
+            recipient = f"supervisor-{smoke.PROJECT}" if request.param else "supervisor-global"
+            assert args["to_id"] == recipient
+            return {"messages": [{
+                "id": "triage-notice", "body": "Failed triage-task", "project_id": smoke.PROJECT,
+            }]}
         raise AssertionError(command)
 
     monkeypatch.setattr(smoke, "aq", fake_aq)
@@ -634,6 +748,103 @@ def test_s18_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s18_surfac
         assert detail in str(error.value)
 
 
+@pytest.fixture(params=["std", "solo"])
+def s16_canary_surfaces(monkeypatch, request):
+    """Exercise S16's probation-canary claim without a live daemon."""
+    smoke = _load_smoke()
+    profile = smoke.STD_A if request.param == "std" else smoke.SOLO_A
+    expected = "pinned-task" if request.param == "std" else "solo-task"
+    responses = [{"result": "claimed", "task": {"id": expected}, "claim_epoch": 7}]
+    calls = []
+
+    def fake_aq(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("session", "token"):
+            return {"token": "canary-token"}
+        if args[:2] == ("task", "claim"):
+            return responses.pop(0) if len(responses) > 1 else responses[0]
+        raise AssertionError(args)
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "live_sessions_for", lambda profile_id: (
+        [{"id": "canary", "profile_id": profile}] if profile_id == profile else []
+    ))
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {
+        "id": task_id, "status": "READY", "profile_id": profile,
+        "route_source": "pin", "is_blocked": False,
+    })
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, responses, calls, clock, profile, expected
+
+
+def _claims(calls):
+    return [args for args, _ in calls if args[:2] == ("task", "claim")]
+
+
+@pytest.mark.parametrize("empty_attempts", [0, 2])
+def test_s16_canary_retries_empty_claims_then_holds_its_pools_task(
+    s16_canary_surfaces, empty_attempts,
+):
+    smoke, responses, calls, _clock, profile, expected = s16_canary_surfaces
+    responses[:0] = [{"result": "no_ready_work"}] * empty_attempts
+
+    worker, canary, held = smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert (canary["id"], canary["profile_id"], held) == ("canary", profile, expected)
+    assert (worker.session_id, worker.token) == ("canary", "canary-token")
+    assert (worker.task_id, worker.claim_epoch) == (expected, 7)
+    assert len(_claims(calls)) == empty_attempts + 1
+    assert all(kwargs["token"] == "canary-token" for args, kwargs in calls
+               if args[:2] == ("task", "claim"))
+
+
+@pytest.mark.parametrize("result", ["prepare_failed", "drain_requested", "not_admissible"])
+def test_s16_canary_does_not_retry_other_claim_failures(s16_canary_surfaces, result):
+    smoke, responses, calls, clock, _profile, _expected = s16_canary_surfaces
+    responses[:] = [{"result": result}]
+
+    with pytest.raises(smoke.Failure, match=result):
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert len(_claims(calls)) == 1
+    assert clock.now == 0
+
+
+def test_s16_canary_rejects_the_other_pools_held_task(s16_canary_surfaces):
+    smoke, responses, calls, _clock, _profile, expected = s16_canary_surfaces
+    other = "solo-task" if expected == "pinned-task" else "pinned-task"
+    responses[0]["task"]["id"] = other
+
+    with pytest.raises(smoke.Failure, match=f"{expected}.*{other}"):
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert len(_claims(calls)) == 1
+
+
+def test_s16_canary_claim_wait_is_bounded_and_reports_fixture_and_last_claim(
+    s16_canary_surfaces,
+):
+    smoke, responses, calls, clock, profile, expected = s16_canary_surfaces
+    # The shape of the CI failure this retry absorbs (run 37983264206).
+    responses[:] = [{"result": "no_ready_work", "session": {
+        "id": "canary", "claims": 0, "claim_phase": "claiming",
+    }}]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke._claim_probation_canary("pinned-task", "solo-task")
+
+    assert clock.now == 1
+    assert len(_claims(calls)) > 1
+    for detail in (expected, "no_ready_work", "claim_phase", "READY", profile, "pin"):
+        assert detail in str(error.value)
+
+
 @pytest.fixture
 def s19_claim_surfaces(monkeypatch, tmp_path):
     """Exercise both S19 claims up to the checklist, without a live daemon."""
@@ -670,14 +881,37 @@ def s19_claim_surfaces(monkeypatch, tmp_path):
         if "--dry-run" in args:
             return {"parent_id": "planner-task"}
         created = True
+        # Model an immediate router decision and scheduler assignment. The
+        # production override must still refuse a child that already started.
+        clock.child_running = not clock.scheduling_paused
         return {"created": True, "request_id": "graph-request",
                 "nodes": [{"task_id": "child-task"}]}
 
     def fake_api(command, _args, **_kwargs):
+        if command == "set_project_constraint":
+            assert _args == {"project_id": smoke.PROJECT, "pause_scheduling": True}
+            assert not _kwargs.get("token")
+            clock.scheduling_paused = True
+            clock.scheduling_events.append("pause")
+            return {"constraint_set": True}
+        if command == "release_project_constraint":
+            assert _args == {"project_id": smoke.PROJECT, "fields": ["pause_scheduling"]}
+            assert not _kwargs.get("token")
+            clock.scheduling_paused = False
+            clock.scheduling_events.append("release")
+            return {"constraint_released": True}
         if command == "task_children":
             return {"count": int(created)}
         assert command == "create_task_graph"
         return {"code": "graph.root_needs_parent"}
+
+    def fake_override(task_id, profile, intelligence_class):
+        assert (task_id, profile, intelligence_class) == (
+            "child-task", smoke.POOL_PROFILE, smoke.POOL_CLASS,
+        )
+        if clock.child_running:
+            raise smoke.Failure("routing.not_routable: child already started")
+        clock.scheduling_events.append("override")
 
     class ChecklistReached(Exception):
         pass
@@ -701,9 +935,11 @@ def s19_claim_surfaces(monkeypatch, tmp_path):
         "profile_id": smoke.PLANNER_PROFILE if task_id == "planner-task" else smoke.POOL_PROFILE,
         "route_source": "router", "is_blocked": False,
     })
-    monkeypatch.setattr(smoke, "override_route", lambda *_args: None)
+    monkeypatch.setattr(smoke, "override_route", fake_override)
     monkeypatch.setattr(smoke, "run_aq", stop_at_checklist)
-    clock = SimpleNamespace(now=0.0)
+    clock = SimpleNamespace(
+        now=0.0, scheduling_paused=False, child_running=False, scheduling_events=[],
+    )
     monkeypatch.setattr(smoke, "time", SimpleNamespace(
         monotonic=lambda: clock.now,
         sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
@@ -711,6 +947,46 @@ def s19_claim_surfaces(monkeypatch, tmp_path):
     monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
     monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
     return smoke, workers, responses, claims, clock, ChecklistReached
+
+
+def test_s19_routes_child_before_scheduler_can_assign(s19_claim_surfaces):
+    smoke, _workers, _responses, claims, clock, reached = s19_claim_surfaces
+
+    with pytest.raises(reached):
+        smoke.s19_scoped_planner_graph({})
+
+    assert clock.scheduling_events == ["pause", "override", "release"]
+    assert not clock.scheduling_paused and not clock.child_running
+    assert claims == ["planner", "child"]
+
+
+@pytest.mark.parametrize("stage", ["create", "override"])
+def test_s19_releases_scheduling_pause_after_graph_setup_failure(
+    s19_claim_surfaces, monkeypatch, stage
+):
+    smoke, _workers, _responses, claims, clock, _reached = s19_claim_surfaces
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("graph setup failed")
+
+    if stage == "create":
+        original = smoke.aq
+
+        def fail_create(*args, **kwargs):
+            if args[:2] == ("task", "create") and "--dry-run" not in args:
+                return fail()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(smoke, "aq", fail_create)
+    else:
+        monkeypatch.setattr(smoke, "override_route", fail)
+
+    with pytest.raises(RuntimeError, match="graph setup failed"):
+        smoke.s19_scoped_planner_graph({})
+
+    assert clock.scheduling_events == ["pause", "release"]
+    assert not clock.scheduling_paused
+    assert claims == ["planner"]
 
 
 @pytest.mark.parametrize("stage", ["planner", "child"])
@@ -870,7 +1146,10 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
         if command == "session_kill":
             return fake_aq("session", "kill", args["session_id"])
         if command == "delete_task":
-            assert args["cascade"] is True
+            if not args.get("confirmed"):
+                return {"success": True, "disposition": "preview"}
+            assert args["recursive"] is True
+            assert args["branches"] == "delete"
             return fake_aq("task", "delete", "--task-id", args["task_id"])
         if command == "session_list":
             assert args == {"lifecycle": "pool"}
@@ -1358,7 +1637,10 @@ def test_world_reset_removes_terminal_tasks_sessions_and_restores_globals(monkey
             assert args["include_completed"]
             return list(tasks)
         if command == "delete_task":
-            assert args["cascade"]
+            if not args.get("confirmed"):
+                return {"success": True, "disposition": "preview"}
+            assert args["recursive"]
+            assert args["branches"] == "delete"
             tasks[:] = [row for row in tasks if row["id"] != args["task_id"]]
         return {"success": True}
 
@@ -1383,6 +1665,32 @@ def test_cleanup_failure_prevents_reusing_the_world(monkeypatch):
     monkeypatch.setattr(world.smoke, "wait_for", lambda *_args, **_kwargs:
                         (_ for _ in ()).throw(RuntimeError("cleanup failed")))
     with pytest.raises(RuntimeError, match="cleanup failed"):
+        world.reset()
+    assert world.poisoned
+    with pytest.raises(AssertionError, match="contaminated"):
+        world.run("S18")
+
+
+def test_world_reset_reports_deletion_refusal_before_reusing_the_world(monkeypatch):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("graphs", {})
+    smoke = world.smoke
+
+    def api(command, args):
+        if command == "session_list":
+            return {"sessions": []}
+        if command == "list_projects":
+            return [{"id": "e2e"}]
+        if command == "list_tasks":
+            return [{"id": "completed", "status": "COMPLETED"}]
+        if command == "delete_task":
+            return {"success": False, "error": "fixture deletion refused"}
+        pytest.fail(f"unexpected cleanup command: {command}")
+
+    monkeypatch.setattr(smoke, "api", api)
+    monkeypatch.setattr(smoke, "wait_for", lambda fn, **_: fn())
+    with pytest.raises(smoke.Failure, match="fixture deletion refused"):
         world.reset()
     assert world.poisoned
     with pytest.raises(AssertionError, match="contaminated"):
@@ -1594,3 +1902,17 @@ def test_pytest_collection_selects_only_the_requested_shard(group):
     assert {line.rsplit("[", 1)[1].removesuffix("]") for line in nodes} == {
         f"{group}-{key}" for key in SCENARIO_GROUPS[group]
     }
+
+
+def test_train_validation_pin_excludes_retired_commands(monkeypatch, tmp_path):
+    from src.playbooks.definition import load_definition_json
+
+    smoke = _load_smoke()
+    monkeypatch.setattr(smoke, "api_checked", lambda *_: {"success": True})
+    policy = smoke._pin_train_validation("fixture", tmp_path)
+    definition = load_definition_json(
+        (tmp_path / "vault/e2e-bundles/fixture-development/artifact.json").read_text()
+    )
+    assert [rule.id for rule in definition.rules] == ["cleanup-promoted"]
+    assert all(name.startswith("cleanup-promoted--") for name in definition.steps)
+    assert policy["development"]["route"]["artifact"]["artifact_sha256"]

@@ -167,7 +167,20 @@ class EpicDeliveryStatus(BaseModel):
     implementation_total: int = 0
 
 
-class TaskDetail(BaseModel):
+class TaskDisplayFields(BaseModel):
+    """A container's rollup of its descendants (``src/task_graph/activity.py``).
+
+    Computed on read and never stored: the lifecycle ``status`` is unchanged.
+    ``display_state`` is set only while some descendant is unfinished.
+    """
+
+    display_state: Literal["active", "waiting", "blocked"] | None = None
+    display_reason: str | None = None
+    child_state_counts: dict[str, int] | None = None
+    descendant_state_counts: dict[str, int] | None = None
+
+
+class TaskDetail(TaskDisplayFields):
     id: str
     project_id: str
     title: str
@@ -506,12 +519,83 @@ class HierarchyRefusalResponse(BaseModel):
     error: str
 
 
-class DeleteTaskResponse(BaseModel):
-    deleted: str
+class DeleteWarning(BaseModel):
+    code: str
+    message: str
+
+
+class DeleteTaskSummary(BaseModel):
+    id: str
     title: str
-    #: Branches the delete discarded, when it was asked to.  Removal itself is
-    #: asynchronous; these are the refs queued for it.
-    discarded_branches: list[DeletedBranch] = []
+    status: str
+
+
+class DeleteSession(BaseModel):
+    session_id: str
+    task_id: str
+    state: str
+
+
+class DeleteLocalRef(BaseModel):
+    path: str
+    sha: str | None = None
+    tracking_sha: str | None = None
+
+
+class DeleteWorktree(BaseModel):
+    path: str
+    head: str | None = None
+    branch: str | None = None
+
+
+class DeleteBranchDetail(BaseModel):
+    task_ids: list[str] = []
+    repository_id: str | None = None
+    branch: str
+    local_refs: list[DeleteLocalRef] = []
+    remote_sha: str | None = None
+    remote_state: str
+    remote_path: str | None = None
+    worktrees: list[DeleteWorktree] = []
+    action: Literal["keep", "delete"]
+
+
+class DeleteCleanupResult(BaseModel):
+    resource: str
+    outcome: Literal["complete", "failed"]
+    error: str | None = None
+
+
+class DeleteTaskResponse(BaseModel):
+    success: bool = True
+    deleted: str | None = None
+    title: str
+    task_ids: list[str] = []
+    disposition: Literal["preview", "deleted"]
+    recursive: bool = False
+    branches: Literal["keep", "delete"] = "keep"
+    stop_running: bool = False
+    tasks: list[DeleteTaskSummary] = []
+    reparented_tasks: list[str] = []
+    sessions: list[DeleteSession] = []
+    dependents: list[str] = []
+    gate_ids: list[str] = []
+    review_ids: list[str] = []
+    escalation_ids: list[str] = []
+    batch_ids: list[str] = []
+    operation_ids: list[str] = []
+    branch_details: list[DeleteBranchDetail] = []
+    warnings: list[DeleteWarning] = []
+    cleanup_results: list[DeleteCleanupResult] = []
+    audit_id: int | None = None
+    reason: str | None = None
+
+
+class RemoveTaskResponse(DeleteTaskResponse):
+    """Deprecated delete alias, including the legacy removed result key."""
+
+    removed: str | None = None
+    deprecated_alias: str = "remove_task"
 
 
 class TaskControlResponse(BaseModel):
@@ -547,6 +631,13 @@ class ArchiveTaskResponse(BaseModel):
     archived: str
     title: str
     status: str = ""
+    # Undelivered work's disposition: ``deliver`` keeps the task (``archived``
+    # is empty, ``kept`` names it, ``delivery`` is the root's authorize-root
+    # dry run); ``obsolete`` and ``retire`` archive it.
+    disposition: str = ""
+    kept: str = ""
+    undelivered: list[dict[str, Any]] = []
+    delivery: dict[str, Any] | None = None
 
 
 class ArchiveTasksResponse(BaseModel):
@@ -658,7 +749,7 @@ class TaskChildrenResponse(BaseModel):
     children: list[TaskDict]
 
 
-class TaskProgressResponse(BaseModel):
+class TaskProgressResponse(TaskDisplayFields):
     success: bool
     parent_id: str
     total: int
@@ -897,16 +988,27 @@ class SpecApproveResponse(BaseModel):
 
 
 class TaskBatchProposeResponse(BaseModel):
-    """A proposal is created, not applied — nothing exists in the graph yet."""
+    """A proposal is created, not applied — unless ingestion applies it live.
+
+    A batch carrying a live spec-ingest role's approved-document authority is
+    applied in the same call: ``committed`` is then true and ``task_ids`` is
+    that batch's receipt, exactly as a commit's would be. Every other proposal
+    stages in ``ready`` and waits for approval.
+    """
 
     success: bool = True
     proposal_id: str | None = None
+    dry_run: bool = False
+    committed: bool = False
+    task_ids: list[str] | None = None
+    diff: dict[str, Any] | None = None
 
 
 class TaskBatchAckResponse(BaseModel):
     """``task_batch_update`` / ``task_batch_discard`` — bare acknowledgement."""
 
     success: bool = True
+    diff: dict[str, Any] | None = None
 
 
 class ClaimSessionSummary(BaseModel):
@@ -937,18 +1039,23 @@ class TaskClaimResponse(BaseModel):
     session: ClaimSessionSummary = ClaimSessionSummary()
     reason: str | None = None
     error: str | None = None
+    retry_after: int | None = None
+    refusal_count: int | None = None
+    instructions: str | None = None
 
 
 class TaskBatchCommitResponse(BaseModel):
     """The ids of the tasks the commit created, in batch order.
 
     ``already_committed`` marks a replay: the proposal was materialised by an
-    earlier call and ``task_ids`` is that commit's receipt.
+    earlier call and the original receipt (including missing references) is replayed.
     """
 
     success: bool = True
     task_ids: list[str] = []
     already_committed: bool = False
+    missing_task_ids: list[str] = []
+    skipped_operations: list[dict[str, Any]] = []
 
 
 class PoolInstanceStatus(BaseModel):
@@ -1041,6 +1148,7 @@ class PoolStatusRow(BaseModel):
     """
 
     profile_id: str
+    name: str = ""
     #: Effective explicit Codex launch tier; None inherits the CLI setting.
     service_tier: str | None = None
     #: Operator kill-switch on the (global) profile.  A disabled pool keeps
@@ -1178,6 +1286,15 @@ class PoolSetLifecycleResponse(BaseModel):
     error: str | None = None
 
 
+class PoolRenameResponse(BaseModel):
+    success: bool
+    profile_id: str | None = None
+    name: str | None = None
+    changed: bool = False
+    backup_path: str | None = None
+    error: str | None = None
+
+
 class PoolSetEnabledResponse(BaseModel):
     success: bool
     profile_id: str | None = None
@@ -1191,8 +1308,6 @@ class TaskRecoveryResponse(BaseModel):
     incident_id: str
     decision: str
     status: str
-
-
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
@@ -1214,6 +1329,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "phase_list": PhaseListResponse,
     "edit_task": EditTaskResponse,
     "delete_task": DeleteTaskResponse,
+    "remove_task": RemoveTaskResponse,
     "stop_task": StopTaskResponse,
     "pause_task": TaskControlResponse,
     "resume_task": TaskControlResponse,
@@ -1253,6 +1369,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
+    "pool_rename": PoolRenameResponse,
     "pool_scale": PoolScaleResponse,
     "pool_set_lifecycle": PoolSetLifecycleResponse,
     "pool_set_enabled": PoolSetEnabledResponse,

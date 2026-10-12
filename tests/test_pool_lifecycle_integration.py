@@ -193,6 +193,24 @@ async def test_pool_status_reports_effective_codex_service_tier(db, orch, handle
     assert row["service_tier"] == "fast"
 
 
+async def test_pool_status_displays_retired_classes_without_launch_warnings(
+    db, orch, handler, caplog,
+):
+    await db.update_profile("worker", harness="codex", default_class="retired-medium")
+    orch.harness_registry.upsert(Harness(id="codex", command="codex"))
+    status = await handler._cmd_pool_status({})
+    row = next(row for row in status["pools"] if row["profile_id"] == "worker")
+    assert row["service_tier"] is None
+    assert not any("retired-medium" in record.getMessage() for record in caplog.records)
+
+    # Launch resolution retains its diagnostic warning for an invalid class.
+    profile = await db.get_profile("worker")
+    assert orch.session_spec_builder._resolve_class_config(
+        profile, orch.harness_registry.get("codex"), None,
+    ) == {}
+    assert any("retired-medium" in record.getMessage() for record in caplog.records)
+
+
 def scoped(handler, sid):
     handler._current_scope = {
         "kind": "session",

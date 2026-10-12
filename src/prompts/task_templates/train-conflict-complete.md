@@ -1,0 +1,1 @@
+Resolve the conflict, then merge every member listed above onto the starting head {{starting_sha}} in that order. Do not stop once the conflict is resolved, or once the checks on the starting head are green: a repaired head without every remaining member cannot close successfully or advance the target.

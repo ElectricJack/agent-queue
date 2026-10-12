@@ -13,10 +13,10 @@ from src.database import tables as t
 from src.integration.engine import EngineRefused
 from src.integration.gates import GatePrimitives
 from src.integration.models import Fence
-from src.integration.parent_engine import ParentEngineOwnership, active_parent_scope
+from src.integration.owner_guards import ParentEngineOwnership, active_parent_scope
 from src.integration.parent_subjects import ParentSubjectFacts
 from src.integration.records import RecordsPrimitives
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     PRIMITIVE_ARGS,
     SHA_PATTERN,
     MemberRef,
@@ -174,29 +174,7 @@ class ParentPrimitiveAdapters:
             ):
                 return PrimitiveOutcome.unknown(p, "parent_target_is_default_branch")
         if p is Primitive.GIT_PUBLISH:
-            pending = facts.pending_publication
-            if (
-                pending is None
-                or args.require_green
-                or (args.fence, args.expected_old_sha, args.new_sha)
-                != (pending.fence, pending.expected_old_sha, pending.new_sha)
-            ):
-                return PrimitiveOutcome.unknown(p, "parent_intent_identity_changed")
-            from src.integration.promotion import PromotionError, PromotionNotApplied
-
-            promotion = commands._integration_promotion_service()
-            try:
-                try:
-                    result = await promotion.reconcile(pending.intent_id)
-                except PromotionNotApplied:
-                    result = await promotion.push(pending.intent_id, args.fence)
-            except PromotionError as exc:
-                return PrimitiveOutcome.unknown(p, str(exc))
-            return PrimitiveOutcome(
-                primitive=p,
-                outcome="published",
-                detail={"head": result.prepared_sha, "intent_id": result.intent_id},
-            )
+            return PrimitiveOutcome.unknown(p, "legacy_publisher_retired")
         if p is Primitive.WRITER_FILE:
             if args.role is not WriterRole.VERIFIER:
                 return PrimitiveOutcome.unknown(p, "parent_repair_requires_reviewed_adapter")
@@ -275,33 +253,7 @@ class ParentPrimitiveAdapters:
                     expected_head_sha=member.head_sha,
                 )
                 return self.translate(args, result, {"recorded": "merged"}, head=subject.head_sha)
-            from src.integration.child_delivery import ChildDelivery
-
-            delivery = ChildDelivery(self.db, commands._integration_promotion_service())
-            await delivery.ensure_evidence(member.task_id, self.clock())
-            result = await self.command(
-                "delivery_promote",
-                operation_key=facts.parent_operation_id,
-                source_task_id=member.task_id,
-                source_head=member.head_sha,
-                source_base=member.base_sha,
-                expected_target=subject.head_sha,
-                fence=facts.collector_fence.model_dump(mode="json"),
-            )
-            return self.translate(
-                args,
-                result,
-                {
-                    "promoted": "merged",
-                    "already_promoted": "merged",
-                    "conflict": "conflict",
-                    "source_moved": "source_moved",
-                    "target_moved": "base_moved",
-                },
-                head=result.get("after_sha") or subject.head_sha,
-                member=member.task_id,
-                files=result.get("files", []),
-            )
+            return PrimitiveOutcome.unknown(p, "legacy_publisher_retired")
         if p in {Primitive.CI_REQUEST, Primitive.CI_OBSERVE}:
             if args.head != subject.head or self.parent_ci is None:
                 return PrimitiveOutcome.unknown(p, "parent_ci_identity_or_adapter_unavailable")

@@ -66,6 +66,7 @@ TASK_TYPE_ICONS: dict[str, str] = {
     "test": "🧪",
     "docs": "📝",
     "chore": "🔧",
+    "operator": "⚙️",
     "research": "🔍",
     "plan": "📋",
     "sync": "🔄",
@@ -73,8 +74,8 @@ TASK_TYPE_ICONS: dict[str, str] = {
     "art": "🎨",
 }
 
-#: Every ``TaskType`` value, in display order: the ``--type`` choices.  The CLI
-#: does not import ``src.models``; a test holds this equal to ``TaskType``.
+#: User-creatable ``TaskType`` values in display order; delivery intents are
+#: excluded. The CLI stays independent of ``src.models``; a test checks parity.
 TASK_TYPES: tuple[str, ...] = tuple(TASK_TYPE_ICONS)
 
 

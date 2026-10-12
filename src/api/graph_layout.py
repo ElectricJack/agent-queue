@@ -57,6 +57,7 @@ from src.api.models.graph_layout import (
 )
 from src.api.scope import check_request_scope
 from src.database.queries.hierarchy_queries import PHASE_KEY
+from src.task_graph.activity import load_activity
 from src.task_graph.layout.compaction import Box, compact_layout
 from src.task_graph.layout.constants import CELL_SIZE, FINISHED_STATUSES, VARIANTS
 from src.task_graph.layout.view import (
@@ -170,6 +171,17 @@ def _failed_phase_holds(holds: dict[str, dict]) -> dict[str, dict]:
     }
 
 
+def _with_activity(deliveries: dict, activity: dict) -> dict[str, tuple]:
+    """Pair each node's delivery projection with its rolled-up activity.
+
+    Activity comes from its own read, so it survives a delivery read failure.
+    """
+    return {
+        task_id: (deliveries.get(task_id), activity.get(task_id, {}))
+        for task_id in deliveries.keys() | activity.keys()
+    }
+
+
 def _node(
     row,
     task,
@@ -185,8 +197,10 @@ def _node(
     box = box or _persisted_box(row)
     total, settled = (subtask_counts or {}).get(task["id"], (0, 0))
     phase_order, phase_label = _phase_fields((phase_meta or {}).get(task["id"]))
+    delivery, activity = (deliveries or {}).get(task["id"], (None, {}))
     return LayoutNode(
         **task,
+        **activity,
         x=box.x,
         y=box.y,
         w=box.w,
@@ -206,7 +220,7 @@ def _node(
         phase_order=phase_order,
         phase_label=phase_label,
         phase_hold=(phase_holds or {}).get(task["id"]),
-        delivery=(deliveries or {}).get(task["id"]),
+        delivery=delivery,
         review_waits=(review_waits or {}).get(task["id"], []),
     )
 
@@ -217,8 +231,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
     # geometry back out of a process-wide cache.
     geometry_cache: OrderedDict[tuple, _Geometry] = OrderedDict()
 
-    async def _deliveries(rows: list) -> dict[str, dict]:
-        """The epic delivery projection for the rows that have children.
+    async def _deliveries(rows: list) -> dict[str, tuple]:
+        """The epic delivery projection and activity for rows with children.
 
         One batched read for the whole response (plus collection readiness
         for the few epics whose children are all done); a read failure
@@ -230,9 +244,10 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         from src.integration.epic_delivery import EpicDeliveryProjection, lease_ttl_from
 
         projection = EpicDeliveryProjection(
-            db, lease_ttl=lease_ttl_from(getattr(command_handler, "config", None))
+            db, lease_ttl=lease_ttl_from(getattr(command_handler, "config", None)),
+            cached_only=True,
         )
-        return await projection.for_tasks(ids)
+        return _with_activity(await projection.for_tasks(ids), await load_activity(db, ids))
 
     async def _project_or_404(project_id: str):
         if await db.get_project(project_id) is None:

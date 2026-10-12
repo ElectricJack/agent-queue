@@ -72,7 +72,9 @@ class OnboardingQueryMixin:
                 raise RuntimeError("onboarding request insert did not persist")
             return result.rowcount == 0, str(row.input_fingerprint)
 
-    async def register_onboarded_project(self, project: Project, workspace: Workspace) -> None:
+    async def register_onboarded_project(
+        self, project: Project, workspace: Workspace, *, request_id: str | None = None,
+    ) -> None:
         """Atomically insert the project and its primary repository workspace."""
         now = time.time()
         async with self.immediate() as conn:
@@ -116,6 +118,22 @@ class OnboardingQueryMixin:
                     created_at=now,
                 )
             )
+
+            if request_id is not None:
+                row = (await conn.execute(
+                    select(project_onboarding_requests.c.created_resources).where(
+                        project_onboarding_requests.c.request_id == request_id,
+                        project_onboarding_requests.c.status == _PENDING,
+                    ).with_for_update()
+                )).first()
+                if row is None:
+                    raise ValueError("Registration requires a pending onboarding request")
+                resources = [*(row.created_resources or []),
+                             {"kind": "project", "id": project.id},
+                             {"kind": "workspace", "id": workspace.id}]
+                await conn.execute(update(project_onboarding_requests).where(
+                    project_onboarding_requests.c.request_id == request_id,
+                ).values(created_resources=resources, updated_at=now))
 
     async def rollback_onboarded_project(self, project_id: str, workspace_id: str) -> None:
         """Remove exactly the two rows inserted by an onboarding request."""

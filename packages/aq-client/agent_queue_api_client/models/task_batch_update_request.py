@@ -18,8 +18,8 @@ class TaskBatchUpdateRequest:
     """
     Attributes:
         proposal_id (str): Proposal to replace.
-        payload (TaskBatchUpdateRequestPayload): The replacement graph: ``{"tasks": [...], "edges": [...]}`` in the same
-            shape task_batch_propose takes.
+        payload (TaskBatchUpdateRequestPayload): The complete replacement change set (tasks, edits, edges, remove_edges,
+            comments), in the same shape task_batch_propose takes.
     """
 
     proposal_id: str

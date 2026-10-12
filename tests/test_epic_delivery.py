@@ -434,7 +434,8 @@ def test_a_canonically_adopted_epic_is_delivered_where_no_receipt_exists():
     assert delivered["links"] == []
 
 
-def test_operator_equivalence_is_named_rather_than_absorbed():
+@pytest.mark.parametrize("leaf_state", ["contained", "no_change"])
+def test_operator_equivalence_is_named_rather_than_absorbed(leaf_state):
     equivalent = _classify(replace(_complete(), canonical=replace(
         ADOPTED, acceptance="operator_equivalent",
     )))
@@ -442,7 +443,8 @@ def test_operator_equivalence_is_named_rather_than_absorbed():
     assert equivalent["reason"].endswith("(operator accepted this source as equivalent)")
 
     leaf = CanonicalDelivery(
-        state="contained", reason="git_completion", source="a" * 40,
+        state=leaf_state, reason="git_no_change" if leaf_state == "no_change" else "git_completion",
+        source="a" * 40,
         target_ref="refs/heads/main", target_oid="c" * 40,
         completion_id="close-epic-2", since=NOW - 5,
     )
@@ -764,6 +766,29 @@ async def test_get_task_reports_delivery_for_an_epic_only(db, tmp_path):
 
     leaf = GetTaskResponse.model_validate(await handler._cmd_get_task({"task_id": "parent.1"}))
     assert leaf.delivery_status is None
+
+
+async def test_get_task_cold_delivery_cache_reports_unavailable_without_network(db, tmp_path):
+    await _plain_epic(db)
+    await _close_epic(db, "close-parent-1")
+    transport = GitManager()
+    transport.afetch_origin = AsyncMock(side_effect=AssertionError("diagnostics must not fetch"))
+    transport.acreate_checkout = AsyncMock(side_effect=AssertionError("must not clone"))
+    transport.als_remote_ref = AsyncMock(side_effect=AssertionError("must not query remote"))
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "observer")
+    db.set_delivery_observer(observer)
+    orch = MagicMock(db=db)
+    orch._emit_notify = AsyncMock()
+    config = MagicMock(vault_root=str(tmp_path / "vault"))
+    handler = CommandHandler(orch, config)
+    result = await handler._cmd_get_task({"task_id": "parent"})
+    delivery = result["delivery_status"]
+    assert (delivery["state"], delivery["evidence"]) == ("unknown", "unavailable")
+    assert "Delivery evidence not loaded yet" in delivery["reason"]
+    assert "nothing is recorded" not in delivery["reason"]
+    transport.afetch_origin.assert_not_awaited()
+    transport.acreate_checkout.assert_not_awaited()
+    transport.als_remote_ref.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

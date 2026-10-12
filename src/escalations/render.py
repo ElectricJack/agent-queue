@@ -169,6 +169,11 @@ def render_root(
     That is the same incident, not a new one, so the configured mention is
     deliberately dropped -- only the initial escalation is allowed to ping.
     """
+    if facts.state in {"reply_received", "resolving"}:
+        return render_state_root(
+            facts, display=STATE_ANSWERED, base_url=base_url, dedup_key=dedup_key,
+            dashboard_notice=dashboard_notice,
+        )
     mention = "" if replacement else mentions.render()
     decision = _one_line(facts.decision_requested, limit=110)
     summary = _one_line(facts.summary, limit=120)
@@ -304,6 +309,8 @@ def render_thread_opener(
             "to the project supervisor, which decides and performs the recovery."
         )
     ]
+    if facts.state in {"reply_received", "resolving"}:
+        return render_ack(facts, dedup_key=dedup_key)
     if facts.investigation:
         lines.append(f"So far: {_one_line(facts.investigation, limit=300)}")
     if facts.choices:

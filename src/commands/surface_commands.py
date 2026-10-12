@@ -77,6 +77,10 @@ class SurfaceCommandsMixin:
         info["operator_decisions"] = await OperatorDecisions(self.db).history("task", task_id)
         info["context"] = await self.db.get_task_contexts(task_id)
         info["labels"] = await self.db.get_task_labels(task_id)
+        # Preparation workers need only their own immutable, daemon-built input.
+        notes_input = await self.db.get_task_meta(task_id, "notes_input")
+        if notes_input is not None:
+            info["metadata"] = {"notes_input": notes_input}
         deps = await self._cmd_task_deps({"task_id": task_id})
         info["provenance"] = deps.get("provenance", [])
 
@@ -89,6 +93,10 @@ class SurfaceCommandsMixin:
         info["parent"] = parent
         info["children"] = await self.db.get_children_summary(task_id)
         info["claimed_by"] = await self._claimed_by(task_id)
+        from src.sessions.worker_recovery import CONTINUATION_KEY, STREAK_KEY
+
+        info[STREAK_KEY] = await self.db.get_task_meta(task_id, STREAK_KEY)
+        info[CONTINUATION_KEY] = await self.db.get_task_meta(task_id, CONTINUATION_KEY)
         task = await self.db.get_task(task_id)
         project = await self.db.get_project(task.project_id) if task else None
         checkpoint = await self.db.get_integration_checkpoint(task_id) if task else None
@@ -117,6 +125,21 @@ class SurfaceCommandsMixin:
                 info["integration_delivery"] = await ParentEpisodeRecords(self.db).readiness(
                     task_id
                 )
+        from src.prime.budgets import field_page, task_preview
+
+        if args.get("field") == "prime_context":
+            from src.prime.sections import build_task_context_section
+
+            scope = getattr(self, "_current_scope", None) or {}
+            section = await build_task_context_section(
+                self.db, self.config, task, session_id=scope.get("session_id"),
+            )
+            info["prime_context"] = section.body
+        if args.get("field"):
+            return field_page(info, args["field"], args.get("offset", 0), args.get("limit", 4096))
+        scope = getattr(self, "_current_scope", None) or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            return task_preview(info)
         return info
 
     async def _root_delivery_receipts(self, checkpoint: dict) -> list[dict]:
@@ -213,8 +236,17 @@ class SurfaceCommandsMixin:
         if any(str(key).startswith("manual_pause") for key in (args.get("meta") or {})):
             return {"error": "manual_pause is reserved; use pause_task/resume_task."}
 
+        if {"notes_input", "promotion_prepare", "promotion_hotfix", "backmerge",
+            "backmerge_result", "promotion_intent", "promotion_result",
+            "promotion_publish_intent"}.intersection(args.get("meta") or {}):
+            return {"error": "Promotion preparation metadata is immutable and daemon-owned."}
+
         if any(str(key).startswith("supervisor_recovery") for key in (args.get("meta") or {})):
             return {"error": "supervisor_recovery metadata is reserved; use task_recover."}
+
+        if any(str(key).startswith("integration_train_ejection")
+               for key in (args.get("meta") or {})):
+            return {"error": "integration_train_ejection metadata is reserved; use integration_eject."}
 
         # Validate the description contract before touching any legacy field.
         for field in ("description", "expected_description"):
@@ -374,6 +406,7 @@ class SurfaceCommandsMixin:
                 session_id=scope.get("session_id") or args.get("session_id"),
                 work_dir=args.get("work_dir"),
                 mark_messages_delivered=mark_messages_delivered,
+                bounded_worker=scope.get("kind") == "session" and not scope.get("elevated"),
             )
         except ValueError as exc:
             return {"error": str(exc)}

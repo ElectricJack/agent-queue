@@ -72,6 +72,7 @@ import logging
 import os
 import time
 import uuid
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,7 @@ from src.messaging.types import (
     ThreadSendCallback as _ThreadSendCallbackType,
 )
 from src.models import (
+    DAEMON_AUTHORED_TASK_TYPES,
     AgentProfile,
     AgentState,
     RepoSourceType,
@@ -346,6 +348,8 @@ class Orchestrator(
         # Playbook V2 retention sweep, interval-limited by configuration.
         self._last_playbook_retention_sweep: float = 0.0
         self._last_worktree_reaper: float = 0.0
+        self._last_git_branch_sweep_date: str | None = None
+        self._git_branch_sweep_task: asyncio.Task | None = None
         self._last_auto_archive: float = 0.0
         self._last_memory_compact: float = 0.0  # TODO: remove once v2 compaction is wired
         self._last_failed_blocked_report: float = 0.0
@@ -560,9 +564,8 @@ class Orchestrator(
         # ---- Message substrate (supervisor-agent.md §5) ------------------
         # SessionLens is the read-only window from the delivery engine into
         # the session runtime; MessageDeliveryEngine owns the delivery
-        # policy.  Both are constructed unconditionally — the cascade step
-        # (``_deliver_messages``) gates on ``config.messages.enabled`` and
-        # ``delivery_interval``, so nothing runs while the flag is off.
+        # policy. The independent consumer gates on messages.enabled and
+        # delivery_interval, so scheduler/Git latency cannot strand mail.
         from src.messages.delivery import MessageDeliveryEngine
         from src.messages.session_lens import SessionLens
 
@@ -591,8 +594,13 @@ class Orchestrator(
             config=config,
             bus=self.bus,
         )
-        #: Wall-clock epoch of the last successful delivery pass — used to
-        #: throttle ``_deliver_messages`` to ``config.messages.delivery_interval``.
+        from src.messages.service import MessageDeliveryService
+
+        self.message_delivery_service = MessageDeliveryService(
+            self.message_delivery, lambda: self.config.messages, self.bus
+        )
+        #: Wall-clock epoch of the last message maintenance pass. Delivery is
+        #: owned by the independent service after initialize.
         self._last_delivery_pass: float = 0.0
         # aq-surface Phase S2: session-scoped API bearer-token store.
         # Constructed on ``initialize()`` once the DB is up; the API layer
@@ -617,8 +625,7 @@ class Orchestrator(
         self.integration_service = None
         # IntegrationTrain | None — the delivery engine when git_first is active.
         self.integration_train = None
-        #: When this process began; refreshed by ``initialize()``.  Integration
-        #: seal grace reads it (``stale_schedule.OrphanGrace``).
+        #: When this process began; refreshed by ``initialize()`` for playbook recovery.
         self._process_started_at = time.time()
         self._owner_recovery_next_due: float = 0.0
         self._development_completion_unsub = None
@@ -626,7 +633,13 @@ class Orchestrator(
         self.integration_attestation_resolver = None
         self.github_client_factory = None
         self.github_repository_binding_resolver = None
+        #: project id -> layer 1-3 problems of a stored promotion flow that
+        #: stopped validating, found at start (R17); status marks its targets
+        #: ``misconfigured``.  Nothing is written.
+        self.promotion_flow_problems: dict[str, list[dict]] = {}
+        self._promotion_flow_check = None
         self.branch_discard_service = None
+        self.branch_retirement_service = None
         self.branch_materialization_service = None
         self.integration_release_service = None
         self.integration_cleanup_service = None
@@ -701,6 +714,11 @@ class Orchestrator(
         The V2 runtime is constructed only after this handler is installed.
         """
         self._command_handler = handler
+        from src.agent_cron import AgentCronService
+
+        self.agent_cron = AgentCronService(handler)
+        if getattr(self, "message_delivery", None) is not None:
+            self.message_delivery.cron_service = self.agent_cron
 
         # Playbook V2 Package 1: the contract registry's built-in adapters
         # call the legacy handler through this provider.  Installing it here
@@ -720,6 +738,18 @@ class Orchestrator(
     def _get_handler(self) -> Any:
         """Return the command handler or None. Used by interactive views."""
         return self._command_handler
+
+    @cached_property
+    def morning_due(self):
+        """The morning-report playbook's once-per-local-day trigger.
+
+        A pure clock check with no Discord dependency, reading the live
+        (hot-reloaded) config.  Its event id is the day's dispatch dedup key,
+        so a restart cannot start a second run.  ``tick`` never raises.
+        """
+        from src.reports.morning_due import MorningDueEmitter
+
+        return MorningDueEmitter(lambda: self.config, self.bus)
 
     def playbook_services(self):
         """Everything a PlaybookRunner needs, built from daemon-wide singletons."""
@@ -808,6 +838,36 @@ class Orchestrator(
 
         # Last resort fallback
         return "main"
+
+    async def _recheck_promotion_flows(self) -> None:
+        """Re-run layers 1-3 on every stored promotion flow (R17, §3.11).
+
+        A flow that stopped validating marks its targets ``misconfigured`` in
+        ``aq integration status``; the train keeps promoting to the default
+        branch and ``aq doctor --check integration.promotion_flow`` names the
+        pointer.  Nothing is written.
+        """
+        handler = self._command_handler
+        if handler is None:
+            return
+        from src.integration.promotion_steps import recheck_stored_flows
+
+        try:
+            found = await recheck_stored_flows(
+                self.db,
+                lambda project_id: handler.execute("promote_validate", {"project_id": project_id}),
+            )
+        except Exception:  # pragma: no cover - never block startup on a re-check
+            logger.warning("promotion flow re-check failed", exc_info=True)
+            return
+        self.promotion_flow_problems = found
+        for project_id, problems in found.items():
+            first = problems[0]
+            logger.warning(
+                "Promotion flow of project %s no longer validates (%s at %r); its targets "
+                "are misconfigured and the train promotes to the default branch",
+                project_id, first.get("code"), first.get("pointer"),
+            )
 
     async def _warn_if_pools_disabled(self) -> None:
         """Say out loud that ``swarm.enabled=False`` strands pool profiles.
@@ -1255,6 +1315,14 @@ class Orchestrator(
         with principal_context(ExecutionPrincipal.service("integration-source-ci")):
             return await self._command_handler._cmd_observe_integration_source_ci(observation)
 
+    async def _repair_root_pr_checks(self, observation):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+
+        if self._command_handler is None:
+            return {"success": False, "outcome": "not_ready"}
+        with principal_context(ExecutionPrincipal.service("integration-admission")):
+            return await self._command_handler.repair_root_pr_checks(observation)
+
     async def _repair_integration_source_ancestry(self, observation):
         from src.commands.principal import ExecutionPrincipal, principal_context
         if self._command_handler is None:
@@ -1301,6 +1369,9 @@ class Orchestrator(
         if service is None:
             return
         await service.drain_due(now=now)
+        retirements = getattr(self, "branch_retirement_service", None)
+        if retirements is not None:
+            await retirements.drain_due(now=now)
 
     async def _sweep_stranded_owners(self, now: float) -> None:
         """Release quiet, provably abandoned branch owners every five minutes."""
@@ -1318,14 +1389,16 @@ class Orchestrator(
         candidates = await recovery.candidates(quiet_seconds=600, limit=50)
         await recovery.recover_many([candidate["id"] for candidate in candidates], principal="sweep")
 
-    async def stop_task(self, task_id: str) -> str | None:
-        """Forcibly stop an in-progress task and release its agent.
+    async def stop_task(self, task_id: str, *, reason: str = "stopped by aq task stop") -> str | None:
+        """Stop under the same exclusion as preparation, close and pause."""
+        async with self._task_control_lock(task_id):
+            return await self._stop_task_locked(task_id, reason=reason)
 
-        Sends a stop signal to the running adapter, transitions the task to
-        BLOCKED, resets the agent to IDLE, and checks whether stopping this
-        task orphans any downstream dependency chain (notifying if so).
+    async def _stop_task_locked(self, task_id: str, *, reason: str) -> str | None:
+        """Stop after preserving managed WIP and proving writer release.
 
-        Returns None on success, or an error string if the task cannot be stopped.
+        Failed preparations return READY; active tasks become BLOCKED. Return None
+        on success or a refusal retaining resources and naming recovery commands.
         """
         task = await self.db.get_task(task_id)
         if not task:
@@ -1333,7 +1406,6 @@ class Orchestrator(
         if task.status != TaskStatus.IN_PROGRESS:
             return f"Task is not in progress (status: {task.status.value})"
 
-        # Find and stop the adapter
         agent_id = task.assigned_agent_id
         if agent_id and agent_id in self._adapters:
             adapter = self._adapters[agent_id]
@@ -1342,48 +1414,78 @@ class Orchestrator(
             except Exception as e:
                 logger.error("Error stopping adapter for agent %s: %s", agent_id, e)
 
-        # Cancel the background asyncio Task so the finally block in
-        # _resilient_query fires even if the transport close didn't
-        # immediately take effect.  We must await the task after cancelling
-        # so that any in-flight DB transaction rollback completes before we
-        # issue our own DB queries — otherwise the StaticPool's single
-        # aiosqlite connection can be left in a closed/corrupt state.
+        # Cancellation runs _resilient_query cleanup even if transport close is delayed.
+        # Await transaction rollback before issuing more database queries.
         bg_task = self._running_tasks.get(task_id)
         if bg_task and not bg_task.done():
             bg_task.cancel()
-            # Wait for the task's cleanup (transaction rollback, etc.) to finish
-            # before we issue our own DB queries.
             await asyncio.wait({bg_task}, timeout=5.0)
 
         project = await self.db.get_project(task.project_id)
+        failed_preparation = False
+        preparation_claim_released = False
         if (
             project is not None
             and project.hierarchical_integration_mode in {"hierarchy", "train"}
             and project.integration_repository_id == task.repo_id
             and task.branch_name
         ):
-            # The handoff proof needs the session/task binding and workspace
-            # lock. Do it before ordinary stop tears either one down. This is
-            # an external stop, so it must use the provider-backed proof even
-            # when the writer belongs to a pool session.
+            # Prove provider-backed handoff before tearing down session/task bindings
+            # or workspace locks, including when the writer belongs to a pool session.
             from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
 
+            session = await self.db.get_session_for_task(task_id)
+            failed_preparation = bool(
+                session is not None and session.lifecycle == "pool"
+                and session.claim_phase == "preparing"
+                and session.last_claim_epoch == task.claim_epoch
+                and session.agent_id == task.assigned_agent_id
+            )
             released = await self.arelease_integration_writer_for_retry(
-                task, reason="stop_task", roles=REQUEUE_INTEGRATION_OWNER_ROLES
+                task, reason="stop_task",
+                roles=REQUEUE_INTEGRATION_OWNER_ROLES, save_wip_reason=reason,
             )
             if released is not True:
-                return "Integration branch handoff is unproven; task resources were retained"
+                await self.db.set_task_meta(
+                    task_id, "needs_attention", "integration_handoff_unproven"
+                )
+                session_stop = (
+                    f"Stop its exact writer with `aq session kill {session.id}`, "
+                    "then wait for confirmed termination. "
+                    if session is not None else ""
+                )
+                return (
+                    "Integration branch handoff is unproven; task resources were retained. "
+                    + session_stop
+                    + f"Preview `aq integration release-owner --task-id {task_id} --dry-run`, "
+                    "then apply without --dry-run to preserve work and release the attachment. "
+                    f"Retry `aq task stop {task_id}` if still in progress, "
+                    f"then `aq task restart {task_id}`. No recovery incident is required."
+                )
+            if failed_preparation:
+                current_session = await self.db.get_session(session.id)
+                preparation_claim_released = bool(
+                    current_session is not None and current_session.task_id is None
+                )
 
-        # Clean up sentinel and release workspace lock (worktree-aware)
-        ws = await self.db.get_workspace_for_task(task_id)
-        if ws:
-            self._remove_sentinel(ws.workspace_path)
-        await self._release_workspaces_for_task(task_id)
-        await self.db.transition_task(
-            task_id, TaskStatus.BLOCKED, context="stop_task", assigned_agent_id=None
-        )
+        # Preparation handoff atomically releases to READY. A successor can claim
+        # before its preparation takes our control lock; never clear that claim.
+        if not preparation_claim_released:
+            ws = await self.db.get_workspace_for_task(task_id)
+            if ws:
+                self._remove_sentinel(ws.workspace_path)
+            await self._release_workspaces_for_task(task_id)
+            await self.db.transition_task(
+                task_id, TaskStatus.READY if failed_preparation else TaskStatus.BLOCKED,
+                context="stop_task", assigned_agent_id=None,
+            )
+            if agent_id:
+                await self.db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
+        else:
+            self._task_attachments.pop(task_id, None)
+        if failed_preparation:
+            await self.db.delete_task_meta(task_id, "needs_attention")
         if agent_id:
-            await self.db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
             self._adapters.pop(agent_id, None)
 
         profile = await self._resolve_profile(task)
@@ -1401,7 +1503,6 @@ class Orchestrator(
                 project_id=task.project_id,
             ),
         )
-        # Delete the task-added and task-started messages to reduce chat clutter
         added_msg = self._task_added_messages.pop(task_id, None)
         if added_msg is not None:
             try:
@@ -1414,7 +1515,6 @@ class Orchestrator(
                 await started_msg.delete()
             except Exception as e:
                 logger.debug("Could not delete task-started message for %s: %s", task_id, e)
-        # Close thread and update root message
         await self._emit_notify(
             "notify.task_thread_close",
             TaskThreadCloseEvent(
@@ -1424,7 +1524,6 @@ class Orchestrator(
                 project_id=task.project_id,
             ),
         )
-        # Check if stopping this task blocks a dependency chain
         await self._notify_stuck_chain(task)
         return None
 
@@ -1729,23 +1828,24 @@ class Orchestrator(
         if self.config.playbooks.enabled:
             from src.playbooks.required import (
                 RequiredPlaybookReconciler,
-                ensure_reviewed_playbook_bundles,
             )
             from src.playbooks.runtime import V2PlaybookRuntime
             from src.timer_service import TimerService
 
             if self._command_handler is None:
                 raise RuntimeError("Playbooks enabled before command handler was wired")
-            written = ensure_reviewed_playbook_bundles(self.config.data_dir)
-            if written:
-                logger.info(
-                    "Seeded or refreshed reviewed playbook bundles in the vault: %s",
-                    ", ".join(written),
-                )
+            source_backfill = await self._command_handler._backfill_playbook_sources()
+            if source_backfill["restored"]:
+                logger.info("Restored %d retained playbook source(s)", len(source_backfill["restored"]))
+            if source_backfill["errors"]:
+                logger.warning("Playbook source backfill errors: %s", source_backfill["errors"])
             self.required_playbook_reconciler = RequiredPlaybookReconciler(
                 config=self.config, db=self.db, handler=self._command_handler
             )
-            self.required_playbook_status = await self.required_playbook_reconciler.reconcile()
+            # Observe existing activations while startup dependencies are still
+            # being wired. Consuming the one-shot installation receipt here
+            # would import against an empty profile registry on a fresh vault.
+            self.required_playbook_status = await self.required_playbook_reconciler.refresh_status()
             self.playbook_manager = V2PlaybookRuntime(
                 config=self.config,
                 db=self.db,
@@ -1803,16 +1903,12 @@ class Orchestrator(
         from src.integration.branch_discard import BranchDiscardService
         from src.integration.branch_materialization import BranchMaterializationService
         from src.integration.cleanup import IntegrationCleanupService
-        from src.integration.main_promotion import RootPromotionService
         from src.integration.models import integration_max_wait_seconds
         from src.integration.outbox import IntegrationOutbox
-        from src.integration.promotion import PromotionService
         from src.integration.protection import (
             enablement_reader as protection_enablement_reader,
         )
-        from src.integration.release import IntegrationReleaseService
         from src.integration.repair import RepairService
-        from src.integration.scheduler import IntegrationScheduler
         from src.integration.service import IntegrationService
 
         async def accept_integration_event(
@@ -1834,10 +1930,9 @@ class Orchestrator(
                 None if project is None else project.hierarchical_integration_policy
             )
 
-        self.integration_scheduler = IntegrationScheduler(self.db)
+        self.integration_scheduler = None
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
-            before_dispatch=self.integration_scheduler.maintain_lease,
             project_max_wait=project_max_wait,
         )
         github_clients = {}
@@ -1851,23 +1946,15 @@ class Orchestrator(
             return client
 
         async def resolve_github_repository(repository):
-            from urllib.parse import urlparse
+            from src.projects.github import GitHubError, parse_github_repository
 
-            parsed = urlparse(repository.url)
-            if (
-                parsed.scheme != "https"
-                or parsed.hostname != "github.com"
-                or parsed.username is not None
-                or parsed.password is not None
-                or parsed.port is not None
-                or parsed.params
-                or parsed.query
-                or parsed.fragment
-                or not parsed.path.endswith(".git")
-            ):
+            try:
+                parsed = parse_github_repository(repository.url)
+            except GitHubError:
                 return None
-            full_name = parsed.path.removeprefix("/").removesuffix(".git")
-            binding = await self.github_access.bind_repository(full_name)
+            # Share onboarding's identity rules; authentication still goes
+            # through the startup-owned authority, including for SSH inputs.
+            binding = await self.github_access.bind_repository(parsed.full_name)
             if binding not in github_clients:
                 github_clients[binding] = GitHubClient(
                     binding,
@@ -1891,7 +1978,6 @@ class Orchestrator(
             ),
         )
         self.integration_attestation_resolver = self.integration_attestation_service.resolve
-        self.integration_release_service = IntegrationReleaseService(self.db)
         self.integration_cleanup_service = IntegrationCleanupService(
             self.db,
             data_dir=self.config.data_dir,
@@ -1900,40 +1986,45 @@ class Orchestrator(
             binding_resolver=self.github_repository_binding_resolver,
             candidate_store=lambda repo: self.development_integration.store(repo, fetch=False),
         )
-        self.root_promotion_service = RootPromotionService(
-            self.db,
-            data_dir=self.config.data_dir,
-            git_manager=self.git,
-            github_client_factory=self.github_client_factory,
-            attestation_resolver=self.integration_attestation_resolver,
+        from src.integration.repository_git import RepositoryGit
+
+        self.repository_git = RepositoryGit(
+            self.db, data_dir=self.config.data_dir, git_manager=self.git,
         )
-        self.promotion_service = PromotionService(
-            self.db,
-            data_dir=self.config.data_dir,
-            git_manager=self.git,
-        )
+        self.root_promotion_service = None
+        self.promotion_service = None
         # Removes the branches an operator explicitly asked to discard when
         # deleting a task.  Its work is recorded on the retired origin row, so
         # it survives a restart and needs no other authority.
         self.branch_materialization_service = BranchMaterializationService(
-            self.db, hierarchy_service_factory=self._branch_materialization_hierarchy
+            self.db,
+            hierarchy_service_factory=self._branch_materialization_hierarchy,
+            # git_first: active hands every target to the train, which collects
+            # a container's children into its own branch; the legacy collector
+            # that owns a collection episode is not built at all.
+            legacy_container_collection=False,
         )
-        self.branch_discard_service = BranchDiscardService(
+        from src.integration.branch_retirement import BranchRetirementService
+
+        self.branch_retirement_service = BranchRetirementService(
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.git,
             github_client_factory=self.github_client_factory,
             github_repository_binding_resolver=self.github_repository_binding_resolver,
+            candidate_store=lambda repo: self.development_integration._store_path(repo),
         )
-        from src.integration.parent_ci import ParentCIService
-
-        parent_ci = ParentCIService(
-            self.integration_attestation_service, self.github_repository_binding_resolver
+        self.branch_discard_service = BranchDiscardService(
+            self.db,
+            data_dir=self.config.data_dir,
+            git_manager=self.git,
+            retirement_service=self.branch_retirement_service,
         )
+        self.integration_cleanup_service.retirement_service = self.branch_retirement_service
         from src.integration.development import DevelopmentPrimitives
         from src.integration.github_review_poll import GitHubReviewPoller
         from src.integration.owner_recovery import owner_recovery_for
-        from src.integration.review_evidence import ReviewEvidenceProducer
+        from src.integration.reviews import ReviewEvidenceProducer
         from src.integration.root_pull_requests import RootPullRequestReconciler
         from src.integration.pr_cleanup import PullRequestReconciler
         async def development_confirm_stopped(session):
@@ -1951,9 +2042,6 @@ class Orchestrator(
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
-        from src.integration.root_runtime import root_runtime_for
-        from src.integration.parent_runtime import parent_runtime_for
-        from src.integration.development_runtime import development_runtime_for
         from src.integration.train_sources import TrainCommandDriver, train_for
 
         self.parent_owner_recovery = owner_recovery
@@ -1961,29 +2049,28 @@ class Orchestrator(
         # runtimes are never built beside it.
         self.integration_train = train_for(self)
         train_active = self.integration_train is not None
-        self.parent_subject_runtime = (
-            None if train_active else parent_runtime_for(self, parent_ci)
-        )
-        # A disabled reconciler pauses delivery; it never selects another engine.
-        self.development_subject_runtime = (
-            None if train_active else development_runtime_for(self)
-        )
+        from src.integration.task_removal import settle_orphaned_parent_operations
+
+        async def settle_orphaned_parents(now):
+            return await settle_orphaned_parent_operations(
+                self.db, now, legacy_engine_gone=True,
+            )
+        self.parent_subject_runtime = None
+        self.development_subject_runtime = None
         self.integration_service = IntegrationService(
             self.db, self.integration_outbox,
-            subject_runtime=None if train_active else root_runtime_for(self),
-            parent_subject_runtime=self.parent_subject_runtime,
-            development_subject_runtime=self.development_subject_runtime,
             # The service drives the train through integration_train_tick.
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
             maintenance={
-                "aborted batch cleanup": self.integration_cleanup_service.reconcile_aborted,
+                "orphaned parent operations": settle_orphaned_parents,
+                "batch cleanup": self.integration_cleanup_service.reconcile,
                 "branch discard": self._drain_branch_discards,
                 "branch materialization": self._drain_branch_materializations,
                 "owner recovery": self._sweep_stranded_owners,
                 "delegate cleanup": RepairService(self.db).retire_terminal_delegates,
                 "GitHub PR reviews": GitHubReviewPoller(
-                    self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git,
+                    self.db, ReviewEvidenceProducer(self.db, self.repository_git), self.git,
                     source_ci_handler=self._observe_integration_source_ci,
                     ancestry_handler=self._repair_integration_source_ancestry,
                     parent_head_handler=self._reverify_integration_parent_source,
@@ -1998,6 +2085,8 @@ class Orchestrator(
             source_timeouts=self.config.integration.service_source_timeouts,
         )
         self.integration_service.start()
+        # Off the start path: layer 3 reads each repository's trust manifest.
+        self._promotion_flow_check = asyncio.create_task(self._recheck_promotion_flows())
 
         # Record intents have their own bounded lifecycle and concurrency.
         # No scheduling cascade, integration lease, or optional plugin owns
@@ -2376,7 +2465,7 @@ class Orchestrator(
             logger.warning("Startup README scan failed: %s", e)
 
         # Some capability registries are populated by late startup wiring.
-        # Retry the reviewed import after all of those registries exist, then
+        # Attempt the one-shot initial import only after those registries exist, then
         # publish the now-durable activation into the runtime snapshot before
         # the first scheduler cycle can emit task.route_needed.
         if self.required_playbook_reconciler is not None:
@@ -2390,6 +2479,10 @@ class Orchestrator(
         # Recovery may execute any pinned step, so wait until all handler
         # dependencies are wired. Only the bounded scan is awaited here.
         await self._recover_interrupted_playbook_runs()
+
+        # A slow scheduling/frontier/Git pass must not strand live recipients.
+        # Start only after tokens, providers and command dependencies are ready.
+        self.message_delivery_service.start()
 
     async def refresh_required_playbook_status(self) -> dict[str, Any]:
         """Recompute required-playbook readiness from the activations as they are now.
@@ -2418,17 +2511,16 @@ class Orchestrator(
                 )
         return status
 
-    async def reconcile_required_playbooks(self) -> dict[str, Any]:
-        """Re-run the startup reconcile: import shipped bundles, repair activations.
+    async def reconcile_required_playbooks(self, *, repair: bool = False) -> dict[str, Any]:
+        """Refresh policy readiness, or explicitly repair required activations.
 
-        For ``aq doctor --check playbooks.reviewed_bundles --fix``, which
-        refreshes the vault bundles and then needs them imported and a broken
-        activation re-pointed without waiting for a restart.
+        Doctor fixes pass ``repair=True`` after refreshing the requested vault
+        bundles, so repair can take effect without waiting for a restart.
         """
         reconciler = getattr(self, "required_playbook_reconciler", None)
         if reconciler is None:
             return self.required_playbook_status
-        self.required_playbook_status = await reconciler.reconcile()
+        self.required_playbook_status = await reconciler.reconcile(repair=repair)
         if self.playbook_manager is not None:
             await self.playbook_manager.apply_required_playbook_status(
                 self.required_playbook_status
@@ -2568,6 +2660,17 @@ class Orchestrator(
         for t in tasks:
             if t.id in skip_task_ids:
                 logger.info("Recovery: task '%s' kept IN_PROGRESS — its session was adopted", t.id)
+                continue
+            if getattr(t.task_type, "value", t.task_type) in DAEMON_AUTHORED_TASK_TYPES:
+                # Promotion/backmerge intents are daemon-authored: no agent
+                # ever holds them, the train drives them, and StepAdmission
+                # requires them IN_PROGRESS with no profile.  Resetting one
+                # to READY hands it to the router and strands the promotion.
+                logger.info(
+                    "Recovery: leaving daemon-authored %s task '%s' IN_PROGRESS",
+                    getattr(t.task_type, "value", t.task_type),
+                    t.id,
+                )
                 continue
             if await self.db.get_subtasks(t.id):
                 logger.info(
@@ -2808,9 +2911,15 @@ class Orchestrator(
         from src.integration.completion_recovery import stop_ready_owner_recovery
 
         await stop_ready_owner_recovery(self)
+        await self.message_delivery_service.stop()
         await self.provider_availability.close()
         await self.wait_for_pool_launches(cancel=True)
         await self.wait_for_running_tasks(timeout=10)
+        if self._git_branch_sweep_task is not None and not self._git_branch_sweep_task.done():
+            _, pending = await asyncio.wait({self._git_branch_sweep_task}, timeout=30)
+            if pending:
+                self._git_branch_sweep_task.cancel()
+                await asyncio.gather(self._git_branch_sweep_task, return_exceptions=True)
         # A layout publish is one transaction; let an in-flight step land
         # rather than cancelling it mid-write.  Marks are durable either way.
         await self.wait_for_layout_step(timeout=30)
@@ -2818,6 +2927,9 @@ class Orchestrator(
             await self.workspace_spec_watcher.stop()
         if self.integration_service:
             await self.integration_service.stop()
+        if self._promotion_flow_check is not None and not self._promotion_flow_check.done():
+            self._promotion_flow_check.cancel()
+            await asyncio.wait({self._promotion_flow_check}, timeout=5.0)
         if self.record_outbox:
             await self.record_outbox.stop()
         if self.knowledge_generation_loop:
@@ -3035,13 +3147,13 @@ class Orchestrator(
 
             # ── Phase 3: Housekeeping ───────────────────────────────────────
 
-            # 7a. Run timer service tick — emit synthetic timer.* events for
-            # playbooks with periodic triggers (playbooks spec §7).
+            # 7a. Synthetic playbook events: timer.*/cron.* (playbooks §7), report.morning_due.
             if self.timer_service:
                 try:
                     await self.timer_service.tick()
                 except Exception as e:
                     logger.warning("Timer service tick failed: %s", e)
+            await self.morning_due.tick()
 
             # 7b. Run plugin cron jobs (plain async functions, not LLM prompts).
             if hasattr(self, "plugin_registry") and self.plugin_registry:
@@ -3163,6 +3275,7 @@ class Orchestrator(
             # called up there, not here.)
             # See docs/analysis/execution-plan.md §1.1.
             await self._reap_worktree_slots()
+            self._schedule_daily_git_branch_sweep()
             sessions_attempted = True
             await self._reconcile_sessions()
             await self._deliver_messages()
@@ -3535,6 +3648,248 @@ class Orchestrator(
                 except Exception as e:
                     logger.debug("prune_branches(%s) failed: %s", ws.id, e)
 
+    def _schedule_daily_git_branch_sweep(self) -> None:
+        """Run the fleet branch audit once daily while Git-first is active."""
+        from datetime import UTC, datetime
+
+        if getattr(self.config.integration, "git_first", "shadow") != "active":
+            return
+        if self._git_branch_sweep_task is not None and not self._git_branch_sweep_task.done():
+            return
+        today = datetime.now(UTC).date().isoformat()
+        if self._last_git_branch_sweep_date == today:
+            return
+        marker = Path(self.config.data_dir) / "maintenance" / "git-branch-sweep-last-date"
+        try:
+            if marker.read_text(encoding="ascii").strip() == today:
+                self._last_git_branch_sweep_date = today
+                return
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning("Could not read daily Git sweep marker %s", marker, exc_info=True)
+        self._last_git_branch_sweep_date = today
+        self._git_branch_sweep_task = asyncio.create_task(
+            self._run_daily_git_branch_sweep(today), name="daily-git-branch-sweep"
+        )
+
+    async def _run_daily_git_branch_sweep(self, scheduled_date: str | None = None) -> None:
+        """Run each project's backstop and deliver its counts to its supervisor."""
+        from datetime import UTC, datetime
+
+        from functools import partial
+        from types import SimpleNamespace
+
+        from src.git.manager import repository_urls_match
+        from src.integration.branch_retirement import retirement_report
+        from src.integration.branch_sweep import (
+            BranchSweepReport, SweepSafety, _append_backup, record_sweep_date, sweep_checkout,
+        )
+        from src.integration.delivery_branches import live_branch_references
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        try:
+            projects = await self.db.list_projects()
+        except Exception:
+            self._last_git_branch_sweep_date = None
+            logger.exception("Daily Git branch sweep could not read project state")
+            return
+
+        date = scheduled_date or datetime.now(UTC).date().isoformat()
+        cleanup = getattr(self, "integration_cleanup_service", None)
+        if cleanup is not None:
+            try:
+                await cleanup.reconcile(time.time())
+            except Exception:
+                logger.exception("Daily Git sweep could not recover landing cleanup")
+        seen_common_dirs: set[str] = set()
+        reports_delivered = True
+        for project in projects:
+            project_marker = (Path(self.config.data_dir) / "maintenance" / "git-branch-sweeps"
+                              / str(project.id))
+            try:
+                if project_marker.read_text(encoding="ascii").strip() == date:
+                    continue
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("Could not read project Git sweep marker %s", project_marker,
+                               exc_info=True)
+            reports: list[BranchSweepReport] = []
+            failures: list[str] = []
+            unregistered: dict[str, list[str]] = {}
+            retired: list[tuple[str, str | None]] = []
+            migrations: list[dict] = []
+            retirement = getattr(self, "branch_retirement_service", None)
+            if retirement is not None:
+                try:
+                    retired = await retirement.reconcile_project(project.id)
+                except Exception as exc:
+                    failures.append(f"retirement recovery failed ({exc})")
+            try:
+                repositories = await self.db.list_repos(project_id=project.id)
+                workspaces = await self.db.list_workspaces(project_id=project.id)
+            except Exception as exc:
+                failures.append(f"{project.name}: workspace list failed ({exc})")
+                repositories, workspaces = [], []
+            extra_paths = [getattr(project, "workspace_path", None)]
+            for repository in repositories:
+                extra_paths.append(repository.checkout_base_path)
+                if retirement is not None:
+                    extra_paths.append(str(retirement.retained_store(repository.id)))
+                publisher = getattr(self, "development_integration", None)
+                if publisher is not None:
+                    extra_paths.append(str(publisher._store_path(repository)))
+            registered = {ws.workspace_path for ws in workspaces}
+            workspaces.extend(SimpleNamespace(workspace_path=path, kind_id=None, is_slot=False)
+                              for path in extra_paths if path and path not in registered)
+            # Process base checkouts before their linked slots; the common-dir
+            # set makes each shared worktree repository run exactly once.
+            workspaces.sort(key=lambda ws: bool(getattr(ws, "is_slot", False)))
+            for workspace in workspaces:
+                checkout = workspace.workspace_path
+                # Job snapshots are detached clones of the local store; job
+                # retention owns them and they carry no delivery refs.
+                if workspace.kind_id == "job-snapshot" or not Path(checkout).is_dir():
+                    continue
+                kind = None
+                if workspace.kind_id:
+                    try:
+                        kind = await self.db.resolve_workspace_kind(project.id, workspace.kind_id)
+                    except Exception:
+                        kind = None
+                if kind is not None and not getattr(kind, "is_git_repo", True):
+                    continue
+                try:
+                    common = await self.git._arun(
+                        ["rev-parse", "--git-common-dir"], cwd=checkout
+                    )
+                    common_path = str((Path(checkout) / common).resolve())
+                except Exception:
+                    continue
+                if common_path in seen_common_dirs:
+                    continue
+                try:
+                    repository_url = await self.git._arun(
+                        ["config", "--get", "remote.origin.url"], cwd=checkout
+                    )
+                except Exception as exc:
+                    failures.append(f"{checkout}: origin unavailable ({exc})")
+                    continue
+                matches = [repo for repo in repositories
+                           if repository_urls_match(repository_url, repo.url, base=checkout)]
+                if len(matches) != 1:
+                    # Ref exclusion needs a repository identity: skip, reported once.
+                    unregistered.setdefault(repository_url, []).append(checkout)
+                    continue
+                repository = matches[0]
+                seen_common_dirs.add(common_path)
+                safety = SweepSafety(self.db, repository.id,
+                                     default_branch=repository.default_branch,
+                                     git=self.git, checkout=checkout)
+                backup = (
+                    Path(self.config.vault_projects)
+                    / str(project.id)
+                    / "notes"
+                    / f"git-branch-sweep-{date}.tsv"
+                )
+                audit = partial(_append_backup, backup, repository=repository_url)
+
+                def audit_migration(scope, branch, sha, proof):
+                    audit(scope=scope, branch=branch, sha=sha, proof=proof)
+
+                try:
+                    migration = await ProvenanceMigration(self.git).run(
+                        repository_url, checkout=checkout, dry_run=False,
+                        deletion_guard=safety.deletion, audit_delete=audit_migration,
+                    )
+                    migrations.extend(migration["rows"])
+                    async with self.db._engine.connect() as conn:
+                        holds = await live_branch_references(conn)
+                    report = await sweep_checkout(
+                        self.git,
+                        checkout,
+                        repository_url=repository_url,
+                        default_branch=repository.default_branch,
+                        holds=holds,
+                        backup_path=backup,
+                        deletion_guard=safety.deletion,
+                    )
+                    reports.append(report)
+                    for branch, sha in report.unique_unmerged:
+                        logger.info(
+                            "Daily Git sweep kept unique ref project=%s checkout=%s ref=%s sha=%s",
+                            project.name, checkout, branch, sha,
+                        )
+                    for stash in report.stashes:
+                        logger.info(
+                            "Daily Git sweep stash audit project=%s checkout=%s stash=%s",
+                            project.name, checkout, stash,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Daily Git branch sweep skipped %s (%s): %s",
+                        project.name, checkout, exc,
+                    )
+                    failures.append(f"{project.name} ({checkout}): {exc}")
+
+            for paths in unregistered.values():
+                failures.append(
+                    f"{paths[0]}: origin has no unique registered repository; skipped "
+                    f"{len(paths)} checkout{'s' if len(paths) > 1 else ''} of it"
+                )
+            unique = {(row.checkout, branch, sha) for row in reports
+                      for branch, sha in row.unique_unmerged}
+            retirement_lines = retirement_report(retired)
+            lines = [
+                f"Daily branch backstop for {project.name} ({date} UTC)",
+                f"Checkouts: {len(reports)}; local heads "
+                f"{sum(r.local_before for r in reports)} → {sum(r.local_after for r in reports)}; "
+                f"deleted {sum(len(r.local_deleted) for r in reports)} Git-proven local refs.",
+                f"Remote heads {sum(r.remote_before for r in reports)} → "
+                f"{sum(r.remote_after for r in reports)}; "
+                f"deleted {sum(len(r.remote_deleted) for r in reports)} Git-proven remote refs.",
+                f"Held {sum(r.local_held for r in reports)} local and "
+                f"{sum(r.remote_held for r in reports)} remote live/attached refs; "
+                f"kept {len(unique)} unique unmerged refs.",
+                retirement_lines[0],
+                f"Provenance refs: {sum(r['action'] == 'migrated' for r in migrations)} migrated, "
+                f"{sum(r['action'] == 'blocked' for r in migrations)} blocked.",
+                f"Pruned {sum(r.stale_worktrees_pruned for r in reports)} stale registrations; "
+                f"audited {sum(len(r.stashes) for r in reports)} unchanged stashes.",
+            ]
+            if failures:
+                lines.append(f"Failures ({len(failures)}): " + "; ".join(failures[:10]))
+            lines.extend(retirement_lines[1:])
+            for row in migrations:
+                if row["action"] == "blocked":
+                    lines.append(f"  provenance {row['old_ref']}: {row['error']}")
+            try:
+                result = await self._command_handler.execute("message_send", {
+                    "project_id": project.id, "from_kind": "system",
+                    "from_id": "daily-branch-sweep", "to_kind": "session",
+                    "to_id": f"supervisor-{project.id}",
+                    "subject": f"Daily branch backstop: {project.name}",
+                    "body": "\n".join(lines), "archive_after_inject": True,
+                })
+                # A queued send carries no "success" key; only an error or an
+                # explicit refusal leaves the day open for a retry.
+                if result.get("error") or result.get("success") is False:
+                    raise RuntimeError(result.get("error") or "report was not accepted")
+                record_sweep_date(project_marker, date)
+            except Exception:
+                reports_delivered = False
+                logger.exception("Daily Git branch sweep report failed for %s", project.id)
+        if not reports_delivered:
+            self._last_git_branch_sweep_date = None
+            return
+        marker = Path(self.config.data_dir) / "maintenance" / "git-branch-sweep-last-date"
+        try:
+            record_sweep_date(marker, date)
+        except OSError:
+            self._last_git_branch_sweep_date = None
+            logger.exception("Could not persist daily Git sweep marker %s", marker)
+
     async def _reconcile_sessions(self) -> None:
         """Reconcile desired vs. actual agent sessions — one reconciler tick.
 
@@ -3576,6 +3931,12 @@ class Orchestrator(
                     logger.error("AgentWaitReconciler tick refused: %s", result)
             except Exception:
                 logger.error("AgentWaitReconciler tick failed", exc_info=True)
+            try:
+                result = await self.agent_cron.tick()
+                if not result.get("success"):
+                    logger.error("Agent cron tick refused: %s", result)
+            except Exception:
+                logger.error("Agent cron tick failed", exc_info=True)
         else:
             # main.py installs the handler before the first cycle; without one
             # no durable wait can resolve, so say so rather than skip silently.
@@ -3597,13 +3958,11 @@ class Orchestrator(
         return await self.db.get_profile(profile_id)
 
     async def _deliver_messages(self) -> None:
-        """Deliver queued inter-agent messages to their recipients.
+        """Maintain recovery/conversation routing and delivery diagnostics.
 
-        Cascade step (supervisor-agent.md §5): throttled to
-        ``config.messages.delivery_interval`` so it piggybacks the 5 s
-        orchestrator cycle without over-polling on faster cadences.  Any
-        exception from the engine is logged and swallowed — a delivery
-        failure must never break the cascade.
+        Live delivery belongs to the independent consumer. Direct cycle
+        callers that skip initialize retain a throttled fallback. A failure
+        in one maintenance operation must never break the cascade.
         """
         if not self.config.messages.enabled:
             return
@@ -3622,8 +3981,12 @@ class Orchestrator(
         except Exception:
             logger.exception("Conversation input routing pass failed")
         try:
-            await self.message_delivery.run_delivery_pass()
-            await self.message_delivery.check_reply_timeouts()
+            service = getattr(self, "message_delivery_service", None)
+            if service is None or not service.running:
+                # Direct cycle callers that skip initialize retain the old
+                # delivery seam. Production has exactly one independent owner.
+                await self.message_delivery.run_delivery_pass()
+                await self.message_delivery.check_reply_timeouts()
         except Exception:
             logger.exception("Message delivery pass failed")
         try:
@@ -3641,8 +4004,8 @@ class Orchestrator(
         aq-surface S2 §4.1 — ``SessionTokenStore.revoke_expired``.  Gated on
         either flag: tokens are minted by sessions, and enforcement can be
         on independently.  Rate-limited to one pass per 60s (the auth path
-        itself is DB-backed with an in-memory cache; the sweep is deletion,
-        not the hot path).
+        itself is DB-backed with an in-memory cache). The sweep first renews
+        still-valid tokens for live supervisors, then deletes expired rows.
         """
         if not (self.config.sessions.enabled or self.config.api_auth.require_session_token):
             return

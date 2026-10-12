@@ -135,7 +135,14 @@ WHERE tasks.id IN (:affected_ids)
 
 That is exact, not an approximation. `is_blocked` is a pure function of statuses, edges and gates, and blockedness is deliberately not transitive through blockedness (design §4.3), so with a fixed set of statuses **one wave is the whole answer**. A further wave is needed only because the transaction changed a status the previous wave could not have seen, and nothing a wave *writes* can invalidate an earlier wave's result. There is consequently no termination question and no iteration bound to assert.
 
-**Locking:** SQLite — single writer, WAL; the whole mutation+recompute is one write transaction, inherently atomic. PostgreSQL — the single UPDATE takes row locks in one statement (no interleaving); multi-wave loops sort `affected_ids` before each UPDATE so concurrent transactions acquire locks in a canonical order, preventing deadlocks (same discipline as workspace acquisition in [design/workspaces-v2](../design/workspaces-v2.md)).
+**Locking:** PostgreSQL projection refreshes acquire affected task rows with
+`SELECT ... ORDER BY tasks.id FOR NO KEY UPDATE` before reading the old projection and
+issuing the set-based UPDATE. Full projection backfills use the same ordering.
+Sorting an UPDATE's `IN` arguments does not control PostgreSQL's row-lock order;
+explicit ordered locks keep refreshes aligned with recursive deletion's task
+locks and make the before/after flip comparison observe the locked values.
+The weaker lock mode permits foreign-key readers while protecting the update.
+Full backfills update only the task identities captured by their ordered lock.
 
 ## 4. Query-layer changes (exact functions)
 

@@ -77,10 +77,8 @@ Install GitHub CLI (`gh`) on the daemon host for **either** credential mode;
   repository. Supply an explicit repository URL: AQ checks that the App
   installation can access it. Account-wide search, owner selection, user
   identity, repository creation and profile gists are unavailable in App mode.
-  **This staged onboarding flow still refuses an App-backed clone** after URL
-  validation;
-  link a repository already on the host or use an existing AQ project for
-  App-backed delivery. AQ does not switch to a personal login for the clone.
+  App-backed cloning uses the daemon’s shared authenticated Git transport.
+  AQ does not switch to a personal login for the clone.
 
 A stored personal login can coexist with an App. AQ selects the configured App
 for its GitHub operations and supplies a repository-scoped token to each `gh`
@@ -101,8 +99,8 @@ The wizard has three source modes:
 | Mode | What it does |
 | --- | --- |
 | **Existing local repository** | Select a valid Git repository below a configured root. AQ records its remote and default branch when available, without fetching, checking out, resetting, committing, or otherwise modifying it. |
-| **New repository** | Choose a new, non-existent child directory. AQ initializes Git on `main` by default and can create an initial README and commit (enabled by default). It can also create an optional GitHub repository, private by default. |
-| **Clone from GitHub** | With an existing login, search repositories or paste a GitHub URL or shorthand, then clone below a configured root. App mode validates an explicit URL but currently refuses the clone. |
+| **New repository** | Choose a new, non-existent child directory. AQ initializes Git on `main` by default and can create an initial README and commit (enabled by default). It can also create a GitHub repository, private by default, or adopt an existing empty GitHub repository by URL. |
+| **Clone from GitHub** | With an existing login, search repositories or paste a GitHub URL or shorthand, then clone below a configured root. App mode verifies access to the explicit URL and uses authenticated Git transport. |
 
 The dashboard keeps non-secret values when you move backward or retry. The
 review step shows every persistent action before submission, with GitHub
@@ -127,7 +125,47 @@ Use a new request ID when starting a distinct operation. Repeating the same
 request ID with the same normalized input is safe and returns the existing
 result or progress; reusing it with different input is rejected.
 
+## Bind a repository created after initialization
+
+If a project was initialized without a remote and its GitHub repository was
+created later, the local operator or live global supervisor can authorize that
+repository explicitly. An origin configured in a checkout alone does not
+authorize worker publication. Use the exact current project URL as the expected
+value; `''` means the project has no repository binding:
+
+```bash
+aq project bind-repository agent-q-sprint-eval \
+  --repo-url https://github.com/ElectricJack/agent-q-sprint-eval.git \
+  --expected-repo-url '' \
+  --reason 'User-authorized Agent Q Sprint Eval: bind the repository created after init'
+```
+
+Run this against a daemon containing the binding command, after the normal
+authorized delivery of its implementation. Worker tokens cannot perform this
+repair. The daemon validates GitHub access with its configured credentials,
+then commits the project URL and an operator/reason audit event atomically.
+No checkout, pending commit, task assignment or human approval gate changes.
+Resume the existing worker's guarded `aq git push` after successful binding;
+retain its implementation at `6dda504577f2e21e183d211d2eb2c7c4ef2f7590`.
+
+The command refuses a changed expectation, reassignment of a nonempty URL,
+active Git pushes, and configured or durable integration publication state.
+Retry `repository_publication_busy` after the push finishes. A stale response
+requires reading the current project again. Repeating a successful first-bind
+request with the old empty expectation returns stale; a readback followed by
+the same canonical URL and matching expected URL returns unchanged success
+without a second audit event. This command does not deploy AQ, restart its
+daemon, push project code, or release a gate.
+
+Existing supervisor profiles receive the new command capability additively on
+normal profile reload/start unless `capability_sync: false` was configured.
+
 ## Recover from errors
+
+Completed requests replay their result. Pending requests resume with the same ID,
+including after a crash during registration or authorization. Failed request IDs
+preserve their error; use the returned recovery command (which generates a new
+ID) after fixing the cause.
 
 The wizard preserves non-secret form values, highlights field errors, identifies
 the failed phase for operation errors, and offers retry when it is safe. Use the
@@ -143,14 +181,14 @@ stable error code to take the matching recovery action:
 | `root_unavailable` | Restore the root's existence, readability, and required write access on the daemon host, then run the doctor check and retry. |
 | `github_cli_missing` | Install GitHub CLI on the daemon host and retry. |
 | `github_auth_required` | In existing-login mode, run `gh auth login` as the daemon OS user or provide a usable environment token, then retry. |
-| `github_operation_unsupported` | In App mode, use an explicit existing repository URL for access checks; account operations and App-backed onboarding clone are unavailable in this staged release. |
+| `github_operation_unsupported` | In App mode, use an explicit existing repository URL for access checks; account operations are unavailable. App-backed cloning requires the shared authenticated Git transport. |
 | `github_repository_inaccessible` | In App mode, check the App installation and repository selection; in existing-login mode, check the URL and daemon user's access. Retry with a new request ID if inputs change. AQ does not fall back between modes. |
 | `github_repository_conflict` | Pick a different GitHub owner or repository name, or use the existing repository through clone/link mode; use a new request ID when changing those inputs. |
-| `clone_failed` | Check host network and GitHub access, remove only an AQ-reported request-owned staging directory if recovery asks for it, then retry unchanged with the same request ID. |
-| `init_failed` | Check the destination root is writable and the target does not exist, then retry unchanged with the same request ID or use a new ID for a new destination. |
+| `clone_failed` | Check host network and GitHub access, remove only an AQ-reported request-owned staging directory if recovery asks for it, then retry with a new request ID. |
+| `init_failed` | Check the destination root is writable and the target does not exist, then retry with a new request ID. |
 | `commit_failed` | Configure Git author identity on the daemon host or disable the initial README/commit option, then retry. |
-| `push_failed` | Check GitHub authorization and remote access; retry after correcting access, noting that a local repository may already exist. |
-| `registration_failed` | Retry with the same request ID after resolving the reported database or vault issue; inspect the returned resource summary before taking manual action. |
+| `push_failed` | Correct GitHub access and run the returned `recovery_command` to adopt the retained remote with a new request ID. Request-owned local resources and registration are rolled back. |
+| `registration_failed` | For a pending request, resume with the same ID. For a failed request, resolve the reported database or vault issue and use the recovery command or a new ID; inspect the resource summary first. |
 
 ## What survives a failure
 
@@ -171,8 +209,62 @@ event bus. It carries `project_id`, `name`, `source` (`onboarding`),
 `workspace_id` and `workspace_path`. It also carries `workspace_in_vault`, which
 is true when that workspace is the AQ vault or lies beneath it. Replaying a
 finished request returns the stored result and emits nothing.
-`create_project` emits the same event with `source: command` and no workspace
-fields, because it registers no workspace. The event exists so a system
+`create_project` without remote options emits the same event with `source: command`
+and no workspace fields. With remote options it uses onboarding and emits
+`source: onboarding`. The event exists so a system
 playbook can apply per-project defaults, for example filing a setup chore. The
 event only states facts; whether a vault-hosted project is skipped is up to the
 playbook. See [Playbooks V2](../concepts/playbooks.md).
+
+## Create and authorize in one command
+
+With one configured root, `aq project create` can select it automatically;
+otherwise supply `--root-id`. The destination defaults to the project slug.
+
+```bash
+# Create a private GitHub repository, initial README commit and AQ project.
+aq project create --name Widgets --create-repo acme/widgets --private \
+  --root-id development --request-id widgets-create-1
+
+# Adopt an existing remote (clone its history; seed a README if it is empty).
+aq project create --name Widgets --repo-url https://github.com/acme/widgets \
+  --root-id development --request-id widgets-adopt-1
+
+# Initialize locally and publish the initial commit to an existing empty remote.
+aq project onboard --source-mode init --root-id development \
+  --relative-path widgets --project-name Widgets --project-id widgets \
+  --repo-url https://github.com/acme/widgets
+```
+
+`--repo-url` and `--create-repo` are exclusive. New repositories are created
+through the configured GitHub provider; repository creation needs existing-login
+mode. With an App, create the remote externally and adopt it after granting the
+installation access. No fallback to personal credentials occurs.
+
+Before the initial push, AQ verifies access using the configured credentials,
+records the canonical repository URL through the audited first-binding primitive,
+and runs repository-only App verification. This does not enable integration or
+change any publication gates. Recheck access independently with:
+
+```bash
+aq integration app-verify widgets --repository-access-only
+```
+
+The full `app-verify` still checks integration policy, workflows and protection;
+repository-only verification makes no claim about those settings.
+
+If GitHub creation succeeds but a later step fails, AQ retains the remote and
+returns `details.recovery_command`, an exact `aq project onboard` clone command.
+Run it after correcting the reported cause. It generates a fresh request ID,
+adopts any already-pushed history, and seeds a commit if the remote is empty.
+The dashboard shows this command with the retained resources.
+
+For a project initialized before its remote existed, run:
+
+```bash
+aq project doctor --project-id widgets
+```
+
+The diagnosis offers `aq project bind-repository widgets --repo-url ...
+--expected-repo-url '' --reason ...`. Review the destination and run that command
+to authorize the existing project; the doctor never changes authorization itself.

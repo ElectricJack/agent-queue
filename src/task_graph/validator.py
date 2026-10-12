@@ -551,7 +551,9 @@ def _check_task_types(graph: TaskGraph) -> list[GraphError]:
     """
     errors: list[GraphError] = []
     for node in graph.nodes:
-        if node.task_type is not None and node.task_type not in TASK_TYPE_VALUES:
+        if node.task_type in {"promotion", "backmerge"}:
+            errors.append(_error("daemon_task_type", "Promotion and backmerge task types are daemon-owned.", node.key))
+        elif node.task_type is not None and node.task_type not in TASK_TYPE_VALUES:
             errors.append(
                 _error(
                     "bad_task_type",

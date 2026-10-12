@@ -15,7 +15,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from src.task_templates import render_task_template
 from src.database.queries.hierarchy_queries import HierarchyError
+from src.git.manager import GitError, is_valid_git_oid
 
 ANCESTRY_REVIEWER = "integration:source-ancestry"
 ANCESTRY_DECISION_PATH = "source_ancestry_invalid"
@@ -121,20 +123,17 @@ def repair_feedback(observation: SourceAncestryObservation) -> str:
         f"in batch {observation.batch_id}" if observation.batch_id else "at admission"
     )
     return (
-        f"Integration withdrew this source {found}: {describe(observation)}. The train "
-        "merges `recorded base..head` onto main, so a head that does not descend from its "
-        "recorded base can never be built; the history on this branch dropped the base it "
-        "was created from.\n\n"
-        f"Repair on {branch} without discarding the reviewed commits: fetch origin and merge "
-        f"the recorded base `{source['base']}` into the branch (`git merge {source['base']}`; "
-        "merging the current default branch also works, because it contains the base). "
-        "Do not rebase, squash away or force-push the existing history. Resolve conflicts, "
-        "regenerate generated files, re-run the focused checks with `aq test`, publish with "
-        "`aq git push` and close again; the new head is a new source identity and is "
-        "admitted normally once `merge-base --is-ancestor` holds.\n"
-        f"Withdrawn identity: base {source['base']}, head {source['head']}, generation "
-        f"{source['generation']}, PR {source.get('pr_url') or '(none)'}, evidence "
-        f"{rejection_evidence_id(observation)}."
+        render_task_template(
+            "source-ancestry-repair",
+            found=found,
+            observation_details=describe(observation),
+            branch=branch,
+            source_base=source["base"],
+            source_head=source["head"],
+            source_generation=source["generation"],
+            pr_url=source.get("pr_url") or "(none)",
+            evidence_id=rejection_evidence_id(observation),
+        )
     )
 
 
@@ -171,3 +170,50 @@ async def merge_base_of(git, store: str, base: str, head: str) -> str | None:
     result = await git.arun_git_result(["merge-base", base, head], cwd=store)
     value = result.stdout.strip()
     return value if result.returncode == 0 and value else None
+
+
+async def effective_source_base(
+    git, store: str, recorded_base: str, current: str, head: str
+) -> str:
+    """Avoid replaying inherited target changes without widening a source delta.
+
+    Callers retain the recorded-base identity and check reserved paths in both
+    recorded and effective deltas. Advance only to a unique common ancestor
+    that contains that base and lies on the target's first-parent chain. A
+    second-parent ancestor may have supplied history without its content, so
+    it cannot replace the recorded delta. Failed probes raise rather than
+    turning an unavailable ancestry proof into a different merge input.
+    """
+    result = await git.arun_git_result(
+        ["--no-replace-objects", "merge-base", "--all", current, head], cwd=store
+    )
+    if result.returncode == 1 and not result.stdout.strip():
+        return recorded_base
+    if result.returncode:
+        raise GitError(result.stderr or "could not determine effective source base")
+    bases = result.stdout.split()
+    if not bases or any(not is_valid_git_oid(base) for base in bases):
+        raise GitError("merge-base did not produce commit OIDs")
+    if len(bases) != 1:
+        return recorded_base
+    natural = bases[0]
+    if natural == recorded_base:
+        return recorded_base
+    for ancestor, descendant in ((recorded_base, natural), (natural, current), (natural, head)):
+        proof = await git.arun_git_result(
+            ["--no-replace-objects", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=store,
+        )
+        if proof.returncode == 1:
+            return recorded_base
+        if proof.returncode:
+            raise GitError(proof.stderr or "effective source base ancestry probe failed")
+    first_parents = await git.arun_git_result(
+        ["--no-replace-objects", "rev-list", "--first-parent", f"{recorded_base}..{current}"],
+        cwd=store,
+    )
+    if first_parents.returncode:
+        raise GitError(first_parents.stderr or "effective source base first-parent probe failed")
+    if natural not in first_parents.stdout.split():
+        return recorded_base
+    return natural

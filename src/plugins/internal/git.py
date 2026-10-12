@@ -783,6 +783,24 @@ class GitPlugin(InternalPlugin):
         args: dict,
         requested_branch: str | None,
     ) -> tuple[str, str | None, list[dict]]:
+        """Resolve authorization inside the fence shared with repository binding."""
+        from src.git.manager import GitError
+
+        if project is None:
+            return await self._push_authorized(checkout_path, project, args, requested_branch)
+        async with self._db._db.project_repository_publication(project.id):
+            current = await self._db._db.get_project(project.id)
+            if current is None:
+                raise GitError("publication project no longer exists")
+            return await self._push_authorized(checkout_path, current, args, requested_branch)
+
+    async def _push_authorized(
+        self,
+        checkout_path: str,
+        project,
+        args: dict,
+        requested_branch: str | None,
+    ) -> tuple[str, str | None, list[dict]]:
         """Publish one branch and return ``(branch, pushed OID, author notes)``.
 
         An operator or supervisor pushes the named (or current) branch of the
@@ -1084,8 +1102,20 @@ class GitPlugin(InternalPlugin):
             return err
         branch = args.get("branch") or None
         try:
+            repository_url = project.repo_url if project else None
+            principal = _worker_principal()
+            if principal is not None:
+                # The source may be main or a dependency; the destination must
+                # remain the live task's branch in its assigned worktree.
+                current_branch = await self._git.aget_current_branch(checkout_path)
+                if not current_branch:
+                    raise GitError("Worker pull requires an attached task branch")
+                publication = await self._worker_publication(
+                    principal, checkout_path, project, current_branch
+                )
+                repository_url = publication.repository_url
             pulled = await self._git.apull_branch(
-                checkout_path, branch, repository_url=project.repo_url if project else None
+                checkout_path, branch, repository_url=repository_url
             )
         except GitError as e:
             return {"error": str(e)}

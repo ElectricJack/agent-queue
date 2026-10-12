@@ -239,6 +239,63 @@ async def test_generated_client_models_round_trip_graph_reflow_status(live_app):
     assert status.failed_scopes == []
 
 
+async def test_generated_client_round_trips_repository_binding_and_repeat(live_app, monkeypatch):
+    """The typed client preserves the binding audit and unchanged repeat result."""
+    from unittest.mock import AsyncMock
+
+    _import_repo_client()
+    from agent_queue_api_client.api.project import bind_project_repository
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.bind_project_repository_request import (
+        BindProjectRepositoryRequest,
+    )
+    from agent_queue_api_client.models.bind_project_repository_response import (
+        BindProjectRepositoryResponse,
+    )
+
+    from src.api.dependencies import get_command_handler
+    from src.models import Project
+
+    app, db = live_app
+    await db.create_project(Project(id="p-bind", name="Existing project"))
+    github = AsyncMock()
+    monkeypatch.setattr(get_command_handler(), "_github_client", lambda: github)
+    url = "https://github.com/acme/existing-project.git"
+    client = Client(base_url="http://test", raise_on_unexpected_status=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+        first = await bind_project_repository.asyncio(
+            client=client,
+            body=BindProjectRepositoryRequest(
+                project_id="p-bind", repo_url=url, expected_repo_url="", reason="Authorized",
+            ),
+        )
+        repeat = await bind_project_repository.asyncio(
+            client=client,
+            body=BindProjectRepositoryRequest(
+                project_id="p-bind", repo_url=url, expected_repo_url=url, reason="Repeat",
+            ),
+        )
+
+    audit = await db.get_recent_events(event_type="project.repository_bound", project_id="p-bind")
+    assert isinstance(first, BindProjectRepositoryResponse), first
+    assert first.success is True
+    assert first.project_id == "p-bind"
+    assert first.repo_url == url
+    assert first.changed is True
+    assert len(audit) == 1
+    assert first.event_id == audit[0]["id"]
+    assert isinstance(repeat, BindProjectRepositoryResponse), repeat
+    assert repeat.success is True
+    assert repeat.project_id == first.project_id
+    assert repeat.repo_url == first.repo_url
+    assert repeat.changed is False
+    assert repeat.event_id is None
+    github.validate_repository.assert_awaited_once_with(url.removesuffix(".git"))
+
+
 async def test_pool_scale_typed_route_preserves_explicit_null_max(live_app):
     """``max: null`` is a meaningful unbounded-pool request, not omission."""
     from src.models import AgentProfile, Project

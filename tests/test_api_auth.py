@@ -178,6 +178,7 @@ class TestSessionTokenStore:
         tok = await store.mint(session_id="s1", task_id=None, project_id=None)
         assert await store.revoke_session("s1") == 1
         assert await store.validate(tok) is None
+        assert store.auth_health("s1")["state"] == "failed"
         await db.close()
 
     async def test_validate_refresh_observes_other_store_revocation_while_cached_validate_does_not(
@@ -227,6 +228,9 @@ class TestSessionTokenStore:
             expires_at=time.time() - 3600,
         )
         assert await store.validate(pt) is None
+        assert store.auth_failures["s2"]["reason"] == "expired"
+        assert pt not in repr(store.auth_failures) and real_h not in repr(store.auth_failures)
+        assert store.auth_health("s2")["status_code"] == 401
         await db.close()
 
     async def test_cache_short_circuits_second_validate(self, tmp_path, monkeypatch):
@@ -263,6 +267,161 @@ class TestSessionTokenStore:
         assert n == 1
         await db.close()
 
+    @pytest.mark.parametrize("reason", ["expired", "revoked"])
+    async def test_pruned_credentials_still_identify_rejected_calls(self, tmp_path,
+                                                                 monkeypatch, reason):
+        from types import SimpleNamespace
+
+        db, store = await self._store(tmp_path)
+        now = [time.time()]
+        monkeypatch.setattr("src.api.auth.time", SimpleNamespace(time=lambda: now[0]))
+        try:
+            token = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            if reason == "revoked":
+                await store.revoke_session("s1")
+                now[0] += 61
+            else:
+                now[0] += store._ttl_seconds + 1
+            await store.revoke_expired()
+            assert await db.get_api_token(hashlib.sha256(token.encode()).hexdigest()) is None
+            assert store.auth_failures == {}  # Expiry alone is not a failed call.
+            assert await store.validate(token) is None
+            assert store.auth_failures["s1"]["reason"] == reason
+            # Diagnostic identity retention is bounded; no old token is revived.
+            now[0] += 901
+            await store.revoke_expired()
+            assert store._rejected_tokens == {}
+            assert await store.validate(token) is None
+        finally:
+            await db.close()
+
+    @pytest.mark.parametrize("project_id", [None, "p1"])
+    async def test_supervisor_token_survives_launch_ttl_and_store_restart(
+        self, tmp_path, monkeypatch, project_id,
+    ):
+        """Housekeeping renews an idle supervisor; the same bearer still works."""
+        from types import SimpleNamespace
+
+        import httpx
+
+        db, store = await self._store(tmp_path, ttl_hours=1)
+        try:
+            await _seed_session_identity(
+                db, session_ids=[("sup", None, project_id)], profile_id="supervisor",
+            )
+            await db.update_session("sup", lifecycle="named")
+            now = time.time()
+            clock = SimpleNamespace(time=lambda: now)
+            monkeypatch.setattr("src.api.auth.time", clock)
+            token = await store.mint(
+                session_id="sup", session_instance_token="tok-sup", task_id=None,
+                project_id=project_id, elevated=True,
+            )
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            original = await db.get_api_token(digest)
+            now += 1700
+            assert await store.revoke_expired() == 0
+            assert (await db.get_api_token(digest))["expires_at"] == original["expires_at"]
+            now += 200
+            assert await store.revoke_expired() == 0
+            renewed = await db.get_api_token(digest)
+            assert renewed["expires_at"] == now + 3600
+            assert renewed["created_at"] == original["created_at"]
+            assert digest not in store._cache
+            now = original["expires_at"] + 1
+
+            app = FastAPI()
+            app.add_middleware(TokenAuthMiddleware)
+
+            @app.get("/probe")
+            async def probe(request: Request):
+                scope = request.state.scope
+                return {"elevated": scope.elevated, "project_id": scope.project_id,
+                        "instance": scope.session_instance_token}
+
+            monkeypatch.setattr(deps, "_orchestrator", None)
+            monkeypatch.setattr(deps, "_command_handler", None)
+            headers = {"Authorization": f"Bearer {token}"}
+            # Both the original cache and a newly constructed store must observe renewal.
+            for active_store in (store, SessionTokenStore(db, ttl_hours=1)):
+                monkeypatch.setattr(deps, "_token_store", active_store)
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1)),
+                    base_url="http://test",
+                ) as client:
+                    response = await client.get("/probe", headers=headers)
+                    assert response.status_code == 200, response.text
+                    assert response.json() == {
+                        "elevated": True, "project_id": project_id, "instance": "tok-sup",
+                    }
+            if project_id is None:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app, client=("203.0.113.1", 1)),
+                    base_url="http://test",
+                ) as client:
+                    assert (await client.get("/probe", headers=headers)).status_code == 403
+            # Revocation still wins over the extended expiry.
+            await active_store.revoke_session("sup")
+            await active_store.revoke_expired()
+            assert await active_store.validate(token) is None
+        finally:
+            await db.close()
+
+    @pytest.mark.parametrize("case", [
+        "expired", "revoked", "worker", "other-named", "draining", "stopped",
+        "sleeping", "quarantined", "desired-sleeping", "ended", "replacement",
+        "missing-instance", "wrong-project", "unelevated", "missing-session", "task-bound",
+    ])
+    async def test_supervisor_renewal_does_not_extend_ineligible_tokens(
+        self, tmp_path, monkeypatch, case,
+    ):
+        from types import SimpleNamespace
+
+        db, store = await self._store(tmp_path, ttl_hours=1)
+        try:
+            await _seed_session_identity(
+                db, session_ids=[("sup", None, None)], profile_id="supervisor",
+            )
+            changes = {"lifecycle": "named"}
+            if case == "worker":
+                changes.update(lifecycle="pool", profile_id="worker")
+            elif case == "other-named":
+                changes["profile_id"] = "interactive"
+            elif case in {"draining", "stopped", "sleeping", "quarantined"}:
+                changes["state"] = case
+            elif case == "desired-sleeping":
+                changes["desired_state"] = "sleeping"
+            elif case == "ended":
+                changes["ended_at"] = time.time()
+            await db.update_session("sup", **changes)
+            now = time.time()
+            monkeypatch.setattr("src.api.auth.time", SimpleNamespace(time=lambda: now))
+            token = await store.mint(
+                session_id="absent" if case == "missing-session" else "sup",
+                session_instance_token=None if case == "missing-instance" else "tok-sup",
+                task_id="task" if case == "task-bound" else None,
+                project_id="other" if case == "wrong-project" else None,
+                elevated=case != "unelevated",
+            )
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            expires_at = (await db.get_api_token(digest))["expires_at"]
+            if case == "replacement":
+                await db.update_session("sup", instance_token="replacement")
+            now += 3601 if case == "expired" else 1900
+            if case == "revoked":
+                await store.revoke_session("sup")
+            await store.revoke_expired()
+            row = await db.get_api_token(digest)
+            if case == "expired":
+                assert row is None
+            else:
+                assert row["expires_at"] == expires_at
+            # A missed renewal window must not turn into expired-token recovery.
+            now = expires_at + 1
+            assert await store.validate(token) is None
+        finally:
+            await db.close()
+
     def test_local_scope_singleton(self):
         assert LOCAL_SCOPE.kind == "local"
         assert LOCAL_SCOPE.session_id is None
@@ -274,7 +433,7 @@ class TestSessionTokenStore:
 
 from unittest.mock import MagicMock  # noqa: E402
 
-from fastapi import FastAPI  # noqa: E402
+from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from src.api import dependencies as deps  # noqa: E402
@@ -381,6 +540,37 @@ async def _seed_app(tmp_path, *, require=False):
 
 
 class TestTokenAuthMiddleware:
+    async def test_expired_recipient_cannot_consume_a_notified_message(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path)
+        try:
+            msg = await db.create_message(
+                project_id="p1", from_kind="session", from_id="worker",
+                to_kind="session", to_id="s1", body="A blocker that must remain visible",
+            )
+            await db.claim_message_notification(msg.id, now=time.time(), retry_delay=0)
+            token = TOKEN_PREFIX + "expired-recipient"
+            await db.insert_api_token(
+                token_hash=hashlib.sha256(token.encode()).hexdigest(),
+                session_id="s1", task_id="t1", project_id="p1",
+                created_at=time.time() - 7200, expires_at=time.time() - 3600,
+            )
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/execute", headers={"Authorization": f"Bearer {token}"},
+                    json={"command": "message_status", "args": {"message_id": msg.id}},
+                )
+            assert response.status_code == 401
+            stored = await db.get_message(msg.id)
+            assert stored.delivered_at is None and stored.read_at is None
+            assert [item.id for item in await db.get_pending_messages("session", "s1")] == [msg.id]
+            assert store.auth_failures["s1"]["reason"] == "expired"
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
+
     async def test_no_token_local_scope_allows_any_command(self, tmp_path):
         db, store, ch, app = await _seed_app(tmp_path)
         try:
@@ -1278,4 +1468,48 @@ async def test_unassigned_session_token_only_allows_prime_and_schema_on_both_sur
             assert "no assigned project" in r.json()["error"]
             assert ch._recorded == []
     finally:
+        await db.close()
+
+
+def test_auth_health_is_bounded_expires_and_recovers(monkeypatch):
+    from unittest.mock import MagicMock
+
+    now = 1000.0
+    monkeypatch.setattr("src.api.auth.time.time", lambda: now)
+    store = SessionTokenStore(MagicMock())
+    assert store.auth_health("sup")["state"] == "unknown"
+    store.record_auth_result("sup", 403)
+    assert store.auth_health("sup")["state"] == "failed"
+    now += 1
+    store.record_auth_result("sup", 200)
+    assert store.auth_health("sup")["state"] == "healthy"
+    now += 901
+    assert store.auth_health("sup")["state"] == "unknown"
+    for i in range(1100):
+        store.record_auth_result(f"sup-{i}", 401)
+    assert len(store._auth_health) == 1024
+
+
+async def test_middleware_records_session_auth_failure_and_success(tmp_path):
+    db, store, ch, app = await _seed_app(tmp_path)
+    try:
+        token = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+        with TestClient(app) as client:
+            rejected = client.post("/api/execute", headers={"Authorization": f"Bearer {token}"},
+                                   json={"command": "task_show", "args": {"task_id": "other"}})
+            assert rejected.status_code == 403, rejected.text
+            assert store.auth_health("s1")["state"] == "failed"
+            accepted = client.post("/api/execute", headers={"Authorization": f"Bearer {token}"},
+                                   json={"command": "task_show", "args": {"task_id": "t1"}})
+            assert accepted.status_code == 200, accepted.text
+            assert store.auth_health("s1")["state"] == "healthy"
+            unknown = client.post("/api/execute", headers={"Authorization": "Bearer aqs_unknown"},
+                                  json={"command": "task_show", "args": {"task_id": "t1"}})
+            assert unknown.status_code == 401
+            assert store.auth_health("s1")["state"] == "healthy"
+    finally:
+        deps._orchestrator = None
+        deps._command_handler = None
+        deps._token_store = None
+        deps._require_session_token = False
         await db.close()

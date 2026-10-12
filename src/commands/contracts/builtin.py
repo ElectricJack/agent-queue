@@ -454,6 +454,11 @@ class TaskRoutePlanValue(CommandValue):
     reason: str | None = None
     policy_sha256: str | None = None
     class_clamped_from: str | None = None
+    #: ``{from, to, risk}`` when the policy's ``risk`` floor raised the class;
+    #: ``task_route_apply`` copies it into the route record.
+    class_raised_for_risk: dict[str, Any] | None = None
+    #: The lower class, target and durable failed attempts behind escalation.
+    escalated_after_failure: dict[str, Any] | None = None
     classification: dict[str, Any] | None = None
     #: The policy's ``balance`` block, for ``task_route_apply``'s re-selection.
     balance: dict[str, Any] | None = None
@@ -620,6 +625,20 @@ class TaskFailureTriageNotifyArgs(TaskRecoveryNotifyArgs):
 
 class TaskFailureTriageNotifyValue(TaskRecoveryNotifyValue):
     """The durable incident receipt returned to the triage playbook."""
+
+
+class GetStuckTasksArgs(CommandArgs):
+    assigned_threshold_seconds: int = Field(default=1800, ge=0)
+    in_progress_threshold_seconds: int = Field(default=7200, ge=0)
+    now: float | None = None
+    project_id: str | None = None
+
+
+class GetStuckTasksValue(CommandValue):
+    stuck: list[dict[str, Any]] = Field(default_factory=list)
+    summary: str = ""
+    now_used: float | None = None
+    thresholds: dict[str, int] = Field(default_factory=dict)
 
 
 class ProviderAvailabilityNotifyArgs(CommandArgs):
@@ -868,6 +887,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "get_downstream_tasks": "listed",
         "stop_task": "stopped",
         "message_send": "queued",
+        "get_stuck_tasks": "read",
         "provider_allocation_status": "read",
         "provider_allocation_preview": "previewed",
     }[name]
@@ -985,6 +1005,16 @@ def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
 # effect clauses use; ``test_presentation_labels_name_real_fields`` pins that.
 
 PRESENTATIONS: dict[str, CommandPresentation] = {
+    "get_stuck_tasks": CommandPresentation(
+        title="Read stuck tasks",
+        summary="Read aged active tasks, orphaned workers and failed routes in active projects.",
+        arg_labels={"project_id": "Project", "now": "Reference time",
+                    "assigned_threshold_seconds": "Assigned threshold",
+                    "in_progress_threshold_seconds": "In-progress threshold"},
+        outcome_labels={"read": "Read", "rejected": "Rejected"},
+        result_labels={"stuck": "Stuck tasks", "summary": "Supervisor summary",
+                       "now_used": "Reference time", "thresholds": "Thresholds"},
+    ),
     "list_projects": CommandPresentation(
         title="List projects",
         summary="Read the configured projects without changing them.",
@@ -1554,6 +1584,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "allowed_classes": "Classes the classifier may answer",
             "providers": "Unavailable providers",
             "class_clamped_from": "Hint clamped from",
+            "class_raised_for_risk": "Class raised for risk",
             "classification": "Classification",
             "balance": "Load-score weights",
         },
@@ -1911,6 +1942,10 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             True,
         ),
         (
+            "get_stuck_tasks", GetStuckTasksArgs, GetStuckTasksValue, _outcomes("read"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
+        (
             "provider_reroute",
             ProviderRerouteArgs,
             ProviderRerouteValue,
@@ -1979,6 +2014,9 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.supervisor_inbox import register_supervisor_inbox_contracts
 
     register_integration_contracts(registry)
+    from src.commands.contracts.promote import register_promote_contracts
+
+    register_promote_contracts(registry)
     from src.commands.contracts.test_selection import register_test_selection_contracts
 
     register_test_selection_contracts(registry)
@@ -1991,6 +2029,9 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.wait import register_wait_contracts
 
     register_wait_contracts(registry)
+    from src.commands.contracts.cron import register_cron_contracts
+
+    register_cron_contracts(registry)
     from src.commands.contracts.message_wait import register_message_wait_contract
 
     register_message_wait_contract(registry)

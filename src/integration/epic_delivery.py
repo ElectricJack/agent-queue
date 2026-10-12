@@ -127,7 +127,7 @@ class CanonicalDelivery:
     (:meth:`~src.integration.delivery_observer.DeliveryView.verified_on`), so
     it never describes a generation the epic no longer has. ``state`` is a
     :class:`~src.integration.delivery_truth.DeliveryState` value as text:
-    ``contained``, ``pending``, ``settled``, ``no_artifact`` or ``unknown``.
+    ``contained``, ``no_change``, ``pending``, ``settled``, ``no_artifact`` or ``unknown``.
 
     ``acceptance`` is wording, never the proof: git already established
     containment, and it names a recorded operator adoption only when that
@@ -629,14 +629,16 @@ def _target_name(canonical: CanonicalDelivery) -> str:
 def _canonical_delivered(facts: EpicFacts, *, result) -> dict | None:
     """Git's own delivered answer, or ``None`` when it has none.
 
-    ``contained`` and ``settled`` are the two canonical states that mean this
-    epic's current work does not owe its target anything. Both name the exact
+    ``contained``, ``no_change`` and ``settled`` are canonical states that mean this
+    epic's current work does not owe its target anything. Each names the exact
     identity they speak for — the verified parent completion's generation and
     source, or the leaf completion's retained source — and a recorded operator
     acceptance of a non-ancestor source is named, never silently absorbed.
     """
     canonical = facts.canonical
-    if canonical is None or canonical.changed or canonical.state not in {"contained", "settled"}:
+    if canonical is None or canonical.changed or canonical.state not in {
+        "contained", "no_change", "settled",
+    }:
         return None
     target = _target_name(canonical)
     if canonical.state == "settled":
@@ -708,6 +710,8 @@ def _source_phrase(canonical: CanonicalDelivery) -> str:
 
 
 def _unknown_reason(canonical: CanonicalDelivery, facts: EpicFacts) -> str:
+    if canonical.reason == "snapshot_unavailable":
+        return "Delivery evidence not loaded yet; a background delivery observation will refresh it"
     target = _target_name(canonical)
     template = _UNPROVEN_REASONS.get(canonical.reason)
     if template is not None:
@@ -1063,7 +1067,8 @@ class EpicDeliveryProjection:
     """Batched, read-only fact gathering for :func:`classify_epic_delivery`."""
 
     def __init__(
-        self, db, *, clock=time.time, lease_ttl: float | None = None, delivery: Any = None
+        self, db, *, clock=time.time, lease_ttl: float | None = None, delivery: Any = None,
+        cached_only: bool = False,
     ) -> None:
         self.db = db
         self.clock = clock
@@ -1073,6 +1078,7 @@ class EpicDeliveryProjection:
         # Without one nothing is claimed about delivery beyond the train
         # evidence below, so an unobserved daemon keeps today's reading.
         self.delivery = delivery if delivery is not None else getattr(db, "_delivery_observer", None)
+        self.cached_only = cached_only
 
     async def for_tasks(self, task_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         """Return ``{task_id: result}`` for every given task that has children.
@@ -1134,7 +1140,8 @@ class EpicDeliveryProjection:
             # read window is reused rather than refetched per poll; a guarded
             # writer is the only thing that must fetch.
             view = await observer.observe(
-                candidates, max_age=getattr(observer, "READ_MAX_AGE", 0.0)
+                candidates, max_age=getattr(observer, "READ_MAX_AGE", 0.0),
+                **({"cached_only": True} if self.cached_only else {}),
             )
             async with self.db._engine.connect() as conn:
                 verified = await view.verified_on(conn, candidates)

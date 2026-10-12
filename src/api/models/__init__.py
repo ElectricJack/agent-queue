@@ -50,6 +50,7 @@ def _category_modules() -> tuple[object, ...]:
     from src.api.models import (
         agent,
         collaboration,
+        cron,
         dashboard,
         decision,
         digest,
@@ -62,11 +63,13 @@ def _category_modules() -> tuple[object, ...]:
         memory,
         message,
         object_loop,
+        operator,
         playbook,
         graph,
         playbook_v2,
         plugin,
         project,
+        policy,
         project_onboarding,
         review,
         report,
@@ -85,7 +88,9 @@ def _category_modules() -> tuple[object, ...]:
     return (
         test_selection,
         task,
+        cron,
         project,
+        policy,
         project_onboarding,
         review,
         agent,
@@ -115,6 +120,7 @@ def _category_modules() -> tuple[object, ...]:
         job,
         knowledge,
         records,
+        operator,
     )
 
 

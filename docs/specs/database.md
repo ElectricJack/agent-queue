@@ -425,6 +425,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `credit_weight` | REAL | NOT NULL DEFAULT 1.0 | Scheduler weight |
 | `max_concurrent_agents` | INTEGER | NOT NULL DEFAULT 2 | Cap on parallel agents |
 | `status` | TEXT | NOT NULL DEFAULT 'ACTIVE' | One of: ACTIVE, PAUSED, ARCHIVED |
+| `supervisor_enabled` | BOOLEAN | NOT NULL DEFAULT false | Opt-in project supervisor; false for new and existing projects. Disabled projects route supervisor messages to the global supervisor, and reconciliation stops their live project supervisor after its current turn. Added by Alembic `a00000000094` ([project supervisor contract](../superpowers/specs/2026-10-12-project-supervisor-opt-in.md)) |
 | `total_tokens_used` | INTEGER | NOT NULL DEFAULT 0 | Cumulative token counter |
 | `budget_limit` | INTEGER | nullable | Max tokens allowed (NULL = unlimited) |
 | `workspace_path` | TEXT | nullable | **Deprecated/unused.** Legacy column kept for backward compatibility; workspace paths are now managed via the `workspaces` table. |
@@ -438,6 +439,8 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `hierarchical_integration_mode` | TEXT | NOT NULL DEFAULT 'disabled' | *Effective* hierarchical-integration rollout mode: one of `disabled`, `observe`, `hierarchy`, `train` (`ck_projects_hierarchical_integration_mode`). Only the orchestrator advances it, via a compare-and-set on `hierarchical_integration_generation`. Added by Alembic `c7a1e5d92f40` |
 | `integration_repository_id` | TEXT | nullable | The one `repos.id` designated as the hierarchical-integration repository (child branches, candidate trains and root promotion all target it). NULL leaves the project `repository_not_designated` and blocks every mode above `disabled`. Added by Alembic `c7a1e5d92f40` |
 | `hierarchical_integration_policy` | JSON | nullable | Frozen policy pins (required checks, repair tiers, source-branch retention, legacy-route suppression) snapshotted into each batch and repair operation; NULL uses config defaults. Added by Alembic `e4c6a8b20d31` |
+| `promotion_flow` | JSONB | nullable | Validated ordered promotion steps, configured separately from hierarchical policy pins; NULL means no promotion flow. Added by Alembic `a00000000085` |
+| `default_branch_cutover` | JSONB | nullable | Generation-fenced cutover binding: repository ID, old and new defaults, activated generation and cutover time. Resolves pre-cutover top-level origins to the current default without rewriting immutable provenance; nested and later origins keep their recorded targets. Reverse clears the binding in the same transaction. Added by Alembic `a00000000086` |
 | `hierarchical_integration_desired_mode` | TEXT | NOT NULL DEFAULT 'disabled' | Mode the operator asked for with `integration_enable`; same value set as `hierarchical_integration_mode`. Differs from the effective mode while a drain is in progress. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_draining` | BOOLEAN | NOT NULL DEFAULT false | True while in-flight batches/repairs are being drained before the effective mode drops to the desired one. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_generation` | INTEGER | NOT NULL DEFAULT 0 | Monotone rollout fence (`>= 0`); every mode transition increments it and is recorded in `integration_rollout_transitions`. Operator controls pass `expected_generation` and are rejected on mismatch. Added by Alembic `a11a5e1e4f04` |
@@ -1328,11 +1331,38 @@ acquires one workspace per declared kind, all-or-nothing, in canonical lock orde
 
 ### Table: `task_proposals`
 
-A batch of tasks and dependency edges proposed as one reviewable graph, before
-anything exists in the live work graph. Written by spec ingest and by agents via
-`task_batch_propose`; `task_batch_commit` materialises the whole batch atomically
-and flips `status` to `committed` in a single conditional update, so two
-concurrent commits cannot both win.
+A task change set proposed as one reviewable graph: new tasks, edits to existing
+tasks, dependency additions/removals, reparenting, lifecycle controls and comments.
+Written by spec ingest and supervisors via `task_batch_propose`. Propose/update
+validate the same connection-scoped implementation as commit in a rolled-back
+savepoint; no task or comment becomes visible until an approved commit.
+
+`task_batch_commit` locks the proposal row and applies the approved operations,
+the receipt and one
+`task.change_set_committed` audit event in a single transaction. It takes the
+fleet routing lock, project hierarchy lock and task/graph table write locks, so
+scheduler, routing and claim writes serialize with commit. The final graph's
+blocked projection and container settlement are computed before publishing;
+listeners run after commit. A stale scheduler promotion repeats its observed
+status, timestamp and unblocked predicate in the guarded write.
+
+An approved proposal is immutable once a human gate awaits it and cannot be
+discarded. Task versions, status/claim churn, metadata, gates and later edits do
+not invalidate its approval. Approved fields overwrite later values; fields
+outside the proposal retain their current values. Subsequent changes belong in
+a subsequent batch, without rebasing or requesting approval again.
+
+If a referenced task has disappeared, commit the remaining operations and
+report `missing_task_ids` and `skipped_operations` in the response, stored receipt
+and audit. Each skipped entry identifies the operation list, its zero-based
+index in the approved payload, and the missing task ids. Creates whose parent
+is missing (including descendants of a skipped create) are skipped rather than
+silently becoming roots. Operations involving those skipped creates are skipped
+too. Even an entirely skipped batch becomes committed with an empty receipt.
+A committed proposal replays its stored receipt, including omissions, even
+after its tasks have been archived.
+Live-holder controls, integration-owned placement/disposition and invalid state
+transitions are refused rather than bypassing existing lifecycle guards.
 
 `payload` is a JSON blob rather than normalised rows on purpose: a proposal is
 reviewed and committed or discarded as a unit, never queried edge-by-edge, and
@@ -1343,7 +1373,7 @@ its tasks do not have real ids until the commit creates them.
 | `id` | TEXT | PRIMARY KEY | `"prop-"` + uuid4[:12] |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
 | `source` | TEXT | NOT NULL | Provenance, e.g. `spec:projects/foo/specs/2026-08-21-thing.md`; stamped onto every task the commit creates |
-| `payload` | TEXT | NOT NULL | JSON: `{"tasks":[{tempId,title,description,priority?},...], "edges":[{from,to,dep_type},...]}` |
+| `payload` | TEXT | NOT NULL | JSON: `tasks`, `edits`, `edges`, `remove_edges`, `comments`, validated `diff`, and committed `receipt`; legacy `expected` snapshots are ignored at commit; see [task change sets](../guides/task-change-sets.md) |
 | `status` | TEXT | NOT NULL DEFAULT 'draft' | CHECK `ck_task_proposals_status`: draft, ready, committed, discarded |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
@@ -2052,6 +2082,59 @@ are materialized so a crash between the two leaves an auditable row.
 | `created_at` | REAL | NOT NULL | Unix timestamp |
 | `materialized_at` | REAL | nullable | When the remote branch appeared |
 
+### Table: `branch_retirements`
+
+Explicit branch retirement decisions and their reconciliation state
+(`docs/specs/design/branch-retirement.md`). A cancel, failed or abandoned
+close, obsolete close, container abandon or aborted batch queues a row in the
+same transaction; the retirement drain deletes the remote, local and
+origin-tracking refs under owner fences and SHA leases, preserving unmerged
+work in a verified bundle first. No foreign keys: the decision and its audit
+outlive tasks and repositories.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Retirement id |
+| `request_id` | TEXT | NOT NULL | Idempotency key of the deciding transition; UNIQUE with `repository_id`, `branch` |
+| `project_id` | TEXT | NOT NULL | Owning project (logical reference) |
+| `repository_id` | TEXT | NOT NULL | Repository the branch lives in |
+| `task_id` | TEXT | nullable | Task whose branch is retired, NULL for batch candidates |
+| `branch` | TEXT | NOT NULL | Branch name to retire |
+| `reason` | TEXT | NOT NULL | Why the branch is retired (cancel, failed close, superseded, …) |
+| `claim_epoch` | INTEGER | nullable | Claim epoch the decision was made under |
+| `requested_at` | REAL | NOT NULL | Unix timestamp |
+| `state` | TEXT | NOT NULL DEFAULT 'pending' | One of: pending, complete, conflict, withdrawn (`ck_branch_retirements_state`) |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Reconcile attempts (`ck_branch_retirements_attempts`) |
+| `next_attempt_at` | REAL | NOT NULL DEFAULT 0 | Next reconcile time; `ix_branch_retirements_due` indexes `(state, next_attempt_at)` |
+| `last_error` | TEXT | nullable | Last reconcile failure |
+| `evidence` | JSONB | NOT NULL DEFAULT '{}' | Pre-delete SHAs, bundle identities and per-ref outcomes |
+
+### Table: `branch_deletion_audit`
+
+Retained predecessor audit history: the name and head SHA of every abandoned
+branch, recorded before anything was deleted, so an unmerged branch stays
+identifiable and restorable from its verified bundle after the ref is gone.
+Unfinished rows are imported once into `branch_retirements` with their
+original SHA as a deletion precondition. No foreign key to `tasks`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Audit id |
+| `project_id` | TEXT | NOT NULL | Owning project; `ix_branch_deletion_audit_branch` indexes `(project_id, branch)` |
+| `repository_id` | TEXT | nullable | Repository the branch lived in |
+| `task_id` | TEXT | nullable | Task whose branch was abandoned |
+| `branch` | TEXT | NOT NULL | Branch name |
+| `head_sha` | TEXT | NOT NULL | 40-character lowercase SHA (`ck_branch_deletion_audit_head_sha`) |
+| `reason` | TEXT | NOT NULL | One of: obsolete_close, cancel, fail_close, supersede, abort, delete (`ck_branch_deletion_audit_reason`) |
+| `detail` | TEXT | nullable | Human explanation from the deciding transition |
+| `outcome` | TEXT | NOT NULL | One of: pending, deleted, held, failed, moved (`ck_branch_deletion_audit_outcome`) |
+| `detail_reason` | TEXT | nullable | Why a held/failed/moved row was not deleted |
+| `backup_path` | TEXT | nullable | Bundle holding the tip when it was not reachable from the default branch |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Delete attempts (`ck_branch_deletion_audit_attempts`) |
+| `next_attempt_at` | REAL | nullable | Next retry; `ix_branch_deletion_audit_due` is partial on `outcome = 'pending'` |
+| `recorded_at` | REAL | NOT NULL | Unix timestamp |
+| `deleted_at` | REAL | nullable | When the ref was confirmed gone |
+
 ### Table: `integration_branch_owners`
 
 Exclusive, fenced ownership of a ref in the integration repository.  Every
@@ -2079,6 +2162,27 @@ a stale owner's push is rejected before it reaches the remote.
 Exact source CI observation and durable repair lineage. Source identity is the
 composite primary key; policy generation fences admission. Logical task IDs retain
 history after archive and refuse hard deletion through the integration guard.
+
+Discarding a task's completion (including reopen with feedback) atomically
+retires its source-CI repairs, including previous attempts and repairs of those
+repairs. Open and completed repairs become terminal failures with no retry,
+their branch origins retire, and a comment plus `source_ci_retirement` metadata
+names the source head and reopen context. Retained lineage remains audit history.
+The train checks that every repair ancestor still has the bound current completion
+head before admission and publication; otherwise it reports
+`source_ci_repair_superseded`. A repair of the current head remains deliverable,
+including when that source has already delivered.
+
+Admission withholds a repair that is superseded *or* terminal — it reports
+`source_ci_repair_failed` for a repair whose own task is FAILED, which owes no
+target any delivery — however the repair reached it, including as a frozen batch
+member re-added to the candidate window. A repair that cannot publish therefore
+never holds a batch, and never holds a target: the open batch carrying one is
+released by the same automatic supersession a refreshed stack uses, so the
+corrected source the repair was filed against is admitted on the next visit
+instead of waiting behind it. An explicitly paused batch is never released this
+way, and a member whose task identity cannot be resolved to exactly one project
+names the operator abort instead.
 
 Only `red` files a repair. `cancelled` — every non-success required check
 cancelled, nothing pending, no required check failed — is infrastructure: the
@@ -3251,6 +3355,48 @@ Append-only (except revocation) record of an omission policy a project earned: t
 | `promoted_at` | REAL | NOT NULL | Unix timestamp |
 | `revoked_at` | REAL | nullable | NULL while active |
 | `revoke_reason` | TEXT | nullable | Why it was revoked |
+
+### Table: `agent_cron`
+
+Session-owned recurring prompts introduced by PostgreSQL revision `a00000000086`
+([recurrence design](design/agent-cron.md)). A registration belongs to one live
+session instance; worker registrations also bind to their task claim. Projectless
+supervisors retain NULL project scope. Session, task and pending-message references
+are soft so history survives owner turnover. This table stores prompt scheduling
+and message delivery diagnostics; it does not record code integration or retain a
+worker claim as a durable wait does.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Stable schedule id |
+| `project_id` | TEXT | nullable, FK → projects | NULL for projectless supervisors |
+| `session_id` | TEXT | NOT NULL | Registering session |
+| `session_instance_token` | TEXT | NOT NULL | Owning live session instance |
+| `owner_task_id` | TEXT | nullable | Held task for a worker registration |
+| `claim_epoch` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Worker claim fence |
+| `idempotency_key` | TEXT | NOT NULL | Unique with session id and instance token |
+| `prompt` | TEXT | NOT NULL | Prompt to deliver to the owner |
+| `recurrence` | JSONB | NOT NULL | Validated interval or restricted cron expression and timezone |
+| `state` | TEXT | NOT NULL DEFAULT 'active', CHECK: active, cancelled, expired | Schedule lifecycle |
+| `created_at` | REAL | NOT NULL | Registration time |
+| `next_fire_at` | REAL | NOT NULL | Next strictly future tick |
+| `checked_at` | REAL | NOT NULL DEFAULT 0 | Last bounded daemon scan |
+| `stopped_at` | REAL | nullable | Cancellation or owner-expiry time |
+| `tick_count` | INTEGER | NOT NULL DEFAULT 0 | Emitted prompt count |
+| `coalesced_count` | INTEGER | NOT NULL DEFAULT 0 | Missed ticks coalesced instead of replayed |
+| `pending_message_id` | TEXT | nullable | At most one pending prompt message |
+| `pending_until` | REAL | nullable | Pending prompt expiry |
+| `delivery_attempts` | INTEGER | NOT NULL DEFAULT 0, `0 <= value <= 5` | Terminal submission attempts |
+| `next_attempt_at` | REAL | NOT NULL DEFAULT 0 | Retry backoff deadline |
+| `last_delivery_at` | REAL | nullable | Last successful submission time |
+| `last_delivery_status` | TEXT | nullable | Prompt delivery diagnostic |
+| `last_error` | TEXT | nullable | Last delivery failure |
+
+`uq_agent_cron_idempotency` covers `(session_id, session_instance_token,
+idempotency_key)`. `ck_agent_cron_state` bounds lifecycle values and
+`ck_agent_cron_attempts_epoch` bounds attempts and claim epoch.
+`idx_agent_cron_scan` indexes `(state, checked_at, next_fire_at)`.
+Legacy SQLite files predate this table and have no schedules to import.
 
 ### Table: `agent_waits`
 

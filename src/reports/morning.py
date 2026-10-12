@@ -428,7 +428,7 @@ async def collect_morning_evidence(
                 "state": row["state"],
                 "severity": row["severity"],
                 "summary": row["summary"][:1000],
-                "unresolved": row["state"] in ("needs_human", "reply_received", "resolving"),
+                "unresolved": row["state"] == "needs_human",
             },
         )
     for row in sources.get("attempts", []):

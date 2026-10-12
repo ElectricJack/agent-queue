@@ -74,7 +74,8 @@ async def _bundle(
     try:
         for ref, sha in refs.items():
             await run_git(store, "update-ref", ref, sha)
-        await run_git(store, "bundle", "create", str(path), *sorted(refs), "--not", main_head)
+        exclusions = ("--not", main_head) if main_head else ()
+        await run_git(store, "bundle", "create", str(path), *sorted(refs), *exclusions)
         await run_git(store, "bundle", "verify", str(path))
         listed = await run_git(store, "bundle", "list-heads", str(path))
     finally:
@@ -143,6 +144,7 @@ class BranchDiscardService:
         git_manager: Any | None = None,
         github_client_factory: Any | None = None,
         github_repository_binding_resolver: Any | None = None,
+        retirement_service: Any | None = None,
         clock=time.time,
     ) -> None:
         self.db = db
@@ -151,6 +153,7 @@ class BranchDiscardService:
         self.github_client_factory = github_client_factory
         self.github_repository_binding_resolver = github_repository_binding_resolver
         self.clock = clock
+        self.retirement_service = retirement_service
 
     # -- draining -------------------------------------------------------
 
@@ -243,6 +246,8 @@ class BranchDiscardService:
     # -- the actual removal ---------------------------------------------
 
     async def _perform(self, row: dict[str, Any]) -> tuple[str, str | None]:
+        if self.retirement_service is not None:
+            return await self.retirement_service.discard_origin(row)
         branch = self._branch(row)
         if not branch:
             return "failed", "origin branch is unknown; restore its exact ref before re-arming"
@@ -341,7 +346,7 @@ class BranchDiscardService:
         branch: str,
         head: str,
         main_head: str,
-    ) -> None:
+    ) -> Path | None:
         """Bundle a doomed head and record the row *before* the ref is deleted.
 
         Nothing is deleted that cannot be put back: the head (and its commits
@@ -391,6 +396,7 @@ class BranchDiscardService:
             repository_id=repository_id,
             now=now,
         )
+        return bundle
 
     @property
     def backup_dir(self) -> Path:

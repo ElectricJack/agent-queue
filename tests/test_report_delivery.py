@@ -326,7 +326,7 @@ async def test_disabled_or_narrowed_reports_never_request_author(db, monkeypatch
 
 
 def test_optional_bundle_uses_only_durable_requests_and_no_model_steps():
-    source = Path("src/prompts/default_playbooks/supervisor-hourly-report.md")
+    source = Path("src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md")
     parsed = PlaybookSource.load(source, vault_root=source.parent)
     assert parsed.frontmatter["enabled"] is False
     definition = load_definition_json(

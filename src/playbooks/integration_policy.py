@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import Field, TypeAdapter, model_validator
 
 from src.integration.models import Fence, RequiredCheckSet
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     PRIMITIVE_ARGS,
     PRIMITIVE_OUTCOMES,
     UNKNOWN,
@@ -289,7 +289,7 @@ def _check_reads(values: list[Any], kind: SubjectKind) -> None:
             if value.binding == "s" and value.path and value.path.startswith("tested_head."):
                 # These projections are built by the evaluator; validate via
                 # their real object schemas below rather than arbitrary paths.
-                from src.integration.subjects import HeadIdentity
+                from src.integration.runtime_contracts import HeadIdentity
 
                 root = HeadIdentity
                 path = value.path.split(".", 1)[1]

@@ -58,7 +58,9 @@ __all__ = [
     "CONTEXT_RECOVERING",
     "CONTEXT_SUSPECT",
     "CONTEXT_UNAVAILABLE",
+    "HANDOFF_EVENT",
     "HANDOFF_META",
+    "HANDOFF_SCREEN_LINES",
     "LAUNCH_REFUSED",
     "PROVIDER_PAUSE_META",
     "PUSH_FAILED_ATTENTION",
@@ -74,6 +76,7 @@ __all__ = [
     "decide",
     "handoff_comment",
     "provider_pause_record",
+    "screen_tail",
 ]
 
 #: The commit a failover checkpoint makes of uncommitted work (D13).
@@ -83,6 +86,16 @@ WIP_COMMIT_MESSAGE = "aq-wip: provider failover checkpoint"
 PROVIDER_PAUSE_META = "provider_pause"
 #: The hand-off note the next worker's ``aq prime`` shows.
 HANDOFF_META = "provider_failover_handoff"
+#: The bus event a written hand-off emits, for the dashboard and supervisor.
+HANDOFF_EVENT = "task.handoff"
+#: How much of the stopped session's screen the hand-off note keeps.
+HANDOFF_SCREEN_LINES = 80
+_HANDOFF_SCREEN_BYTES = 8_192
+#: How much of that tail ``aq prime`` quotes.  Prime's body is required
+#: context, so it must stay inside the knowledge-context budget
+#: (``context.required_over_budget`` fails the whole prime); box-drawing
+#: TUI chrome is three UTF-8 bytes a character.
+PRIME_SCREEN_BYTES = 2_048
 #: ``needs_attention`` when the checkpoint could not be pushed.
 PUSH_FAILED_ATTENTION = "provider_failover_push_failed"
 #: Who the system-authored hand-off comment is from.
@@ -211,8 +224,10 @@ class Checkpoint:
     * ``not_git`` / ``no_workspace`` -- nothing Git could lose;
     * ``not_started`` -- a pool claim still being prepared: the daemon owns
       the slot and no work has started in it;
-    * ``integration_managed`` -- a hierarchy/train branch, whose preservation
-      its integration owner governs (nothing is pushed around its fence);
+    * ``integration_managed`` -- a hierarchy/train branch whose WIP could not
+      be saved onto the task branch, so its integration owner's recovery
+      governs what the workspace keeps (nothing is pushed around its fence).
+      A saved one reports ``pushed`` / ``clean`` like any other branch;
     * ``push_failed`` / ``no_remote`` / ``unknown`` / ``dirty`` -- work
       exists that no remote carries (or whose safety could not be proved).
     """
@@ -225,6 +240,8 @@ class Checkpoint:
     pushed_branch: str | None = None
     commits: int = 0
     error: str | None = None
+    #: The WIP commit's message when it is not :data:`WIP_COMMIT_MESSAGE`.
+    wip_message: str | None = None
 
     @property
     def at_risk(self) -> bool:
@@ -365,8 +382,13 @@ def build_handoff(
     subtasks: list[Mapping[str, Any]] | None = None,
     held: bool = False,
     now: float | None = None,
+    screen: str | None = None,
 ) -> dict[str, Any]:
-    """``task_metadata['provider_failover_handoff']``: where the last worker stopped."""
+    """``task_metadata['provider_failover_handoff']``: where the last worker stopped.
+
+    *screen* is the stopped session's last screenful; the note keeps its
+    tail (:func:`screen_tail`) so the next worker sees what it was doing.
+    """
     items = [
         {
             "ordinal": item.get("ordinal"),
@@ -390,11 +412,44 @@ def build_handoff(
         "branch": checkpoint.pushed_branch or checkpoint.branch or getattr(task, "branch_name", None),
         "head": checkpoint.head,
         "wip_commit": checkpoint.wip_commit,
+        "wip_message": checkpoint.wip_message,
         "checkpoint": checkpoint.status,
         "push_error": checkpoint.error if checkpoint.at_risk else None,
         "disposition": "held" if held else disposition,
         "subtasks": {"total": len(items), "settled": settled, "items": items},
+        "screen_tail": screen_tail(screen),
     }
+
+
+def screen_tail(screen: str | None, lines: int = HANDOFF_SCREEN_LINES) -> str | None:
+    """The last *lines* non-blank-trailing lines of *screen*, bounded in size."""
+    if not screen:
+        return None
+    rows = [row.rstrip() for row in screen.splitlines()]
+    while rows and not rows[-1]:
+        rows.pop()
+    text = "\n".join(rows[-lines:]).strip("\n")
+    return tail_within(text, _HANDOFF_SCREEN_BYTES)[0] or None
+
+
+def tail_within(text: str, max_bytes: int) -> tuple[str, int]:
+    """*text*'s last whole lines that fit in *max_bytes* UTF-8 bytes, and how many it dropped.
+
+    A last line longer than the budget on its own keeps its end.
+    """
+    rows = text.splitlines()
+    kept: list[str] = []
+    size = 0
+    for row in reversed(rows):
+        cost = len(row.encode("utf-8")) + (1 if kept else 0)
+        if size + cost > max_bytes:
+            break
+        kept.append(row)
+        size += cost
+    if not kept and rows:
+        kept = [rows[-1].encode("utf-8")[-max_bytes:].decode("utf-8", "ignore")]
+    kept.reverse()
+    return "\n".join(kept), len(rows) - len(kept)
 
 
 def handoff_comment(handoff: Mapping[str, Any], task_id: str) -> str:
@@ -422,7 +477,7 @@ def handoff_comment(handoff: Mapping[str, Any], task_id: str) -> str:
         lines.append("No Git checkout held by this task to preserve.")
     else:
         if handoff.get("wip_commit"):
-            wip = f"uncommitted work saved as `{WIP_COMMIT_MESSAGE}`"
+            wip = f"uncommitted work saved as `{handoff.get('wip_message') or WIP_COMMIT_MESSAGE}`"
         elif status in ("pushed", "clean"):
             wip = "nothing uncommitted to save"
         else:
@@ -461,9 +516,9 @@ def handoff_comment(handoff: Mapping[str, Any], task_id: str) -> str:
             "The provider is suspect, so the task pauses briefly before its next "
             "launch (no retry was spent)."
         )
-    if handoff.get("session_logs"):
-        lines.append(
-            f"Next worker: start from the branch tip; `{handoff['session_logs']}` shows "
-            "where the previous session stopped."
-        )
+    if handoff.get("head") or handoff.get("session_logs"):
+        text = "Next worker: continue from the branch tip -- do not restart the task"
+        if handoff.get("session_logs"):
+            text += f"; `{handoff['session_logs']}` shows where the previous session stopped"
+        lines.append(text + ".")
     return "\n".join(lines)

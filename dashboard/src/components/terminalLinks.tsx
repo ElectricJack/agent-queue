@@ -2,9 +2,8 @@ import { createContext, useContext, type ReactNode } from "react";
 
 /**
  * Where a terminal link leads. "interactive" (the default) opens the agents
- * page, which attaches a live terminal; "watch" opens the focus session's phone
- * terminal, which never attaches (watch only until Type, then the input-only
- * socket). Focus routes provide "watch" (mobile dashboard §4).
+ * page's terminal; "watch" opens the focus session's phone terminal, an attach
+ * sized to the phone. Focus routes provide "watch" (mobile dashboard §4).
  */
 export type TerminalLinkMode = "interactive" | "watch";
 

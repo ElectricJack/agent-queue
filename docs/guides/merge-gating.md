@@ -32,8 +32,10 @@ Nothing was bypassed. Two things were simply never true:
    `deletion` and `non_fast_forward` — nothing about checks. GitHub was
    never asked to block a red merge.
 2. **The fleet's merge path never looked at CI.** `pr_merge` went straight
-   to `gh pr merge --squash --delete-branch`, which only refuses when
-   branch protection refuses.
+    to `gh pr merge --squash --delete-branch`, which only refuses when
+    branch protection refuses. The default is now `merge` (not `squash`), so
+    `aq git pr-merge` produces a merge commit preserving the original branch
+    history.
 
 A survey of PRs #324–#353 found **29 of the last 30 merges red on `Tests
 (default)`**. #341 was not an outlier; it was the norm. The reason is

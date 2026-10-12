@@ -70,6 +70,20 @@ Notes:
 
 - **`parent-child` replaces the plan-subtask special case.** Today `_check_defined_tasks` hard-codes "parent IN_PROGRESS counts as met" for `is_plan_subtask` rows. The new rule generalizes it: a DEFINED or AWAITING_PLAN_APPROVAL (status since removed) parent withholds its children (a staged graph, an unapproved plan); any released parent — READY, IN_PROGRESS, even a pure container that never executes — frees them. `parent_task_id` stays as a denormalized pointer for tree rendering; the edge is authoritative.
 - **`waits-for` is dynamic fan-in.** The classic pattern: a finalize/review task `waits-for` the group container; workers discovered mid-flight get `parent-child` edges to the container and automatically re-block the finalizer. A `waits-for` edge whose waiter is itself a child of the target container is rejected at write time — it can never be satisfied (§11).
+- **Worker-added dependencies name concrete work.** `add_dependency` from a
+  non-elevated session refuses `blocks`, `waits-for`, and `conditional-blocks`
+  onto a container with `hierarchy.dependency_on_container`. Container identity
+  uses the claim frontier's container flag or live children, including empty
+  declared containers. The check and edge write share a hierarchy-serialized
+  transaction. The error asks for the leaf task that supplies the prerequisite;
+  AQ never guesses among children. Operator/supervisor fan-in, `parent-child`
+  membership, and non-blocking edges retain their existing semantics.
+  `tasks.container_dependencies` and `stall.sweep` report existing scheduling
+  edges from unfinished leaves to containers, with both IDs and edge type,
+  including READY rows withheld from the frontier. These are report-only
+  candidates for retargeting or confirmation of intentional operator fan-in;
+  diagnostics never rewrite edges and omit container sequencing and finished
+  dependents.
 - **`conditional-blocks` has a disposal rule.** When the dependency reaches COMPLETED the edge is permanently unsatisfiable. A cascade step auto-closes dependents whose *only* remaining unsatisfied blocking edges are conditional edges on COMPLETED deps: they transition to COMPLETED with `work_outcome=no-op` metadata and a `task.skipped_conditional` event. Contingency tasks never rot in the queue.
 
 ### 3.2 Non-blocking edge types
@@ -86,7 +100,7 @@ Cross-project dependencies are **allowed, explicitly** (todo §3b, decision 9). 
 
 `tasks.is_blocked` (0/1, default 0) is a pure projection:
 
-> `is_blocked(t) = 1` iff **any** blocking edge from *t* is unsatisfied (§3.1) **or** any gate attached to *t* via `task_gates` has `status ∈ {open, expired}` (§5.4).
+> `is_blocked(t) = 1` iff **any** blocking edge from *t* is unsatisfied (§3.1) **or** any gate attached to *t* via `task_gates` has `status ∈ {open, expired, cancelled}` (§5.4).
 
 It is *graph* blockedness only. Transient capacity reasons — no idle agent, workspace locked, budget, cooldown — are **not** persisted; they change per-tick and belong to explain (§9), not the row.
 
@@ -104,7 +118,7 @@ In hierarchy/train mode with Git-first active, a completed `blocks` sibling
 must be proven on the shared parent's current branch before its dependent can
 run. One request-scoped, identity-revalidated Git prerequisite view per project
 is shared by scheduler/reconciler supply and pool demand within a tick, outside
-database locks. These advisory reads, including direct readiness, explain and
+database locks. Advisory scheduling reads, including direct readiness and
 frontier diagnostics, may reuse a successful snapshot of the same target for
 up to `DeliveryObserver.READ_MAX_AGE` (30 seconds). Each request still evaluates
 current identities and checks remote target freshness. Beyond the bound the
@@ -115,6 +129,25 @@ retains its own uncached observation (`max_age=0`) and revalidation under task
 locks, even when a tick's advisory view still makes a task look runnable. Shadow
 mode keeps the existing receipt fence, and non-hierarchy projects keep their
 existing admission policy.
+
+A cross-epic dependent whose epic already contains every prerequisite's exact
+default-branch source needs no new refresh. Ordinary sibling collection does
+not withhold that child. An existing open epic refresh still withholds it until
+checks and attestation finish, including when a conflict repair publishes a
+merge containing every prerequisite. If the repair only resolves content and
+leaves a prerequisite outside the epic, containment also remains unproven until
+the checked refresh publishes it.
+
+Interactive `task explain` and `pool status` only read snapshots inside that
+age bound. They do not clone, fetch, wait for a fetch lock, or check remote refs.
+Missing or expired evidence is unknown and conservatively withholds demand;
+current database identities are still revalidated against the pinned observation.
+If a background freshness check has already rejected that exact snapshot,
+diagnostics withhold its proof until a new observation or successful check.
+Stacked prerequisites additionally require the existing, unexpired remote-ref
+cache. An explanation shares one request-scoped pool measurement between the
+pool wait reason and capacity spill planning. Actual scheduling, routing and
+claim admission retain their existing fresh observations and guards.
 
 For a development worker close, the completion generation id becomes visible in
 the same database transaction as the `COMPLETED` transition. Git provenance is
@@ -166,7 +199,22 @@ Blockedness is deliberately **not transitive through blockedness**: an open (non
 
 A **gate** is a first-class wait record — "something outside the graph must happen":
 
-`gates(id, project_id, gate_type, title, question, await_id, timeout_at, status, resolved_by, resolution, created_at)` with `gate_type ∈ {human, timer, pr-merged, ci-run, event, task}` and `status ∈ {open, resolved, expired}`. `task_gates(task_id, gate_id)` attaches waiters; one gate may block many tasks, one task may wait on many gates.
+`gates(id, project_id, gate_type, title, question, await_id, timeout_at, status, resolved_by, resolution, created_at)` with `gate_type ∈ {human, timer, pr-merged, ci-run, event, task, review}` and `status ∈ {open, resolved, expired, cancelled}`. `task_gates(task_id, gate_id)` attaches waiters; one gate may block many tasks, one task may wait on many gates.
+
+Withdrawing a document review cancels its approval gate atomically with the review
+state and the dependent tasks' `needs_attention=review_withdrawn` flags. Cancellation
+does not grant approval: the same unresolved-gate predicate continues to hold the
+tasks. The withdrawal records actor, surface, timestamp and reason, returns the
+dependent IDs and sends a durable message to the project supervisor. The dashboard
+requires confirmation and shows the audit and dependent task links.
+
+`review_reopen` accepts the current revision of a withdrawn review and creates its
+next revision from the last submitted text and playbook pin. It keeps the review ID,
+gate ID and waiter links, reopens the gate and clears only withdrawal attention
+that has no other withdrawn review cause. The author task, project supervisor and
+local operator may reopen within their project scope. Stale revisions and approved
+reviews are refused. Earlier withdrawal audit remains visible after reopening;
+approval of the new revision is required before dependents can run.
 
 | gate_type | `await_id` holds | Resolved when |
 |---|---|---|
@@ -176,6 +224,7 @@ A **gate** is a first-class wait record — "something outside the graph must ha
 | `ci-run` | run id / URL | `gh run` reports success (sweep) |
 | `event` | event type (+ optional payload-filter JSON) | a matching EventBus event fires (subscription resolves immediately; sweep is the restart-safe backstop against events missed while the daemon was down, re-checked from the persisted `events` table) |
 | `task` | task id (cross-project allowed) | that task reaches COMPLETED (sweep) |
+| `review` | document review id | the current revision is approved through `review_decide` |
 
 #### 5.1a Merged is not the same as "on the default branch"
 
@@ -301,6 +350,18 @@ they do not infer eligibility from a cached scheduler snapshot. Receipt freshnes
 in shadow mode is scoped to the prerequisite's own `integration_rework_at`, never
 another task's marker or ordinary `updated_at` bookkeeping.
 
+Cross-epic prerequisites in hierarchy/train mode require two independent proofs.
+Their exact completed sources must be on the default branch
+(`frontier_prerequisite_not_on_default_branch` when unproven). A dependent with an
+epic branch also requires those sources to be contained in that branch and any
+open `train-epic-refresh-*` batch targeting it to finish
+(`frontier_epic_refresh_pending`, with blocking batch ids in the detail).
+Ordinary sibling collection batches never withhold an already-contained dependent,
+including when failed or human-blocked. Missing epic containment withholds even
+without an open batch. Scheduler, pool demand, explain and claim share these
+predicates; claim retains fresh Git and identity revalidation. The explicit
+`cross_epic_prerequisites: completed` policy keeps legacy graph-only admission.
+
 ### 9.2 Ready frontier
 
 `aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.
@@ -363,9 +424,44 @@ Every event type emitted anywhere (bus or `log_event`) must have a registered pa
 
 Containers are marked explicitly: `task_metadata.container = true`, set on a task's first child and never cleared. A task can also be *declared* a container when it is created, before any child exists (§13a). Group **progress is computed from the graph, never stored** (Beads' swarm rule): `get_group_progress(container_id)` derives done/ready/blocked/in-progress counts, Kahn-layered **waves** over the blocking edges among the children, and **max parallelism** (the widest wave) on demand. Container **settlement** (auto-completing a container once every child is terminal) is event-driven — it runs inside `_apply_transition` → `settle_containers`, in the same transaction as the child transition that completes it, walking up to `MAX_STRUCTURAL_DEPTH` ancestor levels. A settled container emits `task.completed` on the bus like any other transition, so the default pipeline's branch-guarded review rules (and reflection, once unpaused) see it. A backstop sweep, `_sweep_container_completion`, runs every `work_graph.container_sweep_interval_seconds` (default 60; 0 disables) and logs a WARNING on any hit — it should normally find nothing. Settlement has a second, stricter leg for a container stranded **BLOCKED or PAUSED** by a restart, an update or an operator hold: it completes once every child is COMPLETED *and* every non-container child's development delivery has landed on the default branch, superseding the stale status and any hold (`stale_container_clauses`, audit event `task.stale_container_settled`). The event path runs it when a child's completion seeds the container, the backstop sweep runs it for deliveries that land later, and daemon start runs it once. A lifecycle sweep (`work_graph.lifecycle_sweep_interval_seconds`, default 300) re-checks every BLOCKED/PAUSED task unchanged for `work_graph.stale_open_after_seconds` (default 6h). A task whose graph blockers are all satisfied, or whose pause hold is gone, is unblocked. Any other task gets the advisory `needs_attention=stale_open` and one supervisor message. Unlike every other attention code, `stale_open` never holds a task out of promotion or opens a recovery incident, and it clears itself on leaving BLOCKED/PAUSED. Superseded work is retired with `aq task close <id> --obsolete --reason`: COMPLETED with an `obsolete` marker that the development publisher and readiness honor, its branch owners released through the release-owner proof, and parked batches that list it cancelled (`src/integration/obsolete_close.py`). Waves inform humans and the supervisor; the scheduler keeps ignoring them — parallelism stays emergent from the frontier plus caps.
 
-**Events and error codes.** A successful reparent emits `task.reparented` on the bus after commit, with `task_id`, `project_id`, `title`, `old_parent` and `new_parent` (`null` at the root); playbooks can trigger on it. Rejected hierarchy mutations raise `HierarchyError` and surface as `hierarchy.<code>`, the full set being: `not_found` (task or parent missing), `self_parent`, `cross_project`, `container_closed` (parent is COMPLETED), `cycle`, `depth` (structural or naming cap), `open_children` (any unforced transition to COMPLETED with a non-terminal direct child — enforced in `_apply_transition`, not only at the close surfaces), `open_descendants` (archive of a subtree with a non-terminal *descendant*), `has_children` (delete without `--cascade`), `live_descendants` (abandon or cascade while a *descendant* — never the closing task itself — has a live session), `live_parent` (reparenting onto another worker's held task, refused under the destination task lock so the claim cannot race the check), `manually_paused_descendants` (abandon while a descendant is hand-paused), and `cycle_check_skipped` (internal: the bulk graph-creation writer `set_parent_bulk` was handed a task that is not a freshly inserted leaf). `aq schema` exposes the same list as the `hierarchy_error` enum.
+**Events and error codes.** A successful reparent emits `task.reparented` on the bus after commit, with `task_id`, `project_id`, `title`, `old_parent` and `new_parent` (`null` at the root); playbooks can trigger on it. Rejected hierarchy mutations raise `HierarchyError` and surface as `hierarchy.<code>`, the full set being: `not_found` (task or parent missing), `self_parent`, `cross_project`, `container_closed` (parent is COMPLETED), `dependency_on_container` (worker scheduling edge targets a container), `cycle`, `depth` (structural or naming cap), `open_children` (any unforced transition to COMPLETED with a non-terminal direct child — enforced in `_apply_transition`, not only at the close surfaces), `open_descendants` (archive of a subtree with a non-terminal *descendant*), `has_children` (delete without `--cascade`), `live_descendants` (abandon or cascade while a *descendant* — never the closing task itself — has a live session), `live_parent` (reparenting onto another worker's held task, refused under the destination task lock so the claim cannot race the check), `manually_paused_descendants` (abandon while a descendant is hand-paused), and `cycle_check_skipped` (internal: the bulk graph-creation writer `set_parent_bulk` was handed a task that is not a freshly inserted leaf). `aq schema` exposes the same list as the `hierarchy_error` enum.
 
 **Hierarchical child ids:** children created under a parent (supervisor graphs, plan subtasks, `--parent`) get `<parent_id>.1`, `<parent_id>.1.2` — ordinal per parent via `next_child_ordinal`, depth ≤ 3 — while root ids stay adjective-noun slugs. Ids never change after assignment. A name is never minted while anything still keys it: a live or archived task, or the integration identity a deleted task leaves behind (a `task_integration_checkpoints` row, a `task_branch_origins` row, live or retired, or an `integration_branch_owners` row it owns) — a new task minted onto that name would inherit the predecessor's checkpoint and branch fence (`_task_identity_exists` in `src/task_names.py`). The id itself now carries structure a human can read in Discord, a branch name (`aq/swift-falcon.2`), or a log line, and sorting groups a family together everywhere.
+
+### Operator removal (2026-10-06)
+
+`remove_task` (`aq task remove TASK --reason "..."`, dashboard **Remove**) is
+available to a local human or live project/global supervisor. A worker cannot
+remove its held task. An unconfirmed request previews the subtree without writes;
+the CLI and dashboard ask for one confirmation, explaining that sessions stop,
+open batches abort, audit history remains, and branches stay. A nonblank reason
+is required for the confirmed decision.
+
+Removal holds every task in the subtree in one transaction before stopping its
+captured sessions through manual-pause cleanup. Failed process/resource cleanup
+leaves those holds in place for a safe retry; tasks must never pass through a
+schedulable BLOCKED status as an intermediate cleanup step. New descendants
+detected after cleanup require another Remove attempt. Under publisher, parent,
+batch and hierarchy exclusions, removal aborts unpromoted batches containing the
+subtree (including batches sealing an ancestor), cancels legacy operations only
+when no runtime or writer owns them, and removes the entire subtree atomically.
+Any integration audit identity selects archive; otherwise hard deletion is safe.
+Existing live operation or unproven resource ownership remains an actionable
+refusal. No removal deletes a Git branch.
+
+Maintenance also settles orphaned parent operations under parent-engine exclusion.
+A live reconciler Subject or attached writer protects an operation. When the
+Git-first train has replaced the Subject runtimes, their legacy parent operations
+can retire once all attached writers stop. Cancellation retains operations,
+episodes and history and writes an `integration.orphan_cancelled` event.
+
+Archive preserves delivered identity: retained delivery receipts do not prohibit
+archive, including receipts from an aborted batch. Manual archive also accepts
+PAUSED, DEFINED and READY roots/descendants with a nonblank reason, records that
+reason in retained comments, and still refuses running sessions and live operations.
+Bulk/automatic archive keeps its terminal-only selection. Delete/archive refusals
+in the dashboard offer **Remove while keeping history and branches** where that
+control can resolve the refusal.
 
 ## 13a. Claims and pools
 

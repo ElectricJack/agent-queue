@@ -13,8 +13,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from src.integration.ci_producers import CIProducer, LocalCIProducer, ProducerObservation, digest
-from src.integration.main_promotion import RootAttestationSubject
-from src.integration.subjects import (
+from src.integration.promotion_contracts import RootAttestationSubject
+from src.integration.runtime_contracts import (
     CIAttestArgs,
     CIObserveArgs,
     CIRequestArgs,

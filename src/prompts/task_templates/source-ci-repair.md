@@ -1,0 +1,7 @@
+Authorized source CI repair for task {{task_id}}, PR {{source_pr_url}}.
+Repository {{source_repository_id}}; source branch {{source_branch}}; exact source base {{source_base}}, head {{source_head}}, checkpoint generation {{source_generation}}.
+Observed {{state}} under policy generation {{policy_generation}}.
+Failing/cancelled checks:
+{{checks}}
+
+Work in your assigned root branch. Fetch and merge the exact source head above, preserving it as an ancestor; resolve all necessary code, test, migration and generated-artifact issues. Use the failed check links and record concrete failures and fixes. A red run is repairable only because at least one required check genuinely failed; any cancelled check listed beside it is infrastructure and is never fixed in code or counted as success. Re-chain colliding migration revisions and regenerate generated files. Run only focused checks with aq test: the failing tests and tests covering the code you changed. Do not run broad area or full suites; this branch's CI runs the broad sweep. Publish your assigned branch and close with exact test evidence. The delivery service observes this branch's own exact CI and queues further bounded repair if needed; only its fully checked candidate can reach main. Do not rewrite the source branch or publish main.

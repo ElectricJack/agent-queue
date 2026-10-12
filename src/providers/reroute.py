@@ -44,6 +44,7 @@ from dataclasses import asdict, dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any
 
+from src.commands.operator_authority import is_operator_profile
 from src.providers.availability import AVAILABLE, DEGRADED, UNAVAILABLE
 from src.providers.intent import CLASS_ONLY, PINNED, effective_intent
 
@@ -108,6 +109,7 @@ class Rung:
     lifecycle: str = "task"
     enabled: bool = True
     capacity: int = 1
+    operator: bool = False
 
 
 @dataclass(frozen=True)
@@ -240,6 +242,7 @@ def equivalent_rung(
     provider: str,
     *,
     allow_degraded: bool = False,
+    operator: bool = False,
 ) -> tuple[Rung | None, bool]:
     """``(target, exists)`` for *class_id* on *provider*.
 
@@ -251,6 +254,7 @@ def equivalent_rung(
         rung
         for rung in ctx.rungs.values()
         if rung.enabled and rung.class_id == class_id and rung.provider == provider
+        and compatible_worker_role(operator, rung)
     ]
     if not rungs:
         return None, False
@@ -258,6 +262,15 @@ def equivalent_rung(
     if state == AVAILABLE or (allow_degraded and state == DEGRADED):
         return min(rungs, key=_rung_rank), True
     return None, True
+
+
+def compatible_worker_role(operator: bool, target: Rung) -> bool:
+    """Keep operator authority and frontier limits across failover and spill."""
+    from src.commands.operator_authority import OPERATOR_CLASSES, OPERATOR_HARNESSES
+
+    return target.operator == operator and (
+        not operator or (target.class_id in OPERATOR_CLASSES and target.harness in OPERATOR_HARNESSES)
+    )
 
 
 def route_candidates_of(route: Any) -> tuple[tuple[str, str], ...]:
@@ -351,6 +364,7 @@ def plan_sweep(
         provider = ctx.profile_providers.get(cand.profile_id, "")
         state = ctx.state(provider)
         rung = ctx.rungs.get(cand.profile_id)
+        operator = bool(rung and rung.operator)
         class_id = (cand.intelligence_class or "").strip() or (rung.class_id if rung else "")
         decision = Decision(
             task_id=cand.task_id,
@@ -449,6 +463,9 @@ def plan_sweep(
                 )
                 continue
         if to_profile:
+            if not compatible_worker_role(operator, chosen):
+                _hold(decision, "no_equivalent_rung", "target must preserve the worker's operator role and frontier")
+                continue
             target_state = ctx.state(chosen.provider)
             if not (target_state == AVAILABLE or (allow_degraded and target_state == DEGRADED)):
                 _hold(decision, "no_available_target", f"provider {chosen.provider} is {target_state}")
@@ -466,6 +483,8 @@ def plan_sweep(
             for profile_id, candidate_class in routed:
                 option = candidate_rung(ctx, profile_id, candidate_class or class_id)
                 if option is None or option.profile_id == cand.profile_id:
+                    continue
+                if not compatible_worker_role(operator, option):
                     continue
                 if option.provider == provider or option.provider in left:
                     continue
@@ -495,7 +514,7 @@ def plan_sweep(
                 if other == provider or other in left:
                     continue
                 found, exists = equivalent_rung(
-                    ctx, class_id, other, allow_degraded=allow_degraded
+                    ctx, class_id, other, allow_degraded=allow_degraded, operator=operator
                 )
                 any_rung = any_rung or exists
                 if found is not None:
@@ -718,6 +737,7 @@ class ProviderRerouteService:
                 lifecycle=lifecycle,
                 enabled=enabled,
                 capacity=max(1, capacity),
+                operator=is_operator_profile(profile),
             )
         now = self.now()
         states: dict[str, str] = {}
@@ -944,6 +964,7 @@ class ProviderRerouteService:
         failover: Sequence[Decision],
         *,
         explaining_task_id: str | None = None,
+        pool_measure: Callable[[], Awaitable[Any]] | None = None,
     ) -> list[Decision]:
         """The capacity spill pass (D24 S3-S6) over one pool measurement.
 
@@ -990,7 +1011,7 @@ class ProviderRerouteService:
             ]
             if not rows:
                 return []
-            measurement = await self._pool_measure()
+            measurement = await (pool_measure or self._pool_measure)()
             global_cap = self._pool_global_cap() if self._pool_global_cap is not None else None
             view = with_incoming_moves(
                 capacity_view_from_measurement(
@@ -1288,7 +1309,7 @@ class ProviderRerouteService:
         thread_id = f"reroute:{batch}:{project_id}"
         to_id = f"supervisor-{project_id}"
         try:
-            if await self.db.reroute_notice_sent(thread_id, "session", to_id):
+            if await self.db.reroute_notice_sent(thread_id):
                 return None
         except Exception:
             logger.debug("provider reroute: notice check failed", exc_info=True)
@@ -1485,7 +1506,9 @@ class ProviderRerouteService:
 
     # -- derived answers ----------------------------------------------------------
 
-    async def spill_state(self, task: Any) -> dict[str, Any] | None:
+    async def spill_state(
+        self, task: Any, *, pool_measure: Callable[[], Awaitable[Any]] | None = None,
+    ) -> dict[str, Any] | None:
         """Read-only spill state for a READY frontier task waiting on a pool (D24 S8).
 
         Plan the same queues as an automatic sweep, including its failover
@@ -1507,7 +1530,9 @@ class ProviderRerouteService:
         if candidates:
             ctx.stats = await self.db.task_reroute_stats([c.task_id for c in candidates])
         failover = plan_sweep(candidates, ctx)
-        decisions = await self._plan_spill(ctx, failover, explaining_task_id=task.id)
+        decisions = await self._plan_spill(
+            ctx, failover, explaining_task_id=task.id, pool_measure=pool_measure,
+        )
         mine = next((d for d in decisions if d.task_id == task.id), None)
         if mine is None or mine.action == "skip":
             return None

@@ -552,6 +552,8 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     destination = tmp_path / "destination"
     _git(["clone", str(source), str(destination)], tmp_path)
     _git(["push", str(source), f"{tip}:refs/heads/topic"], checkout)
+    provenance_ref = "refs/aq/provenance/completions/subject/generation"
+    _git(["push", str(source), f"{tip}:{provenance_ref}"], checkout)
     _git(["config", "remote.origin.url", str(trap)], destination)
 
     await GitManager()._afetch_origin_with_auth_to_url(
@@ -559,6 +561,8 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     )
 
     assert _git(["rev-parse", "refs/remotes/origin/topic"], destination) == tip
+    assert _git(["rev-parse", provenance_ref], destination) == tip
+    assert "aq-provenance" not in _git(["for-each-ref", "--format=%(refname)"], destination)
     assert _git(["rev-parse", "HEAD"], destination) == base
     assert _git(["config", "--get", "remote.origin.url"], destination) == str(trap)
     assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
@@ -1280,6 +1284,97 @@ async def test_authenticated_acquisition_timeout_or_cancellation_reaps_process_g
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["acquisition", "push", "import"])
+@pytest.mark.parametrize("interrupt", ["cancellation", "deadline"])
+async def test_isolated_git_interrupted_spawn_reaps_process_group(
+    tmp_path, monkeypatch, operation, interrupt
+):
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    pids = tmp_path / "spawn-pids"
+    hanging_git = tmp_path / "hanging-git"
+    hanging_git.write_text(
+        "#!/bin/sh\n"
+        "sleep 300 &\n"
+        "child=$!\n"
+        f'printf \'%s %s\' "$$" "$child" > {pids}\n'
+        'wait "$child"\n'
+    )
+    hanging_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(hanging_git)
+    # Exercise one interrupted acquisition; retry policy has separate coverage.
+    monkeypatch.setattr(manager, "_APP_GIT_RETRY_MIN_BUDGET", 30.0)
+    home = tmp_path / "home"
+    home.mkdir()
+    spawned = asyncio.Event()
+    release_spawn = asyncio.Event()
+    processes = []
+    timeouts = []
+    real_spawn = asyncio.create_subprocess_exec
+    real_timeout_at = asyncio.timeout_at
+
+    def record_timeout(deadline):
+        timeout = real_timeout_at(deadline)
+        timeouts.append(timeout)
+        return timeout
+
+    async def delayed_spawn(executable, *args, **kwargs):
+        if executable != str(hanging_git) and operation != "import":
+            return await real_spawn(executable, *args, **kwargs)
+        process = await real_spawn(str(hanging_git), *args, **kwargs)
+        processes.append(process)
+        spawned.set()
+        # The child already runs, but its caller has no process handle yet.
+        await release_spawn.wait()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", delayed_spawn)
+    monkeypatch.setattr(asyncio, "timeout_at", record_timeout)
+    deadline = asyncio.get_running_loop().time() + 30
+    if operation == "acquisition":
+        invocation = manager._arun_authenticated_git(
+            ["ls-remote", target.as_uri(), "HEAD"],
+            home=home, repository_url=target.as_uri(), token="test-token", deadline=deadline,
+        )
+    elif operation == "push":
+        invocation = manager._apush_oid_with_app_auth_to_url(
+            str(checkout), destination_url=target.as_uri(), token="test-token",
+            tip_oid=tip, branch="main", expected_old_oid=base, _deadline=deadline,
+        )
+    else:
+        invocation = manager._run_isolated_import_git(["--version"], home=home, deadline=deadline)
+    open_fds_before = _fd_baseline()
+    task = asyncio.create_task(invocation)
+    try:
+        await asyncio.wait_for(spawned.wait(), timeout=10)
+        leader, child = map(int, (await _wait_for_file(pids, fields=2)).split())
+        if interrupt == "cancellation":
+            task.cancel()
+            expected_error = asyncio.CancelledError
+        else:
+            # Expire the active operation budget at the startup barrier.
+            timeouts[-1].reschedule(asyncio.get_running_loop().time())
+            expected_error = GitError
+        await asyncio.sleep(0)
+        release_spawn.set()
+        with pytest.raises(expected_error):
+            await task
+        assert not _process_group_exists(leader)
+        assert not Path(f"/proc/{child}").exists()
+        await asyncio.sleep(0)
+        assert _open_fd_count() == open_fds_before
+        _assert_no_broker_tasks()
+    finally:
+        release_spawn.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        for process in processes:
+            await manager._kill_app_git_group(process)
+
+
+@pytest.mark.asyncio
 async def test_authenticated_acquisition_expired_budget_identifies_preflight(tmp_path, monkeypatch):
     manager = GitManager()
     home = tmp_path / "home"
@@ -1987,6 +2082,43 @@ async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
 
 
 @pytest.mark.asyncio
+async def test_isolated_app_push_import_never_starts_detached_maintenance(
+    tmp_path, monkeypatch
+):
+    """Git 2.47+ ends a fetch with ``maintenance run --auto --detach``.
+
+    That process calls setsid, so the group kill cannot reach it, and it holds
+    the import's stdout pipe until it closes its inherited descriptors: a push
+    abandoned at its deadline could return with that pipe still open.
+    """
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    manager = GitManager()
+    fetches = []
+    real_import = manager._run_isolated_import_git
+
+    async def watched(args, **kwargs):
+        if "fetch" in args:
+            fetches.append(args)
+        return await real_import(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+
+    await manager._apush_oid_with_app_auth_to_url(
+        str(checkout),
+        destination_url=target.as_uri(),
+        token="installation-token-sentinel",
+        tip_oid=tip,
+        branch="main",
+        expected_old_oid=base,
+    )
+
+    [fetch] = fetches
+    assert "maintenance.auto=false" in fetch
+    assert fetch.index("maintenance.auto=false") < fetch.index("fetch")
+    assert _git(["rev-parse", "refs/heads/main"], target) == tip
+
+
+@pytest.mark.asyncio
 async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
     tmp_path, monkeypatch
 ):
@@ -2012,6 +2144,24 @@ async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
     failed = await manager.apush_new_refs(str(checkout), {"other": tip}, repository_url=str(target))
     # Absent after a failed transfer is that failure, not an observation.
     assert failed == {"other": RemoteRefResult(RemoteRefState.ERROR, error="remote unreachable")}
+
+
+@pytest.mark.asyncio
+async def test_authenticated_provenance_push_uses_exact_non_branch_namespace(tmp_path):
+    checkout, target, _, _base, tip = _git_push_case(tmp_path)
+    ref = "refs/aq/provenance/completions/subject/generation"
+    manager = GitManager()
+    await manager._apush_refs_with_app_auth_to_url(
+        str(checkout), destination_url=target.as_uri(), token="local-test-token",
+        updates=((tip, ref, "0" * 40),), _qualified_refs=True,
+    )
+    assert _git(["rev-parse", ref], target) == tip
+    assert "provenance" not in _git(["for-each-ref", "--format=%(refname)", "refs/heads"], target)
+    _git(["remote", "add", "origin", str(target)], checkout)
+    assert (await manager.als_remote_qualified_refs(str(checkout), [ref]))[ref].oid == tip
+    with pytest.raises(GitError, match="provenance ref"):
+        await manager.apush_new_refs(str(checkout), {"refs/heads/aq-provenance/bad": tip},
+                                     qualified=True)
 
 
 @pytest.mark.asyncio

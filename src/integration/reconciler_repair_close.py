@@ -13,7 +13,7 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.engine import EngineRefused, RootEngineOwnership
 from src.integration.hierarchy import resolve_repair_commit_proof
 from src.integration.repair import RepairService, repair_subject_sha
-from src.integration.subjects import Subject, SubjectPhase
+from src.integration.runtime_contracts import Subject, SubjectPhase
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)

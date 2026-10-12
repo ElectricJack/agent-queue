@@ -112,6 +112,55 @@ class TestSettlement:
 
         assert (await db.get_task("p")).status == TaskStatus.COMPLETED
 
+    @pytest.mark.parametrize("state, settles", [("cancelled", True), ("active", False)])
+    @pytest.mark.parametrize("held", [TaskStatus.PAUSED, TaskStatus.IN_PROGRESS])
+    async def test_train_episode_owns_completion_only_while_its_operation_lives(
+        self, db, state, settles, held
+    ):
+        from src.database.tables import (
+            integration_parent_episodes,
+            integration_repair_operations,
+            projects,
+            repos,
+        )
+
+        kids = await family(db, n=1)
+        async with db.immediate() as conn:
+            from tests.test_integration_service import _minimal_policy_values
+
+            await conn.execute(update(projects).where(projects.c.id == PROJECT_ID).values(
+                hierarchical_integration_mode="train",
+                hierarchical_integration_policy=_minimal_policy_values()))
+            await conn.execute(insert(repos).values(
+                id="repo", project_id=PROJECT_ID, url="https://example/repo.git",
+                default_branch="main", checkout_base_path="/checkout", source_type="clone"))
+            await conn.execute(insert(integration_parent_episodes).values(
+                id="ep-1", parent_task_id="p", repository_id="repo", generation=1,
+                pre_collection_checkpoint_sha="a" * 40, created_at=1.0))
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id="p", repository_id="repo", branch="aq/p", generation=1,
+                checkpoint_sha="a" * 40, state="awaiting_children", version=0,
+                updated_at=1.0, episode_id="ep-1"))
+            await conn.execute(insert(integration_repair_operations).values(
+                id="op-1", target_kind="parent", parent_task_id="p", episode_id="ep-1",
+                state=state, policy_snapshot=_minimal_policy_values(), artifact_snapshot={},
+                required_check_version="v", created_at=1.0, updated_at=1.0))
+            await conn.execute(update(tasks).where(tasks.c.id == "p").values(
+                status=held.value))
+            await conn.execute(update(tasks).where(tasks.c.id == kids[0]).values(
+                status=TaskStatus.COMPLETED.value))
+
+        if held == TaskStatus.PAUSED:
+            assert ("p" in await db.stale_container_candidates()) is settles
+        # Both settlement legs complete the container through the integration
+        # guard and leave a live episode's parent alone, without raising
+        # (calm-quest-88 and the epic containers, 2026-10-07).
+        async with db._engine.begin() as conn:
+            result = await db.settle_containers({"p"}, conn=conn)
+        assert ("p" in result.settled) is settles
+        expected = TaskStatus.COMPLETED if settles else held
+        assert (await db.get_task("p")).status == expected
+
     async def test_settles_up_to_three_levels(self, db):
         await mktask(db, "g", status=TaskStatus.IN_PROGRESS)
         await mktask(db, "p", status=TaskStatus.IN_PROGRESS)

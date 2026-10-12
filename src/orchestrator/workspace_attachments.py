@@ -16,6 +16,7 @@ from src.database.tables import task_session_attempts
 from sqlalchemy import or_, select, update
 
 from src.database.tables import agents, integration_branch_owners, sessions, tasks, workspaces
+from src.git.manager import is_valid_git_oid
 from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
 from src.models import (
     SYSTEM_KIND_SCOPE,
@@ -84,6 +85,7 @@ async def mark_integration_handoff_released(
     *,
     workspace,
     task_id: str,
+    preparation_epoch: int | None = None,
 ) -> bool:
     """Atomically record detach proof and release the exact old DB lock.
 
@@ -154,6 +156,11 @@ async def mark_integration_handoff_released(
         ):
             return False
 
+        if preparation_epoch is not None and not await _preparation_claim_is_current(
+            conn, session_row, task_id, preparation_epoch
+        ):
+            return False
+
         released_owner = await conn.execute(
             update(integration_branch_owners)
             .where(
@@ -190,8 +197,9 @@ async def mark_integration_handoff_released(
                 raise RuntimeError("integration pool handoff claim changed before release")
             claim_release = await db.release_claim(
                 session_row["id"],
-                # The successor decides when the old writer may run again.
-                task_status=TaskStatus.PAUSED,
+                # An unactivated preparation has no work to hold for a
+                # successor. Other transfers retain the ordinary pause.
+                task_status=(TaskStatus.READY if preparation_epoch is not None else TaskStatus.PAUSED),
                 context="integration_handoff",
                 now=time.time(),
                 expected_task_id=task_id,
@@ -340,6 +348,7 @@ async def mark_integration_pool_handoff_released(
     task_id: str,
     session_instance_token: str,
     conn=None,
+    preparation_epoch: int | None = None,
 ) -> bool:
     """Record a **pool** writer's detach proof without unbinding its slot.
 
@@ -373,6 +382,7 @@ async def mark_integration_pool_handoff_released(
             return await mark_integration_pool_handoff_released(
                 db, owner, workspace=workspace, task_id=task_id,
                 session_instance_token=session_instance_token, conn=owned_conn,
+                preparation_epoch=preparation_epoch,
             )
     # Match release_claim: session before owner/workspace.
     session_row = (await conn.execute(select(sessions).where(
@@ -417,6 +427,11 @@ async def mark_integration_pool_handoff_released(
     ):
         return False
 
+    if preparation_epoch is not None and not await _preparation_claim_is_current(
+        conn, session_row, task_id, preparation_epoch
+    ):
+        return False
+
     released_owner = await conn.execute(
         update(integration_branch_owners)
         .where(
@@ -438,6 +453,22 @@ async def mark_integration_pool_handoff_released(
     if released_owner.rowcount != 1:
         raise RuntimeError("integration pool handoff release lost its compare-and-swap")
     return True
+
+
+async def _preparation_claim_is_current(conn, session_row, task_id: str, epoch: int) -> bool:
+    """Revalidate the unactivated claim that permits a published-default checkout."""
+    task_row = (await conn.execute(
+        select(tasks).where(tasks.c.id == task_id).with_for_update()
+    )).mappings().one_or_none()
+    return bool(
+        task_row is not None
+        and session_row["lifecycle"] == "pool"
+        and session_row["claim_phase"] == "preparing"
+        and session_row["last_claim_epoch"] == epoch
+        and task_row["claim_epoch"] == epoch
+        and task_row["status"] == TaskStatus.IN_PROGRESS.value
+        and task_row["assigned_agent_id"] == session_row["agent_id"]
+    )
 
 
 async def mark_stopped_integration_pool_handoff_released(
@@ -929,6 +960,37 @@ async def detach_workspace_for_integration_handoff(
         )
         detached_head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
         return detached == "HEAD" and detached_head == head
+
+
+async def detach_retained_preparation(
+    git, git_mutex: Callable, workspace, *, expected_branch: str, retained: dict,
+    mutex_path: str | None = None,
+) -> bool:
+    """Detach an unactivated preparation whose exact clean HEAD is durably pinned.
+
+    This proof is only supplied by preparation retry, after its merge has been
+    aborted or its immutable overlay retained. It does not authorize publication
+    or discard local commits, and ordinary writer handoff still requires a push.
+    """
+    head = retained["head"]
+    store = retained["store"]
+    if not is_valid_git_oid(head) or await git.arev_parse(
+        store, "refs/aq/stacks/" + head,
+    ) != head:
+        return False
+    checkout = workspace.workspace_path
+    async with git_mutex(mutex_path or checkout):
+        branch = await git._arun_unlocked(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout)
+        current = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
+        status = await git._arun_unlocked(["status", "--porcelain"], cwd=checkout)
+        if (branch not in {expected_branch.removeprefix("refs/heads/"), "HEAD"}
+                or current != head or status):
+            return False
+        await git._arun_unlocked(["switch", "--detach", head], cwd=checkout)
+        return (
+            await git._arun_unlocked(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout) == "HEAD"
+            and await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout) == head
+        )
 
 
 async def effective_requirements(db, task: Task) -> list[ResolvedRequirement]:

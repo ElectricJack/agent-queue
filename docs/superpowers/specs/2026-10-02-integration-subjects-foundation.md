@@ -98,6 +98,10 @@ root subject exists per `(project, repository)`
 (`uq_integration_subjects_admitting_root`); how many sealed batches may coexist
 stays policy. An unbound admitting root whose request is no longer outstanding
 can never seal, so the seed for the replacing request closes it as `superseded`.
+Concurrent creation also replays when callers share the deterministic subject
+id: either the primary key or natural key may conflict first. A uniqueness
+collision without a matching natural key still raises its constraint violation;
+it cannot adopt a different subject or bypass the admitting-root or batch limits.
 
 ## Not in this task
 

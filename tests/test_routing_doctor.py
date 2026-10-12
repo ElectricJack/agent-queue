@@ -7,7 +7,9 @@ and its project-only fix).
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select, text
@@ -16,13 +18,17 @@ from src.database.tables import tasks as tasks_table
 from src.doctor.models import DoctorContext, Severity
 from src.doctor.routing_checks import (
     CHECK_ID,
+    SELECTORS_CHECK_ID,
     STALE_UNROUTED_SECONDS,
     _check_bypassed,
+    _check_unmatched_selectors,
     routing_checks,
 )
 from src.doctor.runner import apply_fix
-from src.models import Project, TaskStatus
+from src.models import Project, TaskStatus, TaskType
 from src.playbooks.artifact_ref import ArtifactRef
+from src.playbooks.artifact_store import ArtifactStore
+from src.playbooks.definition import PlaybookDefinition, contract_fingerprint
 from src.routing.readiness import (
     BINDING_MISSING,
     BINDING_NOT_READY,
@@ -33,8 +39,10 @@ from src.routing.readiness import (
     binding_state,
 )
 from src.routing.sources import LEGACY, OVERRIDE, ROUTER, UNROUTED
+from src.sessions.harness_parser import Harness
 from tests import test_routing_router as _router
 from tests.test_routing_router import ROUTER_ID, _create
+from tests.test_routing_planner import SHIPPED_POLICY
 
 # The router suite's orchestrator and handler fixtures, shared as-is.
 orch = _router.orch
@@ -209,9 +217,11 @@ async def test_only_the_local_operator_binds_a_router(handler, orch, kind):
 def test_the_check_is_registered_with_a_fix():
     from src.doctor import default_registry
 
-    (check,) = routing_checks()
+    checks = {check.id: check for check in routing_checks()}
+    check = checks[CHECK_ID]
     assert check.id == CHECK_ID and check.fix is not None
-    assert CHECK_ID in {c.id for c in default_registry().checks()}
+    assert checks[SELECTORS_CHECK_ID].fix is None
+    assert set(checks) <= {c.id for c in default_registry().checks()}
 
 
 async def test_a_clean_install_is_ok(handler, orch):
@@ -298,7 +308,7 @@ async def test_the_fix_binds_projects_and_touches_no_task(handler, orch):
     await _create(orch.db, "queued")
     before = await _task_rows(orch.db)
 
-    (check,) = routing_checks()
+    check = next(check for check in routing_checks() if check.id == CHECK_ID)
     result = await apply_fix(check, _ctx(handler))
 
     assert result.fix_applied is True
@@ -311,3 +321,96 @@ async def test_the_fix_binds_projects_and_touches_no_task(handler, orch):
     assert await _task_rows(orch.db) == before
     assert [b["task_id"] for b in result.data["bypass"]] == ["bypass"]
     assert (await orch.db.get_task("queued")).route_source == UNROUTED
+
+
+async def _activate_policy(orch, policy, *, scope="system", identifier="", enabled=True):
+    raw = json.loads((Path(__file__).parent / "fixtures/playbooks/v2" / ROUTER_ID
+                      / "artifact.json").read_text())
+    for step in raw["steps"].values():
+        if step.get("command") == "task_route_plan":
+            step["inputs"]["policy"]["value"] = policy
+    definition = PlaybookDefinition.model_validate(raw)
+    store = ArtifactStore(orch.config.compiled_root)
+    ref = store.put(
+        definition, source_digest=definition.source_hash,
+        contract_fingerprint=contract_fingerprint(definition),
+        profile_fingerprint="sha256:" + "b" * 64, compiler_build=definition.compiler_build,
+    )
+    path = store.path_for(ref.artifact_sha256)
+    await orch.db.upsert_playbook_artifact(
+        ref, scope=scope, scope_identifier=identifier, path=path, size_bytes=Path(path).stat().st_size,
+    )
+    await orch.db.set_playbook_activation(
+        playbook_id=ROUTER_ID, scope=scope, scope_identifier=identifier,
+        artifact_sha256=ref.artifact_sha256, enabled=enabled, activated_by="test",
+        health="ready" if enabled else "disabled", reasons="[]",
+    )
+    return ref.artifact_sha256
+
+
+async def test_doctor_names_each_unmatched_active_lane_selector_without_refusing_routes(
+    handler, orch,
+):
+    policy = SHIPPED_POLICY.replace("opencode-zen*", "opencod-zen*")
+    sha = await _activate_policy(orch, policy)
+    orch.harness_registry.upsert(Harness(
+        id="opencode-zen-new-preview", name="Zen", command="opencode",
+    ))
+    before = await _task_rows(orch.db)
+    result = await _check_unmatched_selectors(_ctx(handler))
+    assert result.severity == Severity.WARN, result
+    assert result.fixable is False
+    assert result.data["checked_policy_count"] == 1  # repeated plan steps share one policy
+    assert {row["selector"] for row in result.data["unmatched_selectors"]} == {
+        "narrow:opencode", "narrow-unverified-model:opencode", "narrow-hosted:opencod-zen*",
+    }
+    for row in result.data["unmatched_selectors"]:
+        assert row["artifact_sha256"] == sha and row["project_id"] == "p"
+        assert row["selector"] in result.detail
+    assert await _task_rows(orch.db) == before
+    await _create(orch.db, "ordinary", task_type=TaskType.RESEARCH)
+    plan = await handler.execute("task_route_plan", {"task_id": "ordinary", "policy": policy})
+    assert plan["success"] and plan["outcome"] == "planned", plan
+
+
+async def test_doctor_accepts_exact_and_prefix_matches_in_the_project_harness_scope(handler, orch):
+    await _activate_policy(orch, SHIPPED_POLICY)
+    for harness in ("opencode", "opencode-zen-new-preview"):
+        orch.harness_registry.upsert(Harness(
+            id=harness, name=harness, command="opencode", project_id="p",
+        ))
+    result = await _check_unmatched_selectors(_ctx(handler))
+    assert result.severity == Severity.OK, result.detail
+    assert result.data["unmatched_selectors"] == []
+    assert result.data["checked_policy_count"] == 1
+
+
+async def test_doctor_uses_active_project_router_instead_of_system_or_disabled_policies(handler, orch):
+    await _activate_policy(orch, SHIPPED_POLICY.replace("opencode-zen*", "system-typo*"))
+    sha = await _activate_policy(orch, SHIPPED_POLICY.replace("opencode-zen*", "project-typo*"),
+                                 scope="project", identifier="p")
+    await _activate_policy(orch, SHIPPED_POLICY.replace("opencode-zen*", "other-typo*"),
+                           scope="project", identifier="other")
+    await _activate_policy(orch, SHIPPED_POLICY.replace("opencode-zen*", "disabled-typo*"),
+                           scope="project", identifier="disabled", enabled=False)
+    result = await _check_unmatched_selectors(_ctx(handler))
+    assert result.severity == Severity.WARN, result.detail
+    assert "project-typo*" in result.detail
+    assert all(row["artifact_sha256"] == sha for row in result.data["unmatched_selectors"])
+    assert "system-typo*" not in result.detail
+    assert "other-typo*" not in result.detail and "disabled-typo*" not in result.detail
+
+
+async def test_doctor_warns_when_active_exact_selector_leaves_opencode_family_uncovered(handler, orch):
+    from pathlib import Path
+
+    policy = (Path(__file__).parent / "fixtures/routing/active-policy-2026-10-03.yaml").read_text()
+    sha = await _activate_policy(orch, policy)
+    for harness in ("opencode", "opencode-zen", "opencode-zen-longcat", "opencode-zen-nemotron", "custom-cli"):
+        orch.harness_registry.upsert(Harness(id=harness, name=harness, command="opencode", project_id="p"))
+    result = await _check_unmatched_selectors(_ctx(handler))
+    assert result.severity is Severity.WARN
+    uncovered = result.data["uncovered_opencode_harnesses"]
+    assert {row["harness"] for row in uncovered} == {"opencode-zen-longcat", "opencode-zen-nemotron", "custom-cli"}
+    assert all(row["artifact_sha256"] == sha for row in uncovered)
+    assert result.data["unmatched_selectors"] == []

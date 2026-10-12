@@ -215,7 +215,7 @@ class GateCommandsMixin:
             # agent-supplied resolved_by cannot create an integration approval.
             from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
             from src.integration.gates import GatePrimitives
-            from src.integration.subjects import Subject
+            from src.integration.runtime_contracts import Subject
 
             principal = current_principal() or TRUSTED_LOCAL
             if principal.kind is not PrincipalKind.LOCAL:

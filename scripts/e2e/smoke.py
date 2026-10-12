@@ -67,6 +67,13 @@ POLL_INTERVAL = float(os.environ.get("AQ_E2E_POLL_SECONDS", "2"))
 TIMINGS: dict[str, float] = {}
 
 
+def train_delivery_timeout() -> float:
+    """Allow the default root settling window before publication convergence."""
+    from src.integration.models import IntegrationTrainPolicy
+
+    return IntegrationTrainPolicy().cadence_seconds + CONVERGE_TIMEOUT
+
+
 # ---------------------------------------------------------------------------
 # Failure signalling
 # ---------------------------------------------------------------------------
@@ -285,6 +292,12 @@ def api_checked(command: str, args: dict) -> dict | list:
         check(result.get("success", True) is not False and "error" not in result,
               f"{command} fixture command failed: {result}")
     return result
+
+
+def supervisor_recipient() -> str:
+    """Read the fixture project's opted-in supervisor destination."""
+    project = api_checked("get_project", {"project_id": PROJECT})
+    return f"supervisor-{PROJECT}" if project["supervisor_enabled"] else "supervisor-global"
 
 
 def wait_for(
@@ -602,8 +615,10 @@ class Worker:
         )
 
 
-def claim_fixture(worker: Worker, task_id: str, *, what: str) -> dict:
+def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> dict:
     """Bound transient empty claims without hiding a wrong task or session failure."""
+    fixtures = [task_ids] if isinstance(task_ids, str) else task_ids
+    check(fixtures, f"{what}: no fixture tasks available")
     last_claim = None
 
     def claim():
@@ -615,13 +630,16 @@ def claim_fixture(worker: Worker, task_id: str, *, what: str) -> dict:
         if last_claim.get("result") == "no_ready_work":
             return None
         check(last_claim.get("result") == "claimed", f"{what}: {last_claim}")
-        check(worker.task_id == task_id, f"{what}: expected fixture {task_id}, held {worker.task_id}")
+        check(worker.task_id in fixtures,
+              f"{what}: expected fixture {task_ids}, held {worker.task_id}")
         return last_claim
 
     def diagnostic():
-        task = task_show(task_id)
         keys = ("id", "status", "profile_id", "route_source", "is_blocked", "claimed_by")
-        fixture_state = {key: task.get(key) for key in keys}
+        fixture_state = [
+            {key: task.get(key) for key in keys}
+            for task in (task_show(task_id) for task_id in fixtures)
+        ]
         return f"last_claim={last_claim}; fixture={fixture_state}"
 
     return wait_for(
@@ -686,7 +704,7 @@ def fresh_workers(
         project_id=project_id,
     )
     for task_id in fillers:
-        api_checked("delete_task", {"task_id": task_id, "cascade": True, "branches": "delete"})
+        api_checked("delete_task", {"task_id": task_id, "recursive": True, "branches": "delete", "confirmed": True})
     return [Worker.adopt(s["id"]) for s in live[:count]]
 
 
@@ -711,7 +729,7 @@ def _delete_open_pool_tasks(project_id: str = PROJECT) -> None:
     This is fixture cleanup; S9 asserts task deletion through the real CLI.
     """
     for task in _open_pool_tasks(project_id):
-        api("delete_task", {"task_id": task["id"], "cascade": True, "branches": "delete"})
+        api("delete_task", {"task_id": task["id"], "recursive": True, "branches": "delete", "confirmed": True})
 
 
 def idle_worker() -> Worker:
@@ -823,8 +841,11 @@ def s2_claim_loop(state: dict) -> str:
     worker = idle_worker()
     state["s2_session"] = worker.session_id
 
-    first = worker.claim_next()
-    check(first["result"] == "claimed", f"first claim: {first}")
+    # S1 may have run in a previous pytest item's subprocess, so read its
+    # remaining fixtures through the public surface rather than local state.
+    fixtures = [task["id"] for task in _open_pool_tasks()
+                if task["title"].startswith("S1 worker task ")]
+    first = claim_fixture(worker, fixtures, what="S2 worker to claim an S1 fixture")
     check(isinstance(first["claim_epoch"], int), f"no integer claim_epoch: {first}")
     first_task = worker.task_id
 
@@ -892,8 +913,9 @@ def s2_claim_loop(state: dict) -> str:
 def s3_worker_filed_work(state: dict) -> str:
     """Work a worker discovers is DEFINED, provenance-linked and gated."""
     worker = idle_worker()
-    claimed = worker.claim_next()
-    check(claimed["result"] == "claimed", f"S3 needs a held task: {claimed}")
+    fixtures = [task["id"] for task in _open_pool_tasks()
+                if task["title"].startswith("S1 worker task ")]
+    claim_fixture(worker, fixtures, what="S3 worker to claim a remaining S1 fixture")
     held = worker.task_id
     state["s3_worker"] = worker
 
@@ -1136,7 +1158,7 @@ def s5_fence_and_scope(state: dict) -> str:
     # Pool bounds are global. Remove this scope-only fixture before closing
     # the holder frees capacity, or OTHER_PROJECT starts a worker that consumes
     # one of S7's two required slots for the entire scale-down grace period.
-    aq("task", "delete", "--task-id", foreign)
+    aq("task", "delete", foreign, "--recursive", "--branches", "delete", "--yes")
     state.pop("s5_foreign", None)
     holder.close(summary="S5 held task")
     return f"cross-session heartbeat and cross-project prime both refused ({foreign})"
@@ -1459,7 +1481,7 @@ def s9_task_lifecycle(state: dict) -> str:
         )
     finally:
         for task_id in created:
-            aq("task", "delete", "--task-id", task_id, check_ok=False)
+            aq("task", "delete", task_id, "--recursive", "--branches", "delete", "--yes", check_ok=False)
 
     for task_id in created:
         gone = run_aq("task", "show", task_id)
@@ -2124,9 +2146,7 @@ def _s16_outage(state: dict) -> dict:
         _provb_session, what="a provb pool session for the moved task", profile_id=STD_B,
     )
     worker = Worker.adopt(sess["id"])
-    claimed = worker.claim_next()
-    check(claimed.get("result") == "claimed", f"provb worker claim: {claimed}")
-    check(worker.task_id == pref[0], f"provb worker claimed {worker.task_id}, not {pref[0]}")
+    claim_fixture(worker, pref[0], what=f"S16 provb worker to claim moved task {pref[0]}")
     worker.close(summary="S16 moved task done on provb")
     worker.drain_ack()
     note(f"provb session {sess['id']} claimed and closed {pref[0]}")
@@ -2148,18 +2168,20 @@ def _s16_outage(state: dict) -> dict:
         m for m in global_notes if m.get("subject") == f"Provider {PROVA}: unauthenticated"
     ]
     check(len(prova_notes) == 1, f"expected one prova outage notice to the human: {prova_notes}")
+    supervisor = supervisor_recipient()
     project_notes = [
         m for m in collection_rows(
             aq(
-                "message", "list", "--to-kind", "session", "--to-id", f"supervisor-{PROJECT}",
+                "message", "list", "--to-kind", "session", "--to-id", supervisor,
                 "--since", str(t0),
             ),
             "messages",
         )
-        if batch in (m.get("body") or "")
+        if m.get("thread_id") == f"reroute:{batch}:{PROJECT}"
     ]
     check(len(project_notes) == 1, f"expected one batch notice for {PROJECT}: {project_notes}")
-    note(f"notices: 1 to user:dashboard ({prova_notes[0]['subject']!r}), 1 to supervisor-{PROJECT} for {batch}")
+    check(project_notes[0].get("project_id") == PROJECT, "batch notice lost its project context")
+    note(f"notices: 1 to user:dashboard ({prova_notes[0]['subject']!r}), 1 to {supervisor} for {batch}")
     incidents = [e for e in provider_escalations() if e.get("source_identity", "").startswith(f"{PROVA}:")]
     open_incidents = [e for e in incidents if e.get("terminal_at") is None]
     check(len(open_incidents) == 1, f"expected one open prova escalation: {incidents}")
@@ -2181,6 +2203,23 @@ def _s16_outage(state: dict) -> dict:
     }
 
 
+def _claim_probation_canary(pinned: str, solo: str) -> tuple[Worker, dict, str]:
+    """Adopt prova's probation canary and claim the held task its pool owns.
+
+    Probation admits one launch -- whichever prova pool asks first.  Its
+    first authenticated call is the success that completes recovery, and
+    the task it claims is a held one, running on prova.
+    """
+    canary = wait_for(
+        lambda: next(iter(live_sessions_for(STD_A) + live_sessions_for(SOLO_A)), None),
+        what="prova's canary launch",
+    )
+    expected = pinned if canary["profile_id"] == STD_A else solo
+    worker = Worker.adopt(canary["id"])
+    claim_fixture(worker, expected, what=f"S16 prova canary {canary['id']} to claim held {expected}")
+    return worker, canary, expected
+
+
 def _s16_recovery(outage: dict) -> str:
     pref, pinned, solo, incident = (
         outage[key] for key in ("pref", "pinned", "solo", "incident")
@@ -2196,18 +2235,7 @@ def _s16_recovery(outage: dict) -> str:
         f"recheck should put prova on probation: {probation}",
     )
     note(f"recheck: probe authenticated -> {probation['state']} ({probation['reason_code']}), probation")
-    # Probation admits one launch -- whichever prova pool asks first.  Its
-    # first authenticated call is the success that completes recovery, and
-    # the task it claims is a held one, running on prova.
-    canary = wait_for(
-        lambda: next(iter(live_sessions_for(STD_A) + live_sessions_for(SOLO_A)), None),
-        what="prova's canary launch",
-    )
-    expected = pinned if canary["profile_id"] == STD_A else solo
-    worker_a = Worker.adopt(canary["id"])
-    claimed = worker_a.claim_next()
-    check(claimed.get("result") == "claimed", f"prova canary claim: {claimed}")
-    check(worker_a.task_id == expected, f"canary claimed {worker_a.task_id}, not {expected}")
+    worker_a, canary, expected = _claim_probation_canary(pinned, solo)
     recovered = wait_provider(PROVA, ("available",), what="the canary's first authenticated call")
     note(
         f"canary {canary['id']} ({canary['profile_id']}) claimed held {expected}; "
@@ -2222,8 +2250,7 @@ def _s16_recovery(outage: dict) -> str:
             profile_id=STD_A,
         )
         worker_p = Worker.adopt(sess_a["id"])
-        claimed = worker_p.claim_next()
-        check(worker_p.task_id == pinned, f"prova claimed {worker_p.task_id}, not the pin")
+        claim_fixture(worker_p, pinned, what=f"S16 prova worker to claim the pinned task {pinned}")
         worker_p.close(summary="S16 pinned task done on prova")
         worker_p.drain_ack()
         note(f"{sess_a['id']} claimed and closed the pinned task {pinned} on prova")
@@ -2294,7 +2321,7 @@ def _s16_recovery(outage: dict) -> str:
     [check_row] = [c for c in doctor.get("checks", []) if c["id"] == "providers.availability"]
     check(check_row["severity"] == "error", f"doctor with every provider down: {check_row}")
     note(f"doctor providers.availability: {check_row['severity']} — {check_row['detail'][:120]}")
-    aq("task", "delete", "--task-id", filler, check_ok=False)
+    aq("task", "delete", filler, "--recursive", "--branches", "delete", "--yes", check_ok=False)
     TIMINGS["provider_recovery_seconds"] = time.monotonic() - started
     return (
         "recheck→probation→available; "
@@ -2427,6 +2454,13 @@ def _pin_train_validation(project_id: str, home: Path) -> dict:
         "id": f"{project_id}-development", "scope": ProjectScope(project_id=project_id),
         "source_hash": source_digest(source), "integration_policy": policy_from_markdown(source),
     })
+    # Only the retained cleanup command remains activatable. The active train
+    # reads this pin for its frozen validation settings, never for publication.
+    definition = definition.model_copy(update={
+        "rules": [rule for rule in definition.rules if rule.id == "cleanup-promoted"],
+        "steps": {name: step for name, step in definition.steps.items()
+                  if name.startswith("cleanup-promoted--")},
+    })
     digest = artifact_sha256(definition)
     bundle = home / "vault" / "e2e-bundles" / definition.id
     bundle.mkdir(parents=True, exist_ok=True)
@@ -2529,7 +2563,7 @@ def s20_train_delivery(state: dict) -> str:
     completion = shown.get("completion") or {}
     check(completion.get("commits") == [head], f"S20 final source was not recorded: {completion}")
     refs = _git_text(str(remote), "for-each-ref", "--format=%(refname)",
-                     "refs/heads/aq-provenance/completions/").splitlines()
+                     "refs/aq/provenance/completions/").splitlines()
     check(refs, "S20 ordinary train close published no completion provenance")
     records = [json.loads(_git_text(str(remote), "show", "-s", "--format=%B", ref)) for ref in refs]
     check(any(record.get("source_oid") == head and
@@ -2553,6 +2587,7 @@ def s20_train_delivery(state: dict) -> str:
         return tip
 
     tip = wait_for(delivered, what="S20 train to publish its ordinary completion",
+                   timeout=train_delivery_timeout(),
                    diagnostic=lambda: str(aq("integration", "status", project_id)))
     check(_git_text(str(remote), "show", f"{tip}:{artifact}") == "ordinary train delivery",
           "S20 delivered target lost the source artifact")
@@ -2809,7 +2844,7 @@ def s17_phased_graph(state: dict) -> str:
         return row if row["status"] in ("COMPLETED", "DONE") else None
 
     wait_for(epic_settled, what=f"phased epic {epic} to settle")
-    aq("task", "delete", "--task-id", epic, "--cascade")
+    aq("task", "delete", epic, "--recursive", "--yes")
     gone = run_aq("task", "show", epic)
     check(gone.returncode != 0, f"S17 cleanup left epic {epic}: {gone}")
     return (
@@ -2859,18 +2894,20 @@ def s18_supervisor_failure_triage(state: dict) -> str:
 
     run = wait_for(triage_run, what="the supervisor-failure-triage playbook run")
     check(run["lifecycle"] == "completed", f"S18 triage run: {run}")
+    supervisor = supervisor_recipient()
 
     def supervisor_notice() -> dict | None:
         rows = collection_rows(
             api_checked("message_list", {
-                "to_kind": "session", "to_id": f"supervisor-{PROJECT}", "since": started_at,
+                "to_kind": "session", "to_id": supervisor, "since": started_at,
             }),
             "messages",
         )
         return next((row for row in rows if task_id in (row.get("body") or "")), None)
 
     notice = wait_for(supervisor_notice, what="the S18 durable supervisor notice")
-    aq("task", "delete", "--task-id", task_id)
+    check(notice.get("project_id") == PROJECT, "triage notice lost its project context")
+    aq("task", "delete", task_id, "--recursive", "--branches", "delete", "--yes")
     return (
         f"task.failed completed triage run {run['run_id']} and queued one durable supervisor "
         f"notice {notice['id']}"
@@ -2920,10 +2957,20 @@ def s19_scoped_planner_graph(state: dict) -> str:
     after_dry_run = api("task_children", {"task_id": held_task}, token=planner.token)
     check(after_dry_run.get("count") == 0, f"scoped dry-run wrote children: {after_dry_run}")
 
-    created = planner.aq(*graph_args)
-    check(created.get("created") is True, f"scoped graph creation: {created}")
-    check(created.get("request_id"), f"scoped graph omitted request id: {created}")
-    child_id = created["nodes"][0]["task_id"]
+    # Graph filing dispatches the router immediately. Hold scheduling until
+    # the fixture override is written so a task-lifecycle route cannot launch
+    # the child before its pool worker claims it.
+    api_checked("set_project_constraint", {"project_id": PROJECT, "pause_scheduling": True})
+    try:
+        created = planner.aq(*graph_args)
+        check(created.get("created") is True, f"scoped graph creation: {created}")
+        check(created.get("request_id"), f"scoped graph omitted request id: {created}")
+        child_id = created["nodes"][0]["task_id"]
+        override_route(child_id, POOL_PROFILE, POOL_CLASS)
+    finally:
+        api_checked("release_project_constraint", {
+            "project_id": PROJECT, "fields": ["pause_scheduling"],
+        })
     child = task_show(child_id)
     check(child.get("parent_task_id") == held_task, f"scoped child parent: {child}")
     provenance = [
@@ -2974,10 +3021,6 @@ def s19_scoped_planner_graph(state: dict) -> str:
     )
     after_denials = api("task_children", {"task_id": held_task}, token=planner.token)
     check(after_denials.get("count") == 1, f"denied graphs wrote children: {after_denials}")
-
-    # A worker-filed node waits on its routing gate; the operator's override
-    # resolves it (the router's job once a project's router is ready).
-    override_route(child_id, POOL_PROFILE, POOL_CLASS)
 
     def child_ready() -> dict | None:
         row = task_show(child_id)
@@ -3041,8 +3084,8 @@ def s19_scoped_planner_graph(state: dict) -> str:
     )
 
     for node in successful[0]["nodes"]:
-        api_checked("delete_task", {"task_id": node["task_id"]})
-    api_checked("delete_task", {"task_id": foreign_parent})
+        api_checked("delete_task", {"task_id": node["task_id"], "confirmed": True})
+    api_checked("delete_task", {"task_id": foreign_parent, "confirmed": True})
     closed_planner = planner.close(summary="S19 scoped planner graph acceptance")
     check(closed_planner.get("success") is not False, f"S19 planner close: {closed_planner}")
     planner.drain_ack()

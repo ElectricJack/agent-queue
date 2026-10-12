@@ -205,7 +205,7 @@ cleanup, status, explain and doctor — asks git one question through
 [`src/integration/delivery_truth.py`](../../src/integration/delivery_truth.py):
 is the exact final source of the task's *current* completion generation an
 ancestor of the configured target? A close retains that source in git
-(`refs/heads/aq-provenance/completions/…`, see
+(`refs/aq/provenance/completions/…`, see
 [exact completion provenance](../specs/design/git-completion-provenance.md)), so
 branch cleanup and archive never erase the answer.
 

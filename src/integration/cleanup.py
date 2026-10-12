@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Literal
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict
@@ -25,22 +25,37 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_candidate_publications,
+    integration_candidate_resolutions,
     integration_candidate_ref_mutations,
     integration_cleanup_items,
+    integration_owner_recoveries,
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stages,
     integration_root_intent_members,
+    task_completion_records,
     task_delivery_receipts,
     tasks,
+    sessions,
     workspaces,
 )
+from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.git.github_contracts import GitHubRepositoryBinding
-from src.git.manager import GitError
-from src.integration.delivery_branches import branch_of, deletable
+from src.git.manager import GitError, RemoteRefState, repository_urls_match
+from src.integration.delivery_branches import (
+    branch_of, deletable, preserve_branch_tips, repository_protected_branches,
+    train_cleanup_hold,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _TrainCleanupContext:
+    store: str | None
+    snapshot: Any
+    fetched_checkouts: set[str] = field(default_factory=set)
 
 
 class CleanupMaterializationResult(BaseModel):
@@ -76,6 +91,7 @@ class IntegrationCleanupService:
         forge_provider: Any | None = None,
         binding_resolver=None,
         candidate_store=None,
+        retirement_service=None,
         clock=time.time,
     ) -> None:
         self.db = db
@@ -85,12 +101,16 @@ class IntegrationCleanupService:
         self.forge_provider = forge_provider
         self.binding_resolver = binding_resolver
         self.candidate_store = candidate_store
+        self.retirement_service = retirement_service
         self.clock = clock
 
     async def advance(
         self, batch_id: str, *, now: float | None = None, limit: int = 100
     ) -> list[CleanupExecutionResult]:
         observed_at = self.clock() if now is None else now
+        # Recover promoted batches from before cleanup was enabled, including
+        # batches with no items yet. Materialization is idempotent.
+        await self._materialize_pending_train_batches(observed_at)
         async with self.db._engine.connect() as conn:
             rows = (
                 (
@@ -115,8 +135,14 @@ class IntegrationCleanupService:
                 .mappings()
                 .all()
             )
+        batch = await self.db.get_integration_batch(batch_id)
+        context = None
+        if (rows and batch and batch["target_ref"] is not None
+                and batch["lifecycle"] == "promoted"):
+            context = await self._train_context(batch)
         results = [
-            await self.execute(row["batch_id"], row["kind"], row["identity"], now=observed_at)
+            await self.execute(row["batch_id"], row["kind"], row["identity"], now=observed_at,
+                               train_context=context)
             for row in rows
         ]
         await self.reconcile_aggregate(batch_id, observed_at)
@@ -127,9 +153,11 @@ class IntegrationCleanupService:
 
     @root_engine_guard(
         "batch", outcome="wait", result_model=CleanupExecutionResult, aborted_pr_cleanup=True,
+        promoted_train_cleanup=True,
     )
     async def execute(
-        self, batch_id: str, kind: str, identity: str, *, now: float | None = None
+        self, batch_id: str, kind: str, identity: str, *, now: float | None = None,
+        train_context=None,
     ) -> CleanupExecutionResult:
         observed_at = self.clock() if now is None else now
         nonce = uuid.uuid4().hex
@@ -185,6 +213,8 @@ class IntegrationCleanupService:
                 updated_at=observed_at,
             )
         try:
+            if train_context is not None:
+                claimed_row["train_context"] = train_context
             outcome, error = await self._perform(claimed_row)
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
@@ -205,6 +235,13 @@ class IntegrationCleanupService:
             full_name=row["repository_full_name"],
         )
         kind = row["kind"]
+        batch = await self.db.get_integration_batch(row["batch_id"])
+        if batch and batch["target_ref"] is not None and batch["lifecycle"] == "promoted":
+            if kind == "audit_pr":
+                return await self._cleanup_train_pr(row, batch, binding)
+            if kind in {"remote_ref", "local_ref"}:
+                return await self._cleanup_train_ref(row, batch, repository, binding)
+            return "failed", "unknown train cleanup kind"
         if kind in {"source_pr", "audit_pr"}:
             return await self._cleanup_pr(row, binding)
         if kind == "remote_ref":
@@ -364,8 +401,12 @@ class IntegrationCleanupService:
 
     async def _cleanup_remote_ref(self, row, repository, binding):
         short = self._short_head(row["target_ref"])
-        if short == repository.default_branch:
-            return "conflict", "default branch cleanup is forbidden"
+        async with self.db._engine.connect() as conn:
+            protected = await repository_protected_branches(
+                conn, row["repository_id"], default_branch=repository.default_branch,
+            )
+        if short in protected:
+            return "conflict", "protected branch cleanup is forbidden"
         if row["member_ordinal"] is not None:
             async with self.db._engine.connect() as conn:
                 owner = (
@@ -409,8 +450,12 @@ class IntegrationCleanupService:
 
     async def _cleanup_local_ref(self, row, repository):
         short = self._short_head(row["target_ref"])
-        if short == repository.default_branch:
-            return "conflict", "default branch cleanup is forbidden"
+        async with self.db._engine.connect() as conn:
+            protected = await repository_protected_branches(
+                conn, row["repository_id"], default_branch=repository.default_branch,
+            )
+        if short in protected:
+            return "conflict", "protected branch cleanup is forbidden"
         if self.git is None:
             return "retryable", "local cleanup transport is unavailable"
         store = str(self.retained_store(row["repository_id"]))
@@ -747,9 +792,14 @@ class IntegrationCleanupService:
 
     @root_engine_guard(
         "batch", outcome="stale", result_model=CleanupMaterializationResult, aborted_pr_cleanup=True,
+        promoted_train_cleanup=True,
     )
     async def materialize(self, batch_id: str, *, now: float | None = None):
         observed_at = self.clock() if now is None else now
+        train_batch = await self.db.get_integration_batch(batch_id)
+        if (train_batch and train_batch["target_ref"] is not None
+                and train_batch["lifecycle"] == "promoted"):
+            return await self._materialize_train(train_batch, observed_at)
         async with self.db._engine.connect() as conn:
             project_id = (
                 await conn.execute(
@@ -896,6 +946,448 @@ class IntegrationCleanupService:
                 item_count=len(persisted),
             )
 
+    async def _materialize_pending_train_batches(self, now):
+        async with self.db._engine.connect() as conn:
+            ids = (await conn.execute(select(integration_batches.c.id).where(
+                integration_batches.c.target_ref.is_not(None),
+                integration_batches.c.lifecycle == "promoted",
+                integration_batches.c.cleanup_state == "pending",
+                ~select(integration_cleanup_items.c.batch_id).where(
+                    integration_cleanup_items.c.batch_id == integration_batches.c.id,
+                ).exists(),
+            ).order_by(integration_batches.c.updated_at, integration_batches.c.id)
+                .limit(100))).scalars().all()
+        for batch_id in ids:
+            try:
+                result = await self.materialize(batch_id, now=now)
+                if result.outcome not in {"materialized", "already_materialized"}:
+                    logger.warning("Promoted train cleanup %s: %s", batch_id, result.outcome)
+            except Exception:
+                logger.warning("Could not materialize train cleanup %s", batch_id, exc_info=True)
+
+    async def reconcile(self, now: float) -> None:
+        """Maintenance recovers both promoted and aborted batches after restart."""
+        await self.reconcile_aborted(now)
+        await self._materialize_pending_train_batches(now)
+        async with self.db._engine.connect() as conn:
+            ids = (await conn.execute(select(integration_batches.c.id).where(
+                integration_batches.c.target_ref.is_not(None),
+                integration_batches.c.lifecycle == "promoted",
+                integration_batches.c.cleanup_state == "pending",
+            ).order_by(integration_batches.c.updated_at, integration_batches.c.id)
+                .limit(100))).scalars().all()
+        for batch_id in ids:
+            try:
+                await self.advance(batch_id, now=now)
+            except Exception:
+                logger.warning("Could not advance train cleanup %s", batch_id, exc_info=True)
+
+    async def _materialize_train(self, batch, now):
+        """Freeze cleanup identities, without legacy receipts or publication rows."""
+        repository = await self.db.get_repo(batch["repository_id"])
+        if repository is None or self.binding_resolver is None:
+            return CleanupMaterializationResult(outcome="invariant_error", batch_id=batch["id"])
+        binding = await self.binding_resolver(repository)
+        if binding is None or not batch["final_main_sha"]:
+            return CleanupMaterializationResult(outcome="invariant_error", batch_id=batch["id"])
+        from src.integration.batches import candidate_ref
+        from src.integration.models import IntegrationCleanupPolicy
+        from src.integration.train_sources import RETAINED_CANDIDATE_PREFIX
+
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, batch["project_id"])
+            batch = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == batch["id"],
+            ).with_for_update())).mappings().one()
+            if batch["lifecycle"] != "promoted":
+                return CleanupMaterializationResult(outcome="stale", batch_id=batch["id"])
+            count = len((await conn.execute(select(integration_cleanup_items.c.identity).where(
+                integration_cleanup_items.c.batch_id == batch["id"],
+            ))).all())
+            if count:
+                return CleanupMaterializationResult(outcome="already_materialized",
+                                                    batch_id=batch["id"], item_count=count)
+            members = (await conn.execute(select(integration_batch_members).where(
+                integration_batch_members.c.batch_id == batch["id"],
+            ).order_by(integration_batch_members.c.ordinal))).mappings().all()
+            if not members:
+                return CleanupMaterializationResult(outcome="invariant_error", batch_id=batch["id"])
+            policy = batch["policy_snapshot"] or {}
+            cleanup = IntegrationCleanupPolicy.model_validate(policy.get("cleanup", {}))
+            common = dict(
+                batch_id=batch["id"], project_id=batch["project_id"],
+                repository_id=batch["repository_id"], repository_numeric_id=binding.repository_id,
+                repository_full_name=binding.full_name, revision=batch["current_revision"],
+                state="pending", attempts=0, next_attempt_at=now, created_at=now, updated_at=now,
+            )
+            items = []
+
+            default_target = (
+                batch["target_ref"]
+                == "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
+            )
+
+            def item(kind, identity, **values):
+                items.append(common | dict(kind=kind, identity=identity,
+                    domain_key=f"cleanup:{batch['id']}:{kind}:{identity}", **values))
+
+            for member in members:
+                task = None
+                for table in (tasks, archived_tasks):
+                    task = (await conn.execute(select(table.c.branch_name, table.c.pr_url).where(
+                        table.c.id == member["task_id"], table.c.repo_id == batch["repository_id"],
+                    ))).mappings().one_or_none()
+                    if task is not None:
+                        break
+                ref = member["source_ref"] or (
+                    f"refs/heads/{branch_of(task['branch_name'])}"
+                    if task and task["branch_name"] else None
+                )
+                if ref is None:
+                    return CleanupMaterializationResult(outcome="invariant_error",
+                                                        batch_id=batch["id"])
+                if ref == batch["target_ref"]:
+                    # An epic refresh freezes the epic itself at the default
+                    # head: its branch is this batch's target and its PR is not
+                    # this delivery, so neither is a source to retire.
+                    continue
+                pr_url = member["pr_url"] or (task["pr_url"] if task else None)
+                retention = member["source_ref_retention"] or cleanup.successful_source_refs
+                short_ref = self._short_head(ref)
+                # Epic branches are disposable delivery refs once a batch to
+                # the repository default branch has settled. Active or
+                # unique work is still protected by the execution-time hold
+                # and ancestry checks below.
+                retire_epic = default_target and (
+                    short_ref == "aq/epic" or short_ref.startswith("aq/epic/")
+                )
+                if retention == "delete" or retire_epic:
+                    item("remote_ref", ref, member_ordinal=member["ordinal"], target_ref=ref,
+                         expected_sha=member["source_sha"])
+                if pr_url:
+                    number = self._pr_number(pr_url, binding.full_name)
+                    # Train PRs need an audit comment, not a synthetic receipt.
+                    item("audit_pr", f"{binding.repository_id}#{number}",
+                         target_pr_number=number, target_pr_url=pr_url,
+                         expected_sha=member["source_sha"])
+            candidate_sha = batch["tested_candidate_sha"] or batch["final_main_sha"]
+            item("remote_ref", candidate_ref(batch["id"]), target_ref=candidate_ref(batch["id"]),
+                 expected_sha=candidate_sha)
+            integration_ref = batch["integration_branch"]
+            if default_target and integration_ref and integration_ref != batch["target_ref"]:
+                item("remote_ref", integration_ref, target_ref=integration_ref,
+                     expected_sha=candidate_sha)
+
+            if default_target:
+                # Qualified repair branches are only retired after an
+                # accepted reservation was included in this settled
+                # revision. Exact SHA and reachability are rechecked by the
+                # normal remote-ref executor before deletion.
+                repair_refs = (await conn.execute(
+                    select(
+                        integration_candidate_resolutions.c.target_branch,
+                        integration_candidate_resolutions.c.resolved_head_sha,
+                    ).where(
+                        integration_candidate_resolutions.c.batch_id == batch["id"],
+                        integration_candidate_resolutions.c.revision == batch["current_revision"],
+                        integration_candidate_resolutions.c.target_kind == "qualified",
+                        integration_candidate_resolutions.c.state == "accepted",
+                    ).order_by(integration_candidate_resolutions.c.id)
+                )).all()
+                for repair_ref, repair_sha in repair_refs:
+                    if repair_ref != batch["target_ref"]:
+                        item("remote_ref", repair_ref, target_ref=repair_ref,
+                             expected_sha=repair_sha)
+
+                # A preserved tip becomes eligible only after owner recovery
+                # recorded a successful release and the same owner fence is
+                # still released. It is still kept and bundled if its exact
+                # tip is not reachable from the promoted default target.
+                member_ids = [member["task_id"] for member in members]
+                owners = (await conn.execute(select(integration_branch_owners).where(
+                    integration_branch_owners.c.repository_id == batch["repository_id"],
+                    integration_branch_owners.c.owner_id.in_(member_ids),
+                    integration_branch_owners.c.handoff_state == "released",
+                    integration_branch_owners.c.session_id.is_(None),
+                    integration_branch_owners.c.workspace_id.is_(None),
+                ))).mappings().all()
+                for owner in owners:
+                    recovery = (await conn.execute(
+                        select(integration_owner_recoveries).where(
+                            integration_owner_recoveries.c.owner_row_id == owner["id"],
+                            integration_owner_recoveries.c.outcome == "preserved_and_released",
+                        ).order_by(
+                            integration_owner_recoveries.c.created_at.desc(),
+                            integration_owner_recoveries.c.id.desc(),
+                        ).limit(1)
+                    )).mappings().one_or_none()
+                    evidence = (recovery or {}).get("evidence") or {}
+                    preserved_ref = evidence.get("preserved_ref")
+                    preserved_sha = evidence.get("preserved_sha")
+                    if (
+                        not recovery
+                        or evidence.get("released_fence_token") != owner["fence_token"]
+                        or not isinstance(preserved_ref, str)
+                        or not preserved_ref
+                        or not isinstance(preserved_sha, str)
+                        or len(preserved_sha) != 40
+                    ):
+                        continue
+                    if not preserved_ref.startswith("refs/heads/"):
+                        preserved_ref = "refs/heads/" + preserved_ref
+                    if preserved_ref != batch["target_ref"]:
+                        item("remote_ref", preserved_ref, target_ref=preserved_ref,
+                             expected_sha=preserved_sha)
+            retained = RETAINED_CANDIDATE_PREFIX + batch["id"]
+            item("local_ref", retained, target_ref=retained, expected_sha=candidate_sha)
+            for values in items:
+                await conn.execute(pg_insert(integration_cleanup_items).values(**values)
+                    .on_conflict_do_nothing(index_elements=["batch_id", "kind", "identity"]))
+        return CleanupMaterializationResult(outcome="materialized", batch_id=batch["id"],
+                                            item_count=len(items))
+
+    async def _train_context(self, batch):
+        from src.integration.git_truth import GitTruth
+
+        if self.git is None or self.candidate_store is None:
+            return None
+        repository = await self.db.get_repo(batch["repository_id"])
+        if repository is None:
+            return None
+        try:
+            store = str(await self.candidate_store(repository))
+        except (GitError, OSError, ValueError):
+            return _TrainCleanupContext(None, None)
+        snapshot = await GitTruth(self.git).snapshot(
+            store, project_id=batch["project_id"], repository_id=batch["repository_id"],
+            repository_url=repository.url, target_ref=batch["target_ref"],
+        )
+        return _TrainCleanupContext(store, snapshot)
+
+    async def _cleanup_train_ref(self, row, batch, repository, binding):
+        import asyncio
+
+        from src.integration.lock import BranchLock
+        from src.integration.models import BranchKey
+        from src.integration.ownership import BranchBusy
+
+        ref = row["target_ref"]
+        short = self._short_head(ref)
+        async with self.db._engine.connect() as conn:
+            protected = await repository_protected_branches(
+                conn, batch["repository_id"], default_branch=repository.default_branch,
+            )
+        if ref == batch["target_ref"] or not deletable(
+            short, repository.default_branch, protected=protected,
+        ):
+            return "conflict", "target or protected branch cleanup is forbidden"
+        context = row.get("train_context") or await self._train_context(batch)
+        if context is None:
+            return "retryable", "train cleanup Git transport is unavailable"
+        store, snapshot = context.store, context.snapshot
+        if snapshot is None or snapshot.error or not snapshot.target_oid:
+            return "retryable", "train cleanup target is unknown"
+        current = (snapshot.for_target(ref).target_oid if row["kind"] == "remote_ref"
+                   else await self.git.arev_parse(store, ref))
+        if current is None and row["kind"] == "local_ref":
+            if await self.git.aref_exists(store, ref) is not False:
+                return "retryable", "local candidate state is unknown"
+            return "complete", None
+        # An absent origin branch can still have local copies. Retry those
+        # against the immutable landing head rather than finishing early.
+        proof_head = current or row["expected_sha"]
+        ancestry = await self.git.arun_git_result(
+            ["--no-replace-objects", "merge-base", "--is-ancestor", proof_head, snapshot.target_oid],
+            cwd=store,
+        )
+        ancestor = {0: True, 1: False}.get(ancestry.returncode)
+        if ancestor is None:
+            return "retryable", "train cleanup ancestry is unknown"
+        if not ancestor:
+            if current is None:
+                return "conflict", "absent remote's recorded tip is not reachable from target"
+            async def run_git(path, *args):
+                result = await self.git.arun_git_result(list(args), cwd=str(path))
+                if result.returncode:
+                    raise GitError(result.stderr or "branch preservation failed")
+                return result.stdout.strip()
+
+            bundle = await preserve_branch_tips(
+                run_git, store, {short: current}, target_sha=snapshot.target_oid,
+                backup_dir=self.data_dir / "branch-backups", repository_id=batch["repository_id"],
+                now=self.clock(),
+            )
+            return "conflict", f"ref is not reachable from target; retained and bundled at {bundle}"
+        if current is not None and current != row["expected_sha"]:
+            return "conflict", "ref moved after promotion"
+        locks = BranchLock(self.db, clock=self.clock)
+        fence = None
+        try:
+            async with self.db.immediate() as conn:
+                # Reopen and cleanup share project -> branch lock ordering.
+                await self.db.lock_hierarchy_project(conn, batch["project_id"])
+                hold = await train_cleanup_hold(conn, repository_id=batch["repository_id"], ref=ref)
+                if hold:
+                    return "retryable", hold
+                fence = await locks.acquire(BranchKey(repository_id=batch["repository_id"],
+                    branch=ref), "service:integration-cleanup", role="integration",
+                    ttl_seconds=30, conn=conn)
+                async with locks.exclusion(fence, conn=conn) as owner:
+                    if row["kind"] == "local_ref":
+                        occupied = await self.git.aworktree_list(store)
+                        if any(branch_of(entry.get("branch")) == short for entry in occupied):
+                            return "retryable", "candidate is checked out in a worktree"
+                        await self.git.adelete_local_ref_exact(store, ref=ref,
+                                                             expected_old_oid=current)
+                    else:
+                        actual = await self.git.als_remote_ref(store, short,
+                                                              repository_url=repository.url)
+                        if actual.state is RemoteRefState.ERROR:
+                            return "retryable", "remote cleanup state is unknown"
+                        if actual.state is RemoteRefState.PRESENT:
+                            if actual.oid != current:
+                                return "retryable", "remote ref moved; reobserve before preservation"
+                            try:
+                                await self.git.adelete_repository_ref(store, repository=binding,
+                                    branch=short, expected_old_oid=current,
+                                    authority_deadline=asyncio.get_running_loop().time()
+                                    + max(0, owner["expires_at"] - self.clock()))
+                            except GitError:
+                                pass
+                            actual = await self.git.als_remote_ref(store, short,
+                                                                  repository_url=repository.url)
+                            if actual.state is not RemoteRefState.ABSENT:
+                                return "retryable", "remote deletion is unconfirmed"
+                        return await self._cleanup_train_checkouts(
+                            conn, row, repository, context, protected,
+                        )
+            return "complete", None
+        except BranchBusy:
+            return "retryable", "ref has an active writer"
+        finally:
+            if fence is not None:
+                await locks.release(fence)
+
+    async def _cleanup_train_checkouts(self, conn, row, repository, context, protected):
+        """Retire local copies under the project/ref fence and workspace locks."""
+        from src.integration.branch_sweep import clean_landed_checkout
+
+        store, target_sha = context.store, context.snapshot.target_oid
+        checkouts = (await conn.execute(select(workspaces).where(
+            workspaces.c.project_id == row["project_id"],
+        ).order_by(workspaces.c.id).with_for_update())).mappings().all()
+        live_paths = (await conn.execute(select(sessions.c.work_dir).where(
+            sessions.c.project_id == row["project_id"],
+            sessions.c.state.in_(LIVE_SESSION_STATES),
+        ))).scalars().all()
+        busy = {str(Path(path).resolve()) for path in live_paths if path}
+        busy |= {str(Path(ws["workspace_path"]).resolve()) for ws in checkouts
+                 if ws["locked_by_agent_id"] or ws["locked_by_task_id"] or ws["job_pin_count"]}
+        managed = {str(Path(ws["workspace_path"]).resolve()) for ws in checkouts
+                   if ws["source_type"] in {"clone", "worktree"}}
+        managed.add(str(Path(store).resolve()))
+        paths = dict.fromkeys([store, *(ws["workspace_path"] for ws in checkouts)])
+        seen = set()
+        for path in paths:
+            if not Path(path).is_dir():
+                continue
+            common = await self.git.arun_git_result(["rev-parse", "--git-common-dir"], cwd=path)
+            if common.returncode:
+                if str(Path(path).resolve()) not in managed:
+                    # A linked workspace may intentionally be a non-Git directory.
+                    continue
+                return "retryable", f"cleanup common directory is unknown: {path}"
+            url = await self.git.aget_remote_url(path)
+            if not url:
+                return "retryable", f"cleanup repository is unknown: {path}"
+            if not repository_urls_match(url, repository.url, base=path):
+                if path == store:
+                    return "retryable", "retained cleanup repository changed"
+                continue
+            identity = str((Path(path) / common.stdout.strip()).resolve())
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if path == store:
+                # GitTruth already fetched this common directory for the visit.
+                context.fetched_checkouts.add(identity)
+            outcome, error = await clean_landed_checkout(
+                self.git, path, repository_url=repository.url,
+                default_branch=repository.default_branch, ref=row["target_ref"],
+                expected_sha=row["expected_sha"], target_sha=target_sha,
+                managed_paths=managed, busy_paths=busy, protected=protected,
+                fetched_checkouts=context.fetched_checkouts,
+            )
+            if outcome != "complete":
+                return outcome, error
+        return "complete", None
+
+    async def _cleanup_train_pr(self, row, batch, binding):
+        from src.integration.git_truth import commits_added
+        from src.integration.pr_delivery import train_delivery_comment
+        from src.integration.provenance import CompletionIdentity, GitProvenance
+        from src.integration.repair import OrdinaryRepairService
+
+        provider = self.forge_provider or await self._github_client(binding)
+        if provider is None:
+            return "retryable", "train cleanup forge provider is unavailable"
+        current = await provider.exact_pull_request(number=row["target_pr_number"])
+        if current is None:
+            return "complete", None
+        if (current.get("repository_numeric_id") != binding.repository_id
+                or current.get("repository_full_name") != binding.full_name
+                or current.get("head_sha") != row["expected_sha"]):
+            return "conflict", "pull request repository or source head changed"
+        context = row.get("train_context") or await self._train_context(batch)
+        if context is None:
+            return "retryable", "train cleanup Git transport is unavailable"
+        store, snapshot = context.store, context.snapshot
+        promoted = batch["tested_candidate_sha"] or batch["final_main_sha"]
+        if (snapshot is None or snapshot.error or not snapshot.target_oid
+                or await self.git.ais_ancestor(store, promoted, snapshot.target_oid,
+                                              strict=True) is not True):
+            return "retryable", "promotion is not proven in Git"
+        if await self.git.ais_ancestor(store, row["expected_sha"], promoted,
+                                       strict=True) is not True:
+            return "conflict", "pull request source is not in the promoted candidate"
+        marker, _ = train_delivery_comment(batch["id"], row["expected_sha"], promoted,
+                                           batch["target_ref"], [])
+        if await provider.has_comment_marker(number=row["target_pr_number"], marker=marker):
+            return "complete", None
+        beyond = set(await commits_added(self.git, store, row["expected_sha"], promoted))
+        async with self.db._engine.connect() as conn:
+            repair_ids = set()
+            for table in (tasks, archived_tasks):
+                repair_ids.update((await conn.execute(select(table.c.id).where(
+                    table.c.dedup_key.startswith(f"repair:{batch['id']}:", autoescape=True),
+                ))).scalars())
+        fixes = set()
+        repair = OrdinaryRepairService(self.db)
+        for task_id in sorted(repair_ids):
+            original = await repair.input(task_id)
+            if original and original["batch_id"] == batch["id"]:
+                async with self.db._engine.connect() as conn:
+                    completions = (await conn.execute(select(task_completion_records.c.id).where(
+                        task_completion_records.c.task_id == task_id,
+                    ))).scalars().all()
+                provenance = GitProvenance(self.git, store,
+                                          repository_url=snapshot.observation.repository_url)
+                for completion in completions:
+                    source = await provenance.read_completion(CompletionIdentity(
+                        batch["project_id"], batch["repository_id"], task_id, completion,
+                    ), refs=snapshot.observation.source_heads)
+                    if source is None:
+                        continue
+                    head = source["source_oid"]
+                    if await self.git.ais_ancestor(store, head, promoted, strict=True) is True:
+                        fixes.update(await repair.added_commits(task_id, self.git, store, head))
+        _, body = train_delivery_comment(batch["id"], row["expected_sha"], promoted,
+                                         batch["target_ref"], sorted(beyond & fixes))
+        if await self._mark_irreversible_prewrite(row) != "owner":
+            return "retryable", "promotion comment publication is unresolved"
+        await provider.comment_pull_request(number=row["target_pr_number"], marker=marker, body=body)
+        return "complete", None
+
     @classmethod
     async def materialize_aborted_on(cls, conn, batch, now):
         """Queue audit PR retirement atomically with abort; retain all source work."""
@@ -985,11 +1477,41 @@ class IntegrationCleanupService:
                                exc_info=True)
 
     async def _cleanup_aborted_candidate(self, batch) -> bool:
-        """Delete only this batch's private candidate under its managed ref lease."""
+        """Retire both private candidate refs, preserving every member branch."""
+        from src.integration.batches import candidate_ref
+        from src.integration.train_sources import RETAINED_CANDIDATE_PREFIX
+
+        if not await self._cleanup_aborted_ref(batch, candidate_ref(batch["id"])):
+            return False
+        return await self._cleanup_aborted_ref(
+            batch, RETAINED_CANDIDATE_PREFIX + batch["id"], local=True,
+        )
+
+    async def _cleanup_aborted_ref(self, batch, ref, *, local=False) -> bool:
+        """Delete one private candidate under its managed ref lease."""
         import asyncio
 
+        if self.retirement_service is not None:
+            from src.integration.branch_retirement import request_branch_retirement_on
+
+            async with self.db.immediate() as conn:
+                current = (await conn.execute(select(integration_batches).where(
+                    integration_batches.c.id == batch["id"],
+                ).with_for_update())).mappings().first()
+                if (current is None or current["intent"] != "aborted"
+                    or current["lifecycle"] != "aborted"):
+                    return False
+                identity = await request_branch_retirement_on(
+                    conn, request_id="abort:" + batch["id"], project_id=current["project_id"],
+                    repository_id=current["repository_id"], branch=ref,
+                    reason="aborted batch candidate", now=self.clock(),
+                )
+            if identity is None:
+                return False
+            state, _error = await self.retirement_service.advance(identity)
+            return state == "complete"
+
         from src.git.manager import RemoteRefState
-        from src.integration.batches import candidate_ref
         from src.integration.lock import BranchLock
         from src.integration.models import BranchKey
         from src.integration.ownership import BranchBusy
@@ -1000,7 +1522,6 @@ class IntegrationCleanupService:
         binding = await self.binding_resolver(repository)
         if binding is None:
             return False
-        ref = candidate_ref(batch["id"])
         if ref == batch["target_ref"] or self._short_head(ref) == repository.default_branch:
             return False
         store = str(await self.candidate_store(repository))
@@ -1018,6 +1539,18 @@ class IntegrationCleanupService:
                 if current["intent"] != "aborted" or current["lifecycle"] != "aborted":
                     return False
                 short = self._short_head(ref)
+                if local:
+                    exists = await self.git.aref_exists(store, ref)
+                    if exists is not True:
+                        return exists is False
+                    occupied = await self.git.aworktree_list(store)
+                    if any(branch_of(entry.get("branch")) == short for entry in occupied):
+                        return False
+                    head = await self.git.arev_parse(store, ref)
+                    if head is None:
+                        return False
+                    await self.git.adelete_local_ref_exact(store, ref=ref, expected_old_oid=head)
+                    return await self.git.aref_exists(store, ref) is False
                 observed = await self.git.als_remote_ref(
                     store, short, repository_url=repository.url,
                 )
@@ -1120,6 +1653,10 @@ class IntegrationCleanupService:
             "updated_at": now,
         }
         items = []
+        repo = await self.db.get_repo(batch["repository_id"])
+        protected = await repository_protected_branches(
+            conn, batch["repository_id"], default_branch=repo.default_branch,
+        )
         for task_id, (row, ordinal) in sorted(descendants.items()):
             branch = branch_of(row["branch_name"])
             head = heads.get(task_id)
@@ -1127,7 +1664,7 @@ class IntegrationCleanupService:
                 ordinal not in delete_ordinals
                 or row["status"] != "COMPLETED"
                 or not branch
-                or not deletable(branch, "main")
+                or not deletable(branch, repo.default_branch, protected=protected)
                 or not head
             ):
                 continue
@@ -1374,7 +1911,7 @@ class SubjectCleanup:
         self.clock = clock
 
     def bind(self, ports):
-        from src.integration.subjects import Primitive
+        from src.integration.runtime_contracts import Primitive
 
         ports.bind(Primitive.CLEANUP, self)
 
@@ -1383,7 +1920,7 @@ class SubjectCleanup:
 
         from src.integration.development import DevelopmentBusy
         from src.integration.ownership import BranchOwnershipError
-        from src.integration.subjects import PrimitiveOutcome, SubjectPhase
+        from src.integration.runtime_contracts import PrimitiveOutcome, SubjectPhase
 
         p = args.primitive
         if subject.phase not in {SubjectPhase.PUBLISHED, SubjectPhase.CLEANING}:
@@ -1391,6 +1928,10 @@ class SubjectCleanup:
         pending, retained, deleted, retention_deadlines = [], [], [], []
         try:
             repo = await self.gitops._repository(subject)
+            async with self.gitops.db._engine.connect() as conn:
+                protected = await repository_protected_branches(
+                    conn, subject.repository_id, default_branch=repo.default_branch,
+                )
             async with self.gitops.exclusion(repo.repository_id, subject):
                 await self.gitops.authority(subject)
                 items = await self.inventory(subject)
@@ -1403,7 +1944,8 @@ class SubjectCleanup:
                         item.failed_at + args.retain_failed_seconds
                         if item.failed_at is not None else 0
                     ))
-                    if (item.identity in {subject.target_ref, f"refs/heads/{repo.default_branch}"}
+                    if (item.identity == subject.target_ref
+                            or branch_of(item.identity) in protected
                             or item.successful_source and not args.delete_successful_sources
                             or self.clock() < deadline):
                         retained.append(item.identity)

@@ -16,7 +16,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
-from src.git.manager import GitError
+from src.git.manager import GitError, RemoteRefResult, RemoteRefState
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
@@ -64,6 +64,8 @@ def _git_with_remote_refs(*present: str) -> MagicMock:
     git._arun = arun
     git.apush_validated_ref = AsyncMock(return_value="a" * 40)
     git.apush_validated_delivery = AsyncMock(return_value="b" * 40)
+    git.als_remote_ref = AsyncMock(return_value=RemoteRefResult(
+        RemoteRefState.PRESENT, oid="a" * 40))
     return git
 
 
@@ -113,6 +115,8 @@ async def test_new_branch_from_old_default_is_an_exact_oid_push_of_the_remote_re
 @pytest.mark.asyncio
 async def test_new_branch_from_workspace_head_is_a_gated_root_delivery(handler):
     # Neither the new branch nor the recorded old default exists on origin.
+    handler.orchestrator.git.als_remote_ref.return_value = RemoteRefResult(
+        RemoteRefState.PRESENT, oid="b" * 40)
     result = await handler.execute("set_default_branch", {"project_id": "p1", "branch": "develop"})
 
     assert result.get("error") is None
@@ -148,3 +152,28 @@ async def test_project_without_a_workspace_just_records_the_branch(handler, db):
     assert "branch_created" not in result
     assert handler.orchestrator.git.runs == []
     assert (await db.get_project("p2")).repo_default_branch == "develop"
+
+
+@pytest.mark.parametrize("failure", ["denied", "wrong_oid", "unreadable"])
+async def test_failed_default_publication_never_updates_the_project(handler, db, failure):
+    git = _git_with_remote_refs("refs/remotes/origin/main^{commit}")
+    handler.orchestrator.git = git
+    if failure == "denied":
+        git.apush_validated_ref.side_effect = GitError("push denied")
+    elif failure == "wrong_oid":
+        git.als_remote_ref.return_value = RemoteRefResult(RemoteRefState.PRESENT, oid="c" * 40)
+    else:
+        git.als_remote_ref.return_value = RemoteRefResult(RemoteRefState.ERROR, error="unavailable")
+    result = await handler.execute("set_default_branch", {"project_id": "p1", "branch": "dev"})
+    assert result.get("error")
+    assert (await db.get_project("p1")).repo_default_branch == "main"
+
+
+async def test_fetch_failure_keeps_best_effort_default_configuration(handler, db):
+    git = handler.orchestrator.git
+    git._arun = AsyncMock(side_effect=GitError("fetch unavailable"))
+    result = await handler.execute("set_default_branch", {"project_id": "p1", "branch": "dev"})
+    assert result["status"] == "updated"
+    assert (await db.get_project("p1")).repo_default_branch == "dev"
+    git.apush_validated_ref.assert_not_awaited()
+    git.apush_validated_delivery.assert_not_awaited()

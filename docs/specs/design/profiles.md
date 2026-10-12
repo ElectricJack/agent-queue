@@ -36,6 +36,13 @@ project's own `max_concurrent_agents` (see [guides/worker-pools](../../guides/wo
 still carries into its system profile — automatically at startup, or on demand
 via `aq doctor --check profiles.project_overrides --fix`.
 
+New non-pool agents created for task demand use their profile's display
+`name`. If an enabled agent of the same profile already uses that name,
+append the lowest available numeric suffix starting at `2` (for example,
+`Review Spec Ingest 2`). Disabled agents and agents of other profiles do not
+reserve names. Existing agent names remain operator-owned; a profile rename
+does not rename them or require another agent when one already serves demand.
+
 ---
 
 ## 2. Hybrid Format
@@ -304,7 +311,7 @@ load-bearing rather than cosmetic:
 | `read_only` | `GitOpsMixin._task_produces_no_code()` (`src/orchestrator/git_ops.py`) reads it to decide whether a task must push a branch and open a PR. A vault `reviewer` still saying `read_only: false` re-arms the require-a-PR close gate for a session that is told never to push. |
 | `harness` | selects which CLI actually runs the agent. |
 | `lifecycle` | push (`task`) vs pull (`pool`) vs `named`. |
-| `needs_workspace` | whether the orchestrator acquires a worktree. |
+| `needs_workspace` | whether the orchestrator acquires a worktree. `false` also marks the role no-code for `_task_produces_no_code()`, so a proven-clean development-mode close records no artifact instead of requiring the slot branch to be pushed. |
 
 Section renames drift the same way — a copy predating the `## Tools` →
 `## Capabilities` rename routes through the legacy `allowed_tools` adapter
@@ -347,8 +354,11 @@ the full reseed below) or when the merged text would not parse.
 
 Without `--grants-only`, `profile-reseed` copies the old file to
 `profile.md.bak-<epoch>` (pass `--no-backup` to skip) before overwriting it
-wholesale with the shipped default, then syncs the new text straight to the
-DB. There is deliberately no `aq doctor --fix` for either shape: overwriting
+with the shipped default while preserving a nonempty display `name` from
+valid vault frontmatter, then syncs the new text straight to the DB. Missing
+or unreadable frontmatter uses the shipped name. Neither installer refresh
+nor profile reseeding creates agent rows. There is deliberately no
+`aq doctor --fix` for either shape: overwriting
 or merging into an operator-owned vault file automatically would violate the
 `--fix` safety rules (trust-and-ops §5.4) — the operator always invokes the
 repair explicitly. The supervisor's grants are the one exception, below.
@@ -383,7 +393,7 @@ in step automatically (`src/profiles/capability_sync.py`):
   an operator who curates the supervisor's grants by hand; the daemon and the
   doctor fix then never merge. The key also generalises the other way:
   `capability_sync: true` opts any other shipped profile in to the same
-  merge. Only `supervisor` is synced by default.
+  merge. `supervisor`, `worker-claude` and `worker-codex` are synced by default.
 - **Doctor.** `profiles.supervisor_capability_drift` reports the shipped
   grants the vault copy still lacks — `warn` while any are missing (`info`
   when the profile opted out), `ok` when none are — and `--fix` runs the
@@ -420,3 +430,52 @@ When a new agent type is created (profile.md saved for the first time), the syst
 copies matching starter knowledge from `templates/knowledge/{type}/` to the agent
 type's `memory/` folder if one exists. These starter files are tagged `#starter`
 and can be updated or removed as the agent accumulates real experience.
+
+### Routine worker verification and synchronization
+
+Worker templates grant side-effect-free `dry_run_playbook`, task children/progress,
+and Git status/log/diff/changed-files/branch reads. Dry-run events are pinned to
+the live held task and project, and AI execution remains simulated. Actual
+playbook execution, activation and human decisions retain their existing gates.
+
+`git_pull` may read main or a prerequisite branch into the worker's own assigned
+worktree, only while its current branch belongs to its live task. Repository
+credentials are selected from the task's authorized repository. Pull does not
+publish anything; guarded push and integration retain ownership of publication.
+
+Worker templates, like the supervisor, receive additive shipped capability
+updates on startup/profile reload. `capability_sync: false` opts out. Custom
+operator grants and other profile content are preserved; derived rungs inherit
+the updated template without rewriting their local overrides.
+
+
+### Rollout of routine worker grants and knowledge authorization
+
+Deploy the scope implementation together with the shipped worker templates.
+On daemon startup or profile reload, existing `worker-claude` and `worker-codex`
+files receive missing shipped grants additively; custom prose and extra grants
+survive, and `capability_sync: false` preserves a curated grant list. Fresh
+installs seed the same defaults. Derived rungs inherit their worker template.
+For a profile that opts out, the operator can explicitly run
+`aq agent profile-reseed --profile-id <id> --grants-only` after reviewing grants.
+Use `aq doctor --check profiles.system_drift` to inspect outstanding drift.
+Shipped skill changes need the separate `skills.installed_drift` check and its
+supported operator repair. Source delivery alone does not change live permission
+behavior; the daemon must run the deployed code before new grants can help.
+
+The `record_capabilities` fields `enabled` and `writes_enabled` report feature
+configuration, not effective record authorization. `granted_operations` reports
+the current principal's explicit operations. Independently of dispatch audit or
+off mode, `records.auth.authorize_on` refuses `record_search` and
+`knowledge_create` when that principal lacks their explicit grants, its current
+session is not running/draining, its instance/profile/project binding is stale,
+or its held task differs from the live session. Knowledge writes additionally
+require the exact current claim epoch, assigned agent and IN_PROGRESS status;
+those failures use `record.stale_claim`. `--source-task-id` adds an evidence link
+and does not supply or relax authorization. Thus the calm-current-21 report of
+`record.forbidden` despite enabled read/write flags is consistent with an
+operation-grant or live-session identity refusal, separately from the routine
+Git/playbook grant issue. Both shipped worker templates contain `record_search`
+and `knowledge_create`; an existing install's effective template and authenticated
+session bindings must be checked after deployment to distinguish these causes.
+No ACL or ownership widening is part of this permission rollout.

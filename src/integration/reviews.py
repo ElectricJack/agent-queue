@@ -11,15 +11,144 @@ import hashlib
 import json
 import math
 import time
-from collections.abc import Awaitable, Callable
+import uuid
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
+from urllib.parse import quote
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import and_, exists, func, insert, select
 
-from src.database.tables import archived_tasks, integration_review_evidence as evidence, tasks
-from src.git.manager import is_valid_git_oid
+from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.tables import (
+    archived_tasks,
+    gates,
+    integration_review_evidence,
+    integration_source_ci,
+    projects,
+    task_branch_origins,
+    task_dependencies,
+    task_gates,
+    task_integration_checkpoints,
+    task_labels,
+    task_session_attempts,
+    tasks,
+)
+from src.database.tables import integration_review_evidence as evidence
+from src.git.github_contracts import GitHubAccessError
+from src.git.manager import RemoteRefState, is_valid_git_oid
 from src.integration.git_truth import GitTruthSnapshot
+from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.root_authorization import POLICY_KINDS, exact_root_authorization_on
+from src.integration.source_ancestry import (
+    ANCESTRY_DECISION_PATH,
+    ANCESTRY_REVIEWER,
+    PROVEN_REASONS,
+    SourceAncestryInvalid,
+    SourceAncestryObservation,
+    describe,
+    merge_base_of,
+    rejection_evidence_id,
+    repair_feedback,
+)
+from src.models import TaskStatus
+from src.task_graph.integration_dependencies import dependents_of
+
+
+def pull_request_review_state(
+    reviews: Iterable[dict], head_sha: str, *, trusted_reviewers: frozenset[str] = frozenset(),
+) -> str:
+    """Reduce GitHub's latest decisive review per human, with exact-head approval.
+
+    A request for changes remains outstanding across pushes until that reviewer
+    approves or dismisses it. Comments do not erase a decision; dismissed reviews
+    do not count as either approval or rejection.
+    """
+    latest = {}
+    for review in reviews:
+        state, user = review.get("state"), review.get("user")
+        if state not in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
+            continue
+        if not isinstance(user, dict) or user.get("type") != "User":
+            continue
+        login, identity = user.get("login"), review.get("id")
+        if (not isinstance(login, str) or not login.strip()
+                or type(identity) is not int or identity <= 0):
+            raise ValueError("GitHub review identity is malformed")
+        key = login.casefold()
+        if key not in trusted_reviewers:
+            continue
+        if key not in latest or identity > latest[key]["id"]:
+            latest[key] = review
+    if any(review["state"] == "CHANGES_REQUESTED" for review in latest.values()):
+        return "pr_changes_requested"
+    if any(review["state"] == "APPROVED" and review.get("commit_id") == head_sha
+           for review in latest.values()):
+        return "approved"
+    return "pr_review_missing"
+
+
+class ReviewerPermissionUnavailable(ValueError):
+    """Repository permissions could not be read reliably for a human reviewer."""
+
+
+async def trusted_pull_request_reviewers(
+    reviews: Iterable[dict], *, client, binding,
+    requirements: ReviewRequirements | None = None,
+) -> frozenset[str]:
+    """Verify repository write access; an optional allowlist can only narrow it.
+
+    Permissions are read once per decisive human in this observation. Missing
+    collaborators cannot approve; unreadable permissions fail the observation.
+    """
+    reviews = tuple(reviews)
+    logins = {
+        review["user"]["login"].casefold()
+        for review in reviews
+        if review.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+        and isinstance(review.get("user"), dict)
+        and review["user"].get("type") == "User"
+        and isinstance(review["user"].get("login"), str)
+        and review["user"]["login"].strip()
+    }
+    allowed = {identity.removeprefix("github:").casefold()
+               for identity in requirements.reviewers} if requirements else set()
+    trusted = set()
+    for login in sorted(logins):
+        if allowed and login not in allowed:
+            continue
+        try:
+            permission = await client.request_json("GET",
+                f"/repos/{binding.full_name}/collaborators/{quote(login, safe='')}/permission")
+        except GitHubAccessError as exc:
+            if exc.category == "rate_limited":
+                raise
+            raise ReviewerPermissionUnavailable(
+                f"reviewer permission lookup failed: {exc.category} (HTTP {exc.http_status})"
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise ReviewerPermissionUnavailable("reviewer permission lookup failed") from exc
+        if not isinstance(permission, dict):
+            raise ReviewerPermissionUnavailable("GitHub reviewer permission is malformed")
+        user = permission.get("user")
+        if (not isinstance(user, dict) or not isinstance(user.get("login"), str)
+                or user["login"].casefold() != login
+                or permission.get("permission") not in {"admin", "write", "read", "none"}):
+            raise ReviewerPermissionUnavailable("GitHub reviewer permission is malformed")
+        if permission["permission"] in {"write", "admin"}:
+            trusted.add(login)
+    return frozenset(trusted)
+
+
+async def observe_pull_request_review_state(
+    reviews: Iterable[dict], head_sha: str, *, client, binding,
+    requirements: ReviewRequirements | None = None,
+) -> str:
+    """Reduce only decisions by currently trusted repository reviewers."""
+    reviews = tuple(reviews)
+    trusted = await trusted_pull_request_reviewers(
+        reviews, client=client, binding=binding, requirements=requirements)
+    return pull_request_review_state(reviews, head_sha, trusted_reviewers=trusted)
 
 
 @dataclass(frozen=True)
@@ -146,14 +275,14 @@ class TreeReviews:
             raise ValueError("review subject repository/project changed")
         identity = json.dumps((subject.repository_id, subject.task_id, reviewer, decision_id))
         row_id = "tree-verdict-" + hashlib.sha256(identity.encode()).hexdigest()
-        row = dict(
-            id=row_id, source_task_id=subject.task_id, repository_id=subject.repository_id,
-            source_base=source_base, reviewed_head_sha=reviewed_head_sha,
-            reviewed_tree_sha=subject.tree_sha, reviewer_identity=reviewer,
-            reviewer_task_id=reviewer_task_id, reviewer_session_attempt_id=reviewer_session_attempt_id,
-            review_kind=review_kind, generation=0, verdict=verdict,
-            evidence={**provenance, "decision_path": "tree_review", "decision_id": decision_id},
-        )
+        row = {
+            "id": row_id, "source_task_id": subject.task_id, "repository_id": subject.repository_id,
+            "source_base": source_base, "reviewed_head_sha": reviewed_head_sha,
+            "reviewed_tree_sha": subject.tree_sha, "reviewer_identity": reviewer,
+            "reviewer_task_id": reviewer_task_id, "reviewer_session_attempt_id": reviewer_session_attempt_id,
+            "review_kind": review_kind, "generation": 0, "verdict": verdict,
+            "evidence": {**provenance, "decision_path": "tree_review", "decision_id": decision_id},
+        }
         existing = (await conn.execute(select(evidence).where(
             evidence.c.id == row_id,
         ))).mappings().one_or_none()
@@ -215,3 +344,804 @@ class TreeReviews:
                 ),
             })
             return {**result, "outcome": "requested" if result.get("success") else "unknown"}
+
+
+_EVIDENCE_NAMESPACE = uuid.UUID("f22a352d-2664-4db5-ad67-6a60c9db863e")
+_REVIEW_PROFILES = frozenset({"reviewer", "final-reviewer"})
+
+
+class ReviewEvidenceProducer:
+    """Resolve graph identity and pin one server-observed Git verdict."""
+
+    def __init__(self, db, promotion_service, *, clock=time.time) -> None:
+        self.db = db
+        self.promotion = promotion_service
+        self.clock = clock
+
+    async def snapshot_from_pull_request(
+        self, epic_task_id: str, **kwargs: Any
+    ) -> dict[str, Any] | None:
+        return await self._snapshot_pull_request(epic_task_id, **kwargs)
+
+    async def snapshot_authorized(
+        self, epic_task_id: str, *, reviewed_sha: str, policy_generation: int
+    ) -> dict[str, Any] | None:
+        """Pin task authorization without impersonating a human review.
+
+        Only an explicit operator-enabled project policy admits completed
+        feature/bugfix tasks and explicitly named tasks this way, plus a source
+        an operator authorized exactly (``integration_root_authorizations``).
+        Holds, open gates and reviewer rejections remain binding. Git still
+        proves the exact remote head and tree.
+        """
+        return await self._snapshot_pull_request(
+            epic_task_id, verdict="approved", reviewer_login="task-authorization",
+            reviewed_sha=reviewed_sha, authorization_generation=policy_generation,
+        )
+
+    async def _authorization_on(self, conn, task_id, source, generation, *, allow_reviewed=False) -> bool:
+        row = (await conn.execute(
+            select(tasks.c.task_type, projects.c.hierarchical_integration_policy,
+                   projects.c.hierarchical_integration_generation)
+            .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+            .where(
+                tasks.c.id == task_id,
+                ~exists(select(task_labels.c.task_id).where(
+                    task_labels.c.task_id == task_id, task_labels.c.label.like("hold:%"))),
+                ~exists(select(task_gates.c.task_id).select_from(
+                    task_gates.join(gates, gates.c.id == task_gates.c.gate_id)
+                ).where(task_gates.c.task_id == task_id, gates.c.status == "open")),
+            )
+        )).mappings().one_or_none()
+        if (row is None
+                or row["hierarchical_integration_generation"] != generation
+                or not row["hierarchical_integration_policy"]):
+            return False
+        policy = HierarchicalIntegrationPolicy.model_validate(row["hierarchical_integration_policy"])
+        if (
+            row["task_type"] not in POLICY_KINDS
+            and task_id not in policy.root.authorized_task_ids
+            # An operator's grant for exactly this source stands in for the
+            # kind allowlist only; every check below still applies.
+            and await exact_root_authorization_on(conn, task_id, source) is None
+        ):
+            return False
+        if policy.root.admission != "authorized" and not allow_reviewed:
+            return False
+        latest = (await conn.execute(select(integration_review_evidence).where(
+            integration_review_evidence.c.source_task_id == task_id,
+            integration_review_evidence.c.repository_id == source["repository_id"],
+            integration_review_evidence.c.source_base == source["base"],
+            integration_review_evidence.c.reviewed_head_sha == source["head"],
+            integration_review_evidence.c.generation == source["generation"],
+        ).order_by(integration_review_evidence.c.created_at.desc(),
+                   integration_review_evidence.c.id.desc()).limit(1))).mappings().one_or_none()
+        if policy.root.admission == "reviewed":
+            return latest is not None and latest["verdict"] == "approved"
+        return latest is None or latest["verdict"] == "approved"
+
+    async def _snapshot_pull_request(
+        self,
+        epic_task_id: str,
+        *,
+        verdict: str,
+        reviewer_login: str,
+        reviewed_sha: str,
+        summary: str = "",
+        feedback: str = "",
+        github_review_id: int | None = None,
+        authorization_generation: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Store a GitHub verdict against the exact verified train epic head."""
+        if verdict not in {"approved", "rejected"}:
+            raise ValueError(f"unsupported verdict: {verdict}")
+        if not reviewer_login or not reviewer_login.strip():
+            raise ValueError("reviewer_login is required")
+        if github_review_id is not None and (
+            isinstance(github_review_id, bool)
+            or not isinstance(github_review_id, int)
+            or github_review_id <= 0
+        ):
+            raise ValueError("github_review_id must be a positive integer")
+
+        async with self.db._engine.connect() as conn:
+            source = await self._pull_request_source_on(conn, epic_task_id)
+            if source is not None and authorization_generation is not None:
+                if not await self._authorization_on(conn, epic_task_id, source, authorization_generation):
+                    return None
+            repaired_sources = list((await conn.execute(select(integration_source_ci.c.source_head)
+                .where(integration_source_ci.c.repair_task_id == epic_task_id))).scalars())
+        if source is None:
+            return None
+        if reviewed_sha != source["head"]:
+            raise HierarchyError("stale_head", "reviewed head is not the verified epic head")
+
+        resolved = await self.promotion._resolve_repository(source["repository_id"])
+        if resolved.repo.project_id != source["project_id"]:
+            raise HierarchyError("invalid", "review repository project changed")
+        await self.promotion._ensure_retained_repository(resolved)
+        async with self.promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
+            await self.promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
+            remote = await self.promotion.git.als_remote_ref(
+                str(resolved.retained_git_dir), source["branch"]
+            )
+            if remote.state is not RemoteRefState.PRESENT or remote.oid != reviewed_sha:
+                raise HierarchyError("stale_head", "reviewed remote ref is not the exact head")
+            tree = await self.promotion._tree_oid(resolved.retained_git_dir, reviewed_sha)
+            for source_head in repaired_sources:
+                if await self.promotion.git.ais_ancestor(
+                    str(resolved.retained_git_dir), source_head, reviewed_sha, strict=True
+                ) is not True:
+                    raise HierarchyError("stale_head", "repair does not preserve its source ancestry")
+            if verdict == "approved":
+                await self._prove_base_ancestry(
+                    resolved.retained_git_dir, epic_task_id, source, tree
+                )
+
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, source["project_id"])
+            current = await self._pull_request_source_on(conn, epic_task_id)
+            if current != source:
+                raise HierarchyError("stale_head", "epic snapshot changed before verdict commit")
+            if authorization_generation is not None and not await self._authorization_on(
+                conn, epic_task_id, source, authorization_generation
+            ):
+                return None
+            identity = ":".join(
+                (
+                    "task-authorization" if authorization_generation is not None else "github",
+                    epic_task_id,
+                    source["repository_id"],
+                    source["base"],
+                    reviewed_sha,
+                    str(source["generation"]),
+                    verdict,
+                    reviewer_login,
+                    source["pr_url"],
+                    str(github_review_id) if github_review_id is not None else "",
+                    *((str(authorization_generation),) if authorization_generation is not None else ()),
+                )
+            )
+            evidence_id = f"review-{uuid.uuid5(_EVIDENCE_NAMESPACE, identity)}"
+            existing = (
+                (
+                    await conn.execute(
+                        select(integration_review_evidence).where(
+                            integration_review_evidence.c.id == evidence_id
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                return dict(existing)
+            latest_created_at = (
+                await conn.execute(
+                    select(func.max(integration_review_evidence.c.created_at)).where(
+                        integration_review_evidence.c.source_task_id == epic_task_id,
+                        integration_review_evidence.c.repository_id == source["repository_id"],
+                        integration_review_evidence.c.source_base == source["base"],
+                        integration_review_evidence.c.reviewed_head_sha == reviewed_sha,
+                        integration_review_evidence.c.generation == source["generation"],
+                    )
+                )
+            ).scalar_one()
+            created_at = self.clock()
+            if latest_created_at is not None:
+                created_at = max(created_at, math.nextafter(latest_created_at, math.inf))
+            evidence = {
+                "id": evidence_id,
+                "source_task_id": epic_task_id,
+                "repository_id": source["repository_id"],
+                "source_base": source["base"],
+                "reviewed_head_sha": reviewed_sha,
+                "reviewed_tree_sha": tree,
+                "reviewer_task_id": None,
+                "reviewer_session_attempt_id": None,
+                "reviewer_identity": (f"task-authorization:{authorization_generation}"
+                                      if authorization_generation is not None else f"github:{reviewer_login}"),
+                "review_kind": source["review_kind"],
+                "generation": source["generation"],
+                "verdict": verdict,
+                "evidence": {
+                    "decision_path": ("authorized_task" if authorization_generation is not None
+                                      else "github_pull_request"),
+                    **({"policy_generation": authorization_generation}
+                       if authorization_generation is not None else {}),
+                    "summary": summary,
+                    "feedback": feedback,
+                    "reviewed_sha": reviewed_sha,
+                    "pr_url": source["pr_url"],
+                    "verification_id": source["verification_id"],
+                    **(
+                        {"github_review_id": github_review_id}
+                        if github_review_id is not None
+                        else {}
+                    ),
+                },
+                "created_at": created_at,
+            }
+            await self._append_on(conn, evidence)
+            if verdict != "approved":
+                for dependent_id in sorted(await dependents_of(conn, epic_task_id)):
+                    await self.db.add_task_label(dependent_id, "needs-rebase", conn=conn)
+            return evidence
+
+    async def _prove_base_ancestry(self, store, task_id: str, source: dict, tree: str) -> None:
+        """Refuse approval unless Git proves the recorded base is an ancestor.
+
+        Proven non-ancestry is an actionable :class:`SourceAncestryInvalid`; an
+        unknown probe fails closed as an ordinary retryable refusal.
+        """
+        ancestor = await self.promotion.git.ais_ancestor(
+            str(store), source["base"], source["head"], strict=True
+        )
+        if ancestor is None:
+            raise HierarchyError("stale_head", "source base ancestry could not be proven")
+        if ancestor:
+            return
+        raise SourceAncestryInvalid(
+            SourceAncestryObservation(
+                task_id=task_id,
+                source=dict(source),
+                reviewed_tree_sha=tree,
+                reason="source_base_not_ancestor",
+                merge_base=await merge_base_of(
+                    self.promotion.git, str(store), source["base"], source["head"]
+                ),
+            )
+        )
+
+    async def record_ancestry_rejection_on(
+        self, conn, observation: SourceAncestryObservation
+    ) -> dict[str, Any]:
+        """Append the exact rejection that withdraws an unbuildable identity.
+
+        The caller holds the project lock.  The id is deterministic, so a replay
+        from either admission or construction returns the first row unchanged.
+        Its ``created_at`` follows the identity's latest evidence, which makes it
+        the verdict every later seal and authorization reads.
+        """
+        if observation.reason not in PROVEN_REASONS:
+            raise ValueError(f"unproven source ancestry reason: {observation.reason}")
+        evidence_id = rejection_evidence_id(observation)
+        existing = (
+            await conn.execute(
+                select(integration_review_evidence).where(
+                    integration_review_evidence.c.id == evidence_id
+                )
+            )
+        ).mappings().one_or_none()
+        if existing is not None:
+            return dict(existing)
+        task_id, repository_id, base, head, generation = observation.identity()
+        latest_created_at = (
+            await conn.execute(
+                select(func.max(integration_review_evidence.c.created_at)).where(
+                    integration_review_evidence.c.source_task_id == task_id,
+                    integration_review_evidence.c.repository_id == repository_id,
+                    integration_review_evidence.c.source_base == base,
+                    integration_review_evidence.c.reviewed_head_sha == head,
+                    integration_review_evidence.c.generation == generation,
+                )
+            )
+        ).scalar_one()
+        created_at = self.clock()
+        if latest_created_at is not None:
+            created_at = max(created_at, math.nextafter(latest_created_at, math.inf))
+        source = observation.source
+        evidence = {
+            "id": evidence_id,
+            "source_task_id": task_id,
+            "repository_id": repository_id,
+            "source_base": base,
+            "reviewed_head_sha": head,
+            "reviewed_tree_sha": observation.reviewed_tree_sha,
+            "reviewer_task_id": None,
+            "reviewer_session_attempt_id": None,
+            "reviewer_identity": ANCESTRY_REVIEWER,
+            "review_kind": source["review_kind"],
+            "generation": generation,
+            "verdict": "rejected",
+            "evidence": {
+                "decision_path": ANCESTRY_DECISION_PATH,
+                "reason": observation.reason,
+                "merge_base": observation.merge_base,
+                "claimed_tree_sha": observation.claimed_tree_sha,
+                "detected_by": observation.detected_by,
+                "batch_id": observation.batch_id,
+                "branch": source.get("branch"),
+                "pr_url": source.get("pr_url"),
+                "verification_id": source.get("verification_id"),
+                "summary": describe(observation),
+                "feedback": repair_feedback(observation),
+            },
+            "created_at": created_at,
+        }
+        await conn.execute(insert(integration_review_evidence).values(**evidence))
+        return evidence
+
+    async def ancestry_rejection_on(self, conn, task_id: str, source: dict) -> dict | None:
+        """The ancestry rejection that is the exact identity's latest verdict, if any."""
+        latest = (
+            await conn.execute(
+                select(integration_review_evidence)
+                .where(
+                    integration_review_evidence.c.source_task_id == task_id,
+                    integration_review_evidence.c.repository_id == source["repository_id"],
+                    integration_review_evidence.c.source_base == source["base"],
+                    integration_review_evidence.c.reviewed_head_sha == source["head"],
+                    integration_review_evidence.c.generation == source["generation"],
+                )
+                .order_by(
+                    integration_review_evidence.c.created_at.desc(),
+                    integration_review_evidence.c.id.desc(),
+                )
+                .limit(1)
+            )
+        ).mappings().one_or_none()
+        if (
+            latest is None
+            or latest["verdict"] != "rejected"
+            or latest["reviewer_identity"] != ANCESTRY_REVIEWER
+        ):
+            return None
+        return dict(latest)
+
+    async def _pull_request_source_on(self, conn, epic_task_id: str) -> dict[str, Any] | None:
+        checkpoint = task_integration_checkpoints
+        origin = task_branch_origins
+        row = (
+            (
+                await conn.execute(
+                    select(
+                        tasks.c.project_id,
+                        tasks.c.branch_name.label("branch"),
+                        tasks.c.pr_url,
+                        tasks.c.repo_id.label("repository_id"),
+                        checkpoint.c.checkpoint_sha,
+                        checkpoint.c.verified_sha.label("head"),
+                        checkpoint.c.verified_generation,
+                        checkpoint.c.generation,
+                        checkpoint.c.current_verification_id.label("verification_id"),
+                        checkpoint.c.last_completed_verification_id,
+                        checkpoint.c.episode_id,
+                        origin.c.base_sha.label("base"),
+                    )
+                    .select_from(
+                        tasks.join(projects, projects.c.id == tasks.c.project_id)
+                        .join(
+                            checkpoint,
+                            and_(
+                                checkpoint.c.task_id == tasks.c.id,
+                                checkpoint.c.repository_id == tasks.c.repo_id,
+                                checkpoint.c.branch == tasks.c.branch_name,
+                            ),
+                        )
+                        .join(
+                            origin,
+                            and_(
+                                origin.c.task_id == tasks.c.id,
+                                origin.c.repository_id == tasks.c.repo_id,
+                                origin.c.retired_at.is_(None),
+                            ),
+                        )
+                    )
+                    .where(
+                        tasks.c.id == epic_task_id,
+                        tasks.c.parent_task_id.is_(None),
+                        tasks.c.status == TaskStatus.COMPLETED.value,
+                        tasks.c.branch_name.is_not(None),
+                        tasks.c.pr_url.is_not(None),
+                        projects.c.hierarchical_integration_mode == "train",
+                        projects.c.integration_repository_id == tasks.c.repo_id,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None or not row["pr_url"].strip() or not row["branch"].strip():
+            return None
+        active_child = (
+            await conn.execute(
+                select(tasks.c.id).where(tasks.c.parent_task_id == epic_task_id).limit(1)
+            )
+        ).first()
+        archived_child = (
+            await conn.execute(
+                select(archived_tasks.c.id)
+                .where(archived_tasks.c.parent_task_id == epic_task_id)
+                .limit(1)
+            )
+        ).first()
+        if active_child is None and archived_child is None:
+            # A childless root filed straight onto its own branch: its leaf
+            # checkpoint is the finished head, exactly as the train seats it
+            # (``eligible_root_page_on``'s leaf identity).
+            if (
+                not row["checkpoint_sha"]
+                or row["episode_id"] is not None
+                or row["verification_id"] is not None
+                or row["checkpoint_sha"] == row["base"]
+            ):
+                return None
+            head, verification_id, review_kind = row["checkpoint_sha"], None, "leaf"
+        else:
+            if (
+                row["head"] is None
+                or row["head"] != row["checkpoint_sha"]
+                or row["verified_generation"] != row["generation"]
+                or not row["verification_id"]
+                or row["verification_id"] != row["last_completed_verification_id"]
+            ):
+                return None
+            head, verification_id, review_kind = row["head"], row["verification_id"], "parent"
+        return {
+            "project_id": row["project_id"],
+            "repository_id": row["repository_id"],
+            "branch": row["branch"],
+            "pr_url": row["pr_url"],
+            "base": row["base"],
+            "head": head,
+            "generation": int(row["generation"]),
+            "verification_id": verification_id,
+            "review_kind": review_kind,
+        }
+
+    async def snapshot(
+        self,
+        review_task,
+        session,
+        *,
+        verdict: str,
+        summary: str = "",
+        feedback: str = "",
+        requested_subject_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Precompute immutable Git facts; return None for legacy projects."""
+        if verdict not in {"approved", "rejected"}:
+            raise HierarchyError("invalid", "review verdict is invalid")
+        if (
+            review_task.profile_id not in _REVIEW_PROFILES
+            or session is None
+            or session.task_id != review_task.id
+            or session.project_id != review_task.project_id
+            or session.profile_id != review_task.profile_id
+            or session.agent_id != review_task.assigned_agent_id
+            or session.state not in {"starting", "running"}
+        ):
+            raise HierarchyError("unauthorized", "reviewer session identity is not live")
+        project = await self.db.get_project(review_task.project_id)
+        if getattr(project, "hierarchical_integration_mode", "disabled") not in {
+            "hierarchy",
+            "train",
+        }:
+            return None
+        subject, graph_link = await self._subject(review_task)
+        if requested_subject_id is not None and requested_subject_id != subject.id:
+            raise HierarchyError("unauthorized", "review target is not graph-derived")
+        if subject.project_id != review_task.project_id:
+            raise HierarchyError("unauthorized", "review subject belongs to another project")
+        attempts = await self.db.list_task_session_attempts(
+            review_task.id, project_id=review_task.project_id
+        )
+        if not attempts or attempts[0]["session_id"] != session.id:
+            raise HierarchyError("unauthorized", "reviewer session attempt is not current")
+        attempt = attempts[0]
+        repository_id = getattr(project, "integration_repository_id", None)
+        if not repository_id or subject.repo_id != repository_id or not subject.branch_name:
+            raise HierarchyError("invalid", "review subject is not in the designated repository")
+        origin = await self.db.get_task_branch_origin_for_promotion(subject.id, repository_id)
+        checkpoint = await self.db.get_integration_checkpoint(subject.id)
+        if origin is None or checkpoint is None:
+            raise HierarchyError("invalid", "review subject has no exact integration snapshot")
+        generation = int(checkpoint["generation"])
+        children = await self.db.get_children(subject.id, limit=1)
+        review_kind = "parent" if children else "leaf"
+        if review_kind == "parent":
+            if (
+                checkpoint.get("verified_generation") != generation
+                or not checkpoint.get("verified_sha")
+            ):
+                raise HierarchyError("invalid", "parent aggregate is not currently verified")
+            head = checkpoint["verified_sha"]
+            verification_id = checkpoint.get("current_verification_id")
+        else:
+            head = checkpoint["checkpoint_sha"]
+            verification_id = None
+
+        async with self.db._engine.connect() as conn:
+            prior_evidence_id = (
+                await conn.execute(
+                    select(integration_review_evidence.c.id)
+                    .where(
+                        integration_review_evidence.c.source_task_id == subject.id,
+                        integration_review_evidence.c.repository_id == repository_id,
+                        integration_review_evidence.c.source_base == origin["base_sha"],
+                        integration_review_evidence.c.reviewed_head_sha == head,
+                        integration_review_evidence.c.generation == generation,
+                    )
+                    .order_by(
+                        integration_review_evidence.c.created_at.desc(),
+                        integration_review_evidence.c.id.desc(),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+        resolved = await self.promotion._resolve_repository(repository_id)
+        if resolved.repo.project_id != subject.project_id:
+            raise HierarchyError("invalid", "review repository project changed")
+        await self.promotion._ensure_retained_repository(resolved)
+        async with self.promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
+            await self.promotion._fetch_all_heads(
+                resolved.retained_git_dir, resolved.origin_url
+            )
+            remote = await self.promotion.git.als_remote_ref(
+                str(resolved.retained_git_dir), subject.branch_name
+            )
+            if remote.state is not RemoteRefState.PRESENT or remote.oid != head:
+                raise HierarchyError("stale_head", "reviewed remote ref is not the exact head")
+            tree = await self.promotion._tree_oid(resolved.retained_git_dir, head)
+            # A train root's approval admits it to a batch that merges
+            # ``base..head``; refuse it here rather than at construction.
+            if (
+                verdict == "approved"
+                and project.hierarchical_integration_mode == "train"
+                and subject.parent_task_id is None
+            ):
+                await self._prove_base_ancestry(
+                    resolved.retained_git_dir,
+                    subject.id,
+                    {
+                        "project_id": subject.project_id,
+                        "repository_id": repository_id,
+                        "branch": subject.branch_name,
+                        "pr_url": subject.pr_url,
+                        "base": origin["base_sha"],
+                        "head": head,
+                        "generation": generation,
+                        "verification_id": verification_id,
+                        "review_kind": review_kind,
+                    },
+                    tree,
+                )
+
+        identity = ":".join(
+            (
+                review_task.id,
+                attempt["id"],
+                verdict,
+                subject.id,
+                repository_id,
+                origin["base_sha"],
+                head,
+                str(generation),
+            )
+        )
+        return {
+            "id": f"review-{uuid.uuid5(_EVIDENCE_NAMESPACE, identity)}",
+            "source_task_id": subject.id,
+            "repository_id": repository_id,
+            "source_base": origin["base_sha"],
+            "reviewed_head_sha": head,
+            "reviewed_tree_sha": tree,
+            "reviewer_task_id": review_task.id,
+            "reviewer_session_attempt_id": attempt["id"],
+            "review_kind": review_kind,
+            "generation": generation,
+            "verdict": verdict,
+            "evidence": {
+                "decision_path": "review_task_close" if verdict == "approved" else "reopen_with_feedback",
+                "graph_link": graph_link,
+                "summary": summary,
+                "feedback": feedback,
+                "verification_id": verification_id,
+                "prior_evidence_id": prior_evidence_id,
+            },
+            "created_at": self.clock(),
+        }
+
+    async def complete_review_on(self, conn, review_task_id: str, evidence: dict, **transition):
+        rejected = (
+            await conn.execute(
+                select(integration_review_evidence.c.id).where(
+                    integration_review_evidence.c.reviewer_task_id == review_task_id,
+                    integration_review_evidence.c.reviewer_session_attempt_id
+                    == evidence["reviewer_session_attempt_id"],
+                    integration_review_evidence.c.verdict == "rejected",
+                )
+            )
+        ).first()
+        if rejected:
+            if evidence["reviewer_task_id"] != review_task_id:
+                raise HierarchyError("unauthorized", "review evidence task identity changed")
+        else:
+            await self._revalidate_on(conn, review_task_id, evidence)
+            await self._append_on(conn, evidence)
+        return await self.db._apply_transition(
+            conn, review_task_id, TaskStatus.COMPLETED, **transition
+        )
+
+    async def reject_and_reopen_on(
+        self, conn, subject_task_id: str, review_task_id: str, evidence: dict, **transition
+    ):
+        await self._revalidate_on(conn, review_task_id, evidence)
+        if evidence["source_task_id"] != subject_task_id or evidence["verdict"] != "rejected":
+            raise HierarchyError("invalid", "rejection subject changed")
+        await self._append_on(conn, evidence)
+        return await self.db._apply_transition(
+            conn, subject_task_id, TaskStatus.READY, **transition
+        )
+
+    async def _append_on(self, conn, evidence: dict) -> None:
+        existing = (
+            await conn.execute(
+                select(integration_review_evidence).where(
+                    integration_review_evidence.c.id == evidence["id"]
+                )
+            )
+        ).mappings().one_or_none()
+        if existing is None:
+            await conn.execute(insert(integration_review_evidence).values(**evidence))
+        elif any(existing[key] != value for key, value in evidence.items() if key != "created_at"):
+            raise HierarchyError("invariant_error", "review evidence identity changed")
+
+    async def _revalidate_on(self, conn, review_task_id: str, evidence: dict) -> None:
+        review = (
+            await conn.execute(select(tasks).where(tasks.c.id == review_task_id))
+        ).mappings().one_or_none()
+        if review is None:
+            raise HierarchyError("stale_head", "review task disappeared before verdict commit")
+        await self.db.lock_hierarchy_project(conn, review["project_id"])
+        latest_attempt = (
+            await conn.execute(
+                select(task_session_attempts)
+                .where(task_session_attempts.c.task_id == review_task_id)
+                .order_by(
+                    task_session_attempts.c.started_at.desc(),
+                    task_session_attempts.c.id.desc(),
+                )
+                .limit(1)
+            )
+        ).mappings().one_or_none()
+        origin = (
+            await conn.execute(
+                select(task_branch_origins).where(
+                    task_branch_origins.c.task_id == evidence["source_task_id"],
+                    task_branch_origins.c.repository_id == evidence["repository_id"],
+                    task_branch_origins.c.base_sha == evidence["source_base"],
+                    task_branch_origins.c.retired_at.is_(None),
+                )
+            )
+        ).first()
+        checkpoint = (
+            await conn.execute(
+                select(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == evidence["source_task_id"],
+                    task_integration_checkpoints.c.generation == evidence["generation"],
+                )
+            )
+        ).mappings().one_or_none()
+        source = (
+            await conn.execute(
+                select(tasks.c.status).where(tasks.c.id == evidence["source_task_id"])
+            )
+        ).mappings().one_or_none()
+        latest_evidence_id = (
+            await conn.execute(
+                select(integration_review_evidence.c.id)
+                .where(
+                    integration_review_evidence.c.source_task_id
+                    == evidence["source_task_id"],
+                    integration_review_evidence.c.repository_id == evidence["repository_id"],
+                    integration_review_evidence.c.source_base == evidence["source_base"],
+                    integration_review_evidence.c.reviewed_head_sha
+                    == evidence["reviewed_head_sha"],
+                    integration_review_evidence.c.generation == evidence["generation"],
+                )
+                .order_by(
+                    integration_review_evidence.c.created_at.desc(),
+                    integration_review_evidence.c.id.desc(),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        edges = (
+            await conn.execute(
+                select(task_dependencies.c.depends_on_task_id, task_dependencies.c.dep_type).where(
+                    task_dependencies.c.task_id == review_task_id
+                )
+            )
+        ).all()
+        if evidence["evidence"]["graph_link"] == "discovered-from":
+            subjects = {row[0] for row in edges if row[1] == "discovered-from"}
+            linked = subjects == {evidence["source_task_id"]}
+        else:
+            review_ids = [row[0] for row in edges if row[1] == "blocks"]
+            final_links = (
+                await conn.execute(
+                    select(task_dependencies.c.depends_on_task_id).where(
+                        task_dependencies.c.task_id.in_(review_ids),
+                        task_dependencies.c.dep_type == "discovered-from",
+                    )
+                )
+            ).scalars().all() if review_ids else []
+            candidate_ids: set[str] = set()
+            if final_links:
+                candidates = (
+                    await conn.execute(
+                        select(tasks.c.id, projects.c.hierarchical_integration_mode)
+                        .join(projects, projects.c.id == tasks.c.project_id)
+                        .where(tasks.c.id.in_(final_links))
+                    )
+                ).all()
+                candidate_ids = {
+                    row[0]
+                    for row in candidates
+                    if row[1] in {"hierarchy", "train"}
+                }
+            linked = candidate_ids == {evidence["source_task_id"]}
+        expected_head = (
+            checkpoint.get("verified_sha")
+            if checkpoint and evidence["review_kind"] == "parent"
+            else checkpoint.get("checkpoint_sha") if checkpoint else None
+        )
+        parent_generation_current = (
+            evidence["review_kind"] != "parent"
+            or checkpoint.get("verified_generation") == evidence["generation"]
+        ) if checkpoint else False
+        if (
+            evidence["reviewer_task_id"] != review_task_id
+            or review["profile_id"] not in _REVIEW_PROFILES
+            or review["status"] != TaskStatus.IN_PROGRESS.value
+            or latest_attempt is None
+            or latest_attempt["id"] != evidence["reviewer_session_attempt_id"]
+            or latest_attempt["profile_id"] != review["profile_id"]
+            or latest_attempt["agent_id"] != review["assigned_agent_id"]
+            or latest_attempt["project_id"] != review["project_id"]
+            or latest_attempt["state"] not in {"starting", "running"}
+            or origin is None
+            or checkpoint is None
+            or source is None
+            or source["status"] != TaskStatus.COMPLETED.value
+            or latest_evidence_id != evidence["evidence"].get("prior_evidence_id")
+            or not linked
+            or not parent_generation_current
+            or expected_head != evidence["reviewed_head_sha"]
+        ):
+            raise HierarchyError("stale_head", "review snapshot changed before verdict commit")
+
+    async def _subject(self, review_task):
+        edges = await self.db.get_typed_dependencies(review_task.id)
+        if review_task.profile_id == "reviewer":
+            subjects = {task_id for task_id, kind in edges if kind == "discovered-from"}
+            if len(subjects) != 1:
+                raise HierarchyError("unauthorized", "reviewer has no unique graph subject")
+            subject = await self.db.get_task(next(iter(subjects)))
+            if subject is None:
+                raise HierarchyError("invalid", "review subject is missing")
+            return subject, "discovered-from"
+
+        review_ids = {task_id for task_id, kind in edges if kind == "blocks"}
+        candidates = []
+        for review_id in sorted(review_ids):
+            links = await self.db.get_typed_dependencies(review_id)
+            subjects = {task_id for task_id, kind in links if kind == "discovered-from"}
+            if len(subjects) != 1:
+                raise HierarchyError("unauthorized", "final review graph is ambiguous")
+            subject = await self.db.get_task(next(iter(subjects)))
+            if subject is None:
+                raise HierarchyError("invalid", "final review subject is missing")
+            project = await self.db.get_project(subject.project_id)
+            if getattr(project, "hierarchical_integration_mode", "disabled") in {
+                "hierarchy",
+                "train",
+            }:
+                candidates.append(subject)
+        unique = {task.id: task for task in candidates}
+        if len(unique) != 1:
+            raise HierarchyError("unauthorized", "final review has no unique integration subject")
+        return next(iter(unique.values())), "final-review-blocks"

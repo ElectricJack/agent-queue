@@ -1,4 +1,4 @@
-"""Database schema CLI (``aq db ...``) — the operator's migration door.
+"""Database CLI (``aq db ...``) — the operator's migration and recovery door.
 
 Migrations against the production database are daemon-only by policy
 (:mod:`src.database.migration_guard`).  This module is the one exception that
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 import click
 
@@ -58,7 +59,7 @@ def _display_url(url: str) -> str:
 @cli.group("db")
 @click.pass_context
 def db_group(ctx: click.Context) -> None:
-    """Database schema — inspect and upgrade the daemon's database."""
+    """Database administration — schema, custom backups and disaster recovery."""
     reject_json_mode(
         ctx,
         "aq db",
@@ -137,6 +138,138 @@ def db_upgrade(yes: bool) -> None:
     with process_scope(OPERATOR):
         asyncio.run(_main())
     console.print(f"[green]schema at head[/] ({', '.join(_head_revisions())})")
+
+
+def _require_operator() -> None:
+    from src.database.migration_guard import WORKER, current_scope
+
+    if current_scope() == WORKER or os.environ.get("AQ_API_TOKEN"):
+        raise click.ClickException(
+            "restore_operator_only: database backup/restore is a local operator workflow; "
+            "worker sessions must use fixture databases through tests"
+        )
+
+
+def _backup_destination(prefix: str) -> Path:
+    from datetime import UTC, datetime
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    return Path(_CONFIG_PATH).parent / "backups" / f"{prefix}-{stamp}.dump"
+
+
+@db_group.command("backup")
+@click.argument("destination", required=False, type=click.Path(dir_okay=False, path_type=Path))
+def db_backup(destination: Path | None) -> None:
+    """Back up the configured database as one private pg_dump custom archive."""
+    _require_operator()
+
+    async def _main() -> None:
+        from src.database.backup import backup_database, postgres_clients
+
+        clients = await postgres_clients(_load_config().database.url)
+        path = destination or _backup_destination("agent-queue")
+        info = await backup_database(clients, path)
+        console.print(f"Backup written: {path} ({path.stat().st_size:,} bytes)", markup=False)
+        console.print(f"Dump timestamp: {info.timestamp}", markup=False)
+        console.print(f"Schema: {', '.join(info.revisions) or 'unstamped'}", markup=False)
+
+    try:
+        asyncio.run(_main())
+    except (OSError, RuntimeError, TimeoutError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@db_group.command("restore")
+@click.argument("dump", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--accept-data-loss",
+    metavar="DUMP_TIMESTAMP",
+    help="Accept data loss by repeating the UTC dump timestamp printed by preflight.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Override the live-daemon refusal; agent sessions must still have ended.",
+)
+def db_restore(dump: Path, accept_data_loss: str | None, force: bool) -> None:
+    """Replace the configured database from a custom archive (operator only).
+
+    Checks the archived schema before writing, prints the loss bound, and takes
+    a recovery backup before pg_restore. Known older revisions are accepted;
+    upgrade the restored schema with `aq db upgrade` before restarting.
+    """
+    _require_operator()
+    from asyncpg import InvalidCatalogNameError
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from src.daemon_state import acquire_start_lock, find_daemon_pid, release_start_lock
+
+    lock = str(Path(_CONFIG_PATH).parent / "daemon.lock")
+    if not acquire_start_lock(lock):
+        raise click.ClickException("restore_start_in_progress: daemon start/restore lock is held")
+
+    async def _main() -> None:
+        from src.database.backup import (
+            BackupError,
+            assert_custom_archive,
+            assert_sessions_ended,
+            backup_database,
+            inspect_archive,
+            loss_bound,
+            postgres_clients,
+            restore_database,
+            validate_revisions,
+        )
+
+        pid_file = str(Path(_CONFIG_PATH).parent / "daemon.pid")
+        if not force and await asyncio.to_thread(find_daemon_pid, pid_file, _CONFIG_PATH):
+            raise BackupError(
+                "restore_daemon_live: stop the daemon first, or explicitly use --force"
+            )
+        config = _load_config()
+        assert_custom_archive(dump)
+        clients = await postgres_clients(config.database.url)
+        info = await inspect_archive(clients, dump)
+        validate_revisions(info)
+        console.print(f"Restore target: {_display_url(config.database.url)}", markup=False)
+        console.print(f"Dump timestamp: {info.timestamp}", markup=False)
+        console.print(f"Archived schema: {', '.join(info.revisions)}", markup=False)
+        engine, _ = _make_engine(config)
+        try:
+            await assert_sessions_ended(config, engine)
+            counts = await loss_bound(engine, info.created_at)
+            console.print("Data-loss bound: rows created/changed since the dump:")
+            for table, count in counts.items():
+                console.print(f"  {table}: {count}", markup=False)
+            console.print("Deleted rows and changes without timestamps cannot be counted.")
+            if accept_data_loss != info.timestamp:
+                raise BackupError(
+                    "restore_data_loss_unaccepted: repeat --accept-data-loss " + info.timestamp
+                )
+            recovery = _backup_destination("pre-restore")
+            await backup_database(clients, recovery)
+            console.print(f"Recovery backup: {recovery}", markup=False)
+            # Check again after a potentially lengthy backup; the start lock is
+            # still held so aq start and its watchdog cannot race the restore.
+            if not force and await asyncio.to_thread(find_daemon_pid, pid_file, _CONFIG_PATH):
+                raise BackupError("restore_daemon_live: daemon became live during preflight")
+            await assert_sessions_ended(config, engine)
+        finally:
+            await engine.dispose()
+        await restore_database(clients, dump)
+        console.print("Restore complete. Run `aq db current` before restarting.")
+
+    try:
+        asyncio.run(_main())
+    except (SQLAlchemyError, InvalidCatalogNameError) as exc:
+        raise click.ClickException(
+            "restore_target_unavailable: cannot connect to or inspect the configured database; "
+            "ensure the target database exists and PostgreSQL is reachable"
+        ) from exc
+    except (OSError, RuntimeError, TimeoutError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        release_start_lock(lock, owner=os.getpid())
 
 
 @db_group.command("import-sqlite")

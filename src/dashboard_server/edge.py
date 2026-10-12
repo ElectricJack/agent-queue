@@ -11,11 +11,12 @@ the daemon:
 * **Origin gate** -- an ``Origin``, when present, must equal ``scheme://Host``
   or be trusted; otherwise ``403 origin_not_allowed``.  No ``Origin`` (curl, a
   same-origin ``GET``) passes.
-* **Peer gate** -- non-loopback terminals and their read-only reconnect probes
-  require an explicitly trusted origin. Same-origin HTTP probes may omit the
-  Origin header; only those GETs can use ``browser_origin`` or scheme/Host.
-  Requests carrying ``Authorization`` or an ``aq-bearer.*`` subprotocol remain
-  loopback-only, even for trusted origins. No forwarding header is invented.
+* **Peer gate** -- browser terminals and their read-only reconnect probes may
+  connect from any peer that passes the Host and Origin gates. Requests carrying
+  ``Authorization`` or an ``aq-bearer.*`` subprotocol remain loopback-only, even
+  for trusted origins. Human GitHub approvals require loopback or a trusted
+  tailnet origin. The edge overwrites dashboard viewer/peer headers with its
+  real-peer verdict; it adds no general forwarding headers.
 """
 
 from __future__ import annotations

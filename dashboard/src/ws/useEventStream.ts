@@ -346,6 +346,11 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   }
 
   if (type.startsWith("pool.")) {
+    if (type === "pool.renamed") {
+      queryClient.invalidateQueries({ queryKey: ["profiles"] });
+      queryClient.invalidateQueries({ queryKey: ["profile"] });
+      queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+    }
     queryClient.invalidateQueries({ queryKey: ["pools"] });
     queryClient.invalidateQueries({ queryKey: ["sessions", "pool"] });
     // The Providers view groups the same profiles and supply by provider.
@@ -413,10 +418,21 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     queryClient.invalidateQueries({ queryKey: ["proposal", pid] });
     return;
   }
+  if (type === "project.paused" || type === "project.resumed") {
+    queryClient.invalidateQueries({ queryKey: ["projects"] });
+    queryClient.invalidateQueries({ queryKey: ["project", event.project_id] });
+    queryClient.invalidateQueries({ queryKey: ["reviews"] });
+    queryClient.invalidateQueries({ queryKey: ["review"] });
+    queryClient.invalidateQueries({ queryKey: ["escalations"] });
+    queryClient.invalidateQueries({ queryKey: ["escalation"] });
+    return;
+  }
   if (type.startsWith("review.")) {
     const reviewId = (event as { review_id?: string }).review_id;
     queryClient.invalidateQueries({ queryKey: ["reviews"] });
     if (reviewId) queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
+    queryClient.invalidateQueries({ queryKey: ["gates"] });
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
     return;
   }
 

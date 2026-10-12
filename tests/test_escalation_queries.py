@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import func, insert, select
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from src.database import Database
 from src.database.queries.escalation_queries import EscalationConflict, EscalationStateError
-from src.database.tables import escalation_messages, messages
+from src.database.tables import escalation_deliveries, escalation_messages, messages
 from src.models import Project, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
@@ -66,6 +66,10 @@ async def test_source_incident_replay_is_idempotent_but_new_attempt_is_distinct(
     assert replay["id"] == first["id"] == "esc-1"
     assert second["id"] == "esc-2"
     assert len(await db.list_escalations(project_id="p")) == 2
+    assert first["deep_link"] == "/focus/escalations/esc-1"
+    assert (await db.get_escalation(first["id"]))["deep_link"] == first["deep_link"]
+    deliveries = await db.list_escalation_deliveries(first["id"])
+    assert len(deliveries) == 1 and deliveries[0]["status"] == "pending"
 
     with pytest.raises(EscalationConflict, match="source_identity"):
         await make_incident(
@@ -232,23 +236,16 @@ async def test_cas_allows_only_one_concurrent_supervisor_transition(db):
 
 async def test_delivery_dedup_lease_recovery_receipts_and_unknown_are_durable(db):
     row, _ = await make_incident(db)
-    delivery, created = await db.enqueue_escalation_delivery(
-        row["id"],
-        dedup_key="escalation:esc-1:root:0",
-        kind="root",
-        payload={"summary": "Deployment is blocked"},
-        available_at=10.0,
-        delivery_id="delivery-1",
-    )
+    [delivery] = await db.list_escalation_deliveries(row["id"])
     replay, replay_created = await db.enqueue_escalation_delivery(
         row["id"],
-        dedup_key="escalation:esc-1:root:0",
+        dedup_key="esc-1:root:0",
         kind="root",
-        payload={"summary": "Deployment is blocked"},
+        payload={"replacement": False},
         available_at=10.0,
         delivery_id="ignored",
     )
-    assert created is True and replay_created is False and replay["id"] == delivery["id"]
+    assert replay_created is False and replay["id"] == delivery["id"]
 
     first = await db.claim_escalation_deliveries(
         lease_owner="sender-1", now=10.0, lease_seconds=5.0
@@ -301,6 +298,90 @@ async def test_delivery_dedup_lease_recovery_receipts_and_unknown_are_durable(db
         last_error="send result ambiguous"
     )
     assert await db.claim_escalation_deliveries(lease_owner="sender-5", now=1000.0) == []
+
+
+@pytest.mark.parametrize("field", ["project_id", "task_title", "investigation", "summary"])
+@pytest.mark.parametrize("empty", [None, "", " \n\t"])
+async def test_human_incident_requires_title_project_and_reason(db, field, empty):
+    with pytest.raises(ValueError, match=field):
+        await make_incident(db, **{field: empty})
+    assert await db.list_escalations() == []
+
+
+async def test_initial_delivery_failure_rolls_back_the_incident_and_outbox(db, monkeypatch):
+    enqueue = db.enqueue_escalation_delivery
+
+    async def fail_after_enqueue(*args, **kwargs):
+        await enqueue(*args, **kwargs)
+        raise RuntimeError("outbox write failed")
+
+    monkeypatch.setattr(db, "enqueue_escalation_delivery", fail_after_enqueue)
+    with pytest.raises(RuntimeError, match="outbox write failed"):
+        await make_incident(db)
+    assert await db.list_escalations() == []
+    assert await db.list_escalation_deliveries("esc-1") == []
+
+
+async def test_initial_delivery_uses_the_callers_transaction(db):
+    with pytest.raises(RuntimeError, match="caller rolled back"):
+        async with db.immediate() as conn:
+            await db.create_escalation(**incident(), conn=conn)
+            raise RuntimeError("caller rolled back")
+    assert await db.list_escalations() == []
+    assert await db.list_escalation_deliveries("esc-1") == []
+
+
+async def test_concurrent_creation_queues_one_root_and_replay_repairs_a_legacy_gap(db):
+    results = await asyncio.gather(make_incident(db), make_incident(db))
+    assert sum(created for _, created in results) == 1
+    [root] = await db.list_escalation_deliveries("esc-1")
+    async with db.immediate() as conn:
+        await conn.execute(delete(escalation_deliveries).where(
+            escalation_deliveries.c.id == root["id"],
+        ))
+    _, created = await make_incident(db)
+    assert created is False
+    [root] = await db.list_escalation_deliveries("esc-1")
+    assert root["dedup_key"] == "esc-1:root:0" and root["status"] == "pending"
+    async with db.immediate() as conn:
+        await conn.execute(update(escalation_deliveries).where(
+            escalation_deliveries.c.id == root["id"],
+        ).values(status="unknown", last_error="ambiguous send"))
+    await make_incident(db)
+    assert await db.list_escalation_deliveries("esc-1") == [
+        await db.get_escalation_delivery(root["id"])
+    ]
+
+
+async def test_doctor_reports_missing_retrying_and_unknown_deliveries_after_five_minutes(db):
+    from src.config import AppConfig
+    from src.doctor.escalation_checks import escalation_checks, undelivered_escalations
+    from src.doctor.models import DoctorContext, Severity
+
+    for name in ("missing", "retry", "unknown", "sent", "fresh", "boundary", "internal"):
+        await make_incident(
+            db, ident=name, escalation_id=name,
+            source_kind="supervisor_delivery" if name == "internal" else "core",
+            now=310.0 if name == "fresh" else 300.0 if name == "boundary" else 10.0,
+        )
+    async with db.immediate() as conn:
+        await conn.execute(delete(escalation_deliveries).where(
+            escalation_deliveries.c.escalation_id == "missing",
+        ))
+        for status in ("retry", "unknown", "sent"):
+            await conn.execute(update(escalation_deliveries).where(
+                escalation_deliveries.c.escalation_id == status,
+            ).values(status=status, last_error="delivery fault" if status != "sent" else None,
+                     receipt_confirmed_at=20.0 if status == "sent" else None,
+                     external_receipt_id="confirmed-root" if status == "sent" else None))
+    ctx = DoctorContext(config=AppConfig(), db=db)
+    findings = await undelivered_escalations(ctx, now=600.0)
+    assert {row["escalation_id"] for row in findings} == {"missing", "retry", "unknown"}
+    assert {row["delivery_status"] for row in findings} == {"missing", "retry", "unknown"}
+    assert all(row["deep_link"].startswith("/focus/escalations/") for row in findings)
+    assert await undelivered_escalations(ctx, now=600.0, project_ids={"other"}) == []
+    check = next(check for check in escalation_checks() if check.id == "escalations.undelivered")
+    assert (await check.run(ctx)).severity == Severity.WARN
 
 
 async def test_digest_windows_reserve_suppression_and_recover_expired_lease(db):

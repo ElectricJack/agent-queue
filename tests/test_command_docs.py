@@ -59,6 +59,7 @@ def test_the_committed_pages_match_a_fresh_generation(generator):
 
 def test_the_index_lists_every_command_exactly_once(generator):
     index = (DOCS / "README.md").read_text(encoding="utf-8")
+    assert "commands are registered." not in index
     for name in sorted(CONTRACTS.names()):
         assert index.count(f"[`{name}`]({name}.md)") == 1, f"{name} is not indexed exactly once"
 

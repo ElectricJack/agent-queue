@@ -48,6 +48,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,8 @@ __all__ = [
     "VERIFY",
     "WORKER",
     "MigrationRefused",
+    "SchemaAheadCode",
+    "SchemaAheadPolicy",
     "SchemaBehindCode",
     "assert_not_production_database",
     "current_scope",
@@ -113,6 +117,76 @@ class MigrationRefused(RuntimeError):
 
 class SchemaBehindCode(MigrationRefused):
     """The production schema is older than this checkout, and we may not fix it."""
+
+
+class SchemaAheadCode(MigrationRefused):
+    """An ahead schema exceeds policy or lacks additive migration evidence."""
+
+
+@dataclass(frozen=True)
+class SchemaAheadPolicy:
+    """Retained newer migration sources and an opt-in revision-distance limit.
+
+    No limit is enforced until cutover configures ``max_revisions``. A directory
+    is still required to prove unknown revisions are additive descendants;
+    absent evidence retains the historical orphan-revision refusal.
+    """
+
+    migrations_path: str = ""
+    max_revisions: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_revisions is not None and (
+            type(self.max_revisions) is not int or self.max_revisions < 0
+        ):
+            raise ValueError("schema_ahead_max_revisions must be null or a nonnegative integer")
+
+    def accepts(self, current: tuple[str, ...], code_versions: Path) -> bool:
+        """Return whether current is ahead; raise on invalid supplied evidence."""
+        if not self.migrations_path:
+            return False
+        from src.database.additive_migrations import MigrationTree, check_upgrade
+
+        try:
+            code = MigrationTree.from_directory(code_versions)
+            if not current or set(current) == set(code.heads):
+                return False
+            if set(current) <= code.revisions.keys():
+                return False  # known heads: ordinary upgrade/verification owns them
+            if len(current) != 1:
+                raise ValueError(f"database has multiple or missing heads: {list(current)}")
+            evidence = MigrationTree.from_directory(Path(self.migrations_path).expanduser())
+            for revision_id, revision in code.revisions.items():
+                retained = evidence.revisions.get(revision_id)
+                if retained is None or retained.source != revision.source:
+                    raise ValueError(f"retained migrations changed code revision {revision_id}")
+            extra = evidence.extra_revisions(code.heads[0], current[0])
+            if self.max_revisions is not None and len(extra) > self.max_revisions:
+                raise ValueError(
+                    f"schema is {len(extra)} revisions ahead; policy permits "
+                    f"{self.max_revisions} (schema_ahead_max_revisions)"
+                )
+            findings = [
+                str(finding)
+                for revision_id in sorted(extra)
+                for finding in check_upgrade(evidence.revisions[revision_id])
+            ]
+            if findings:
+                raise ValueError("; ".join(findings))
+            logger.warning(
+                "Accepting additive schema ahead of code: %s (%d extra revisions)",
+                current[0],
+                len(extra),
+            )
+            return True
+        except (OSError, ValueError, SyntaxError) as exc:
+            raise SchemaAheadCode(
+                f"Schema ahead of code refused: {exc}. Deploy code matching the database "
+                "revision, or retain the newer release's unmodified migrations/versions "
+                "at database.schema_ahead_migrations and configure "
+                "database.schema_ahead_max_revisions for the rollback window. "
+                "Do not downgrade or stamp the database to bypass this guard."
+            ) from exc
 
 
 def set_process_scope(scope: str | None) -> str | None:

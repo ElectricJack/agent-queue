@@ -4,6 +4,12 @@ import { activityWindowHours, activityWindowLabel, matchesTask, readTaskFilters,
 const base = { query: "", status: "", showCompleted: false, focus: "", window: "", held: false };
 
 describe("shared task filters", () => {
+  it("filters an idle epic as waiting even when its stored lifecycle is IN_PROGRESS", () => {
+    const epic = { id: "epic", status: "IN_PROGRESS", display_state: "waiting" as const };
+    expect(matchesTask(epic, { ...base, status: "IN_PROGRESS" })).toBe(false);
+    expect(matchesTask(epic, { ...base, status: "WAITING" })).toBe(true);
+    expect(matchesTask(epic, { ...base, query: "waiting" })).toBe(true);
+  });
   it("searches words across title, ID, project, and agent without case sensitivity", () => {
     const task = { id: "bright-fox", title: "Fix checkout", status: "READY", assigned_agent_id: "worker-sol" };
     expect(matchesTask(task, { ...base, query: "CHECKOUT sol moss" }, "moss-and-spade")).toBe(true);

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { legacyFetch } from "../../api/legacy-fetch";
+import { getProposalApiProposalsProposalIdGet, taskBatchDiscard } from "../../api/client";
 import { useGates, useResolveGate, type GateSummary } from "../../api/hooks";
 
 export interface ProposalTask {
@@ -21,34 +21,39 @@ export interface ProposalDetail {
   source: string;
   tasks: ProposalTask[];
   edges: ProposalEdge[];
+  edits?: Array<Record<string, unknown> & { task_id: string }>;
+  remove_edges?: ProposalEdge[];
+  comments?: Array<{ task_id: string; body: string; kind?: string }>;
+  diff?: {
+    tasks: Array<{
+      task_id: string;
+      before: Record<string, unknown> | null;
+      after: Record<string, unknown> | null;
+    }>;
+  } | null;
   status: "draft" | "ready" | "committed" | "discarded";
 }
 
-/** GET /api/proposals/{proposalId} — not in the generated SDK (bare dict
- *  response, no registered Pydantic model). Follows the same legacyFetch
- *  pattern already established by GhostOverlay.tsx for this endpoint. */
+/** Proposal operations and their validated before/after diff. */
 export function useProposal(proposalId: string) {
   return useQuery<ProposalDetail>({
     queryKey: ["proposal", proposalId],
     enabled: !!proposalId,
     queryFn: async () => {
-      const r = await legacyFetch(`/api/proposals/${proposalId}`);
-      if (r.status === 404) throw new Error("proposal not found");
-      if (!r.ok) throw new Error(`proposal fetch ${r.status}`);
-      return (await r.json()) as ProposalDetail;
+      const { data } = await getProposalApiProposalsProposalIdGet({
+        path: { proposal_id: proposalId },
+      });
+      return data as unknown as ProposalDetail;
     },
     refetchInterval: (query) => (query.state.data?.status === "ready" ? 15_000 : false),
   });
 }
 
-/** There is no GET /api/proposals/{id}/gate endpoint — the default-pipeline
- *  creates the review gate with subject_id === proposalId (routing gate),
- *  so the pane locates it by filtering the existing open-gates list. */
+/** The pipeline's human gate awaits this exact proposal. */
 export function useProposalGate(projectId: string | undefined, proposalId: string) {
   const gatesQuery = useGates({ projectId, status: "open", enabled: !!projectId });
   const gate = (gatesQuery.data ?? []).find((g: GateSummary) => {
-    const subjectId = (g as unknown as { subject_id?: string }).subject_id;
-    return g.gate_type === "routing" && subjectId === proposalId;
+    return g.gate_type === "human" && g.await_id === proposalId;
   });
   return { ...gatesQuery, gate };
 }
@@ -59,19 +64,9 @@ export function useDiscardProposal(proposalId: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      const r = await legacyFetch(`/api/execute`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          command: "task_batch_discard",
-          args: { proposal_id: proposalId },
-        }),
-      });
-      const body = (await r.json()) as { ok?: boolean; error?: string };
-      if (!r.ok || body.ok === false) {
-        throw new Error(body.error ?? `discard failed: ${r.status}`);
-      }
-      return body;
+      const { data } = await taskBatchDiscard({ body: { proposal_id: proposalId } });
+      if (data?.success === false) throw new Error("discard failed");
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["proposal", proposalId] });

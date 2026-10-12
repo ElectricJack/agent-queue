@@ -26,7 +26,7 @@ from src.database.tables import (
     task_gates as task_gates_table,
     tasks as tasks_table,
 )
-from src.models import ProjectStatus, TaskStatus
+from src.models import DAEMON_AUTHORED_TASK_TYPES, ProjectStatus, TaskStatus
 from src.routing.sources import LEGACY, UNROUTED
 
 logger = logging.getLogger(__name__)
@@ -92,6 +92,9 @@ class RouteNeededMixin:
             ),
             tasks_table.c.assigned_agent_id.is_(None),
             tasks_table.c.is_plan_subtask == 0,
+            # Promotion/backmerge intents are train-driven, never worker work.
+            or_(tasks_table.c.task_type.is_(None),
+                tasks_table.c.task_type.not_in(sorted(DAEMON_AUTHORED_TASK_TYPES))),
             needs_route,
             ~container_flag_exists(),
             ~exists(select(literal(1)).where(_child.c.parent_task_id == tasks_table.c.id)),

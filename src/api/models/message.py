@@ -75,6 +75,11 @@ class MessageInboxResponse(BaseModel):
     injected: int | None = None
     archived: int | None = None
     messages: list[MessageModel] = []
+    #: Present only when ``include_consumed`` was set: the read-only re-read of
+    #: rows this recipient already consumed, in the same delivery order. Absent
+    #: otherwise, so an unflagged call's envelope is byte-identical to before.
+    consumed: int | None = None
+    consumed_messages: list[MessageModel] | None = None
 
 
 class MessageListResponse(BaseModel):

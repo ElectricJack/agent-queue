@@ -46,6 +46,88 @@ class Handler:
         return {"success": True, "reasons": self.reasons.get(args["task_id"], [])}
 
 
+async def test_worker_relaunch_streak_is_visible_to_stall_sweep():
+    from unittest.mock import AsyncMock
+
+    db = SimpleNamespace(get_task_meta_bulk=AsyncMock(return_value={
+        "loop": {"cause": "context_thrash", "count": 2, "session_id": "old-worker"},
+        "retry": {"cause": "context_thrash", "count": 1},
+        "done": {"cause": "context_thrash", "count": 9},
+    }))
+    findings = await module._worker_relaunch_findings(DoctorContext(db=db, config=AppConfig()), [
+        task("loop", status=TaskStatus.BLOCKED), task("retry"),
+        task("done", status=TaskStatus.COMPLETED),
+    ])
+    assert len(findings) == 1
+    assert findings[0]["kind"] == "worker_relaunch_loop"
+    assert findings[0]["count"] == 2 and findings[0]["cause"] == "context_thrash"
+
+
+async def test_container_dependencies_sweep_reports_cap_and_retargeting(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    read = AsyncMock(return_value={"edges": [{
+        "task_id": "ready", "project_id": "one", "status": "READY",
+        "depends_on": "epic", "dependency_project_id": "two", "dep_type": "waits-for",
+    }], "truncated": True})
+    monkeypatch.setattr(import_module("src.doctor.task_checks"), "container_dependency_report", read)
+    result = await module._container_dependency_findings(context, {"one"})
+    read.assert_awaited_once_with(context, project_ids={"one"})
+    assert [f["kind"] for f in result] == [
+        "container_dependency", "container_dependencies_truncated",
+    ]
+    assert result[0]["depends_on"] == "epic" and result[0]["dep_type"] == "waits-for"
+    assert "retarget" in result[0]["detail"]
+
+
+async def test_undelivered_human_escalations_reach_stall_sweep(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    checks = import_module("src.doctor.escalation_checks")
+    read = AsyncMock(return_value=[{
+        "project_id": "one", "escalation_id": "esc-gate", "detail": "Root is missing",
+        "deep_link": "/focus/escalations/esc-gate", "age_seconds": 301,
+        "delivery_status": "missing",
+    }])
+    monkeypatch.setattr(checks, "undelivered_escalations", read)
+    [finding] = await module._escalation_delivery_findings(context, {"one"}, NOW)
+    read.assert_awaited_once_with(context, project_ids={"one"}, now=NOW)
+    assert finding["kind"] == "escalation_undelivered"
+    assert finding["escalation_id"] == "esc-gate" and finding["delivery_status"] == "missing"
+
+
+async def test_continuous_promotion_lag_and_unavailable_evidence_reach_sweep(context, monkeypatch):
+    import importlib
+    from unittest.mock import AsyncMock
+
+    read = AsyncMock(return_value={"findings": [{
+        "project_id": "one", "step_id": "staging", "detail": "dev is ahead for 7h",
+        "source_sha": "a" * 40, "target_sha": "b" * 40, "age_seconds": 7 * 3600,
+    }], "unavailable": [{"project_id": "two", "reason": "missing target"}]})
+    monkeypatch.setattr(importlib.import_module("src.doctor.integration_checks"),
+                        "continuous_promotion_lag", read)
+    result = await module._continuous_promotion_findings(context, {"one", "two"}, NOW)
+    read.assert_awaited_once_with(context, project_ids={"one", "two"}, now=NOW)
+    assert [item["kind"] for item in result] == [
+        "continuous_promotion_lag", "continuous_promotion_observation_unavailable"]
+    assert result[0]["source_sha"] == "a" * 40
+    assert result[1]["evidence"]["reason"] == "missing target"
+
+
+async def test_continuous_promotion_sweep_timeout_is_visible(context, monkeypatch):
+    import importlib
+
+    async def unavailable(*_args, **_kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(importlib.import_module("src.doctor.integration_checks"),
+                        "continuous_promotion_lag", unavailable)
+    monkeypatch.setattr(module, "_CONTINUOUS_PROMOTION_BUDGET_SECONDS", 0.01)
+    [finding] = await module._continuous_promotion_findings(context, {"one"}, NOW)
+    assert finding["kind"] == "continuous_promotion_observation_unavailable"
+    assert "integration.continuous_promotion_lag" in finding["detail"]
+
+
 class _Rows:
     """The one read a statement-backed probe needs from the fake engine."""
 
@@ -100,6 +182,9 @@ class DB:
     async def list_sessions(self):
         return self.sessions
 
+    async def uncredentialed_supervisor_sessions(self, *, now):
+        return []
+
     async def list_repos(self):
         return self.repos
 
@@ -122,6 +207,23 @@ class DB:
 @pytest.fixture
 def context(tmp_path):
     return DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=DB(), handler=Handler({}))
+
+
+async def test_auth_failure_reaches_sweep_without_active_projects(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    checks = import_module("src.doctor.session_checks")
+    monkeypatch.setattr(context.db, "list_projects", AsyncMock(return_value=[]))
+    monkeypatch.setattr(checks, "session_authentication_findings", AsyncMock(return_value=[{
+        "session_id": "global", "project_id": None, "detail": "credential expired",
+        "recovery_command": "aq session token global --json",
+    }]))
+    result = await module._check_sweep(context)
+    assert result.severity is Severity.ERROR
+    [finding] = result.data["findings"]
+    assert finding["kind"] == "session_authentication"
+    assert finding["session_id"] == "global"
+    assert finding["evidence"]["recovery_command"] == "aq session token global --json"
 
 
 @pytest.mark.parametrize(
@@ -286,35 +388,6 @@ async def test_disabled_provider_with_queued_task(context):
     assert findings[0]["provider"] == "claude"
 
 
-async def test_high_priority_task_on_a_local_model(context):
-    providers = {"opencode": "ollama", "opencode-zen": "opencode", "claude": "anthropic"}
-    context.handler.orchestrator = SimpleNamespace(harness_registry=SimpleNamespace(
-        get=lambda harness_id, project_id=None: SimpleNamespace(
-            id=harness_id, provider=providers[harness_id],
-        ),
-    ))
-    context.db.profiles = [
-        SimpleNamespace(id=f"standard-high-{harness}", harness=harness) for harness in providers
-    ]
-    rows = [
-        task("top-fix", profile="standard-high-opencode", priority=298,
-             status=TaskStatus.IN_PROGRESS),
-        task("queued-fix", project="two", profile="standard-high-opencode", priority=150),
-        task("docs", profile="standard-high-opencode", priority=100),
-        task("hosted", profile="standard-high-opencode-zen", priority=298),
-        task("claude", profile="standard-high-claude", priority=298),
-        task("done", profile="standard-high-opencode", priority=298,
-             status=TaskStatus.COMPLETED),
-    ]
-    findings = await module._local_model_findings(context, rows)
-    assert [(f["kind"], f["task_id"], f["project_id"]) for f in findings] == [
-        ("high_priority_local_model", "top-fix", "one"),
-        ("high_priority_local_model", "queued-fix", "two"),
-    ]
-    assert "stop it, then aq task route --task-id top-fix" in findings[0]["detail"]
-    assert findings[1]["detail"].endswith("< 150); aq task route --task-id queued-fix")
-
-
 def test_high_cost_non_design_route_across_projects():
     rows = [
         task("implement widget", project="two", profile="deep-high-claude"),
@@ -361,6 +434,39 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
     assert result.data["vault_root"] == context.config.vault_root
     assert "unclaimed_work one: one-ready" in result.detail
     assert "unclaimed_work two: two-ready" in result.detail
+
+
+async def test_sweep_reports_missing_delivery_engine_without_waiting_for_tasks(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.doctor.models import CheckResult
+    from src.models import Project
+
+    context.config.integration.reconciler_active = False
+    context.db.list_projects = AsyncMock(return_value=[
+        Project(id="one", name="One", hierarchical_integration_mode="development"),
+        Project(id="two", name="Two", hierarchical_integration_mode="disabled"),
+    ])
+    sessions = import_module("src.doctor.session_checks")
+    monkeypatch.setattr(sessions, "_check_flock", AsyncMock(return_value=CheckResult(
+        "sessions.untracked", Severity.OK, "clean",
+    )))
+    for name in (
+        "_work_findings", "_branch_findings", "_session_findings", "_delivery_findings",
+        "_provider_findings", "_unmaterialized_pr_findings", "_completed_undelivered_findings",
+        "_unadmitted_parent_findings", "_stranded_child_findings", "_reviewed_file_guard_findings",
+        "_orphaned_pr_findings", "_validation_findings", "_subject_unknown_findings",
+        "_object_bootstrap_findings", "_worker_relaunch_findings",
+    ):
+        monkeypatch.setattr(module, name, AsyncMock(return_value=[]))
+    monkeypatch.setattr(module, "_log_findings", lambda *args: [])
+    result = await module._check_sweep(context)
+    assert result.severity is Severity.ERROR
+    assert len(result.data["findings"]) == 1
+    finding = result.data["findings"][0]
+    assert finding["kind"] == "delivery_engine_unavailable"
+    assert finding["project_id"] == "one"
+    assert "no delivery engine for this project" in finding["detail"]
 
 
 async def test_conversation_inputs_with_no_live_supervisor_are_named(context):
@@ -501,3 +607,62 @@ def test_observation_failure_journal_replay_is_visible():
                  recorded_at=NOW-301, rule=None, primitive="integration_observe_subject",
                  outcome="unknown", payload={"result": {"reason": "source unavailable"}})]
     assert "source unavailable" in module._unknown_subject_streaks(rows, NOW)[0]["detail"]
+
+
+async def test_completed_undelivered_line_names_only_branches_nothing_will_move(
+    context, monkeypatch,
+):
+    integration_checks = import_module("src.doctor.integration_checks")
+
+    def entry(task_id, rule, accounted):
+        return {"task_id": task_id, "project_id": "one", "archived": False,
+                "branch": f"aq/{task_id}", "head": "abc", "wip": False, "rule": rule,
+                "accounted": accounted, "reason": f"{task_id} reason",
+                "remedy": f"settle {task_id}" if not accounted else None}
+
+    async def read(ctx, *, project_ids=None, now=None):
+        assert (project_ids, now) == ({"one"}, NOW)
+        return {"entries": [entry("stray", "unreconciled", False),
+                            entry("queued", "awaiting_delivery", True),
+                            entry("dark", "unknown", False)],
+                "unavailable": [], "projects": 1}
+
+    monkeypatch.setattr(integration_checks, "completed_undelivered", read)
+    [finding] = await module._completed_undelivered_findings(context, {"one"}, NOW)
+    assert (finding["kind"], finding["project_id"], finding["rule"]) == (
+        "completed_undelivered", "one", "unreconciled")
+    assert "aq/stray holds work the default branch cannot reach" in finding["detail"]
+    assert finding["detail"].endswith("settle stray")
+
+    async def slow(ctx, *, project_ids=None, now=None):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(integration_checks, "completed_undelivered", slow)
+    monkeypatch.setattr(module, "_COMPLETED_UNDELIVERED_BUDGET_SECONDS", 0.01)
+    assert await module._completed_undelivered_findings(context, {"one"}, NOW) == []
+
+
+@pytest.mark.parametrize("claims,phase,failures,ready,expected", [
+    (0, None, 2, False, True), (0, None, 0, True, True),
+    (0, None, 0, False, False), (1, None, 2, True, False),
+    (0, "preparing", 0, True, False), (0, "preparing", 2, False, True),
+    (0, "active", 2, True, False), (0, "claiming", 2, True, False),
+])
+async def test_pool_without_claim_uses_progress_not_activity(
+    context, claims, phase, failures, ready, expected
+):
+    row = session("retrying")
+    row.claims, row.claim_phase, row.claim_failure_count = claims, phase, failures
+    row.claim_failure_reason = "own branch handoff is unproven"
+    row.last_activity = NOW
+    context.db.sessions = [row]
+    findings = await module._session_findings(context, {"one"}, [task("ready")] if ready else [], NOW)
+    assert [f["kind"] for f in findings] == (["pool_without_claim"] if expected else [])
+
+
+async def test_never_claimed_worker_requires_own_projects_ready_work(context):
+    row = session("standby")
+    row.claims = 0
+    row.last_activity = NOW
+    context.db.sessions = [row]
+    assert await module._session_findings(context, {"one", "two"}, [task("other", project="two")], NOW) == []

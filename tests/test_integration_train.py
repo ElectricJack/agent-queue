@@ -8,9 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from dataclasses import replace
 
-from src.database.tables import integration_batches
+from sqlalchemy import func, select
+
+from src.database.tables import escalations, integration_batches, messages, tasks
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.integration.batches import Batch, BatchMember, BatchObservation, candidate_ref
@@ -21,6 +23,9 @@ from src.integration.checks import (
     Conclusion,
     RequiredChecks,
 )
+from src.integration.selection_metrics import selection_count, selection_stage
+from src.messages.delivery import MessageDeliveryEngine
+from src.models import Message
 from src.integration.train import (
     BatchSelection,
     CandidateChecks,
@@ -30,6 +35,7 @@ from src.integration.train import (
     candidate_head,
     conflict_brief,
     exact_gate,
+    sync_default_branch_brief,
 )
 from tests import test_integration_gitops
 from tests.test_integration_gitops import commit, git
@@ -149,9 +155,15 @@ class Repair:
     def __init__(self):
         self.calls = []
 
+    async def settle_green(self, batch_id, head_sha):
+        pass
+
     async def allocate(self, batch_id, **kwargs):
         self.calls.append((batch_id, kwargs))
         return {"outcome": "filed", "task_id": f"repair-{batch_id}", "attempts": 1}
+
+    async def recover_reservation(self, batch_id, **kwargs):
+        return {"outcome": "none"}
 
 
 ROOT = TrainTarget("p", "r", "refs/heads/main")
@@ -188,6 +200,25 @@ def test_target_rejects_unknown_kind_and_missing_fields():
         TrainTarget("p", "r", "main")
 
 
+async def test_promotion_target_visits_its_own_lane_and_keeps_a_step_snapshot():
+    step = {"id": "release", "target": "main", "gate": {"approval": "operator"}}
+    promotion = TrainTarget("p", "r", "refs/heads/main", "promotion", step=step)
+    development = TrainTarget("p", "r", "refs/heads/dev", "development")
+    step["gate"]["approval"] = "requester"
+    assert promotion.step_id == "release"
+    assert promotion.step["gate"]["approval"] == "operator"
+    t = train(Targets(development, promotion), Batches(), {
+        development.key: lane(Service()), promotion.key: lane(Service()),
+    })
+    started = await t.tick()
+    await t.drain()
+    assert len(started["started"]) == 2
+    assert {(row["target_ref"], row["kind"], row["state"]) for row in t.status()} == {
+        ("refs/heads/dev", "development", "idle"),
+        ("refs/heads/main", "promotion", "idle"),
+    }
+
+
 async def test_no_open_batch_is_idle_and_reports_the_fetched_target():
     t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
     visit = await t.visit(ROOT)
@@ -202,6 +233,74 @@ async def test_contained_candidate_settles_without_checks_or_repair():
     assert visit.state == "delivered"
     assert batches.settled == [("batch-1", "delivered")]
     assert checks.requests == [] and repair.calls == []
+
+
+async def test_post_delivery_epic_snapshot_does_not_reuse_an_older_sibling_fetch(setup, tmp_path):
+    from src.integration.git_truth import GitTruth
+
+    _db, ops, _subject, _fence, repo, base, head, _green = setup
+    epic = TrainTarget("p", "r", "refs/heads/epic", kind="epic")
+    await ops.push(repo, epic.target_ref, base, "")
+    writer = tmp_path / "writer.git"
+    await ops.git._arun(["clone", "--bare", str(repo.store), str(writer)], cwd=str(tmp_path))
+    truth = GitTruth(ops.git, share_fetches=True)
+    fetch = ops.git.afetch_origin
+    entered, release, resnapshot = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def blocked_sibling_fetch(*args, **kwargs):
+        await fetch(*args, **kwargs)
+        if ops.git.afetch_origin.await_count == 2:
+            entered.set()
+            await release.wait()
+
+    ops.git.afetch_origin = AsyncMock(side_effect=blocked_sibling_fetch)
+
+    async def snapshot_for(target):
+        return await truth.snapshot(
+            str(repo.store), project_id="p", repository_id="r",
+            repository_url=str(ops.git.remote_path), target_ref=target.target_ref,
+        )
+
+    epic_reads = 0
+
+    async def epic_snapshot():
+        nonlocal epic_reads
+        epic_reads += 1
+        if epic_reads == 2:
+            resnapshot.set()
+        return await snapshot_for(epic)
+
+    siblings = []
+
+    async def deliver(batch, members, snapshot):
+        assert snapshot.target_oid == base
+        siblings.append(asyncio.create_task(snapshot_for(ROOT)))
+        await entered.wait()
+        await ops.push(replace(repo, store=writer), epic.target_ref, head, base)
+        return BatchObservation("delivered", head, head)
+
+    completion_heads = []
+
+    async def complete_epic(snapshot):
+        completion_heads.append(snapshot.target_oid)
+        assert await snapshot.is_fresh()
+        return ({"blocking": False, "outcome": "completed", "head": snapshot.target_oid},)
+
+    batches = Batches({epic.key: (batch(ref=epic.target_ref), MEMBERS)})
+    t = train(Targets(epic), batches, {epic.key: TrainLane(
+        snapshot=epic_snapshot, service=SimpleNamespace(visit=deliver),
+        checks=CandidateChecks.fixed(Checks()), complete_epic=complete_epic,
+    )})
+    visit_task = asyncio.create_task(t.visit(epic))
+    await resnapshot.wait()
+    release.set()
+    visit = await visit_task
+    [sibling] = await asyncio.gather(*siblings)
+    assert (visit.state, completion_heads) == ("delivered", [head])
+    assert visit.detail["epic_completions"][0]["head"] == head
+    assert sibling.for_target(epic.target_ref).target_oid == base
+    assert ops.git.afetch_origin.await_count == 3
+    assert not truth._fetches
 
 
 async def test_green_exact_candidate_publishes_within_the_visit():
@@ -347,6 +446,222 @@ async def test_red_candidate_files_one_ordinary_repair_on_the_candidate_ref(db):
     assert task.branch_name == candidate_ref("batch-db").removeprefix("refs/heads/")
     assert task.branch_name != "main"
     assert (await store.get("batch-db")).repair_attempt_count == 1
+
+
+async def complete_ordinary_repair(db, repairs, task_id, ref):
+    from src.integration.models import BranchKey
+    from src.models import TaskStatus
+
+    await db.update_task(task_id, status=TaskStatus.COMPLETED)
+    lease = await repairs.locks.get(BranchKey(repository_id="r", branch=ref))
+    await repairs.locks.release(lease.grant())
+
+
+@pytest.mark.parametrize("recovery", ["checks", "contained", "allocation", "advisory"])
+async def test_repair_escalation_debug_then_one_supervisor_incident_and_green_recovery(db, recovery):
+    """Spec §6.7: allocations escalate; repeated reds/restarts never spend attempts."""
+    from src.integration.batches import BatchStore
+    from src.integration.models import RepairPolicy
+    from src.integration.repair import OrdinaryRepairService
+    from src.models import TaskType
+
+    store, repairs = BatchStore(db), OrdinaryRepairService(db)
+    frozen = await store.freeze(batch("batch-escalation"), MEMBERS, trees={"t-1": PARTIAL})
+    policy = RepairPolicy(primary_attempts=1, debug_attempts=1, primary_seconds=30,
+                          debug_seconds=60, debug_intelligence_class="deep-high",
+                          debug_profile_id="ignored-legacy-profile", on_exhausted="human")
+    checks = Checks(*(ChecksState.RED,) * 5, ChecksState.GREEN)
+    current = replace(lane(Service(*("testing",) * 6, "delivered"), checks),
+                      repair_policy=policy)
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}), {ROOT.key: current}, repairs)
+    first = await t.visit(ROOT)
+    task = await db.get_task(first.repair["task_id"])
+    assert task.task_type == TaskType.BUGFIX and task.profile_id is None
+    assert task.class_hint is None
+    assert (await repairs.input(task.id))["budget_seconds"] == 30
+    # An in-flight primary is found even though the counter reached its limit.
+    assert (await t.visit(ROOT)).repair["task_id"] == task.id
+    await complete_ordinary_repair(db, repairs, task.id, candidate_ref(frozen.id))
+    second = await t.visit(ROOT)
+    task = await db.get_task(second.repair["task_id"])
+    assert task.task_type == TaskType.BUGFIX and task.profile_id is None
+    assert task.class_hint == "deep-high"
+    assert (await repairs.input(task.id))["stage"] == "debug"
+    assert (await repairs.input(task.id))["budget_seconds"] == 60
+    assert "work budget: 60 seconds" in task.description
+    await complete_ordinary_repair(db, repairs, task.id, candidate_ref(frozen.id))
+    third = await t.visit(ROOT)
+    assert (third.state, third.repair["outcome"]) == ("blocked", "human_required")
+    assert third.repair["attempt_count"] == 2
+    blocker = AsyncMock(return_value={"reason": "repair_completion_unconfirmed"})
+    concurrent = await asyncio.gather(*(repairs.allocate(
+        frozen.id, target_ref=candidate_ref(frozen.id), head_sha=CANDIDATE, policy=policy,
+        completion_blocker=blocker,
+    ) for _ in range(4)))
+    assert all(row["escalation_id"] == third.repair["escalation_id"] for row in concurrent)
+    blocker.assert_not_awaited()  # A proof blocker cannot hide the exhausted budget.
+    # The allocator is stateless: a daemon restart finds the same incident/notice.
+    t.repair = OrdinaryRepairService(db)
+    repeated = await t.visit(ROOT)
+    assert repeated.repair["escalation_id"] == third.repair["escalation_id"]
+    incident = await db.get_escalation(third.repair["escalation_id"])
+    assert incident["source_identity"] == frozen.id and incident["state"] == "needs_human"
+    assert incident["supervisor_owner"] == "supervisor-p"
+    assert incident["choices"] == ["eject", "abort-batch"]
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(tasks)) == 2
+        assert await conn.scalar(select(func.count()).select_from(escalations)) == 1
+        assert await conn.scalar(select(func.count()).select_from(messages).where(
+            messages.c.body_kind == "integration_repair_exhausted",
+        )) == 1
+    if recovery == "allocation":
+        green = await t.repair.allocate(
+            frozen.id, target_ref=candidate_ref(frozen.id), head_sha=CANDIDATE,
+            green_sha=CANDIDATE, policy=policy,
+        )
+        assert (green["outcome"], green["attempt_count"]) == ("green", 2)
+    else:
+        if recovery == "contained":
+            # Cleanup can remove the candidate ref after Git proves delivery.
+            current.service.visit = AsyncMock(return_value=BatchObservation(
+                "delivered", target_sha=TARGET_SHA,
+            ))
+        elif recovery == "advisory":
+            checks.states = [ChecksState.RED]
+            current.checks.advisory = True
+        assert (await t.visit(ROOT)).state == "delivered"
+    cleared = await db.get_escalation(incident["id"])
+    assert cleared["state"] == "resolved"
+    assert cleared["terminal_evidence"] == {
+        "batch_id": frozen.id, "candidate_sha": TARGET_SHA if recovery == "contained" else CANDIDATE,
+    }
+    assert (await store.get(frozen.id)).repair_attempt_count == 2
+
+
+@pytest.mark.parametrize("green_after", [1, 2])
+async def test_green_repair_bypasses_primary_and_debug_limits(db, green_after):
+    from src.integration.batches import BatchStore
+    from src.integration.models import RepairPolicy
+    from src.integration.repair import OrdinaryRepairService
+
+    store, repairs = BatchStore(db), OrdinaryRepairService(db)
+    frozen = await store.freeze(batch("batch-green"), MEMBERS, trees={"t-1": PARTIAL})
+    policy = RepairPolicy(primary_attempts=1, debug_attempts=1, debug_intelligence_class="deep-high")
+    current = replace(lane(Service(*("testing",) * (green_after + 1), "delivered"),
+                           Checks(*(ChecksState.RED,) * green_after, ChecksState.GREEN)),
+                      repair_policy=policy)
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}), {ROOT.key: current}, repairs)
+    for _ in range(green_after):
+        visit = await t.visit(ROOT)
+        await complete_ordinary_repair(db, repairs, visit.repair["task_id"], candidate_ref(frozen.id))
+    assert (await t.visit(ROOT)).state == "delivered"
+    assert (await store.get(frozen.id)).repair_attempt_count == green_after
+    assert await db.list_escalations(project_id="p") == []
+
+
+async def test_exhausted_continue_keeps_filing_ordinary_debug_repairs(db):
+    from src.integration.batches import BatchStore
+    from src.integration.models import RepairPolicy
+    from src.integration.repair import OrdinaryRepairService
+
+    store, repairs = BatchStore(db), OrdinaryRepairService(db)
+    frozen = await store.freeze(batch("batch-continue"), MEMBERS, trees={"t-1": PARTIAL})
+    policy = RepairPolicy(primary_attempts=1, debug_attempts=1, debug_intelligence_class="deep-high",
+                          on_exhausted="continue")
+    current = replace(lane(Service(*("testing",) * 4), Checks(*(ChecksState.RED,) * 4)),
+                      repair_policy=policy)
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}), {ROOT.key: current}, repairs)
+    for attempt in range(1, 5):
+        visit = await t.visit(ROOT)
+        assert visit.repair["outcome"] == "filed" and visit.repair["attempt_count"] == attempt
+        task = await db.get_task(visit.repair["task_id"])
+        assert task.class_hint == (None if attempt == 1 else "deep-high")
+        await complete_ordinary_repair(db, repairs, task.id, candidate_ref(frozen.id))
+    assert (await store.get(frozen.id)).repair_attempt_count == 4
+    assert await db.list_escalations(project_id="p") == []
+
+
+@pytest.mark.parametrize("scope", ["member", "batch"])
+async def test_conflict_repair_brief_honors_policy_scope(scope):
+    from src.integration.models import RepairPolicy
+
+    repair = Repair()
+    current = replace(lane(Conflicting(CONFLICT, candidate=PARTIAL)), repair_policy=RepairPolicy(
+        debug_intelligence_class="deep-high", conflict_scope=scope,
+    ))
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), CONFLICTING_MEMBERS)}),
+              {ROOT.key: current}, repair)
+    await t.visit(ROOT)
+    brief = repair.calls[0][1]["brief"]
+    assert f"Conflict scope: {scope}." in brief
+    assert ("conflicting member's changes" if scope == "member" else "whole frozen batch") in brief
+    assert "Still to merge onto the starting head, in this order:" in brief
+    assert "t-2" in brief and "t-3" in brief
+
+
+@pytest.mark.parametrize("scope", ["member", "batch"])
+def test_default_branch_sync_conflict_brief_honors_policy_scope(scope):
+    brief = sync_default_branch_brief(
+        {"ref": "refs/heads/main", "sha": TARGET_SHA, "checks": ["unit"],
+         "conflicting_files": ["src/example.py"]},
+        CONFLICTING_MEMBERS, starting_sha=PARTIAL, conflict_scope=scope,
+    )
+    assert f"Conflict scope: {scope}." in brief
+    assert "src/example.py" in brief
+    assert "t-1" in brief and "t-2" in brief and "t-3" in brief
+
+@pytest.mark.parametrize("state", ["testing", "unknown"])
+@pytest.mark.parametrize("lost", ["released", "expired"])
+async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, state, lost):
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+    from src.database.tables import tasks
+    from src.integration.batches import BatchStore
+    from src.integration.lock import BranchLock
+    from src.integration.models import BranchKey
+    from src.integration.repair import OrdinaryRepairService
+    from src.models import TaskStatus
+
+    store, now = BatchStore(db), [100.0]
+    await store.freeze(batch("batch-retry"), MEMBERS, trees={"t-1": "d" * 40})
+    locks = BranchLock(db, clock=lambda: now[0])
+    repair = OrdinaryRepairService(db, locks=locks, clock=lambda: now[0])
+    ref = candidate_ref("batch-retry")
+    target = BranchKey(repository_id="r", branch=ref)
+    filed = await repair.allocate("batch-retry", target_ref=ref, head_sha=CANDIDATE,
+                                  authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    task_id = filed["task_id"]
+    original = await repair.input(task_id)
+    await db.update_task(task_id, status=TaskStatus.READY)
+    old = (await locks.get(target)).grant()
+    if lost == "released":
+        await locks.release(old)
+        async with db._engine.connect() as conn:
+            assert await conn.scalar(select(tasks.c.id).where(
+                tasks.c.id == task_id, _frontier_where("p", ProjectIntegrationMode(True, "r")),
+            )) is None
+    else:
+        now[0] += 10
+    frozen = await store.get("batch-retry")
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}),
+              {ROOT.key: lane(Service(state), Checks(ChecksState.PENDING))}, repair)
+
+    visit = await t.visit(ROOT)
+
+    assert visit.state == state
+    lease = await locks.get(target)
+    assert (lease.holder, lease.fence) == (task_id, old.token + 1)
+    assert await repair.input(task_id) == original
+    assert (await store.get("batch-retry")).repair_attempt_count == 1
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id).where(
+            tasks.c.id == task_id, _frontier_where("p", ProjectIntegrationMode(True, "r")),
+        )) == task_id
+    # A repeated visit keeps the same task/fence rather than allocating again.
+    t = train(Targets(ROOT), Batches({ROOT.key: (frozen, MEMBERS)}),
+              {ROOT.key: lane(Service(state), Checks(ChecksState.PENDING))}, repair)
+    await t.visit(ROOT)
+    assert await locks.get(target) == lease
 
 
 async def test_filed_conflict_repair_task_carries_the_plain_english_brief(db):
@@ -672,6 +987,36 @@ async def test_slow_target_never_stalls_another():
     assert not any(row["running"] for row in status.values())
 
 
+async def test_status_reports_a_first_visit_in_flight_as_visiting(monkeypatch):
+    """After a restart, a lane whose first visit is running is not 'unvisited'."""
+    slow = TrainTarget("p", "r", "refs/heads/main")
+    release = asyncio.Event()
+
+    async def blocked_fetch():
+        await release.wait()
+
+    batches = Batches({slow.key: (batch(), MEMBERS)})
+    t = train(Targets(slow), batches, {slow.key: lane(Service("delivered"), fetch=blocked_fetch)})
+    now = [100.0]
+    monkeypatch.setattr("src.integration.train.time", SimpleNamespace(monotonic=lambda: now[0]))
+    await t.tick()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    now[0] += 7.5
+    [row] = t.status()
+    assert row["state"] == "visiting" and row["running"] and row["visits"] == 0
+    assert row["progress"]["stage"]
+    assert row["timing"]["stages_seconds"]["fetch_snapshot"] == 7.5
+    assert row["timing"]["elapsed_seconds"] == 7.5
+    release.set()
+    await t.drain()
+    [row] = t.status()
+    assert row["state"] == "delivered" and not row["running"] and "progress" not in row
+    now[0] += 10
+    assert t.status()[0]["timing"] == row["timing"]
+    assert sum(row["timing"]["stages_seconds"].values()) == 7.5
+
+
 async def test_one_target_failure_is_recorded_and_others_continue():
     broken, healthy = TrainTarget("p", "r", "refs/heads/main"), TrainTarget("q", "s", "refs/heads/main")
 
@@ -742,6 +1087,109 @@ async def test_rate_limited_visit_defers_the_target_with_backoff(caplog):
     assert "p/r/refs/heads/main" in message
     assert "code=rate_limited" in message and "http=403" in message
     assert "\n" not in message
+
+
+class Holding(Service):
+    """A promotion lane that names what each visit waits for."""
+
+    def __init__(self, *reasons):
+        super().__init__()
+        self.reasons = list(reasons)
+
+    async def visit(self, batch, members, snapshot):
+        self.calls += 1
+        reason = self.reasons.pop(0)
+        return BatchObservation("held", SOURCE, TARGET_SHA,
+                                detail=reason if isinstance(reason, dict) else {"reason": reason})
+
+
+PROMOTION = TrainTarget("p", "r", "refs/heads/main", "promotion",
+                        step={"id": "release", "target": "main", "gate": {"approval": "operator"}})
+
+
+async def test_named_promotion_hold_defers_its_target_until_woken():
+    """grand-lantern-78.4: a request waiting on a person is not re-polled every tick."""
+    clock = [100.0]
+    approval, vetoed = "promotion_operator_approval_missing", "promotion_pr_changes_requested"
+    service = Holding(approval, approval, vetoed, vetoed)
+
+    async def lane_for(target):
+        return lane(service)
+
+    t = IntegrationTrain(targets=Targets(PROMOTION),
+                         batches=Batches({PROMOTION.key: (batch(), MEMBERS)}),
+                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0])
+    label = "p/r/refs/heads/main"
+
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    [row] = t.status()
+    assert (row["state"], row["detail"]["reason"]) == ("held", approval)
+    assert row["detail"]["retry_at"] == row["deferred_until"] == 130.0
+
+    clock[0] = 129.0
+    assert await t.tick() == {"started": [], "running": [], "skipped": [], "deferred": [label]}
+    assert service.calls == 1
+
+    clock[0] = 130.0
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    # The same refusal again doubles the wait.
+    assert t.status()[0]["detail"]["retry_at"] == 130.0 + 60.0
+
+    clock[0] = 190.0
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    # A different refusal starts the wait over.
+    assert t.status()[0]["detail"]["retry_at"] == 190.0 + 30.0
+
+    # A promote command wakes only its own target, at once.
+    assert t.wake("p", "r", "refs/heads/release") == 0
+    assert t.wake("p", "r", "refs/heads/main") == 1
+    assert (await t.tick())["started"] == [label]
+    await t.drain()
+    assert service.calls == 4
+
+
+async def test_a_promotion_hold_logs_its_reason_once_per_hold(caplog):
+    """solid-impact-50: an intent StepAdmission refuses must not idle silently."""
+    clock = [100.0]
+    error = "promotion task t-1 is routed to profile 'worker'; run `aq promote repair r --project p`"
+    invalid = {"reason": "promotion_intent_invalid", "error": error}
+    service = Holding(invalid, dict(invalid), "promotion_operator_approval_missing")
+
+    async def lane_for(target):
+        return lane(service)
+
+    t = IntegrationTrain(targets=Targets(PROMOTION),
+                         batches=Batches({PROMOTION.key: (batch(), MEMBERS)}),
+                         lane_for=lane_for, repair=Repair(), clock=lambda: clock[0])
+    caplog.set_level(logging.INFO, logger="src.integration.train")
+    for now in (100.0, 130.0, 190.0):
+        clock[0] = now
+        assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+        await t.drain()
+    held = "promotion batch-1 on refs/heads/main held: "
+    assert [(r.levelno, r.getMessage()) for r in caplog.records
+            if r.name == "src.integration.train" and " held: " in r.getMessage()] == [
+        (logging.WARNING, f"{held}promotion_intent_invalid {error}"),
+        (logging.INFO, f"{held}promotion_operator_approval_missing"),
+    ]
+
+
+async def test_only_a_named_promotion_hold_defers_its_target():
+    root = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+                 {ROOT.key: lane(Holding("promotion_operator_approval_missing"))})
+    unnamed = train(Targets(PROMOTION), Batches({PROMOTION.key: (batch(), MEMBERS)}),
+                    {PROMOTION.key: lane(Service("held", "held"))})
+    for t, target, visits in ((root, ROOT, 1), (unnamed, PROMOTION, 2)):
+        for _ in range(visits):
+            assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+            await t.drain()
+        [row] = t.status()
+        assert row["state"] == "held" and "deferred_until" not in row
+        assert "retry_at" not in (row["detail"] or {})
+    assert root.wake("p") == 0
 
 
 async def test_rate_limited_visit_honours_a_later_github_retry_time():
@@ -832,15 +1280,16 @@ async def test_a_rate_limit_pauses_every_target_of_the_repository_behind_one_pro
     # The next probe succeeds and releases every target of the repository.
     limited["r"] = False
     clock[0] = 280.0
-    assert (await t.tick())["started"] == [a, s]
-    assert (await t.tick())["deferred"] == [b]
+    # The sibling that has waited longest gets this probe.
+    assert (await t.tick())["started"] == [b, s]
+    assert (await t.tick())["deferred"] == [a]
     await t.drain()
     clock[0] = 281.0
     assert (await t.tick())["started"] == [a, b, s]
     await t.drain()
     assert [v for v in visits if v[2] == "r"] == [
         (100.0, "refs/heads/a", "r"), (100.0, "refs/heads/b", "r"),
-        (160.0, "refs/heads/a", "r"), (280.0, "refs/heads/a", "r"),
+        (160.0, "refs/heads/a", "r"), (280.0, "refs/heads/b", "r"),
         (281.0, "refs/heads/a", "r"), (281.0, "refs/heads/b", "r"),
     ]
 
@@ -865,7 +1314,7 @@ async def test_a_cancelled_probe_does_not_hold_the_repository_paused():
     clock[0] = 160.0
     assert (await t.tick())["started"] == ["p/r/refs/heads/a"]
     await t.stop()
-    assert (await t.tick())["started"] == ["p/r/refs/heads/a"]
+    assert (await t.tick())["started"] == ["p/r/refs/heads/b"]
     await t.stop()
 
 
@@ -902,6 +1351,145 @@ async def test_visit_timeout_frees_the_target_for_the_next_tick():
     await t.stop()
 
 
+@pytest.mark.parametrize("bounded_leader", [True, False])
+async def test_cancelled_shared_fetch_records_waiter_failure_and_retries(setup, bounded_leader):
+    from src.integration.git_truth import GitTruth
+
+    _db, ops, _subject, _fence, repo, base, head, _green = setup
+    waiters = [TrainTarget("p", "r", f"refs/heads/waiter-{i}") for i in range(3)]
+    for target in waiters:
+        await ops.push(repo, target.target_ref, base, "")
+    truth = GitTruth(ops.git, share_fetches=True)
+    fetch = ops.git.afetch_origin
+    entered, release = asyncio.Event(), asyncio.Event()
+    arrivals = {target.key: asyncio.Event() for target in waiters}
+
+    async def blocked_fetch(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await fetch(*args, **kwargs)
+
+    ops.git.afetch_origin = AsyncMock(side_effect=blocked_fetch)
+
+    async def lane_for(target):
+        async def snapshot_for():
+            if target.key in arrivals:
+                arrivals[target.key].set()
+            return await truth.snapshot(
+                str(repo.store), project_id="p", repository_id="r",
+                repository_url=str(ops.git.remote_path), target_ref=target.target_ref,
+            )
+
+        return TrainLane(snapshot=snapshot_for, service=Service(),
+                         checks=CandidateChecks.fixed(Checks()))
+
+    t = IntegrationTrain(targets=Targets(*waiters), batches=Batches(), lane_for=lane_for,
+                         repair=Repair(), clock=lambda: 100.0)
+    if bounded_leader:
+        await t.tick(target=ROOT)
+        leader = t._lanes[ROOT.key].task
+    else:
+        leader = asyncio.create_task(t.visit(ROOT, seal_now=True))
+    requests = []
+    try:
+        await entered.wait()
+        requests = [asyncio.create_task(t.request_visit(target)) for target in waiters]
+        await asyncio.gather(*(arrival.wait() for arrival in arrivals.values()))
+        leader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leader
+
+        visits = await asyncio.gather(*requests)
+        assert ops.git.afetch_origin.await_count == 1
+        assert not truth._fetches
+        for target, visit in zip(waiters, visits, strict=True):
+            assert visit.state == "unknown"
+            assert visit.detail["reason"] == "SharedFetchCancelled"
+            lane_state = t._lanes[target.key]
+            assert lane_state.last is visit
+            assert (lane_state.visits, lane_state.errors) == (1, 1)
+            assert not lane_state.task.cancelled()
+
+        # A later visit must fetch the current remote rather than reuse the
+        # failed observation or a tracking ref from before the cancellation.
+        for target in waiters:
+            await ops.push(repo, target.target_ref, head, base)
+        release.set()
+        assert len((await t.tick())["started"]) == len(waiters)
+        await t.drain()
+        assert ops.git.afetch_origin.await_count == 3
+        assert not truth._fetches
+        for target in waiters:
+            lane_state = t._lanes[target.key]
+            assert (lane_state.last.state, lane_state.last.target_sha) == ("idle", head)
+            assert (lane_state.visits, lane_state.errors) == (2, 1)
+    finally:
+        leader.cancel()
+        for request in requests:
+            request.cancel()
+        await t.stop()
+        await asyncio.gather(leader, *requests, return_exceptions=True)
+
+
+async def test_visit_timeout_status_keeps_the_last_known_state():
+    lanes = {ROOT.key: lane(Service())}
+    t = train(Targets(ROOT), Batches(), lanes, visit_timeout_seconds=0.5)
+    await t.tick()
+    await t.drain()
+    [first] = t.status()
+    known = first["state"]
+
+    async def hang():
+        await asyncio.sleep(3600)
+
+    lanes[ROOT.key] = lane(Service(), fetch=hang)
+    for _ in range(2):  # consecutive timeouts keep the chain
+        assert (await t.tick())["started"] == ["p/r/refs/heads/main"]
+        await t.drain()
+        [row] = t.status()
+        assert row["state"] == known
+        assert row["detail"]["reason"] == "visit_timeout"
+        assert row["detail"]["previous_state"] == known
+    await t.stop()
+
+
+async def test_requested_visit_shares_running_lane_and_respects_rate_limit_pause():
+    gate, entered = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def limited():
+        calls.append(True)
+        entered.set()
+        await gate.wait()
+        raise _rate_limited()
+
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service(), fetch=limited)})
+    await t.tick()
+    await entered.wait()
+    requested = asyncio.create_task(t.request_visit(ROOT))
+    await asyncio.sleep(0)
+    assert calls == [True]
+    gate.set()
+    visit = await requested
+    assert visit.detail["reason"] == "rate_limited"
+    assert await t.request_visit(ROOT) is None
+    assert calls == [True]
+
+
+async def test_requested_visit_uses_timeout_and_never_returns_stale_tick_result():
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
+    assert (await t.request_visit(ROOT)).state == "idle"
+    async with t._tick_lock:
+        assert await t.request_visit(ROOT) is None
+
+    async def hang():
+        await asyncio.Event().wait()
+
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service(), fetch=hang)},
+              visit_timeout_seconds=0.01)
+    assert (await t.request_visit(ROOT)).detail["reason"] == "visit_timeout"
+
+
 async def test_restart_resumes_from_git_without_any_notification():
     """A fresh train over the same refs settles a candidate a crash left behind."""
     batches = Batches({ROOT.key: (batch(), MEMBERS)})
@@ -932,6 +1520,137 @@ async def test_overlapping_ticks_do_not_double_start():
     gate.set()
     assert (await first)["started"] == ["p/r/refs/heads/main"]
     await t.drain()
+
+
+async def test_repository_budget_admits_new_work_and_keeps_inbox_reconciliation_running():
+    old = [TrainTarget("p", "r", f"refs/heads/old-{i}") for i in range(55)]
+    fresh = TrainTarget("p", "r", "refs/heads/fresh")
+    other = TrainTarget("q", "s", "refs/heads/main")
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    active, peak, calls = 0, 0, []
+
+    class SlowBatches(Batches):
+        async def open_batch(self, target, snapshot, service):
+            nonlocal active, peak
+            if target in old:
+                active += 1
+                peak = max(peak, active)
+                calls.append(target.key)
+                if active == 4:
+                    entered.set()
+                try:
+                    with selection_stage("root_delivery", items=1):
+                        await release.wait()
+                finally:
+                    active -= 1
+                return BatchSelection(blockers=({"code": "missing_provenance"},))
+            return BatchSelection()
+
+    targets = Targets(*old, other)
+    lanes = {target.key: lane(Service()) for target in [*old, fresh, other]}
+    t = train(targets, SlowBatches(), lanes)
+    try:
+        scheduled = await t.tick()
+        assert len(scheduled["started"]) == 5  # four here, one in another repository
+        assert len(scheduled["deferred"]) == 51
+        await entered.wait()
+        assert peak == 4 and len(calls) == 4
+        # These are running visits, not 51 additional tasks queued on a semaphore.
+        assert sum(lane.task is not None for lane in t._lanes.values()) == 5
+        row = next(row for row in t.status() if row["target_ref"] == old[0].target_ref)
+        assert row["timing"]["selection"]["stages"]["root_delivery"]["items"] == 1
+
+        db = SimpleNamespace(
+            redirect_disabled_supervisor_messages=AsyncMock(return_value=0),
+            get_pending_recipients=AsyncMock(return_value=[("user", "dashboard", "p")]),
+            get_pending_messages=AsyncMock(return_value=[Message(
+                "inbox-1", "p", "system", "benchmark", "user", "dashboard", "pending")]),
+            mark_delivered=AsyncMock(return_value=True),
+        )
+        inbox = MessageDeliveryEngine(db, None, SimpleNamespace(max_inject_per_prompt=10))
+        assert (await inbox.run_delivery_pass())["delivered"] == 1
+        db.mark_delivered.assert_awaited_once_with("inbox-1", via="platform")
+        # Requested visits use the same budget and never bypass occupied slots.
+        assert await t.request_visit(fresh) is None
+        targets.items.append(fresh)
+        release.set()
+        await t.drain()
+        for _ in range(14):
+            scheduled = await t.tick()
+            assert all("old-0" not in label for label in scheduled["started"])
+            await t.drain()
+            if "/".join(fresh.key) in scheduled["started"]:
+                break
+        else:
+            pytest.fail("new work did not get a turn within one bounded frontier sweep")
+        assert peak == 4
+    finally:
+        release.set()
+        await t.stop()
+
+
+async def test_repository_fairness_rotates_idle_targets_and_releases_cancelled_slots():
+    targets = [TrainTarget("p", "r", f"refs/heads/target-{i}") for i in range(3)]
+    t = train(Targets(*targets), Batches(), {x.key: lane(Service()) for x in targets},
+              repository_concurrency=1)
+    for target in targets * 2:
+        assert (await t.tick())["started"] == ["/".join(target.key)]
+        await t.drain()
+    await t.tick()
+    await t.stop()
+    assert len((await t.tick())["started"]) == 1
+    await t.drain()
+
+
+async def test_unchanged_blockers_back_off_with_bounded_retry_and_wake():
+    from src.integration.train import TrainVisit
+
+    clock = [100.0]
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service())})
+    t.clock = lambda: clock[0]
+    result = TrainVisit(ROOT, "blocked", target_sha=TARGET_SHA,
+                        detail={"blockers": [{"code": "missing_provenance"}]})
+    t.visit = AsyncMock(return_value=result)
+    for delay in (10, 20, 40, 60, 60):
+        assert (await t.tick())["started"]
+        await t.drain()
+        assert t.status()[0]["deferred_until"] == clock[0] + delay
+        assert not (await t.tick())["started"]
+        clock[0] += delay
+    # A changed exact target resets the retry sequence; wake also resets it.
+    t.visit.return_value = replace(result, target_sha="d" * 40)
+    await t.tick()
+    await t.drain()
+    assert t.status()[0]["deferred_until"] == clock[0] + 10
+    assert t.wake("p", "r", ROOT.target_ref) == 1
+    assert (await t.tick())["started"]
+    await t.drain()
+    assert t.status()[0]["deferred_until"] == clock[0] + 10
+
+
+async def test_selection_metrics_retain_interrupted_operations_without_cross_visit_leaks():
+    async def measured_fetch():
+        selection_count("completion_cache_misses")
+        with selection_stage("provenance", items=7):
+            await asyncio.Event().wait()
+
+    t = train(Targets(ROOT), Batches(), {ROOT.key: lane(Service(), fetch=measured_fetch)},
+              visit_timeout_seconds=0.01)
+    await t.tick()
+    await t.drain()
+    metrics = t.status()[0]["timing"]["selection"]
+    assert metrics["counts"] == {"completion_cache_misses": 1}
+    assert metrics["stages"]["provenance"]["items"] == 7
+    assert metrics["stages"]["provenance"]["seconds"] > 0
+    await t.tick()
+    await t.drain()
+    assert t.status()[0]["timing"]["selection"]["counts"] == metrics["counts"]
+
+
+def test_repository_concurrency_must_be_positive():
+    with pytest.raises(ValueError, match="repository concurrency"):
+        train(Targets(), Batches(), {}, repository_concurrency=0)
 
 
 def test_visit_timeout_must_be_positive():
@@ -1029,6 +1748,9 @@ async def test_driver_skips_until_a_command_handler_is_attached():
 RETIRED_TRUTH = {
     "src.integration.reconciler", "src.integration.root_runtime", "src.integration.parent_runtime",
     "src.integration.source_delivery", "src.integration.settling", "src.integration.records",
+    "src.integration.subjects", "src.integration.parent_engine", "src.integration.main_promotion",
+    "src.integration.promotion", "src.integration.candidates", "src.integration.root_adapters",
+    "src.integration.scheduler", "src.integration.stale_schedule",
 }
 RETIRED_TABLES = {
     "integration_subject_journal", "integration_subjects", "task_delivery_receipts",
@@ -1040,8 +1762,37 @@ SHARED_NAMES = {
     "src.integration.development_runtime": {
         "development_repository", "project_development_pin", "load_pinned_development_policy",
     },
-    "src.integration.subjects": {"Subject", "HeadIdentity"},
 }
+
+
+def test_active_train_and_promotion_modules_import_retained_contracts():
+    """Retirement cannot remove a live train's DTO, error or ownership dependency."""
+    import ast
+    from pathlib import Path
+
+    for module in ("parent_runtime", "parent_engine", "promotion", "scheduler", "settling",
+                   "stale_schedule", "candidates", "main_promotion", "root_runtime",
+                   "root_adapters", "subjects", "reconciler"):
+        assert not Path(f"src/integration/{module}.py").exists(), module
+
+    modules = (
+        "train", "train_sources", "checks", "candidate_baseline", "promotion_steps",
+        "epics", "github_review_poll", "attestation", "ci_producers", "ci_adapters",
+        "runtime_contracts", "promotion_contracts", "owner_guards", "source_repairs",
+        "reviews", "repository_git", "release",
+    )
+    paths = [Path(f"src/integration/{module}.py") for module in modules]
+    paths.append(Path("src/git/github.py"))
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                assert not {alias.name for alias in node.names} & RETIRED_TRUTH, path
+            elif isinstance(node, ast.ImportFrom):
+                assert node.module not in RETIRED_TRUTH, (path, node.module)
+                if node.module == "src.integration":
+                    assert not {"src.integration." + alias.name for alias in node.names} & (
+                        RETIRED_TRUTH
+                    ), path
 
 
 def test_train_reads_no_journal_receipt_or_runtime_truth():
@@ -1096,3 +1847,36 @@ def test_activation_runbook_exists_before_canary():
     assert "aq restart --no-dashboard" in text
     assert runbook.name in Path("docs/guides/README.md").read_text()
     assert runbook.name in Path("docs/concepts/integration.md").read_text()
+
+
+def test_active_train_shared_imports_work_with_retirement_modules_unavailable():
+    """Fresh imports cannot hide an eager legacy dependency already loaded by pytest."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = '''
+import importlib
+import importlib.abc
+import sys
+legacy = {
+    "candidates", "main_promotion", "parent_engine", "parent_runtime", "promotion",
+    "reconciler", "root_adapters", "root_runtime", "scheduler", "settling",
+    "stale_schedule", "subjects", "source_delivery",
+}
+class RefuseLegacy(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith("src.integration.") and fullname.split(".")[2] in legacy:
+            raise AssertionError("Retiring runtime was imported: " + fullname)
+sys.meta_path.insert(0, RefuseLegacy())
+for module in (
+    "train", "train_sources", "gates", "parent_subjects", "hierarchy",
+    "development_adapter", "development_runtime",
+):
+    importlib.import_module("src.integration." + module)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr

@@ -10,7 +10,7 @@ from src.api.pull_requests import PendingPullRequestInbox, build_pull_requests_r
 from src.commands.review_commands import ReviewCommandsMixin
 from src.database import Database
 from src.database.queries.pull_request_queries import (
-    list_known_pull_requests, read_pull_request_snapshot,
+    list_known_pull_requests, read_pull_request_snapshot, write_pull_request_snapshot,
 )
 from src.database.tables import archived_tasks, projects, tasks
 from src.git.github_contracts import GitHubRepositoryBinding
@@ -189,6 +189,94 @@ async def test_failed_refresh_keeps_previous_snapshot(db):
     assert await read_pull_request_snapshot(db) == first
 
 
+async def test_project_summary_aggregates_snapshot_without_pr_details_or_github(db, monkeypatch):
+    await seed(db)
+    async with db._engine.begin() as conn:
+        await conn.execute(projects.insert().values(
+            id="empty", name="Empty project", repo_url="git@github.com:acme/empty.git",
+            status="ACTIVE", created_at=1,
+        ))
+        # Project names come from current configuration, not cached PR details.
+        await conn.execute(projects.update().where(projects.c.id == "active").values(
+            name="Renamed project",
+        ))
+    await write_pull_request_snapshot(db, [
+        {"project_id": "active", "url": BASE + "1"},
+        {"project_id": "active", "url": BASE + "1"},  # two tasks share the same PR
+        {"project_id": "active", "url": BASE + "4"},  # archived task's open PR
+        {"project_id": "paused", "url": BASE + "3"},
+    ], now=100)
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("Summary must not load PR details or refresh GitHub")
+
+    import src.api.pull_requests as api
+    monkeypatch.setattr(api, "read_pull_request_snapshot", forbidden)
+    restarted = PendingPullRequestInbox(db, None)
+    monkeypatch.setattr(restarted, "list", forbidden)
+    monkeypatch.setattr(restarted, "refresh", forbidden)
+    app = FastAPI()
+    app.include_router(build_pull_requests_router(db=db, inbox=restarted))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as ac:
+        response = await ac.get("/api/reviews/pull-requests/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["snapshot_at"] == 100
+    assert body["snapshot_age_seconds"] > 0
+    assert body["projects"] == [
+        {"project_id": "empty", "project_name": "Empty project", "repository": "acme/empty",
+         "pulls_url": "https://github.com/acme/empty/pulls", "open_pr_count": 0},
+        {"project_id": "active", "project_name": "Renamed project", "repository": "acme/repo",
+         "pulls_url": "https://github.com/acme/repo/pulls", "open_pr_count": 2},
+    ]
+    assert "pull_requests" not in body
+    assert "can_approve" not in body
+
+
+async def test_project_summary_distinguishes_missing_and_empty_snapshot(db):
+    await seed(db)
+    app = FastAPI()
+    app.include_router(build_pull_requests_router(db=db, inbox=PendingPullRequestInbox(db, None)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as ac:
+        missing = (await ac.get("/api/reviews/pull-requests/summary")).json()
+        await write_pull_request_snapshot(db, [], now=100)
+        empty = (await ac.get("/api/reviews/pull-requests/summary")).json()
+    assert missing["snapshot_at"] is None
+    assert missing["snapshot_age_seconds"] is None
+    assert empty["snapshot_at"] == 100
+    assert missing["projects"] == empty["projects"]
+    assert empty["projects"][0]["open_pr_count"] == 0
+
+
+@pytest.mark.parametrize(("repo_url", "pulls_url"), [
+    ("https://github.com/acme/repo.git/", "https://github.com/acme/repo/pulls"),
+    ("ssh://git@github.com/acme/repo.git", "https://github.com/acme/repo/pulls"),
+    ("acme/repo", "https://github.com/acme/repo/pulls"),
+    ("https://gitlab.com/acme/repo", None),
+    ("https://github.com/../repo", None),
+    ("https://github.com/acme/repo?token=secret", None),
+    ("https://user:password@github.com/acme/repo", None),
+    (None, None),
+])
+async def test_project_summary_only_returns_canonical_github_links(db, repo_url, pulls_url):
+    await seed(db)
+    async with db._engine.begin() as conn:
+        await conn.execute(projects.update().where(projects.c.id == "active").values(
+            repo_url=repo_url,
+        ))
+    app = FastAPI()
+    app.include_router(build_pull_requests_router(db=db, inbox=PendingPullRequestInbox(db, None)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as ac:
+        response = await ac.get("/api/reviews/pull-requests/summary")
+    assert response.status_code == 200
+    rows = response.json()["projects"]
+    if pulls_url is None:
+        assert rows == []
+    else:
+        assert len(rows) == 1
+        assert rows[0]["pulls_url"] == pulls_url
+
+
 async def test_task_scoped_session_cannot_read_or_approve(db):
     class Handler:
         called = False
@@ -212,10 +300,11 @@ async def test_task_scoped_session_cannot_read_or_approve(db):
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
         listing = await ac.get("/api/reviews/pull-requests")
+        summary = await ac.get("/api/reviews/pull-requests/summary")
         approval = await ac.post(
             "/api/reviews/pull-requests/open-task/approve", json={"head_sha": SHA},
         )
-    assert listing.status_code == approval.status_code == 403
+    assert listing.status_code == summary.status_code == approval.status_code == 403
     assert not handler.called
 
 

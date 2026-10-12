@@ -168,7 +168,7 @@ async def test_seal_requires_current_retained_completion_and_keeps_source_histor
                               completion_id="close-1", has_recorded_source=True)
     assert await service.freeze(batch, members, requests={"task": request},
                                 snapshot=await snapshot()) == batch
-    retained = git(ops.git.remote_path, "rev-parse", f"refs/heads/{identity.branch}^")
+    retained = git(ops.git.remote_path, "rev-parse", f"{identity.ref}^")
     assert retained == head
     assert git(ops.git.remote_path, "merge-base", "--is-ancestor", base, retained) == ""
     with pytest.raises(ValueError, match="not retained"):
@@ -257,7 +257,7 @@ async def test_candidate_app_check_is_published_before_target_push(batch_env, tm
     from src.integration.attestation import IntegrationAttestationService
     from src.integration.ci import ATTESTATION_CHECK_NAME, IntegrationTrustManifest
     from src.integration.ci_producers import HostedCIProducer
-    from src.integration.main_promotion import RootAttestationSubject
+    from src.integration.promotion_contracts import RootAttestationSubject
     from tests.test_integration_train_sources import HostedGitHub
 
     db, ops, _, base, _, _, batch, members, green, _, snapshot, service = batch_env
@@ -335,7 +335,9 @@ async def test_local_lane_never_calls_attestation_publish(batch_env, monkeypatch
         github_repository_binding_resolver=AsyncMock(return_value=None),
         development_integration=SimpleNamespace(),
     )
-    lanes = DaemonLanes(orchestrator, batches=SimpleNamespace(eligible=AsyncMock(return_value=True)))
+    lanes = DaemonLanes(orchestrator, batches=SimpleNamespace(
+        eligible=AsyncMock(return_value=True), pr_gate=None,
+    ))
     monkeypatch.setattr(lanes, "_policy", AsyncMock(return_value={}))
     monkeypatch.setattr(lanes, "_settings", AsyncMock(return_value=(
         SimpleNamespace(validation="none", commands=()), "v1",

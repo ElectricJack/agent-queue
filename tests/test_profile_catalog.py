@@ -36,6 +36,8 @@ def test_the_worker_set_is_the_class_x_harness_cross_product():
     catalog = {profile.id: profile for profile in shipped_profile_catalog()}
 
     assert set(catalog) == {
+        "operator-standard-high-claude", "operator-deep-high-claude",
+        "operator-standard-high-codex", "operator-deep-high-codex",
         "fast-low-claude", "fast-high-claude", "standard-high-claude",
         "deep-low-claude", "deep-high-claude",
         "fast-low-codex", "fast-high-codex", "standard-high-codex",
@@ -124,6 +126,7 @@ def test_refresh_seeds_ready_providers_and_preserves_existing_profile_edits(tmp_
     _seed_vault(tmp_path)
     first = refresh_catalog_profiles(tmp_path, _probes("codex"))
     assert set(first["created"]) == {
+        "operator-standard-high-codex", "operator-deep-high-codex",
         "fast-low-codex", "fast-high-codex", "standard-high-codex",
         "deep-low-codex", "deep-high-codex", "astra-low-codex", "astra-high-codex",
     }
@@ -134,6 +137,22 @@ def test_refresh_seeds_ready_providers_and_preserves_existing_profile_edits(tmp_
     second = refresh_catalog_profiles(tmp_path, _probes("codex"))
     assert "standard-high-codex" in second["skipped"]
     assert profile_path.read_text(encoding="utf-8") == "# operator edit\n"
+
+
+def test_installer_refresh_preserves_renamed_role_profile(tmp_path):
+    _seed_vault(tmp_path)
+    path = tmp_path / "vault" / "agent-types" / "spec-ingest" / "profile.md"
+    renamed = path.read_text(encoding="utf-8").replace(
+        "name: Review Spec Ingest", "name: My Spec Review"
+    )
+    path.write_text(renamed, encoding="utf-8")
+
+    refresh_catalog_profiles(tmp_path, _probes("codex"))
+    second = refresh_catalog_profiles(tmp_path, _probes("codex"))
+
+    assert second["created"] == []
+    assert path.read_text(encoding="utf-8") == renamed
+    assert parse_profile(renamed).frontmatter.name == "My Spec Review"
 
 
 def test_refresh_after_provider_removal_deactivates_without_deleting_profiles(tmp_path):
@@ -171,6 +190,7 @@ def test_refresh_skips_every_retired_catalog_id(tmp_path):
 
     assert refreshed["created"] == []
     assert set(refreshed["retired"]) == {
+        "operator-standard-high-codex", "operator-deep-high-codex",
         "fast-low-codex", "fast-high-codex", "standard-high-codex",
         "deep-low-codex", "deep-high-codex", "astra-low-codex", "astra-high-codex",
     }

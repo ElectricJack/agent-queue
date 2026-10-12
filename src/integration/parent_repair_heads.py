@@ -29,7 +29,7 @@ from src.database.tables import (
 )
 from src.git.manager import RemoteRefState, is_valid_git_oid
 from src.integration.records import ParentEpisodeRecords
-from src.integration.parent_engine import parent_engine_guard
+from src.integration.owner_guards import parent_engine_guard
 from src.integration.writers import OperationSafety
 from src.integration.repair_lineage import introduced_repair_commits_on
 

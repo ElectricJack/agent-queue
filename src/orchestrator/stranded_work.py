@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from src.git.manager import GitError
+from src.git.manager import GitError, RemoteRefState
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +191,132 @@ async def preserve_unpushed_work(
         count=count,
         error=last_error,
     )
+
+
+#: Subject of the commit :func:`save_wip_to_task_branch` makes; the reason
+#: (``usage exhausted on opencode``, ``stopped by aq task stop``) follows.
+WIP_SAVED_PREFIX = "WIP saved by AQ: "
+
+#: Task metadata naming the commit a stopped hierarchy/train writer's work was
+#: saved at.  An exact-origin preparation otherwise checks the branch out at
+#: its filing base; with this it continues from the published branch while
+#: that still contains the saved commit.  Consumed by the launch it prepares.
+RESUME_POINT_META = "failover_resume_checkpoint"
+
+
+async def record_resume_point(db, task_id: str, repository_id: str, branch: str, sha) -> bool:
+    """Record where the next exact-origin preparation of *task_id* continues.
+
+    Pinned to the task's canonical origin, so a re-minted origin ignores it.
+    Never raises.
+    """
+    from src.git.manager import is_valid_git_oid
+
+    try:
+        origin = await db.get_task_branch_origin_for_promotion(task_id, repository_id)
+        if origin is None or not is_valid_git_oid(sha):
+            return False
+        await db.set_task_meta(
+            task_id,
+            RESUME_POINT_META,
+            {
+                "repository_id": repository_id,
+                "branch": branch.removeprefix("refs/heads/"),
+                "base_sha": origin["base_sha"],
+                "sha": sha,
+            },
+        )
+    except Exception:
+        logger.warning("Task %s: resume point not recorded", task_id, exc_info=True)
+        return False
+    return True
+
+
+async def save_wip_to_task_branch(
+    git,
+    workspace: str | None,
+    branch: str,
+    reason: str,
+    *,
+    repository_url: str | None = None,
+    event_bus=None,
+    project_id: str | None = None,
+) -> StrandedWork:
+    """Commit everything in *workspace* and fast-forward ``origin/<branch>`` to it.
+
+    For a writer that was stopped for it -- usage ran out, an operator ran
+    ``aq task stop`` -- so the next worker resumes on the task's own branch
+    instead of the work sitting in a stopped slot.  Unlike
+    :func:`preserve_unpushed_work` there is no fallback name: the task branch
+    is the only destination, and a remote that this HEAD does not descend
+    from is ``push_failed``, never forced.  The caller then keeps the
+    checkout fenced, and owner recovery's ``aq/preserved/<row>`` snapshot is
+    what remains for the case that cannot fast-forward.
+
+    ``repository_url`` confines the save to that authorized repository: a
+    checkout whose ``origin`` names another one is ``push_failed`` before
+    anything is committed or pushed.  The caller must have stopped the
+    writer first; committing under a live agent races its next edit.  Never
+    raises.
+    """
+    branch = branch.removeprefix("refs/heads/")
+    if not workspace or not branch:
+        return StrandedWork(status="unknown", branch=branch or None)
+    try:
+        if not await git.avalidate_checkout(workspace):
+            return StrandedWork(status="unknown", branch=branch)
+        current = await git.aget_current_branch(workspace, strict=True)
+        if current != branch:
+            return StrandedWork(
+                status="push_failed",
+                branch=branch,
+                error=(
+                    f"checkout is on a detached HEAD, not {branch}" if current == "HEAD"
+                    else f"checkout is on {current or 'an unknown ref'}, not {branch}"
+                ),
+            )
+        remote = await git.als_remote_ref(workspace, branch, repository_url=repository_url)
+        if remote.state is RemoteRefState.ERROR:
+            return StrandedWork(
+                status="push_failed",
+                branch=branch,
+                error=f"could not read origin/{branch}: {remote.error}",
+            )
+        remote_sha = remote.oid if remote.state is RemoteRefState.PRESENT else None
+        committed = False
+        if await git.ahas_uncommitted_changes(workspace, strict=True):
+            committed = bool(
+                await git.acommit_all(
+                    workspace,
+                    WIP_SAVED_PREFIX + reason,
+                    no_verify=True,
+                    event_bus=event_bus,
+                    project_id=project_id,
+                )
+            )
+        head = await git.arev_parse(workspace, "HEAD")
+        if remote_sha == head:
+            return StrandedWork(status="clean", branch=branch, commit=head)
+        if remote_sha and not await git.ais_ancestor(workspace, remote_sha, "HEAD"):
+            return StrandedWork(
+                status="push_failed",
+                branch=branch,
+                commit=head,
+                count=int(committed),
+                error=f"origin/{branch} has commits this HEAD does not descend from",
+            )
+        await git.apush_head_to(
+            workspace,
+            branch,
+            event_bus=event_bus,
+            project_id=project_id,
+            repository_url=repository_url,
+        )
+    except (GitError, OSError) as exc:
+        logger.warning("Could not save WIP for %s onto %s: %s", workspace, branch, exc)
+        return StrandedWork(status="push_failed", branch=branch, error=str(exc))
+    logger.info("Saved WIP from %s onto origin/%s (%s): %s", workspace, branch, head[:12], reason)
+    return StrandedWork(status="pushed", branch=branch, commit=head, count=int(committed))
 
 
 def unpushed_close_issues(work: StrandedWork) -> list[str]:

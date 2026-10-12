@@ -29,10 +29,16 @@ class SessionSummary(BaseModel):
     provider: str | None = None
     lifecycle: str | None = None
     state: str | None = None
+    desired_state: str | None = None
     work_dir: str | None = None
     started_at: float | None = None
     last_activity: float | None = None
     restarts: int = 0
+    claims: int = 0
+    claim_phase: str | None = None
+    claim_failure_count: int = 0
+    claim_failure_reason: str | None = None
+    claim_failure_at: float | None = None
     quarantined_at: float | None = None
     sleep_reason: str | None = None
     # ``sessions.epoch`` is a Text column (AQ_DAEMON_EPOCH — a hex string
@@ -152,6 +158,21 @@ class SessionTokenResponse(BaseModel):
     token: str
 
 
+class SessionCleanupResponse(BaseModel):
+    """``session_cleanup`` — taskless sleeping named sessions stopped and pruned.
+
+    With ``dry_run`` only ``count`` and ``sessions`` are filled.
+    """
+
+    model_config = {"extra": "allow"}
+    success: bool = True
+    dry_run: bool = False
+    count: int = 0
+    sessions: list[dict[str, Any]] = []
+    pruned: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "supervisor_restart": SupervisorRestartResponse,
     "session_list": ListSessionsResponse,
@@ -166,4 +187,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "session_sleep": SessionDesiredStateResponse,
     "session_wake": SessionDesiredStateResponse,
     "session_token": SessionTokenResponse,
+    "session_cleanup": SessionCleanupResponse,
 }

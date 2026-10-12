@@ -48,10 +48,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 
-#: Frontmatter id -> the shipped Markdown it was compiled from.
+#: Frontmatter id -> the shipped Markdown it was compiled from. Retired policies
+#: retain their reviewed source for audit, outside the auto-installed defaults.
 SHIPPED_SOURCES: dict[str, str] = {
+    "stuck-task-watch": "src/prompts/default_playbooks/stuck-task-watch.md",
     "object-loop": "src/prompts/project_playbooks/matter-engine-cpp/object-loop.md",
-    "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
+    "supervisor-hourly-report": "src/prompts/reviewed_playbooks/supervisor-hourly-report/source.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
@@ -59,15 +61,17 @@ SHIPPED_SOURCES: dict[str, str] = {
         "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
     ),
     "agent-queue-root-train": "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md",
-    "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
+    "blocked-task-escalation": "src/prompts/reviewed_playbooks/blocked-task-escalation/source.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
-    "supervisor-digest": "src/prompts/default_playbooks/supervisor-digest.md",
+    "supervisor-digest": "src/prompts/reviewed_playbooks/supervisor-digest/source.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
     "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
     "root-train": "src/prompts/integration_playbooks/root-train.md",
+    "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
+    "promotion-continuous": "src/prompts/integration_playbooks/promotion-continuous.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)
@@ -480,7 +484,7 @@ def test_spec_ingest_is_ensured_with_an_explicit_route() -> None:
     definition = _artifact("default-pipeline")
     ensure = definition.steps["spec-ingest-on-approve--spec_ingest_gate"]
     assert _inputs(ensure)["profile_id"] == {"type": "literal", "value": "spec-ingest"}
-    assert _inputs(ensure)["intelligence_class"] == {"type": "literal", "value": "standard-high"}
+    assert _inputs(ensure)["intelligence_class"] == {"type": "literal", "value": "deep-high"}
 
 
 def test_integration_only_bundle_is_the_reviewed_fixture() -> None:
@@ -538,13 +542,24 @@ def _routing_policy_block(source: str) -> str:
     return match.group(1)
 
 
+#: The ``## Routing policy`` digest of the shipped default router: the
+#: risk-aware revision approved as rev-azure-flare revision 1, with no
+#: priority gate on any lane, as decided in review rev-wise-impact, plus the
+#: ``operator`` kind that routes setup work only to scoped operator rungs
+#: (docs/guides/operator-workers.md), and standard-first bugfix escalation
+#: (docs/specs/design/routing-live-context.md).
+SHIPPED_ROUTING_POLICY_SHA256 = (
+    "sha256:4133b64ec754ff8cd88f1bf0eaa3badff1f34b4d594005705842d4d71edea9bf"
+)
+
 ROUTING_BUNDLES = (
     FIXTURE_ROOT / "default-assignment-routing",
     DAEMON_REVIEWED_BUNDLES / "default-assignment-routing",
+    REPO_ROOT / "docs/playbooks/shared-fleet/default-assignment-routing",
 )
 
 
-@pytest.mark.parametrize("bundle", ROUTING_BUNDLES, ids=("fixture", "shipped"))
+@pytest.mark.parametrize("bundle", ROUTING_BUNDLES, ids=("fixture", "shipped", "shared-fleet"))
 def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None:
     """Mandatory routing §6.3: the reviewed prose and the executed policy cannot drift.
 
@@ -554,7 +569,6 @@ def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None
     """
     from src.playbooks.definition import CommandStep
     from src.routing.policy import parse_policy
-    from tests.test_routing_planner import SHIPPED_POLICY
 
     definition = load_definition_json((bundle / "artifact.json").read_text(encoding="utf-8"))
     block = _routing_policy_block((bundle / "source.md").read_text(encoding="utf-8"))
@@ -573,8 +587,11 @@ def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None
     for step_id, step in plans.items():
         policy = _inputs(step)["policy"]
         assert policy == {"type": "literal", "value": block}, step_id
-    # The block is a valid policy, and the one the planner's own tests exercise.
-    assert parse_policy(block)[1] == parse_policy(SHIPPED_POLICY)[1]
+    # The block is the standard-first bugfix policy (agile-delta-86), pinned
+    # so a policy edit remains an explicit change.
+    policy, digest = parse_policy(block)
+    assert digest == SHIPPED_ROUTING_POLICY_SHA256
+    assert set(policy.risk) == {"medium", "high", "very_high"}
 
     diagnostics = validate_definition(
         definition,
@@ -643,7 +660,8 @@ def test_assignment_router_plans_classifies_and_applies() -> None:
     classify = definition.steps["route-task--classify"]
     assert classify.type == "llm"
     assert classify.profile_id == "playbook-compiler"
-    # §6.5: the classifier never sees a profile, a provider or a load.
+    # §6.5: the classifier never sees a profile, a provider, a load or the
+    # task's priority.
     assert set(_inputs(classify)) == {
         "title", "description", "task_type", "class_hint",
         "questions", "allowed_kinds", "allowed_classes",
@@ -655,8 +673,13 @@ def test_assignment_router_plans_classifies_and_applies() -> None:
     assert classify.save_result_as == "classification"
     assert classify.output_schema["required"] == [
         "task_type", "intelligence_class", "narrow", "test_verified",
-        "independent_verifier", "reason",
+        "independent_verifier", "reason", "risk", "risk_reason",
     ]
+    properties = classify.output_schema["properties"]
+    assert properties["risk"] == {
+        "type": "string", "enum": ["low", "medium", "high", "very_high"],
+    }
+    assert properties["risk_reason"]["maxLength"] == 400
     assert classify.output_schema["additionalProperties"] is False
     assert not classify.tool_use.enabled
     assert classify.transitions == {

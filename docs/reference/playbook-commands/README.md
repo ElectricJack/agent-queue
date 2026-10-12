@@ -21,8 +21,6 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-168 commands are registered.
-
 ### Tasks, gates and routing
 
 | Command | Title | Summary |
@@ -61,7 +59,6 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 | Command | Title | Summary |
 |---|---|---|
-| [`delivery_promote`](delivery_promote.md) | Promote reviewed child delivery | Prepare and lease-push one reviewed squash to its immediate parent. |
 | [`delivery_receipts`](delivery_receipts.md) | Read delivery receipts | Read repository-qualified delivery evidence for one source task. |
 
 ### Escalation
@@ -84,33 +81,36 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_abort_batch`](integration_abort_batch.md) | Integration Abort Batch | Authenticated hierarchical integration operational control. |
 | [`integration_app_verify`](integration_app_verify.md) | Integration App Verify | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each. |
 | [`integration_authorize_root`](integration_authorize_root.md) | Integration Authorize Root | Authenticated hierarchical integration operational control. |
-| [`integration_build_candidate`](integration_build_candidate.md) | Build exact root candidate | Build exact root candidate |
+| [`integration_backmerge_source`](integration_backmerge_source.md) | Integration Backmerge Source | Author gated back-merge sources and fast-forward intents down the chain. |
 | [`integration_checkpoint_parent`](integration_checkpoint_parent.md) | Checkpoint integration parent | Pin the parent head and generation before waiting for child deliveries. |
 | [`integration_ci_evidence`](integration_ci_evidence.md) | Observe exact root candidate CI | Observe exact root candidate CI |
 | [`integration_cleanup`](integration_cleanup.md) | Advance integration cleanup | Materialize and advance bounded cleanup for one terminal root batch. |
 | [`integration_close_delivered_pr`](integration_close_delivered_pr.md) | Integration Close Delivered Pr | Authenticated hierarchical integration operational control. |
 | [`integration_complete_parent`](integration_complete_parent.md) | Integration Complete Parent | Complete a verified parent task at its exact verified generation and head. |
+| [`integration_cutover`](integration_cutover.md) | Integration Cutover | Authenticated hierarchical integration operational control. |
+| [`integration_cutover_plan`](integration_cutover_plan.md) | Integration Cutover Plan | Authenticated hierarchical integration operational control. |
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
 | [`integration_development_engine_transfer`](integration_development_engine_transfer.md) | Development engine transfer | Preview or transfer every Development subject of one project to the reconciler, at the exact previewed versions; the same command rolls it back. |
 | [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_engine_transfer`](integration_engine_transfer.md) | Integration Engine Transfer | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
+| [`integration_migrate_provenance_refs`](integration_migrate_provenance_refs.md) | Move Git provenance out of branches | Local operator copies and verifies immutable provenance refs before deleting legacy heads. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
-| [`integration_promote_main`](integration_promote_main.md) | Promote exact root candidate | Reconcile and fast-forward main to the exact trusted green candidate. |
-| [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) | Push conflict resolution | Push a frozen conflict resolution under the current repair writer fence. |
-| [`integration_rebind_detached_repair`](integration_rebind_detached_repair.md) | Integration Rebind Detached Repair | Authenticated hierarchical integration operational control. |
-| [`integration_rebind_repair`](integration_rebind_repair.md) | Integration Rebind Repair | Authenticated hierarchical integration operational control. |
-| [`integration_reconcile_promotion`](integration_reconcile_promotion.md) | Reconcile prepared promotion | Compare a durable prepared intent with the remote and finalize its receipt. |
+| [`integration_pause_batch`](integration_pause_batch.md) | Integration Pause Batch | Authenticated hierarchical integration operational control. |
+| [`integration_promotion_notes_input`](integration_promotion_notes_input.md) | Integration Promotion Notes Input | Assemble immutable promotion notes from full Git history. |
+| [`integration_promotion_policy_input`](integration_promotion_policy_input.md) | Integration Promotion Policy Input | Read pinned source and outstanding promotion facts for reviewed policy. |
+| [`integration_promotion_publish`](integration_promotion_publish.md) | Integration Promotion Publish | Authenticated hierarchical integration operational control. |
+| [`integration_quiesce`](integration_quiesce.md) | Quiesce idle train admission | Local operator closes an unfrozen root and releases explicitly fenced idle reservations. |
+| [`integration_reconcile_expired_mutation`](integration_reconcile_expired_mutation.md) | Reconcile an expired mutation after its operation ended | Local operator verifies nonce, fences, stopped authority and actual remote target. |
+| [`integration_record_delivered`](integration_record_delivered.md) | Record exact externally delivered completion | Local operator verifies exact source on the designated default and records shipped work. |
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
-| [`integration_recover_candidate_member`](integration_recover_candidate_member.md) | Resolve pushed candidate member | Accept one valid frozen repair or retain its failed invariant for a fresh recovery. |
-| [`integration_recover_parent_head`](integration_recover_parent_head.md) | Integration Recover Parent Head | Authenticated hierarchical integration operational control. |
-| [`integration_recover_preserved_repair`](integration_recover_preserved_repair.md) | Integration Recover Preserved Repair | Authenticated hierarchical integration operational control. |
-| [`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md) | Recover unwritten conflict resolution | Supersede a malformed reservation only after an operator proves no remote write occurred. |
+| [`integration_record_root_noop`](integration_record_root_noop.md) | Record verified no-code root completion | Preview or complete an unheld root with exact no-artifact Git provenance. |
 | [`integration_redrive_child`](integration_redrive_child.md) | Integration Redrive Child | Authenticated hierarchical integration operational control. |
 | [`integration_redrive_root`](integration_redrive_root.md) | Integration Redrive Root | Authenticated hierarchical integration operational control. |
 | [`integration_reevaluate_repair`](integration_reevaluate_repair.md) | Integration Reevaluate Repair | Authenticated hierarchical integration operational control. |
+| [`integration_refresh_epic`](integration_refresh_epic.md) | Integration Refresh Epic | Authenticated hierarchical integration operational control. |
 | [`integration_release`](integration_release.md) | Release terminal root train | Release terminal root train |
 | [`integration_release_held_gate`](integration_release_held_gate.md) | Release a held parent gate | A local human releases an exact parent hold with an audited reason. |
 | [`integration_release_owner`](integration_release_owner.md) | Integration Release Owner | Authenticated hierarchical integration operational control. |
@@ -121,14 +121,13 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |
 | [`integration_repair_timeout`](integration_repair_timeout.md) | Integration Repair Timeout | Expire the current repair stage once its absolute deadline has passed. |
 | [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
-| [`integration_resolve_candidate_member`](integration_resolve_candidate_member.md) | Resolve candidate member | Reserve, publish, accept, and continue the exact conflicted candidate member owned by the authenticated repair session. |
-| [`integration_resolve_conflict`](integration_resolve_conflict.md) | Reserve conflict resolution | Freeze an active repair session's exact conflict resolution before push. |
+| [`integration_resume_batch`](integration_resume_batch.md) | Integration Resume Batch | Authenticated hierarchical integration operational control. |
+| [`integration_retire_legacy_park`](integration_retire_legacy_park.md) | Retire a historical parked operation | Local operator abandons every explicitly selected source under an exact journal fence. |
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
-| [`integration_schedule_due`](integration_schedule_due.md) | Schedule integration sweep | Coalesce a periodic or manual trigger into one durable sweep request. |
-| [`integration_seal`](integration_seal.md) | Seal integration frontier | Atomically snapshot the full eligible integration frontier. |
+| [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
-| [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from the policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
+| [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from a full or hosted-check policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
 
 ### Other
 
@@ -142,9 +141,14 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`collaboration_create`](collaboration_create.md) | Collaboration Create | Create a bounded thread between 2 to 4 tasks and invite each once. |
 | [`collaboration_get`](collaboration_get.md) | Collaboration Get | Read a thread, its members, capacity hold and ordered messages. |
 | [`collaboration_list`](collaboration_list.md) | Collaboration List | List collaboration threads for the held task or a project. |
+| [`cron_cancel`](cron_cancel.md) | Cron Cancel | Cancel this session's recurring prompt and pending delivery. |
+| [`cron_get`](cron_get.md) | Cron Get | Read a schedule and optionally consume its pending prompt. |
+| [`cron_list`](cron_list.md) | Cron List | List this session instance's schedules and next-fire times. |
+| [`cron_register`](cron_register.md) | Cron Register | Register an idempotent recurring prompt for the caller's session. |
 | [`decision_list`](decision_list.md) | Decision List | Record or read durable operator instructions on a task or integration. |
 | [`decision_record`](decision_record.md) | Decision Record | Record or read durable operator instructions on a task or integration. |
 | [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
+| [`get_stuck_tasks`](get_stuck_tasks.md) | Read stuck tasks | Read aged active tasks, orphaned workers and failed routes in active projects. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
 | [`github_issue_fix_approved`](github_issue_fix_approved.md) | File an approved issue fix | Create or reuse the fix task for an approved investigation. |
 | [`github_issue_rejection`](github_issue_rejection.md) | Apply an explicit issue closure request | Close an issue only when Jack explicitly asks in a rejected review. |
@@ -191,6 +195,17 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`object_loop_reconcile`](object_loop_reconcile.md) | Object Loop Reconcile | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_start`](object_loop_start.md) | Object Loop Start | Coordinate a bounded, durable object evaluation round. |
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |
+| [`promote_approve`](promote_approve.md) | Promote Approve | Post a pinned GitHub approval using the authenticated human gh login. |
+| [`promote_cancel`](promote_cancel.md) | Promote Cancel | Close an unpublished promotion PR and abort its intent. |
+| [`promote_hotfix`](promote_hotfix.md) | Promote Hotfix | File a hotfix based on a promotion target, through ordinary task routing. |
+| [`promote_list`](promote_list.md) | Promote List | List promotion history using the local evidence cache. |
+| [`promote_prepare`](promote_prepare.md) | Promote Prepare | File ordinary release preparation on the repository default branch. |
+| [`promote_repair`](promote_repair.md) | Promote Repair | Back up and restore a stranded promotion task the train refuses. |
+| [`promote_request`](promote_request.md) | Promote Request | Open an idempotent promotion intent and a PR pinned to its source commit. |
+| [`promote_rulesets`](promote_rulesets.md) | Promote Rulesets | Authenticated hierarchical integration operational control. |
+| [`promote_schema`](promote_schema.md) | Promote Schema | Authenticated hierarchical integration operational control. |
+| [`promote_status`](promote_status.md) | Promote Status | Read promotion intents and cached check and PR review evidence. |
+| [`promote_validate`](promote_validate.md) | Promote Validate | Authenticated hierarchical integration operational control. |
 | [`provider_allocation_preview`](provider_allocation_preview.md) | Preview a provider worker allocation | Show what one provider allocation would change -- the selected profiles before and after, the provider-wide ceiling, the sessions it drains and the busy set an interrupt would need, the pins and manual agents it leaves alone -- with the token apply consumes, without changing anything. |
 | [`provider_allocation_status`](provider_allocation_status.md) | Read provider worker allocation | Group every ordinary worker profile by provider with its pool supply, live sessions, pinned tasks, manual agents, project preferences and the provider-wide configured ceiling, without changing anything. |
 | [`provider_availability_notify`](provider_availability_notify.md) | Announce a provider's availability change | Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing. |

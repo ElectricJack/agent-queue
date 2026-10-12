@@ -367,6 +367,49 @@ async def test_prune_query_refuses_wake_or_token_change(db, providers):
     assert await db.prune_named_session(row.id, row.instance_token)
 
 
+async def test_cleanup_stops_and_prunes_sleeping_named_terminals(handler, providers, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+    sleeping = await _make_session(
+        handler.db, providers.create("fake"), sid="sleeping", task_id=None,
+        lifecycle="named", state="sleeping", desired_state="sleeping",
+        name="n-supervisor--old",
+    )
+    active = await _make_session(
+        handler.db, providers.create("fake"), sid="active", task_id=None,
+        lifecycle="named", state="running", name="n-supervisor--active",
+    )
+    dry_run = await handler.execute("session_cleanup", {"dry_run": True})
+    assert [row["id"] for row in dry_run["sessions"]] == [sleeping.id]
+    assert await providers.create("fake").is_running(
+        SessionHandle(sleeping.name, sleeping.provider, sleeping.instance_token)
+    )
+
+    result = await handler.execute("session_cleanup", {})
+    assert result["pruned"] == [sleeping.id]
+    assert result["skipped"] == []
+    assert await handler.db.get_session(sleeping.id) is None
+    assert await handler.db.get_session(active.id) is not None
+
+
+async def test_cleanup_skips_sleeping_session_with_task(handler, providers, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+    await _make_task(handler.db)
+    row = await _make_session(
+        handler.db, providers.create("fake"), sid="taskful", task_id="t1",
+        lifecycle="named", state="sleeping", desired_state="sleeping",
+    )
+    result = await handler.execute("session_cleanup", {})
+    assert result["count"] == 0
+    assert await handler.db.get_session(row.id) is not None
+    assert await providers.create("fake").is_running(
+        SessionHandle(row.name, row.provider, row.instance_token)
+    )
+
+
 class TestSessionList:
     async def test_empty(self, handler):
         result = await handler.execute("session_list", {})
@@ -589,6 +632,23 @@ class TestDesiredStateCommands:
         assert (await db.get_session("sess-1")).desired_state == "sleeping"
         # Still running: sleep is a statement of intent, not a signal.
         assert [h.name for h in await provider.list_running("s-")] == ["s-t1"]
+
+    async def test_sleep_named_session_is_carried_out_on_next_tick(
+        self, handler, db, provider, providers, config
+    ):
+        await _make_task(db)
+        await db.update_project("p1", supervisor_enabled=True)
+        row = await _make_session(
+            db, provider, sid="n1", task_id=None, name="n-supervisor--p1", lifecycle="named",
+        )
+        result = await handler.execute("session_sleep", {"session_id": row.id})
+        assert result["success"]
+        assert await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
+        reconciler = SessionReconciler(db, config, providers)
+        await reconciler.tick()
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("sleeping", "sleeping")
+        assert not await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
 
     async def test_wake_marks_a_named_session_wanted(self, handler, db, provider):
         await _make_session(
@@ -916,6 +976,60 @@ class TestSessionToken:
         assert await store.validate(first) is not None
         assert await store.validate(second) is not None
 
+    @pytest.mark.parametrize("project_id", [None, "p1"])
+    async def test_supervisor_remint_preserves_launch_scope(
+        self, handler, db, provider, store, project_id,
+    ):
+        from src.api.auth import SessionTokenStore
+        from src.api.scope import check_command_scope
+
+        await _make_session(db, provider, task_id=None, lifecycle="named")
+        await db.update_session("sess-1", profile_id="supervisor", project_id=project_id)
+        result = await handler.execute("session_token", {"session_id": "sess-1"})
+        assert result["success"] is True
+        # Reload from durable storage rather than relying on the minter's cache.
+        scope = await SessionTokenStore(db).validate(result["token"])
+        assert scope.elevated is True
+        assert scope.project_id == project_id
+        assert scope.task_id is None
+        assert scope.session_instance_token == "tok-1"
+        args = {}
+        assert check_command_scope("session_list", args, scope) is None
+        assert args.get("project_id") == project_id
+        if project_id is not None:
+            assert check_command_scope("session_list", {"project_id": "other"}, scope)
+
+    async def test_project_supervisor_cannot_remint_global_supervisor(
+        self, handler, db, provider, store,
+    ):
+        await _make_session(db, provider, task_id=None, lifecycle="named")
+        await db.update_session("sess-1", profile_id="supervisor", project_id=None)
+        handler._current_scope = {
+            "kind": "session", "session_id": "project-sup", "task_id": None,
+            "project_id": "p1", "elevated": True,
+        }
+        try:
+            result = await handler._cmd_session_token({"session_id": "sess-1"})
+        finally:
+            handler._current_scope = None
+        assert result["success"] is False
+        assert "another project" in result["error"]
+        assert "token" not in result
+
+    @pytest.mark.parametrize("changes", [
+        {"state": "stopped"}, {"state": "draining"}, {"desired_state": "sleeping"},
+        {"ended_at": 1}, {"instance_token": ""},
+    ])
+    async def test_cannot_remint_inactive_supervisor(
+        self, handler, db, provider, store, changes,
+    ):
+        await _make_session(db, provider, task_id=None, lifecycle="named")
+        await db.update_session("sess-1", profile_id="supervisor", **changes)
+        result = await handler.execute("session_token", {"session_id": "sess-1"})
+        assert result["success"] is False
+        assert "live named supervisor" in result["error"]
+        assert "token" not in result
+
     async def test_unknown_session(self, handler, store):
         assert "error" in await handler.execute("session_token", {"session_id": "nope"})
 
@@ -1073,6 +1187,78 @@ class TestTaskClose:
         assert (await handler.execute("task_close", args))["success"] is True
         assert len(orch.closed_calls) == 1
 
+    @pytest.mark.parametrize("recipient_kind,recipient_id", [("task", "t1"), ("session", "sess-1")])
+    async def test_consumed_body_stays_readable_after_a_crashed_inject(
+        self, handler, db, provider, orch, recipient_kind, recipient_id
+    ):
+        """fair-impact-65: the reviewer's body must not be lost to a dead parser.
+
+        The worker ran the injected read the refusal names, the daemon consumed
+        delivery, and the worker's own output died before it printed anything.
+        Its pending queue is now empty and — before this fix — nothing anywhere
+        still held the body, so it could neither handle the feedback nor tell
+        anyone what it had been told.
+        """
+        task = await _make_task(db)
+        await _make_session(db, provider)
+        message = await db.create_message(
+            project_id="p1", from_kind="system", from_id="review:rev-bold-vault",
+            to_kind=recipient_kind, to_id=recipient_id,
+            body="Spec review rev-bold-vault: revise section 3 before merging.",
+        )
+        scope = {"kind": "session", "session_id": "sess-1", "project_id": "p1",
+                 "task_id": "t1", "elevated": False}
+        args = {
+            "task_id": "t1", "outcome": "pass", "summary": "Done.",
+            "claim_epoch": task.claim_epoch, "_scope": scope,
+        }
+
+        assert (await handler.execute("task_close", dict(args)))["code"] == (
+            "messages.pending_before_close"
+        )
+
+        # The injected read: delivery consumed, response discarded unread.
+        injected = await handler.execute("message_inbox", {
+            "to_kind": recipient_kind, "to_id": recipient_id,
+            "inject": True, "limit": 50, "_scope": scope,
+        })
+        assert injected["injected"] == 1
+        # A plain re-read is empty — the queue really is drained.
+        assert (await handler.execute("message_inbox", {
+            "to_kind": recipient_kind, "to_id": recipient_id, "_scope": scope,
+        }))["count"] == 0
+
+        # The body is still reachable, read-only, through the consumed re-read.
+        recovered = await handler.execute("message_inbox", {
+            "to_kind": recipient_kind, "to_id": recipient_id,
+            "include_consumed": True, "limit": 50, "_scope": scope,
+        })
+        assert recovered["count"] == 0
+        assert [m["body"] for m in recovered["consumed_messages"]] == [message.body]
+
+        # Recovering the body is not itself a delivery event, and the close
+        # that was refused for unread feedback now proceeds on its own merits.
+        args["summary"] = "Revised section 3 per review rev-bold-vault."
+        assert (await handler.execute("task_close", dict(args)))["success"] is True
+        assert len(orch.closed_calls) == 1
+
+    async def test_refusal_names_the_consumed_re_read(self, handler, db, provider):
+        """The recovery is discoverable from the refusal itself."""
+        task = await _make_task(db)
+        await _make_session(db, provider)
+        await db.create_message(
+            project_id="p1", from_kind="user", from_id="operator",
+            to_kind="session", to_id="sess-1", body="A correction.",
+        )
+        result = await handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "Done.",
+            "claim_epoch": task.claim_epoch,
+            "_scope": {"kind": "session", "session_id": "sess-1", "project_id": "p1",
+                       "task_id": "t1", "elevated": False},
+        })
+        assert result["code"] == "messages.pending_before_close"
+        assert "--include-consumed" in result["error"]
+
     @pytest.mark.parametrize("bypass", ["operator", "disabled", "other_recipient", "delivered"])
     async def test_feedback_check_does_not_gate_unrelated_or_consumed_messages(
         self, handler, db, provider, config, bypass
@@ -1134,6 +1320,18 @@ class TestTaskClose:
 
     async def test_missing_task_id(self, handler):
         assert "error" in await handler.execute("task_close", {"outcome": "pass"})
+
+    async def test_close_without_failure_class_clears_previous_transient_metadata(
+        self, handler, db, provider,
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+        await db.set_task_meta("t1", "failure_class", "transient")
+        result = await handler.execute("task_close", {
+            "task_id": "t1", "outcome": "fail", "summary": "Worker could not fix the bug",
+        })
+        assert result["success"] is True
+        assert await db.get_task_meta("t1", "failure_class") is None
 
     async def test_invalid_outcome_is_rejected(self, handler, db, provider):
         await _make_task(db)
@@ -1357,8 +1555,9 @@ class TestEndToEndOnFakeProvider:
         from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
         from src.integration.train import TrainTarget
-        from src.integration.train_sources import DatabaseBatches, LeasedPublish, _never_trusted
+        from src.integration.train_sources import LeasedPublish, _never_trusted
         from tests.test_integration_gitops import LocalGit
+        from tests.test_integration_train_sources import fixture_batches
 
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
         real_orch.config.integration.git_first = "active"
@@ -1386,7 +1585,7 @@ class TestEndToEndOnFakeProvider:
             wd, project_id="p1", repository_id="repo", repository_url=repo.url,
             target_ref="refs/heads/main",
         )
-        members, requests, dependencies = await DatabaseBatches(db).pending(
+        members, requests, dependencies = await fixture_batches(db).pending(
             TrainTarget("p1", "repo", "refs/heads/main"), snapshot,
         )
         assert [(m.task_id, m.source_sha, m.source_base_sha) for m in members] == [
@@ -1415,7 +1614,7 @@ class TestEndToEndOnFakeProvider:
         async def gate(_batch, _sha, _tree):
             return False
 
-        batches = DatabaseBatches(db)
+        batches = fixture_batches(db)
         service = BatchService(
             BatchStore(db), GitOperations(
                 db, git=transport, repository=repository,
@@ -1433,6 +1632,104 @@ class TestEndToEndOnFakeProvider:
         assert [(m.task_id, m.source_sha, m.source_base_sha) for m in opened.members] == [
             ("t1", second.commits[0], base),
         ]
+
+    @pytest.mark.parametrize("mode", ["train", "hierarchy", "development"])
+    @pytest.mark.parametrize("vault_only", [False, True])
+    async def test_empty_close_retains_no_change_proof_in_every_train_mode(
+        self, db, real_orch, real_handler, tmp_path, mode, vault_only,
+    ):
+        from sqlalchemy import insert
+        from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+        from src.integration.git_truth import GitTruth
+        from src.integration.provenance import CompletionIdentity, GitProvenance
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path, artifact=False)
+        await db.update_project("p1", hierarchical_integration_mode=mode)
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_branch_origins).values(
+                id="t1-origin", task_id="t1", repository_id="repo", branch_name="aq/t1",
+                base_sha=base, creation_generation=0, reserved=True, materialized=True,
+                created_at=time.time(),
+            ))
+        if vault_only:
+            await db.create_workspace(Workspace(
+                id="vault", project_id="p1", workspace_path=str(tmp_path / "vault"),
+                source_type=RepoSourceType.LINK, kind_id="vault",
+            ))
+            await db.add_task_workspace_requirements("t1", [("vault", None)])
+            await git._arun(["push", "origin", "--delete", "aq/t1"], cwd=wd)
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "no source changes",
+            "work_outcome": "shipped" if vault_only else "no-op",
+        })
+        assert close["success"] and close["status"] == "COMPLETED", close
+        completion = await db.get_task_completion("t1")
+        assert completion.outcome == "pass" and completion.commits == []
+        repo = await db.get_repo("repo")
+        # Read from a fresh store after task-ref deletion: close itself must
+        # have retained the immutable head; no live branch can supply proof.
+        if not vault_only:
+            await git._arun(["push", "origin", "--delete", "aq/t1"], cwd=wd)
+        retained = str(tmp_path / "retained")
+        await git._arun(["clone", repo.url, retained], cwd=str(tmp_path))
+        await git.afetch_origin(retained, repository_url=repo.url, all_heads=True)
+        store = GitProvenance(git, retained, repository_url=repo.url)
+        record = await store.read_completion(CompletionIdentity("p1", "repo", "t1", completion.id))
+        assert record["source_oid"] == base
+        request = (await load_delivery_requests(
+            db, ["t1"], repository_id="repo", target_ref="refs/heads/main",
+        ))["t1"]
+        snapshot = await GitTruth(git).snapshot(
+            retained, project_id="p1", repository_id="repo", repository_url=repo.url,
+            target_ref="refs/heads/main",
+        )
+        proof = await snapshot.is_delivered(request, source_base=base)
+        assert proof.state == DeliveryState.NO_CHANGE and proof.satisfied
+
+    @pytest.mark.parametrize("failure", ["changed_head", "missing_base", "dirty", "publication", "moved_source"])
+    async def test_vault_empty_close_refuses_unbound_or_unretained_source(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, failure,
+    ):
+        from pathlib import Path
+        from sqlalchemy import insert
+        from src.git.manager import GitError
+        from src.integration.provenance import GitProvenance
+
+        wd, git, base = await self._setup_development_git(
+            db, real_orch, tmp_path, artifact=failure == "changed_head",
+        )
+        await db.create_workspace(Workspace(
+            id="vault", project_id="p1", workspace_path=str(tmp_path / "vault"),
+            source_type=RepoSourceType.LINK, kind_id="vault",
+        ))
+        await db.add_task_workspace_requirements("t1", [("vault", None)])
+        if failure != "missing_base":
+            async with db._engine.begin() as conn:
+                await conn.execute(insert(task_branch_origins).values(
+                    id="t1-origin", task_id="t1", repository_id="repo", branch_name="aq/t1",
+                    base_sha=base, creation_generation=0, reserved=True, materialized=True,
+                    created_at=time.time(),
+                ))
+        if failure == "dirty":
+            (Path(wd) / "dirty").write_text("uncommitted source")
+        elif failure == "publication":
+            async def failed(*args, **kwargs):
+                raise GitError("provenance publication failed")
+            monkeypatch.setattr(GitProvenance, "write_completion", failed)
+        elif failure == "moved_source":
+            original = GitProvenance.write_completion
+            async def moved(store, *args, **kwargs):
+                result = await original(store, *args, **kwargs)
+                await git._arun(["commit", "--allow-empty", "-m", "racing commit"], cwd=wd)
+                return result
+            monkeypatch.setattr(GitProvenance, "write_completion", moved)
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "vault delivery", "work_outcome": "shipped",
+        })
+        assert close["result"] == "verification_failed", close
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        assert await db.get_task_completion("t1") is None
 
     @pytest.mark.parametrize("mode", ["train", "hierarchy", "development"])
     @pytest.mark.parametrize("failure", ["old_commit", "unpublished_provenance", "moved_source", "branchless_artifact"])
@@ -1574,6 +1871,107 @@ class TestEndToEndOnFakeProvider:
             CompletionIdentity("p1", "repo", "t1", completion.id))
         assert record["source_oid"] == base and record["artifact"] is False
 
+    async def _setup_spec_ingest(self, db, real_orch, real_handler, tmp_path):
+        """A spec-ingest task holding a development slot, after its batch commit.
+
+        Its whole output is the committed graph: database rows, no source
+        commit. The role holds no ``git_push`` grant, so its task branch stays
+        local at the target tip, and development mode records no branch
+        origin to bind an unchanged base against.
+        """
+        from types import MethodType
+
+        from src.orchestrator.git_ops import GitOpsMixin
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path, artifact=False)
+        await git._arun(["push", "origin", "--delete", "aq/t1"], cwd=wd)
+        await db.create_profile(AgentProfile(
+            id="spec-ingest", name="Spec Ingest", harness="claude", lifecycle="task",
+            needs_workspace=False,
+        ))
+        await db.update_task("t1", profile_id="spec-ingest", route_source="role")
+        proposal = await real_handler.execute("task_batch_propose", {
+            "project_id": "p1", "source": "spec:/specs/ingested.md",
+            "tasks": [{"tempId": "epic", "title": "Ingested epic", "description": "d"}],
+            "edges": [],
+        })
+        gate = await real_handler.execute("gate_create", {
+            "project_id": "p1", "gate_type": "human", "title": "Approve?",
+            "await_id": proposal["proposal_id"],
+        })
+        await db.resolve_gate(gate["gate_id"], resolved_by="human:test", resolution="approved")
+        committed = await real_handler.execute(
+            "task_batch_commit", {"proposal_id": proposal["proposal_id"]},
+        )
+        assert committed["success"], committed
+        # The development branch of the real completion pipeline is what
+        # demanded the push; only its result is stubbed elsewhere.
+        real_orch._run_completion_pipeline = MethodType(
+            GitOpsMixin._run_completion_pipeline, real_orch,
+        )
+        return wd, git, base
+
+    async def test_spec_ingest_task_closes_pass_after_committing_its_batch(
+        self, db, real_orch, real_handler, tmp_path
+    ):
+        from src.integration.provenance import CompletionIdentity, GitProvenance
+
+        wd, git, base = await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "committed the ingested graph",
+        })
+
+        assert close["success"] and close["status"] == "COMPLETED", str(close)
+        completion = await db.get_task_completion("t1")
+        assert completion.outcome == "pass" and completion.commits == []
+        repo = await db.get_repo("repo")
+        record = await GitProvenance(git, wd, repository_url=repo.url).read_completion(
+            CompletionIdentity("p1", "repo", "t1", completion.id))
+        assert record["source_oid"] == base and record["artifact"] is False
+        assert not await git._arun(["ls-remote", "--heads", "origin", "aq/t1"], cwd=wd)
+
+    @pytest.mark.parametrize("work", ["dirty", "commit", "diverged_remote"])
+    async def test_spec_ingest_close_still_refuses_unpublished_source_work(
+        self, db, real_orch, real_handler, tmp_path, work
+    ):
+        from pathlib import Path
+
+        wd, git, base = await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+        if work == "dirty":
+            (Path(wd) / "notes.md").write_text("uncommitted")
+        elif work == "commit":
+            (Path(wd) / "notes.md").write_text("committed, never pushed")
+            await git.acommit_all(wd, "stray source work")
+        else:
+            # Someone published work on the task branch the slot never saw.
+            await git._arun(["commit", "--allow-empty", "-m", "remote work"], cwd=wd)
+            await git._arun(["push", "origin", "HEAD:refs/heads/aq/t1"], cwd=wd)
+            await git._arun(["reset", "--hard", base], cwd=wd)
+
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "committed the ingested graph",
+        })
+
+        assert close["result"] == "verification_failed", close
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert await db.get_task_completion("t1") is None
+
+    async def test_unpushed_code_task_branch_still_refuses_close(
+        self, db, real_orch, real_handler, tmp_path
+    ):
+        """No-code recognition is the role's, not any clean slot's."""
+        await self._setup_spec_ingest(db, real_orch, real_handler, tmp_path)
+        await db.update_task("t1", profile_id="claude-opus", route_source="legacy")
+
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "done",
+        })
+
+        assert close["result"] == "verification_failed", close
+        assert "exactly pushed" in str(close)
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
     async def _setup_development_repair(self, db, real_orch, tmp_path, source_id, *,
                                         parent=None, failure=None, filing="legacy"):
         """A development repair (t1) of a legacy, commits-less source close.
@@ -1687,7 +2085,7 @@ class TestEndToEndOnFakeProvider:
         original = CompletedSource(CompletionIdentity("p1", "repo", source_id, "source-close"), source)
         assert (await store.read_completion(original.identity))["source_oid"] == source
         refs = (await store.run("for-each-ref", "--format=%(refname)",
-                                "refs/remotes/origin/" + PREFIX + "replacements/")).split()
+                                PREFIX + "replacements/")).split()
         assert len(refs) == 1
         record = await store._read(refs[0])
         # The replacement names the main commit the repair built on, not the

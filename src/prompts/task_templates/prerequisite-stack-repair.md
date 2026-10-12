@@ -1,0 +1,1 @@
+Preserve dependent {{task_id}} at {{head}}. Your isolated branch starts there. Merge these current prerequisite heads, resolve conflicts, push and close: {{prerequisite_heads}}{{parent_conflict}}{{overlay_conflict}}

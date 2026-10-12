@@ -1364,9 +1364,8 @@ def ensure_vault_layout(data_dir: str) -> None:
     packs) into ``vault/templates/`` if they don't already exist.  See
     :func:`ensure_default_templates` for details.
 
-    Installs default system playbooks (``task-outcome.md``, etc.) into
-    ``vault/system/playbooks/`` if they don't already exist.  See
-    :func:`ensure_default_playbooks` for details.
+    On first installation only, installs the explicit minimal system playbooks.
+    Subsequent startups never restore deleted playbooks or refresh their sources.
 
     The supervisor's own ``profile.md`` (roadmap §4.2.3) is written to
     ``vault/agent-types/supervisor/profile.md`` if it doesn't already exist.
@@ -1375,16 +1374,17 @@ def ensure_vault_layout(data_dir: str) -> None:
     Args:
         data_dir: The root data directory (e.g. ``~/.agent-queue``).
     """
+    from src.playbooks.required import install_initial_playbooks
+
+    install_initial_playbooks(data_dir)
     for subdir in _STATIC_DIRS:
         path = os.path.join(data_dir, subdir)
         os.makedirs(path, exist_ok=True)
 
     ensure_default_templates(data_dir)
     ensure_default_harnesses(data_dir)
-    ensure_default_playbooks(data_dir)
     ensure_default_formulas(data_dir)
     ensure_default_intelligence_classes(data_dir)
-    ensure_default_agent_type_playbooks(data_dir)
     # Ship the supervisor/planner/reviewer profiles into vault before
     # legacy per-profile writers run, so a fresh install boots with the
     # spec §4/§9 profiles the SessionLens and planner flow expect.
@@ -1460,6 +1460,11 @@ def ensure_default_templates(data_dir: str) -> dict:
     _write_if_missing("profile-template.md", PROFILE_TEMPLATE)
     _write_if_missing("playbook-template.md", PLAYBOOK_TEMPLATE)
 
+    from src.task_templates import SHIPPED_TASK_TEMPLATES
+
+    for template in sorted(SHIPPED_TASK_TEMPLATES.glob("*.md")):
+        _write_if_missing(os.path.join("tasks", template.name), template.read_text(encoding="utf-8"))
+
     # Starter knowledge packs (profiles spec §4)
     for agent_type, files in _STARTER_KNOWLEDGE.items():
         for filename, content in files.items():
@@ -1504,10 +1509,9 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     into the vault's system playbook directory.  These playbooks are compiled at
     first use by the :class:`~src.playbooks.compiler.PlaybookCompiler`.
 
-    The bundled set includes the default review and assignment policies, the
-    blocked-task escalation (a ``task.failed`` with ``status: BLOCKED``
-    messages the project supervisor to read the session log tail), and the
-    provider-usage probe. Retired playbooks are deliberately absent, so a
+    The bundled set includes the default pipeline and assignment policies,
+    supervisor failure triage, provider failover, and the provider-usage probe.
+    Retired playbooks are deliberately absent, so a
     restart cannot reseed them after their catalog entry is deleted. The
     directory is discovered mechanically so adding a reviewed source does not
     require a second production inventory.

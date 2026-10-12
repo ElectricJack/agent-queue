@@ -91,13 +91,13 @@ export default function AgentWorkspace() {
           <DirectoryTabs view={view} onChange={setView} />
           {view === "providers" ? <ProvidersView /> : (
             <>
-              <PoolDirectory entries={pools} onOpen={(key) => select(key)} />
+              <PoolDirectory entries={pools} />
               <PoolDirectoryHint />
             </>
           )}
         </div>
       ) : (
-        <div className={"grid min-h-0 flex-1 auto-rows-[minmax(20rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>
+        <div className={"grid min-h-0 flex-1 auto-rows-[minmax(24rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>
           {selections.map((selection) => {
             const id = selection.key;
             if (selection.kind === "pool") {
@@ -106,7 +106,7 @@ export default function AgentWorkspace() {
                 return (
                   <PoolWindow key={entry.key} entry={entry} instanceId={selection.instanceId}
                     onInstanceChange={(instanceId) => setInstance(id, instanceId)}
-                    onClose={() => close(id)} resetToken={resetToken}
+                    onClose={() => close(id)}
                     focusRequest={focusSelection?.key === selectionAddress(id) ? focusSelection.request : null} />
                 );
               }

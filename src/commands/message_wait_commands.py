@@ -80,6 +80,7 @@ class MessageWaitCommandsMixin:
                             after_seq=values.after_seq,
                         )
                         reason = (row.get("digest") or {}).get("reason")
+                        await self._acknowledge_collaboration_read(caller, values.thread_id, page)
                         return {
                             "success": True,
                             "state": reason if reason in WAIT_REASONS else row["state"],

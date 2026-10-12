@@ -169,6 +169,59 @@ def test_the_hand_off_note_says_where_the_last_worker_stopped():
     assert "aq session logs sess-1" in text
 
 
+def test_a_saved_head_says_continue_even_without_a_session_log():
+    text = inflight.handoff_comment(
+        {"checkpoint": "pushed", "branch": "aq/t0", "head": "a" * 40, "wip_commit": True},
+        "t0",
+    )
+    assert "continue from the branch tip -- do not restart the task." in text
+
+
+#: A full-width OpenCode frame: box-drawing chrome is three UTF-8 bytes a character.
+_BOX_PANE = "\n".join(f"│ step {n:02d} " + "─" * 150 + "│" for n in range(80))
+
+
+def test_the_kept_screen_tail_is_bounded_in_bytes_not_characters():
+    tail = inflight.screen_tail(_BOX_PANE)
+    assert len(tail.encode("utf-8")) <= 8192
+    assert tail.endswith(_BOX_PANE.splitlines()[-1])
+    kept, omitted = inflight.tail_within(tail, inflight.PRIME_SCREEN_BYTES)
+    assert len(kept.encode("utf-8")) <= inflight.PRIME_SCREEN_BYTES
+    assert omitted == len(tail.splitlines()) - len(kept.splitlines()) > 0
+    # One line wider than the budget keeps its end, never a split character.
+    wide, dropped = inflight.tail_within("─" * 2000, 100)
+    assert wide == "─" * 33 and dropped == 0
+
+
+async def test_a_large_hand_off_screen_keeps_prime_inside_the_context_budget(orch):
+    """fresh-rapids-73 review: prime's body is required knowledge context, and an
+    over-budget body fails ``aq prime`` outright -- the quoted screen stays small."""
+    from src.knowledge.budget import ContextBudget
+    from tests.session_dispatch_helpers import prime_bodies, render_prime
+
+    await _task(orch, "t0")
+    handoff = {
+        "checkpoint": "pushed", "branch": "aq/t0", "head": "a" * 40,
+        "session_logs": "aq session logs sess-1",
+    }
+    await orch.db.set_task_meta("t0", inflight.HANDOFF_META, handoff)
+    without = prime_bodies(await render_prime(orch, "t0"))["task_context"]
+    # The size an older daemon stored, before the byte cap.
+    handoff["screen_tail"] = "\n".join(_BOX_PANE.splitlines()[-80:])
+    assert len(handoff["screen_tail"].encode("utf-8")) > 32768
+    await orch.db.set_task_meta("t0", inflight.HANDOFF_META, handoff)
+
+    doc = await render_prime(orch, "t0")
+    body = prime_bodies(doc)["task_context"]
+    assert len(body.encode("utf-8")) - len(without.encode("utf-8")) <= (
+        inflight.PRIME_SCREEN_BYTES + 512
+    )
+    assert _BOX_PANE.splitlines()[-1] in body
+    assert "earlier screen line(s) omitted; the full log: `aq session logs sess-1`" in body
+    budget = ContextBudget.from_config(orch.config).account(doc.to_markdown())
+    assert budget["diagnostic"] is None
+
+
 # -- the WIP checkpoint against real Git -------------------------------------------
 
 
@@ -528,6 +581,8 @@ async def test_live_opencode_exhaustion_preserves_work_and_releases_or_holds_tas
     if push_fails:
         _git(["remote", "set-url", "origin", str(tmp_path / "missing.git")], workspace)
     fake = _fake(orch)
+    events: list[dict] = []
+    orch.bus.subscribe(inflight.HANDOFF_EVENT, events.append)
     # The retry status keeps last_activity fresh: this must not depend on a
     # stale pane, a readable OpenCode store, or an Ollama liveness endpoint.
     fake.feed_output(session.name, OPENCODE_LIMIT_PANE)
@@ -545,6 +600,11 @@ async def test_live_opencode_exhaustion_preserves_work_and_releases_or_holds_tas
     handoff = await orch.db.get_task_meta("t0", inflight.HANDOFF_META)
     assert handoff["provider"] == "opencode-zen" and handoff["wip_commit"]
     assert handoff["verdict"] == "rate_limit"
+    # The next worker sees what this one was doing when it stopped.
+    assert handoff["screen_tail"] == OPENCODE_LIMIT_PANE
+    assert [(e["task_id"], e["disposition"], e["checkpoint"]) for e in events] == [
+        ("t0", handoff["disposition"], handoff["checkpoint"])
+    ]
     head = _git(["rev-parse", "HEAD"], workspace)
     assert _git(["merge-base", "--is-ancestor", committed, head], workspace) == ""
     assert "new.py" in _git(["ls-tree", "-r", "--name-only", head], workspace)
@@ -561,6 +621,150 @@ async def test_live_opencode_exhaustion_preserves_work_and_releases_or_holds_tas
         assert handoff["checkpoint"] == "pushed" and handoff["head"] == head
         assert _git(["rev-parse", "refs/heads/aq/t0"], origin) == head
         assert await orch.db.get_workspace_for_task("t0") is None
+    orch.git = mock_git
+
+
+async def _attach_train_owner(
+    orch, origin: pathlib.Path, work: pathlib.Path, *, session_id: str, workspace_id: str,
+    owner_role: str = "worker",
+) -> None:
+    """Make p-1 a train project whose writer of t0 is *session_id* in *workspace_id*.
+
+    A train writer works on its recorded (fenced) branch: materialized from
+    its origin and held, by its integration owner row, attached to that
+    session and slot.
+    """
+    from sqlalchemy import insert
+
+    from src.database.tables import (
+        integration_branch_owners,
+        task_branch_origins,
+        task_integration_checkpoints,
+    )
+    from src.models import RepoConfig
+
+    await orch.db.create_repo(
+        RepoConfig(id="r-1", project_id="p-1", source_type=RepoSourceType.LINK, url=str(origin))
+    )
+    await orch.db.update_project(
+        "p-1", hierarchical_integration_mode="train", integration_repository_id="r-1"
+    )
+    await orch.db.update_task("t0", repo_id="r-1", branch_name="aq/t0")
+    base = _git(["rev-parse", "main"], work)
+    async with orch.db.immediate() as conn:
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id="origin-t0", task_id="t0", repository_id="r-1", branch_name="aq/t0",
+                base_sha=base, creation_generation=1, reserved=True, materialized=True,
+                created_at=time.time(), materialized_at=time.time(),
+            )
+        )
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id="t0", repository_id="r-1", branch="aq/t0",
+                checkpoint_sha=base, updated_at=time.time(),
+            )
+        )
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner-t0", repository_id="r-1", ref="aq/t0", owner_id="t0",
+                owner_role=owner_role, fence_token=1, handoff_state="attached",
+                session_id=session_id, workspace_id=workspace_id,
+                created_at=time.time(), updated_at=time.time(),
+            )
+        )
+
+
+async def test_a_train_verifier_on_a_usage_limit_screen_commits_nothing(orch, tmp_path):
+    """fresh-rapids-73 review: only the task's own writer is saved onto its branch;
+    a verifier's checkout is left to owner recovery, untouched."""
+    session, workspace, origin = await _launch_on_codex(
+        orch, git_root=tmp_path / "git", harness="opencode-zen"
+    )
+    head = _do_some_work(workspace)
+    await _attach_train_owner(
+        orch, origin, workspace, session_id=session.id, workspace_id="ws-p-1",
+        owner_role="verifier",
+    )
+    orch.git = GitManager()
+    refs = _git(["for-each-ref", "--format=%(refname) %(objectname)"], origin)
+
+    _fake(orch).feed_output(session.name, OPENCODE_LIMIT_PANE)
+    await orch.session_reconciler.tick(now=time.time())
+
+    assert orch.provider_availability.effective_state("opencode-zen") == EXHAUSTED
+    assert _git(["for-each-ref", "--format=%(refname) %(objectname)"], origin) == refs
+    assert _git(["rev-parse", "HEAD"], workspace) == head
+    assert "new.py" in _git(["status", "--porcelain"], workspace)
+    handoff = await orch.db.get_task_meta("t0", inflight.HANDOFF_META)
+    assert handoff["checkpoint"] == "integration_managed"
+
+
+async def test_a_train_writer_on_a_usage_limit_screen_saves_wip_onto_its_own_branch(
+    orch, tmp_path
+):
+    """fresh-rapids-73: a hierarchy/train worker parked on a usage-limit retry
+    screen is stopped, its WIP is committed and fast-forwarded onto its own task
+    branch -- no ``aq/preserved`` snapshot -- and the hand-off names the saved
+    commit and quotes the stopped screen."""
+    session, workspace, origin = await _launch_on_codex(
+        orch, git_root=tmp_path / "git", harness="opencode-zen"
+    )
+    committed = _do_some_work(workspace)
+    await _attach_train_owner(orch, origin, workspace, session_id=session.id, workspace_id="ws-p-1")
+    mock_git, orch.git = orch.git, GitManager()
+    events: list[dict] = []
+    orch.bus.subscribe(inflight.HANDOFF_EVENT, events.append)
+
+    _fake(orch).feed_output(session.name, OPENCODE_LIMIT_PANE)
+    now = time.time()
+    await orch.session_reconciler.tick(now=now)
+
+    # The provider is out until the parsed reset, so routing skips it.
+    assert orch.provider_availability.effective_state("opencode-zen") == EXHAUSTED
+    assert orch.provider_availability.row("opencode-zen").until == pytest.approx(now + 54120)
+    tip = _git(["rev-parse", "refs/heads/aq/t0"], origin)
+    subject = _git(["log", "-1", "--format=%s", tip], origin)
+    assert subject.startswith("WIP saved by AQ: usage-limit screen on a stalled session")
+    assert _git(["merge-base", "--is-ancestor", committed, tip], origin) == ""
+    assert "new.py" in _git(["ls-tree", "-r", "--name-only", tip], origin)
+    refs = _git(["for-each-ref", "--format=%(refname)"], origin).splitlines()
+    assert not [ref for ref in refs if "preserved" in ref]
+    task = await orch.db.get_task("t0")
+    assert task.retry_count == 0 and task.branch_name == "aq/t0"
+    assert (await orch.db.get_session(session.id)).restarts == 0
+    handoff = await orch.db.get_task_meta("t0", inflight.HANDOFF_META)
+    assert handoff["checkpoint"] == "pushed"
+    assert handoff["head"] == tip and handoff["branch"] == "aq/t0"
+    assert handoff["wip_message"] == subject
+    assert handoff["screen_tail"] == OPENCODE_LIMIT_PANE
+    note = inflight.handoff_comment(handoff, "t0")
+    assert tip[:12] in note and subject in note
+    assert [(e["checkpoint"], e["branch"], e["head"]) for e in events] == [
+        ("pushed", "aq/t0", tip)
+    ]
+    # The release found a clean, pushed checkout: the slot is free and the
+    # task is claimable again, parked behind its tripped provider.
+    assert task.status == TaskStatus.READY and handoff["disposition"] == "tripped"
+    assert await orch.db.get_workspace_for_task("t0") is None
+
+    # The reroute moves it; the next worker runs on another provider, on the
+    # same branch, and its prime names the saved head and says to continue.
+    from tests.session_dispatch_helpers import prime_bodies, render_prime
+
+    result = await CommandHandler(orch, orch.config).execute("provider_reroute", {})
+    assert [d["task_id"] for d in result["moved"]] == ["t0"]
+    await _cycle(orch)
+    relaunched = await orch.db.get_session_for_task("t0")
+    assert relaunched.id != session.id and relaunched.harness == "claude"
+    task = await orch.db.get_task("t0")
+    assert task.retry_count == 0 and task.branch_name == "aq/t0"
+    # It continues from the saved WIP, not the branch's filing base.
+    assert _git(["rev-parse", "HEAD"], pathlib.Path(relaunched.work_dir)) == tip
+    assert await orch.db.get_task_meta("t0", "failover_resume_checkpoint") is None
+    body = prime_bodies(await render_prime(orch, "t0"))["task_context"]
+    assert tip[:12] in body and "do not restart" in body
+    assert "Free usage exceeded" in body
     orch.git = mock_git
 
 
@@ -819,6 +1023,61 @@ async def test_open_pool_claim_on_opencode_exhaustion_is_preserved_then_released
 
     measurement = await orch._measure_pools()
     assert measurement.bounds[PoolKey("standard-high-codex")] == (0, 0)
+    orch.git = mock_git
+
+
+async def test_a_pool_train_writer_on_a_usage_limit_screen_hands_its_owner_back(
+    orch, tmp_path
+):
+    """fresh-rapids-73, the pool half: an attached integration owner retains a
+    pool claim until it is handed back.  Once the WIP is on the task branch the
+    checkout is clean and pushed -- the pool handoff's proof -- so the stop hands
+    the owner back at once, and the task is released with its hand-off note
+    instead of waiting for owner recovery."""
+    from sqlalchemy import select
+
+    from src.database.tables import integration_branch_owners
+
+    orch.harness_registry.upsert(Harness(id="opencode-zen", name="Zen", command="opencode"))
+    await orch.db.update_profile(
+        "standard-high-codex", lifecycle="pool", max_active=2, harness="opencode-zen"
+    )
+    row = await _claimed_pool_session(orch, tmp_path, "t0", 1)
+    await orch.db.update_session(row.id, harness="opencode-zen")
+    origin, work = _make_repo(tmp_path / "git", work=pathlib.Path(row.work_dir))
+    committed = _do_some_work(work)
+    await _attach_train_owner(orch, origin, work, session_id=row.id, workspace_id="pool-ws-1")
+    mock_git, orch.git = orch.git, GitManager()
+    events: list[dict] = []
+    orch.bus.subscribe(inflight.HANDOFF_EVENT, events.append)
+    _fake(orch).feed_output(row.name, OPENCODE_LIMIT_PANE)
+
+    await orch.session_reconciler.tick()
+
+    tip = _git(["rev-parse", "refs/heads/aq/t0"], origin)
+    assert _git(["log", "-1", "--format=%s", tip], origin).startswith("WIP saved by AQ: ")
+    assert _git(["merge-base", "--is-ancestor", committed, tip], origin) == ""
+    refs = _git(["for-each-ref", "--format=%(refname)"], origin).splitlines()
+    assert not [ref for ref in refs if "preserved" in ref]
+    async with orch.db._engine.connect() as conn:
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners).where(integration_branch_owners.c.id == "owner-t0")
+            )
+        ).mappings().one()
+    assert owner["handoff_state"] != "attached" and owner["session_id"] is None
+    task = await orch.db.get_task("t0")
+    assert task.status == TaskStatus.READY and task.assigned_agent_id is None
+    assert task.retry_count == 0 and task.branch_name == "aq/t0"
+    stopped = await orch.db.get_session(row.id)
+    assert stopped.state == "stopped" and stopped.task_id is None
+    assert await orch.db.get_workspace_for_task("t0") is None
+    handoff = await orch.db.get_task_meta("t0", inflight.HANDOFF_META)
+    assert handoff["checkpoint"] == "pushed" and handoff["head"] == tip
+    assert handoff["screen_tail"] == OPENCODE_LIMIT_PANE
+    assert [(e["task_id"], e["head"]) for e in events] == [("t0", tip)]
+    resume = await orch.db.get_task_meta("t0", "failover_resume_checkpoint")
+    assert resume["sha"] == tip and resume["branch"] == "aq/t0"
     orch.git = mock_git
 
 

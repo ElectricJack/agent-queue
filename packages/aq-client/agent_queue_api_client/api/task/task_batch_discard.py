@@ -65,11 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: TaskBatchDiscardRequest,
 ) -> Response[TaskBatchAckResponse | TaskBatchDiscardResponse422]:
-    """Discard a pending proposal without creating anything. Refused if it was already committed or
-    discarded.
+    """Discard a pending proposal without creating anything. Refused if it has a human approval gate or was
+    already committed or discarded.
 
-     Discard a pending proposal without creating anything. Refused if it was already committed or
-    discarded.
+     Discard a pending proposal without creating anything. Refused if it has a human approval gate or was
+    already committed or discarded.
 
     Args:
         body (TaskBatchDiscardRequest):
@@ -98,11 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: TaskBatchDiscardRequest,
 ) -> TaskBatchAckResponse | TaskBatchDiscardResponse422 | None:
-    """Discard a pending proposal without creating anything. Refused if it was already committed or
-    discarded.
+    """Discard a pending proposal without creating anything. Refused if it has a human approval gate or was
+    already committed or discarded.
 
-     Discard a pending proposal without creating anything. Refused if it was already committed or
-    discarded.
+     Discard a pending proposal without creating anything. Refused if it has a human approval gate or was
+    already committed or discarded.
 
     Args:
         body (TaskBatchDiscardRequest):
@@ -126,11 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: TaskBatchDiscardRequest,
 ) -> Response[TaskBatchAckResponse | TaskBatchDiscardResponse422]:
-    """Discard a pending proposal without creating anything. Refused if it was already committed or
-    discarded.
+    """Discard a pending proposal without creating anything. Refused if it has a human approval gate or was
+    already committed or discarded.
 
-     Discard a pending proposal without creating anything. Refused if it was already committed or
-    discarded.
+     Discard a pending proposal without creating anything. Refused if it has a human approval gate or was
+    already committed or discarded.
 
     Args:
         body (TaskBatchDiscardRequest):
@@ -157,11 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: TaskBatchDiscardRequest,
 ) -> TaskBatchAckResponse | TaskBatchDiscardResponse422 | None:
-    """Discard a pending proposal without creating anything. Refused if it was already committed or
-    discarded.
+    """Discard a pending proposal without creating anything. Refused if it has a human approval gate or was
+    already committed or discarded.
 
-     Discard a pending proposal without creating anything. Refused if it was already committed or
-    discarded.
+     Discard a pending proposal without creating anything. Refused if it has a human approval gate or was
+    already committed or discarded.
 
     Args:
         body (TaskBatchDiscardRequest):

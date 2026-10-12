@@ -111,6 +111,10 @@ DEVELOPMENT_COMPLETION_ID_KEY = "development_completion_id"
 # completion record is recovered after a restart only when this names it
 # exactly; a task's status alone never proves a close was accepted.
 ACCEPTED_CLOSE_KEY = "accepted_close"
+# No-attempt failures need an incarnation clock independent of ordinary task
+# edits. Written atomically on entry into FAILED, removed on exit, and kept by
+# same-status reconciliation. Older rows are seeded by the recovery reader.
+RECOVERY_FAILURE_AT_KEY = "supervisor_recovery_failure_at"
 
 
 def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
@@ -179,6 +183,8 @@ _READY_REASONS = {
     # was promoted: the task goes back on the frontier to wait for the
     # owner-recovery sweep, exactly as a slot-reset failure does.
     "branch_fenced": "released",
+    "stack_prerequisites_conflict": "released",
+    "stack_preparation_changed": "released",
     "prepare_timeout": "released",
     # provider-failover D13: a launch or session its provider killed hands the
     # task back; the sweep resumes a provider pause early.
@@ -217,6 +223,7 @@ TERMINAL_BLOCKED_CONTEXTS = frozenset(
         "session_close_hard_failure",
         "max_retries",
         "session_close_pipeline_stop",
+        "verification_failed",
         "merge_conflict",
         "timeout",
         "stop_task",
@@ -362,6 +369,10 @@ class TaskQueryMixin:
                 updated_at=now,
             )
         )
+        if task.status == TaskStatus.FAILED:
+            await self._record_recovery_failure_generation_on(
+                conn, task.id, None, task.status, now,
+            )
         await self.mark_layout_dirty(task.project_id, [task.id], "task.created", conn=conn)
 
     async def get_task(self, task_id: str) -> Task | None:
@@ -465,6 +476,7 @@ class TaskQueryMixin:
         "branch_name",
         "pr_url",
         "dedup_key",
+        "parent_task_id",
     )
 
     async def list_graph_task_rows(self, project_id: str) -> list[dict]:
@@ -640,6 +652,7 @@ class TaskQueryMixin:
             values["route_source"] = declared_route_source(
                 values["profile_id"], values.get("route_source")
             )
+        retired = []
         async with self._engine.begin() as conn:
             comment_source_project = None
             if "project_id" in kwargs:
@@ -717,6 +730,11 @@ class TaskQueryMixin:
             if lifecycle & kwargs.keys():
                 stmt = stmt.where(_not_manually_paused())
             result = await conn.execute(stmt.values(**values))
+            if result.rowcount == 1 and previous_status is not None:
+                await self._record_recovery_failure_generation_on(
+                    conn, task_id, TaskStatus(previous_status), TaskStatus(values["status"]),
+                    values["updated_at"],
+                )
             if (
                 result.rowcount == 1
                 and previous_status == TaskStatus.COMPLETED.value
@@ -724,6 +742,11 @@ class TaskQueryMixin:
             ):
                 await self._upsert_meta(
                     task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
+                )
+                from src.integration.source_repairs import retire_reopened_source_repairs_on
+
+                retired = await retire_reopened_source_repairs_on(
+                    self, conn, task_id, context="update_task",
                 )
             if result.rowcount == 0 and lifecycle & kwargs.keys():
                 paused = (await conn.execute(select(tasks.c.id).where(
@@ -742,6 +765,10 @@ class TaskQueryMixin:
             if PROJECTION_INPUT_COLUMNS & values.keys():
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
+        for transition in retired:
+            await self.log_blocked_flips(transition.flipped)
+            await self._notify_settled(transition.settled)
+            await self._notify_ready(transition.ready)
 
     @staticmethod
     async def _moved_task_repo_id(conn, task_id: str, project_id: str) -> str | None:
@@ -817,44 +844,59 @@ class TaskQueryMixin:
     async def pause_task(self, task_id: str) -> dict:
         """Persist an operator hold and fence the previous claim in one transaction."""
         async with self.immediate() as conn:
-            row = (await conn.execute(
-                select(tasks).where(tasks.c.id == task_id).with_for_update()
-            )).mappings().fetchone()
-            if row is None:
-                raise ValueError(f"Task '{task_id}' not found")
-            if row["status"] in self._TERMINAL_TASK_STATUSES:
-                raise ValueError(f"Cannot pause task in {row['status']}")
-            saved = (await conn.execute(select(task_metadata.c.value).where(
-                task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
-            ))).scalar_one_or_none()
-            if saved is not None:
-                return json.loads(saved)
-            owned_workspaces = (await conn.execute(select(workspaces.c.id).where(
-                workspaces.c.locked_by_task_id == task_id
-            ))).scalars().all()
-            if len(owned_workspaces) > 1:
-                raise ValueError("Cannot pause a task with multiple locked workspaces safely. Stop or finish it before changing its workspace assignments.")
-            owned_sessions = (await conn.execute(select(
-                sessions.c.id, sessions.c.instance_token
-            ).where(sessions.c.task_id == task_id, sessions.c.state.not_in(("stopped", "quarantined"))))).mappings().all()
-            snapshot = {
-                "sessions": [dict(session) for session in owned_sessions],
-                "status": row["status"],
-                "resume_after": row["resume_after"],
-                "agent_id": row["assigned_agent_id"],
-                "claim_epoch": row["claim_epoch"],
-                "cleanup_pending": bool(row["assigned_agent_id"] or owned_sessions or owned_workspaces),
-            }
-            if row["status"] == "DEFINED":
-                await self._upsert_meta(task_id, "manual_pause_withholds_children", True, conn=conn)
+            snapshot, result = await self._pause_task_on(task_id, conn=conn)
+        if result:
+            await self.log_blocked_flips(result.flipped)
+        return snapshot
+
+    async def _pause_task_on(self, task_id: str, *, conn, for_removal=False, defer_projection=False):
+        row = (await conn.execute(
+            select(tasks).where(tasks.c.id == task_id).with_for_update()
+        )).mappings().fetchone()
+        if row is None:
+            raise ValueError(f"Task '{task_id}' not found")
+        if row["status"] in self._TERMINAL_TASK_STATUSES and not for_removal:
+            raise ValueError(f"Cannot pause task in {row['status']}")
+        saved = (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
+        ))).scalar_one_or_none()
+        if saved is not None:
+            return json.loads(saved), None
+        owned_workspaces = (await conn.execute(select(workspaces.c.id).where(
+            workspaces.c.locked_by_task_id == task_id
+        ))).scalars().all()
+        if len(owned_workspaces) > 1:
+            raise ValueError("Cannot pause a task with multiple locked workspaces safely. Stop or finish it before changing its workspace assignments.")
+        owned_sessions = (await conn.execute(select(
+            sessions.c.id, sessions.c.instance_token
+        ).where(sessions.c.task_id == task_id, sessions.c.state.not_in(("stopped", "quarantined"))))).mappings().all()
+        snapshot = {
+            "sessions": [dict(session) for session in owned_sessions],
+            "status": row["status"],
+            "resume_after": row["resume_after"],
+            "agent_id": row["assigned_agent_id"],
+            "claim_epoch": row["claim_epoch"],
+            "cleanup_pending": bool(row["assigned_agent_id"] or owned_sessions or owned_workspaces),
+        }
+        if for_removal:
+            snapshot["removal"] = True
+        if row["status"] == "DEFINED":
+            await self._upsert_meta(task_id, "manual_pause_withholds_children", True, conn=conn)
+        result = None
+        if row["status"] in self._TERMINAL_TASK_STATUSES:
+            # Removal must stop a draining terminal writer without reopening delivered work.
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                claim_epoch=tasks.c.claim_epoch + 1,
+            ))
+        else:
             result = await self._apply_transition(
                 conn, task_id, TaskStatus.PAUSED, context="manual_pause", force=True,
                 _manual_pause_control=True, resume_after=None,
                 extra_values={"claim_epoch": tasks.c.claim_epoch + 1},
+                _defer_projection=defer_projection,
             )
-            await self._upsert_meta(task_id, "manual_pause", snapshot, conn=conn)
-        await self.log_blocked_flips(result.flipped)
-        return snapshot
+        await self._upsert_meta(task_id, "manual_pause", snapshot, conn=conn)
+        return snapshot, result
 
     async def finish_task_pause(self, task_id: str, snapshot: dict) -> None:
         """Release only this stopped claim's resources, never a reused worker's."""
@@ -862,7 +904,14 @@ class TaskQueryMixin:
             row = (await conn.execute(
                 select(tasks).where(tasks.c.id == task_id).with_for_update()
             )).mappings().fetchone()
-            if row is None or row["status"] != "PAUSED" or row["resume_after"] is not None:
+            retained_terminal = (
+                snapshot.get("removal") and row is not None
+                and row["status"] == snapshot["status"]
+                and row["status"] in self._TERMINAL_TASK_STATUSES
+            )
+            if row is None or not retained_terminal and (
+                row["status"] != "PAUSED" or row["resume_after"] is not None
+            ):
                 raise ValueError("Task pause changed while stopping its session")
             agent_id = snapshot.get("agent_id")
             await conn.execute(
@@ -1107,7 +1156,9 @@ class TaskQueryMixin:
             task_metadata.c.task_id == task_id, task_metadata.c.key == "manual_pause"
         ))).scalar_one_or_none()
 
-    async def _resume_locked(self, conn, task_id: str, encoded: str | None) -> TransitionResult:
+    async def _resume_locked(
+        self, conn, task_id: str, encoded: str | None, *, defer_projection=False,
+    ) -> TransitionResult:
         """Restore a PAUSED task from its hold snapshot; the caller holds the row lock."""
         saved = json.loads(encoded) if encoded is not None else {}
         if saved.get("cleanup_pending"):
@@ -1143,6 +1194,7 @@ class TaskQueryMixin:
         result = await self._apply_transition(
             conn, task_id, prior, context="manual_resume", force=True,
             _manual_pause_control=True, resume_after=None, assigned_agent_id=None,
+            _defer_projection=defer_projection,
         )
         # Resuming is an operator decision that the paused incident has been
         # addressed.  Do this in the same transaction as the status write so
@@ -1221,6 +1273,20 @@ class TaskQueryMixin:
             )
         return [r[0] for r in rows]
 
+    async def _record_recovery_failure_generation_on(
+        self, conn, task_id, old_status, new_status, failed_at,
+    ):
+        """A no-attempt incident belongs to one FAILED incarnation, never an edit."""
+        if old_status == new_status:
+            return
+        if new_status == TaskStatus.FAILED:
+            await self._upsert_meta(task_id, RECOVERY_FAILURE_AT_KEY, failed_at, conn=conn)
+        elif old_status == TaskStatus.FAILED:
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == RECOVERY_FAILURE_AT_KEY,
+            ))
+
     async def _apply_transition(
         self,
         conn,
@@ -1239,80 +1305,46 @@ class TaskQueryMixin:
         returning: bool = False,
         assume_pre_state: tuple[TaskStatus, bool] | None = None,
         _manual_pause_control: bool = False,
+        _defer_projection: bool = False,
         _integration_completion_token=None,
         _operator_adoption_token=None,
         _integration_wake_token=None,
         accepted_close: dict | None = None,
         **kwargs,
     ) -> TransitionResult:
-        """Update task status with state-machine validation, on a caller-owned connection.
+        """Validate and update status on a caller-owned connection (work-graph §4.1).
 
-        Read, validate, apply and recompute ``is_blocked`` happen in **one**
-        transaction (work-graph implementation spec §4.1), so no reader can
-        observe the new status against the old projection.
+        Status, metadata, ``is_blocked`` and container settlement share one transaction.
+        The caller emits blocked/unblocked audit rows and settlement callbacks after commit.
+        The result includes flipped task ids and settled containers (§7).
+        Validation follows ``state_machine.enforce`` and the explicit ``force`` bypass.
 
-        Validation stays warn-only in this phase — the ``state_machine.
-        enforce`` flag and the ``force`` bypass land with WG-5.
+        ``_settle_depth`` is private recursion state for ``settle_containers``, never a
+        task column passed through ``**kwargs`` to ``_coerce_task_values``.
+        Same-status writes still recompute when projection inputs change: increasing
+        a FAILED task's retries to its limit can satisfy conditional-blocks edges.
 
-        Returns the set of task ids whose ``is_blocked`` flipped — including
-        any flips caused by settling a container this write completed — plus
-        any containers settled by this write (spec §7); the matching
-        ``task.blocked`` / ``task.unblocked`` audit rows and the settlement
-        listener callback are the caller's job, after the transaction commits.
+        Claim-path fast paths (§15) preserve these guarantees:
+        ``projection_stable`` skips recomputation and dependent frontier bookkeeping
+        only when both statuses are READY/IN_PROGRESS; other moves recompute even
+        with this assertion. The task's own READY/unblocked frontier entry is recorded.
+        ``extra_where`` and ``extra_values`` add guards and columns to the one status
+        UPDATE, including claim epoch and READY/unblocked/unassigned claim fences.
+        ``returning`` supplies the updated row in ``TransitionResult.row``, or None
+        when no row matched, so callers can build a Task without another read.
+        ``assume_pre_state`` skips the pre-read using ``(status, is_blocked)``; callers
+        must pin both values in ``extra_where`` so the matched UPDATE proves them.
 
-        ``_settle_depth`` is private: it is only ever passed by
-        ``settle_containers`` recursing into its own parent one level
-        deeper, and is never a real task column, so it must stay a named
-        keyword rather than fall into ``**kwargs`` (which feeds
-        ``_coerce_task_values``).
-
-        A same-status call is **not** a no-op for the projection: it can still
-        carry a ``PROJECTION_INPUT_COLUMNS`` write (a FAILED task bumped to
-        ``retry_count == max_retries`` turns a transient failure terminal,
-        satisfying every ``conditional-blocks`` edge pointing at it), so it
-        recomputes too.
-
-        The remaining keywords are the spec §15 claim-path fast paths.  All
-        are additive; every pre-existing caller keeps the behaviour above.
-
-        ``projection_stable=True`` is the caller's **assertion** that this
-        write cannot change any task's ``is_blocked``.  It is honoured only
-        when both the pre- and post-status are in
-        ``_PROJECTION_NEUTRAL_STATUSES`` (READY / IN_PROGRESS) — every other
-        move, terminal ones included, silently falls back to the full
-        recompute, so a mistaken assertion cannot corrupt the projection.
-        When honoured, ``recompute_blocked`` and the *dependents'* frontier
-        bookkeeping are skipped; the task's **own** frontier entry is still
-        recorded when its post-state is READY and unblocked (that is the
-        release path's ``task.ready`` / ``released`` audit row).
-
-        ``extra_where`` / ``extra_values`` fold a caller's guard and extra
-        columns into the single status UPDATE (the claim's epoch bump and
-        its ``status = READY AND is_blocked = 0 AND assigned_agent_id IS
-        NULL`` fence), so the write still goes through this one sanctioned
-        path.  With ``returning=True`` the updated row comes back in
-        ``TransitionResult.row`` (``None`` when the guard matched nothing)
-        and the caller builds its ``Task`` from it instead of re-reading.
-
-        ``assume_pre_state`` is ``(status, is_blocked)`` asserted by the
-        caller *in the same statement* via ``extra_where``; it skips the
-        pre-read.  Only pass it when ``extra_where`` pins both values, so
-        that a matched UPDATE proves the assertion.
-
-        ``accepted_close`` is the identity of the ``task close`` this write
-        accepts.  It is stored as ``ACCEPTED_CLOSE_KEY`` only when the status
-        write matched, in its transaction, so the identity exists exactly when
-        the close's transition committed.
+        ``accepted_close`` is stored under ``ACCEPTED_CLOSE_KEY`` in this transaction
+        only after the guarded write matches, tying close identity to its commit.
+        ``_defer_projection`` retains all guards and metadata writes while a change
+        set defers projection, settlement and frontier work until all mutations apply.
         """
         values = self._coerce_task_values(kwargs)
         from src.database.tables import projects
 
-        # Only a *managed* parent (one holding an integration checkpoint) can
-        # be waived by development mode, and that is a rare shape.  Reading
-        # the project eagerly for every READY/COMPLETED transition put one
-        # extra statement on the hot release path -- see the release_claim
-        # budget in ``tests/perf/test_claim_statements.py``.  Cache it here
-        # so the two call sites below can ask for it at most once.
+        # Only managed parents can waive integration in development mode. Cache the
+        # project read lazily to preserve the release_claim statement budget.
         _development_mode: bool | None = None
 
         async def in_development_mode() -> bool:
@@ -1334,11 +1366,11 @@ class TaskQueryMixin:
             current_status, pre_blocked = assume_pre_state
         else:
             pre_state = select(tasks.c.status, tasks.c.is_blocked).where(tasks.c.id == task_id)
-            # A terminal transition must serialize against checklist appends
-            # before it reads the state that determines whether the transition
-            # is legal.  Appenders take the same parent-row lock before
-            # allocating their ordinal.
-            if new_status == TaskStatus.COMPLETED:
+            # Completion serializes against checklist appends before reading
+            # the state that determines whether the transition is legal.
+            # Failure entry also locks before reading its status, so concurrent
+            # same-status reconciliation cannot rotate the failure generation.
+            if new_status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
                 pre_state = pre_state.with_for_update()
             row = (
                 await conn.execute(pre_state)
@@ -1354,12 +1386,8 @@ class TaskQueryMixin:
             current_status = TaskStatus(row[0])
             pre_blocked = bool(row[1])
 
-        # Checklist state is part of terminal completion, not a follow-up
-        # write.  The terminal pre-state read above locks the parent before
-        # observing either its status or its rows; appenders take this same
-        # lock before allocating an ordinal, so a close cannot slip past a
-        # concurrent append.  Any later refusal in this transition rolls the
-        # explicitly requested skip back with it.
+        # The terminal pre-read's parent lock keeps completion from racing an
+        # append. Checklist skips share this transaction and roll back on refusal.
         if current_status != TaskStatus.COMPLETED and new_status == TaskStatus.COMPLETED:
             open_ordinals = [
                 row[0]
@@ -1410,6 +1438,12 @@ class TaskQueryMixin:
 
         async def _write(values: dict):
             """Run the guarded UPDATE; return ``(matched, row_or_None)``."""
+            async def record_retry() -> bool:
+                return await self.record_routing_retry_on(
+                    conn, task_id, context=context, previous_status=current_status,
+                    new_status=new_status,
+                )
+
             stmt = update(tasks).where(tasks.c.id == task_id)
             if not _manual_pause_control:
                 stmt = stmt.where(_not_manually_paused())
@@ -1433,6 +1467,10 @@ class TaskQueryMixin:
                     ))).scalar_one_or_none()
                     if paused:
                         raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
+                if out is not None and await record_retry():
+                    out = (await conn.execute(select(tasks).where(
+                        tasks.c.id == task_id,
+                    ))).mappings().one()
                 return out is not None, (dict(out) if out is not None else None)
             res = await conn.execute(stmt)
             if res.rowcount == 0:
@@ -1443,6 +1481,7 @@ class TaskQueryMixin:
                     if paused:
                         raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
                 return False, None
+            await record_retry()
             if not returning:
                 return True, None
             out = (
@@ -1464,7 +1503,7 @@ class TaskQueryMixin:
                     await self._upsert_meta(
                         task_id, ACCEPTED_CLOSE_KEY, accepted_close, conn=conn
                     )
-                if not stable and PROJECTION_INPUT_COLUMNS & values.keys():
+                if not stable and not _defer_projection and PROJECTION_INPUT_COLUMNS & values.keys():
                     result.flipped = await self.recompute_blocked({task_id}, conn=conn)
                     # A same-status write can still flip is_blocked (e.g. a
                     # FAILED task's retry_count reaching max_retries turns a
@@ -1592,6 +1631,9 @@ class TaskQueryMixin:
                 # claim fence).  Nothing was written, so there is nothing to
                 # project or announce.
                 return result
+            await self._record_recovery_failure_generation_on(
+                conn, task_id, current_status, new_status, values["updated_at"],
+            )
             if accepted_close is not None:
                 await self._upsert_meta(task_id, ACCEPTED_CLOSE_KEY, accepted_close, conn=conn)
 
@@ -1610,6 +1652,18 @@ class TaskQueryMixin:
                 await self._upsert_meta(
                     task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
                 )
+                from src.integration.source_repairs import (
+                    SUPERSEDED,
+                    retire_reopened_source_repairs_on,
+                )
+
+                if context != SUPERSEDED:
+                    for transition in await retire_reopened_source_repairs_on(
+                        self, conn, task_id, context=context or "transition_task",
+                    ):
+                        result.flipped |= transition.flipped
+                        result.settled.extend(transition.settled)
+                        result.ready.extend(transition.ready)
 
             # Layout only cares about crossing the finished boundary (a
             # finished task leaves the ``active`` variant and restyles in
@@ -1638,8 +1692,8 @@ class TaskQueryMixin:
                         conn=conn,
                     )
 
-            if not stable:
-                result.flipped = await self.recompute_blocked({task_id}, conn=conn)
+            if not stable and not _defer_projection:
+                result.flipped |= await self.recompute_blocked({task_id}, conn=conn)
 
             # Terminal-BLOCKED bookkeeping (see TERMINAL_BLOCKED_META_KEY).
             # Same transaction as the status write, so the promotion cascade
@@ -1648,6 +1702,13 @@ class TaskQueryMixin:
                 if context in TERMINAL_BLOCKED_CONTEXTS:
                     await self._upsert_meta(
                         task_id, TERMINAL_BLOCKED_META_KEY, context, conn=conn
+                    )
+                if context == "stop_task":
+                    from src.integration.branch_retirement import request_task_retirement_on
+
+                    await request_task_retirement_on(
+                        conn, task_id, request_id=f"cancel:{task_id}:{values['updated_at']}",
+                        reason="task cancelled", now=values["updated_at"],
                     )
             elif current_status == TaskStatus.BLOCKED:
                 await conn.execute(
@@ -1698,7 +1759,7 @@ class TaskQueryMixin:
                     )
                 )
 
-            if not was_frontier:
+            if not was_frontier and not _defer_projection:
                 reason = _ready_reason(context)
                 for tid in await self._note_frontier_entry(conn, {task_id}, reason=reason):
                     result.ready.append((tid, reason))
@@ -1715,7 +1776,7 @@ class TaskQueryMixin:
             if new_status.value in self._TERMINAL_TASK_STATUSES:
                 await self.expire_satisfied_gates(task_id, conn=conn)
 
-            if new_status == TaskStatus.COMPLETED:
+            if new_status == TaskStatus.COMPLETED and not _defer_projection:
                 parent = (
                     await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
                 ).scalar()
@@ -1727,6 +1788,16 @@ class TaskQueryMixin:
                     result.flipped |= settle_result.flipped
                     result.ready.extend(settle_result.ready)
 
+        if new_status == TaskStatus.READY and context in {
+            "restart_task", "reopen_with_feedback", "supervisor_recovery", "operator_handoff",
+        }:
+            # An intentional new attempt clears the automatic failure streak
+            # in the READY transaction, before claim waiters can wake. Ordinary
+            # pool releases preserve it across replacement session rows.
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "worker_failure_streak",
+            ))
         return result
 
     def set_settlement_listener(self, cb) -> None:
@@ -2053,6 +2124,7 @@ class TaskQueryMixin:
         preserve_completion: bool = False,
         preserve_subtasks: bool = False,
         gate_resolution: str = "last waiter task deleted",
+        operator_delete: bool = False,
     ) -> None:
         """Delete an active task and its FK references; archives retain comments and completion history.
 
@@ -2063,7 +2135,12 @@ class TaskQueryMixin:
         — which for a human gate means live Approve/Deny buttons in Discord
         for a task that no longer exists.
         """
-        await self._assert_pause_cleanup_complete(task_id, conn=conn)
+        if operator_delete:
+            # FK writers take KEY SHARE on the task. Keep them behind the
+            # deletion until every owned row (including layouts) has gone.
+            await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
+        else:
+            await self._assert_pause_cleanup_complete(task_id, conn=conn)
         comment_project_id = (await conn.execute(
             select(tasks.c.project_id).where(tasks.c.id == task_id)
         )).scalar_one_or_none()
@@ -2725,6 +2802,7 @@ class TaskQueryMixin:
         prefer_mode: str | None | object = _UNSET,
         route_source: str | None = None,
         queued_only: bool = False,
+        conn=None,
     ) -> bool:
         """Send a task back to its router while no worker holds it.
 
@@ -2785,6 +2863,9 @@ class TaskQueryMixin:
             conditions.append(tasks.c.status.in_((
                 TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.BLOCKED.value,
             )))
-        async with self._engine.begin() as conn:
+        if conn is not None:
             result = await conn.execute(update(tasks).where(*conditions).values(**vals))
+        else:
+            async with self._engine.begin() as owned:
+                result = await owned.execute(update(tasks).where(*conditions).values(**vals))
         return result.rowcount == 1

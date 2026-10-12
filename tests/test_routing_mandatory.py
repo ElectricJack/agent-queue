@@ -298,6 +298,10 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
     ("src/database/queries/routing_queries.py", "RoutingQueryMixin.write_router_route"): (
         "task_route_apply: the bound router's single route write (spec §6.6)"
     ),
+    ("src/database/queries/routing_queries.py", "RoutingQueryMixin.record_routing_retry_on"): (
+        "guarded retry/reopen clears router/legacy results for a fresh router plan; "
+        "journals substantive failures atomically, never selects a worker or changes an override"
+    ),
     # -- the audited emergency override (spec §7, D2) -------------------------
     ("src/database/queries/routing_queries.py", "RoutingQueryMixin.write_override_route"): (
         "task_route_override: the local operator's or supervisor's pinned override"
@@ -327,6 +331,10 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
     ("src/database/queries/task_queries.py", "TaskQueryMixin.reset_task_route"): (
         "sends a queued task back to its router: clears the route (aq task route, "
         "edit_task hint edits)"
+    ),
+    ("src/commands/promote_commands.py", "PromoteCommandsMixin._cmd_promote_repair"): (
+        "operator/supervisor repair clears an erroneous worker route from a "
+        "daemon-owned promotion intent; never selects a worker profile"
     ),
     # -- the persistence layer -------------------------------------------------
     ("src/database/queries/task_queries.py", "TaskQueryMixin._insert_task_row"): (

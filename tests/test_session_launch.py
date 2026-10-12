@@ -301,7 +301,11 @@ _START_SITES = {
     ("src/dashboard_server/proxy.py", "exchange.start"): 1,
     ("src/dashboard_server/proxy.py", "self.start"): 1,
     ("src/discord/adapter.py", "self._bot.start"): 1,
-    ("src/integration/candidates.py", "self.repair.start"): 1,
+    # Freezes an epic refresh batch; the train visits it without launching an agent.
+    ("src/integration/train_sources.py", "EpicRefresh(self.db, clock=self.clock).start"): 1,
+    # Changelog section boundaries use re.Match offsets, never agent launches.
+    ("src/integration/promotion_notes.py", "following.start"): 1,
+    ("src/integration/promotion_notes.py", "match.start"): 3,
     ("src/intelligence_classes/editing.py", "block.start"): 1,
     ("src/main.py", "adapter.start"): 1,
     ("src/main.py", "metrics_sampler.start"): 1,
@@ -311,6 +315,8 @@ _START_SITES = {
     ("src/orchestrator/core.py", "self._config_watcher.start"): 1,
     ("src/orchestrator/core.py", "self.integration_service.start"): 1,
     ("src/orchestrator/core.py", "self.knowledge_generation_loop.start"): 1,
+    # Runs the async mailbox consumer; session starts still use launch_session.
+    ("src/orchestrator/core.py", "self.message_delivery_service.start"): 1,
     ("src/orchestrator/core.py", "self.record_outbox.start"): 1,
     ("src/orchestrator/core.py", "self.timer_service.start"): 1,
     ("src/orchestrator/sync_workflow.py", "adapter.start"): 1,
@@ -344,6 +350,10 @@ _PROCESS_SITES = {
     ("src/commands/helpers.py", "_run_subprocess_shell", "create_subprocess_shell"): 1,
     ("src/commands/profile_commands.py", "ProfileCommandsMixin._cmd_check_profile", "create_subprocess_exec"): 1,
     ("src/commands/profile_commands.py", "ProfileCommandsMixin._install_manifest", "create_subprocess_exec"): 3,
+    # The detached operator updater runs aq update with a scrubbed environment.
+    ("src/commands/system_commands.py", "SystemCommandsMixin._cmd_update_and_restart", "create_subprocess_exec"): 1,
+    # PostgreSQL clients, Docker probes and tmux session listing never launch agents.
+    ("src/database/backup.py", "_run", "create_subprocess_exec"): 1,
     ("src/doctor/builtin.py", "_probe_binary", "create_subprocess_exec"): 1,
     ("src/doctor/dashboard_server_checks.py", "_run_aq", "create_subprocess_exec"): 1,
     ("src/doctor/db_checks.py", "_git", "create_subprocess_exec"): 1,
@@ -352,12 +362,11 @@ _PROCESS_SITES = {
     ("src/git/github_cli.py", "GhRunner.run", "create_subprocess_exec"): 1,
     # Whole-source proof pipes git diff into git patch-id; neither starts an agent.
     ("src/git/manager.py", "GitManager.apatch_id", "create_subprocess_exec"): 2,
-    ("src/git/manager.py", "GitManager._apush_refs_with_app_auth_to_url", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._arun_authenticated_git_once", "create_subprocess_exec"): 1,
     ("src/git/manager.py", "GitManager._arun_git_result_unlocked", "create_subprocess_exec"): 1,
     ("src/git/manager.py", "GitManager._arun_subprocess", "create_subprocess_exec"): 1,
     ("src/git/manager.py", "GitManager._arun_unlocked", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._run_isolated_import_git", "create_subprocess_exec"): 1,
+    # Authenticated acquisition, push and credential-free import share this Git-only spawn.
+    ("src/git/manager.py", "GitManager._spawn_isolated_git", "create_subprocess_exec"): 1,
     ("src/integration/regeneration.py", "_run", "create_subprocess_exec"): 1,
     ("src/jobs/e2e.py", "main", "create_subprocess_exec"): 1,
     ("src/jobs/matter.py", "native_status", "create_subprocess_exec"): 1,

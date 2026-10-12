@@ -77,7 +77,11 @@ export default function EscalationInbox() {
                 <span className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-xs">{item.state}</span>
                 <span className="font-medium">{item.summary}</span>
                 <span className="text-xs text-gray-500">{item.project_id}</span>
-                {item.pending_delivery && (
+                {item.held_while_paused ? (
+                  <span className="rounded bg-gray-800 px-1.5 py-0.5 text-xs text-gray-300">
+                    held while paused
+                  </span>
+                ) : item.pending_delivery && (
                   <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-xs text-amber-200">
                     delivery pending
                   </span>

@@ -70,6 +70,7 @@ def pytest_configure(config) -> None:
     error = postgres_test_dsn_error()
     if error:
         raise pytest.UsageError(error)
+    _refuse_stale_selection_catalogue(config)
 
     # Collection validates configuration but must not create test resources.
     if getattr(config.option, "collectonly", False):
@@ -85,6 +86,33 @@ def pytest_configure(config) -> None:
 
     global _PG_BASE_DSN
     _PG_BASE_DSN = _resolve_base_dsn()
+
+
+def _refuse_stale_selection_catalogue(config) -> None:
+    """Refuse to run a named test module whose selection-catalogue entry is stale.
+
+    ``tests/selection_catalogue.json`` records every test module's areas and
+    ``src`` imports.  A worker who adds a module, or an import to one, and
+    runs only that file never sees ``tests/test_generated_artifacts.py``
+    fail; the candidate CI run does, and a train repair follows (2026-10-06:
+    keen-harbor-16.2).  The check is per named file, so directory runs are
+    untouched, and it is off under ``CI``, where that test is the check and a
+    usage error would only blank a job that names a file.  xdist workers
+    repeat the controller's configuration, so only the controller checks.
+    """
+    if (
+        os.environ.get("CI")
+        or hasattr(config, "workerinput")
+        or getattr(config.option, "pyargs", False)
+    ):
+        return
+    from src.test_selection.catalogue import stale_named_modules, stale_named_modules_message
+    from src.test_selection.discovery import named_test_modules
+
+    rels = named_test_modules(config.rootpath, config.invocation_params.dir, config.args)
+    problems = stale_named_modules(config.rootpath, rels)
+    if problems:
+        raise pytest.UsageError(stale_named_modules_message(problems))
 
 
 def pytest_unconfigure(config) -> None:

@@ -33,6 +33,7 @@ from typing import Any
 
 from sqlalchemy import and_, delete, insert, or_, select
 
+from src.task_templates import render_task_template
 from src.database.queries.integration_state_queries import session_attached_clause
 from src.database.tables import (
     integration_candidate_resolutions,
@@ -107,13 +108,12 @@ def retired_writer_close_feedback(retirement: dict[str, Any]) -> str:
     """
     reason = str(retirement["reason"])
     return (
-        f"{reason[:1].upper()}{reason[1:]}: this delegate is retired "
-        f"({retirement['disposition']}), so there is nothing left to close. "
-        "Do not retry the close and do not close --outcome fail. Its branch and "
-        "workspace stay preserved for cleanup; stop working and run "
-        "`aq session drain-ack`. The session reconciler then stops this session, "
-        "owner recovery preserves its checkout, and the integration reconciler "
-        "records the retirement."
+        render_task_template(
+            "retired-writer-close-feedback",
+            reason_1_upper=reason[:1].upper(),
+            reason_1=reason[1:],
+            retirement_disposition=retirement["disposition"],
+        )
     )
 
 

@@ -203,8 +203,9 @@ inside the 600-character digest budget and appends the needs-you link to. A
 window with no new facts and nothing waiting on Jack is skipped; after
 `quiet_line_after_skips` such windows one line is posted per local day, so
 silence stays distinguishable from a dead bot. Authoring also requires the
-`supervisor-digest` playbook, which is shipped disabled and activated by the
-operator; without it every window falls back.
+`supervisor-digest` playbook, whose disabled reviewed bundle is available for
+explicit operator import and activation; its retired source is no longer copied
+into `vault/system/playbooks/` at startup. Without it every window falls back.
 `escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
 numeric Discord IDs.
 
@@ -338,9 +339,13 @@ the page separates landed changes, pending/unknown shipment, failures and source
 gaps, and labels prior verification as agent-reported. Project-scoped readers
 receive scoped deterministic evidence rather than global supervisor prose.
 
-The optional reviewed system playbook `morning-report` calls
-`morning_report_tick` on `timer.1m`. It is neither required for readiness nor
-activated by default; the operator imports and activates the reviewed bundle
+The optional reviewed system playbook `morning-report` triggers on
+`report.morning_due`, which the daemon emits once per local day after the zoned
+morning time. The event id names the schedule and local date, so a restart or a
+repeated emission deduplicates to the day's one run; that run calls
+`morning_report_tick` a minute apart on a durable timer until the day's report
+settles. Activating it after the day's morning time starts with the next day.
+It is neither required for readiness nor activated by default; the operator imports and activates the reviewed bundle
 separately. Morning authoring requires `full_fleet_visibility: true`, an empty
 project selection and a configured Discord destination. Restricted destinations
 use the deterministic report without waking the global supervisor. The author
@@ -793,6 +798,15 @@ names to positive numbers.
 `reconciler_active` must be booleans. Neither flag is hot-reloadable: a config
 value alone installs no loop into a running service, so both need `aq restart
 --no-dashboard`.
+
+The active train's shared contracts and ownership guards live in retained
+`runtime_contracts.py`, `promotion_contracts.py` and `owner_guards.py`. Shared
+parent checkpoint seeding belongs to `parent_subjects.py`, and is invoked only
+when a subject policy loader is explicitly installed. Loading gates or the
+Development adapter must not import the legacy scheduler or reconciler; their
+compatibility execution paths load those services only when invoked. The
+Development runtime factory also refuses construction under `git_first: active`,
+so a fallback caller cannot install a second publisher.
 
 `git_first` accepts only `shadow` or `active` and is read when the integration service is constructed; a change takes effect at the next daemon restart.
 It requires an operator restart to change. Its diagnostics stay outside policy bindings

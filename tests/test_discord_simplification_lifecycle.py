@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import update
@@ -241,8 +241,11 @@ async def create_recovery_escalation(env, task_id: str, recovery: dict, scope: d
         "severity": "high",
         "_scope": scope,
     }
-    created = await env.handler.execute("escalation_create", args)
-    replay = await env.handler.execute("escalation_create", args)
+    # Creation now sets the outbox deadline as well as the incident timestamp.
+    # Keep both on the same synthetic timeline as the delivery service.
+    with patch("src.database.queries.escalation_queries.time.time", return_value=BASE):
+        created = await env.handler.execute("escalation_create", args)
+        replay = await env.handler.execute("escalation_create", args)
     assert created["success"] is True and created["created"] is True
     assert replay["created"] is False
     assert replay["escalation"]["id"] == created["escalation"]["id"]
@@ -930,6 +933,7 @@ async def test_discord_disabled_keeps_scheduler_and_dashboard_escalation_command
                 "project_id": "p",
                 "source_kind": "core",
                 "source_identity": "disabled-discord",
+                "task_title": "Continue project work through the dashboard",
                 "incident_key": "disabled-discord",
                 "summary": "External messaging is unavailable",
                 "investigation": "The dashboard and core are still reachable",

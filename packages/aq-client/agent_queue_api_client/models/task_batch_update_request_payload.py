@@ -11,7 +11,10 @@ T = TypeVar("T", bound="TaskBatchUpdateRequestPayload")
 
 @_attrs_define
 class TaskBatchUpdateRequestPayload:
-    """The replacement graph: ``{"tasks": [...], "edges": [...]}`` in the same shape task_batch_propose takes."""
+    """The complete replacement change set (tasks, edits, edges, remove_edges, comments), in the same shape
+    task_batch_propose takes.
+
+    """
 
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 

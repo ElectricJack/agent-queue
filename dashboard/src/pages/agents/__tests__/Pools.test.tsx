@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import LeftRail from "../../../shell/LeftRail";
 import AgentWorkspace from "../AgentWorkspace";
@@ -9,7 +9,7 @@ import type { FlockAgent } from "../../../api/agents";
 import type { PoolProjectStatus, PoolStatusRow, SessionSummary } from "../../../api/hooks";
 import { boundsOf, scaleRequest, validateBounds } from "../PoolScaleFields";
 import { PoolSupplyRow } from "../PoolMetadata";
-import { poolEntries, poolPlacement, poolProfileIds, isPoolAgent, formatIdle, outsideSessionAgent, splitBusyPoolEntries, useDebouncedBusyPoolEntries, type OutsidePoolSession } from "../pools";
+import { poolEntries, poolPlacement, poolProfileIds, isPoolAgent, formatIdle, outsideSessionAgent, outsideSessionName, splitBusyPoolEntries, useDebouncedBusyPoolEntries, type OutsidePoolSession } from "../pools";
 import { parseAgentSelection, poolSelectionKey, selectionAddress } from "../useAgentSelection";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
 import { createFakeDashboardStateServer, TestDashboardState } from "../../../testUtils/dashboardState";
@@ -21,7 +21,7 @@ const api = vi.hoisted(() => ({
   listAgents: vi.fn(), listProjects: vi.fn(), listProfiles: vi.fn(), listIntelligenceClasses: vi.fn(),
   getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(),
   sessionInput: vi.fn(), startAgentTerminal: vi.fn(),
-  poolStatus: vi.fn(), poolScale: vi.fn(), poolSetEnabled: vi.fn(), sessionList: vi.fn(),
+  poolStatus: vi.fn(), poolRename: vi.fn(), poolScale: vi.fn(), poolSetEnabled: vi.fn(), sessionList: vi.fn(),
   getProviderAllocationApiProvidersAllocationGet: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
@@ -99,6 +99,16 @@ const SLOW = { timeout: 5_000 };
 
 const clients: QueryClient[] = [];
 
+function NavigationProbe() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return <>
+    <output aria-label="Current URL">{location.pathname + location.search}</output>
+    <button onClick={() => navigate(-1)}>Previous page</button>
+    <button onClick={() => navigate(1)}>Next page</button>
+  </>;
+}
+
 function renderAgents(initial = "/agents") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   clients.push(client);
@@ -106,6 +116,7 @@ function renderAgents(initial = "/agents") {
     <QueryClientProvider client={client}>
       <TestDashboardState server={createFakeDashboardStateServer()}>
         <MemoryRouter initialEntries={[initial]}>
+          <NavigationProbe />
           <LeftRail />
           <Routes><Route path="/agents" element={<AgentWorkspace />} /><Route path="*" element={null} /></Routes>
         </MemoryRouter>
@@ -133,6 +144,7 @@ beforeEach(() => {
   api.sessionList.mockResolvedValue({ data: { success: true, sessions: [instance("aaa"), instance("bbb", { task_id: "quick-torrent-39", started_at: 200 })], count: 2 } });
   api.poolScale.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", min_active: 2, max_active: 6, project_caps: [], terminated: [], warnings: [] } });
   api.poolSetEnabled.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", enabled: false, warnings: [] } });
+  api.poolRename.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", name: "Space Bunny", changed: true } });
   api.getProviderAllocationApiProvidersAllocationGet.mockResolvedValue({ data: {
     success: true, now: 1, providers: [], projects: [], diagnostics: [],
   } });
@@ -233,6 +245,16 @@ describe("pool derivation", () => {
     expect(outsideSessionAgent(outside("s-3", { task_id: "task-9" }), [byTask, bySession])).toBeNull();
     // A session with no task never matches an idle agent through a null id.
     expect(outsideSessionAgent(outside("s-4"), [{ ...byTask, current_task_id: null }])).toBeNull();
+  });
+
+  it("names an outside session by its agent only when the agent belongs to the session's profile", () => {
+    const own = agent("own", "opencode-a", "worker-standard");
+    // A stopped pool worker reused for a dedicated task session keeps its pool name.
+    const borrowed = agent("borrowed", "deep-high-codex-0901", "deep-high-codex");
+    const ingest = outside("s-1", { profile_id: "spec-ingest", name: "s-solid-apex-97" });
+    expect(outsideSessionName(outside("s-2"), own)).toBe("opencode-a");
+    expect(outsideSessionName(ingest, borrowed)).toBe("spec-ingest");
+    expect(outsideSessionName(ingest, null)).toBe("s-solid-apex-97");
   });
 
   it("separates busy pools from configured pools without claimed work", () => {
@@ -508,6 +530,63 @@ describe("pools in the agent flock", () => {
     });
   });
 
+  describe("a Codex pool with a dedicated task session on its route", () => {
+    // Live on 2026-10-08: the deep-high-codex pool had a busy member, and a
+    // spec-ingest task session (codex, deep-high) ran on the same route. The
+    // push scheduler had put that session on a stopped pool worker's agent
+    // row, which keeps its pool identity: name deep-high-codex-0901, profile
+    // deep-high-codex.
+    const codex = "deep-high-codex";
+    beforeEach(() => {
+      api.listAgents.mockResolvedValue({ data: { agents: [
+        agent("fixed", "Builder", "implementer"),
+        { ...agent("member", "deep-high-codex-45fb", codex), harness: "codex", intelligence_class: "deep-high",
+          state: "busy", session_id: "pool-s1", current_task_id: "task-pool", current_task_title: "Pool work" },
+        { ...agent("borrowed", "deep-high-codex-0901", codex), harness: "codex", intelligence_class: "deep-high",
+          state: "busy", session_id: "ingest-s1", current_task_id: "solid-apex-97", current_task_title: "Ingest spec" },
+      ], count: 3 } });
+      api.listProfiles.mockResolvedValue({ data: { profiles: [
+        { id: "implementer", name: "Implementer" },
+        { id: codex, name: "Deep high Codex", lifecycle: "pool" },
+        { id: "spec-ingest", name: "Spec ingest" },
+      ] } });
+      api.sessionList.mockResolvedValue({ data: { success: true, sessions: [
+        instance("pool-s1", { id: "pool-s1", name: "p-deep-high-codex--agent-queue--pool-s1", profile_id: codex,
+          harness: "codex", model: "gpt-5.5", intelligence_class: "deep-high", task_id: "task-pool" }),
+      ], count: 1 } });
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({
+        profile_id: codex, running_busy: 1, running_idle: 0, desired: 1, ready: 0,
+        outside_pools: [outside("ingest-s1", { profile_id: "spec-ingest", harness: "codex",
+          intelligence_class: "deep-high", name: "s-solid-apex-97", task_id: "solid-apex-97",
+          task_title: "Ingest spec" })],
+      })] } });
+    });
+
+    it("keeps the pool member inside its pool and names the outside row by its own profile", async () => {
+      renderAgents("/");
+
+      const poolRow = await screen.findByRole("button", { name: "Open " + codex + " pool" }, SLOW);
+      expect(within(poolRow).getByText("1 live instance")).toBeInTheDocument();
+      const nested = await screen.findByRole("list", { name: "Sessions outside the " + codex + " pool" }, SLOW);
+      const rows = within(nested).getAllByRole("listitem");
+      // Only the dedicated session is outside the pool, named for what it is.
+      expect(rows).toHaveLength(1);
+      expect(within(rows[0]!).getByRole("button", { name: "Open spec-ingest (outside pool)" })).toBeInTheDocument();
+      expect(within(rows[0]!).getByText("spec-ingest")).toHaveAttribute("title", "s-solid-apex-97");
+      expect(within(rows[0]!).getByText("Outside pool")).toBeInTheDocument();
+      // No pool-worker identity is shown as outside the pool, and neither
+      // agent row is listed beside the pool.
+      expect(screen.queryByText("deep-high-codex-0901")).not.toBeInTheDocument();
+      expect(screen.queryByText("deep-high-codex-45fb")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /deep-high-codex-/ })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
+
+      // The row still opens the agent window running the session.
+      fireEvent.click(within(rows[0]!).getByRole("button", { name: "Open spec-ingest (outside pool)" }));
+      await waitFor(() => expect(screen.getByLabelText("Current URL")).toHaveTextContent("agent=borrowed"), SLOW);
+    });
+  });
+
   it("lists every pool, idle ones included, on the agents page the idle link points at", async () => {
     api.poolStatus.mockResolvedValue({ data: { success: true, pools: [
       pool({ profile_id: "worker-busy", running_busy: 1 }),
@@ -516,19 +595,101 @@ describe("pools in the agent flock", () => {
     renderAgents("/agents");
 
     const directory = await screen.findByRole("region", { name: "Worker pools" }, SLOW);
-    expect(await within(directory).findByRole("button", { name: "Open pool worker-idle" }, SLOW)).toBeInTheDocument();
-    expect(within(directory).getByRole("button", { name: "Open pool worker-busy" })).toBeInTheDocument();
+    expect(await within(directory).findByRole("link", { name: "Open pool worker-idle" }, SLOW)).toBeInTheDocument();
+    expect(within(directory).getByRole("link", { name: "Open pool worker-busy" })).toBeInTheDocument();
     expect(within(directory).getByText("idle")).toBeInTheDocument();
     expect(within(directory).getByText("busy")).toBeInTheDocument();
   });
 
-  it("opens a pool window when a directory row is clicked", async () => {
+  it("opens settings from a directory row and links back to the list", async () => {
     api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ profile_id: "worker-idle", running_busy: 0 })] } });
     renderAgents("/agents");
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open pool worker-idle" }, SLOW));
+    const row = await screen.findByRole("link", { name: "Open pool worker-idle" }, SLOW);
+    expect(row).toHaveAttribute("href", "/agents?agent=pool%3Aworker-idle&pool-view=settings");
+    fireEvent.click(row.closest("li")!);
     expect(await screen.findByRole("region", { name: /worker-idle/ }, SLOW)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByLabelText("Display name")).toHaveValue("worker-idle");
+    expect(screen.getByLabelText("Current URL")).toHaveTextContent("pool-view=settings");
     expect(screen.queryByRole("region", { name: "Worker pools" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Back to pools" }));
+    expect(await screen.findByRole("region", { name: "Worker pools" }, SLOW)).toBeInTheDocument();
+    expect(screen.getByLabelText("Current URL")).toHaveTextContent(/^\/agents$/);
+  });
+
+  it("offers an explicit Settings link and restores settings through browser history", async () => {
+    renderAgents("/agents");
+    const directory = await screen.findByRole("region", { name: "Worker pools" }, SLOW);
+    fireEvent.click(within(directory).getByRole("link", { name: "Settings for worker-standard" }));
+    expect(await screen.findByLabelText("Display name", undefined, SLOW)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Terminal" }));
+    expect(screen.getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await screen.findByRole("tab", { name: "Settings" }, SLOW)).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await screen.findByRole("region", { name: "Worker pools" }, SLOW)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(await screen.findByLabelText("Display name", undefined, SLOW)).toBeInTheDocument();
+  });
+
+  it("loads a shared settings URL and displays the renamed pool across views", async () => {
+    const renamed = pool({ name: "Space Bunny" });
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [renamed] } });
+    renderAgents("/agents?agent=pool%3Aworker-standard&pool-view=settings");
+    expect(await screen.findByRole("region", { name: "Space Bunny pool agent window" }, SLOW)).toBeInTheDocument();
+    expect(screen.getByLabelText("Display name")).toHaveValue("Space Bunny");
+    expect(screen.getByRole("button", { name: "Open Space Bunny pool" })).toBeInTheDocument();
+    expect(screen.getByText("worker-standard")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Back to pools" }));
+    const directory = await screen.findByRole("region", { name: "Worker pools" }, SLOW);
+    expect(within(directory).getByRole("link", { name: "Open pool Space Bunny" })).toBeInTheDocument();
+    expect(within(directory).getByRole("link", { name: "Settings for Space Bunny" })).toHaveAttribute(
+      "href", "/agents?agent=pool%3Aworker-standard&pool-view=settings",
+    );
+  });
+
+  it("saves a new display name using the stable ID and refreshes the rail, window, list and pickers", async () => {
+    api.poolRename.mockImplementation(async () => {
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ name: "Space Bunny" })] } });
+      api.listProfiles.mockResolvedValue({ data: { profiles: [{ id: "worker-standard", name: "Space Bunny", lifecycle: "pool" }] } });
+      return { data: { success: true, profile_id: "worker-standard", name: "Space Bunny", changed: true } };
+    });
+    renderAgents("/agents?agent=pool%3Aworker-standard&pool-view=settings");
+    const name = await screen.findByLabelText("Display name", undefined, SLOW);
+    fireEvent.change(name, { target: { value: " Space Bunny " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save pool name" }));
+    await waitFor(() => expect(api.poolRename).toHaveBeenCalledTimes(1), SLOW);
+    expect(api.poolRename.mock.calls[0]![0].body).toEqual({ profile_id: "worker-standard", name: "Space Bunny" });
+    expect(await screen.findByText("Pool name saved.", undefined, SLOW)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Space Bunny pool agent window" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Space Bunny pool" })).toBeInTheDocument();
+    expect(name).toHaveValue("Space Bunny");
+    await waitFor(() => expect(api.listProfiles.mock.calls.length).toBeGreaterThan(1), SLOW);
+    fireEvent.click(screen.getByRole("link", { name: "Back to pools" }));
+    const directory = await screen.findByRole("region", { name: "Worker pools" }, SLOW);
+    expect(within(directory).getByRole("link", { name: "Settings for Space Bunny" })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("region", { name: "Agent flock" }))
+      .getByRole("button", { name: "Create agent or pool" }));
+    fireEvent.click(within(screen.getByRole("region", { name: "Create agent or pool" }))
+      .getByRole("button", { name: "Create agent pool" }));
+    expect(await screen.findByRole("option", { name: "Space Bunny" }, SLOW)).toHaveValue("worker-standard");
+  });
+
+  it("rejects invalid names in the form and displays server refusals without claiming success", async () => {
+    api.poolRename.mockResolvedValue({ data: { success: false, error: "Vault is read-only" } });
+    renderAgents("/agents?agent=pool%3Aworker-standard&pool-view=settings");
+    const name = await screen.findByLabelText("Display name", undefined, SLOW);
+    for (const value of [" ", "x".repeat(121)]) {
+      fireEvent.change(name, { target: { value } });
+      expect(screen.getByRole("button", { name: "Save pool name" })).toBeDisabled();
+    }
+    expect(api.poolRename).not.toHaveBeenCalled();
+    fireEvent.change(name, { target: { value: "Space Bunny" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save pool name" }));
+    expect(await screen.findByText("Vault is read-only", undefined, SLOW)).toBeInTheDocument();
+    expect(screen.queryByText("Pool name saved.")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "worker-standard pool agent window" })).toBeInTheDocument();
   });
 
   it("switches the directory to the Providers view and keeps the choice in the URL", async () => {
@@ -841,7 +1002,8 @@ describe("enabling and disabling a pool from the directory", () => {
     // The mutation's own refresh (not a later poll) reports the persisted
     // state; the row stays in the list.
     expect(await directory.findByRole("switch", { name: "Enable worker-standard pool" }, SLOW)).toBeInTheDocument();
-    expect(directory.getByRole("button", { name: "Open pool worker-standard" })).toBeInTheDocument();
+    expect(directory.getByRole("link", { name: "Open pool worker-standard" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Current URL")).toHaveTextContent(/^\/agents$/);
     expect(directory.getByText(/no new work is claimed/i)).toBeInTheDocument();
     expect(directory.getByText("disabled")).toBeInTheDocument();
   });
@@ -890,7 +1052,10 @@ describe("enabling and disabling a pool from the directory", () => {
     await waitFor(() => expect(finishRead).toBeDefined(), SLOW);
     api.poolStatus.mockImplementation(() => new Promise(() => {}));
     fireEvent.click(toggle);
-    await waitFor(() => expect(toggle).toBeEnabled(), SLOW);
+    await waitFor(() => {
+      expect(toggle).toBeEnabled();
+      expect(toggle).toHaveAttribute("aria-checked", "false");
+    }, SLOW);
     await act(async () => {
       finishRead({ data: { success: true, pools: [pool(idle)] } });
       await read;

@@ -9,8 +9,10 @@
 
 The maintained machine-readable inventory is
 [`cli-command-inventory.json`](cli-command-inventory.json). It is generated from the live
-Click command tree, so its totals follow the current source rather than pinning the 318-command
-audit baseline.
+Click command tree. Schema version 2 stores command records without aggregate
+counts, so unrelated additions do not rewrite shared count lines. Derive totals
+with `src.cli.inventory.inventory_counts(inventory)`; the generator also reports
+the current leaf count.
 
 Regenerate and verify it with:
 

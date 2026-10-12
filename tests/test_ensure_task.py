@@ -91,6 +91,16 @@ async def test_ensure_task_preserves_source_repair_repository_and_type(handler):
     assert filed["integration_mode"] == "pull_request" and filed["root"] is True
 
 
+async def test_ensure_task_records_an_internal_filers_origin(handler, db):
+    # Source-CI recovery files its repair this way; the origin routes it.
+    internal = await handler._cmd_ensure_task({
+        "project_id": PROJECT_ID, "dedup_key": "source-ci:x:1", "title": "Repair source",
+        "_created_by_kind": "source_ci_repair", "_created_by_id": "source-ci:x",
+    })
+    task = await db.get_task(internal["task_id"])
+    assert (task.created_by_kind, task.created_by_id) == ("source_ci_repair", "source-ci:x")
+
+
 async def test_ensure_task_ignores_completed_task(handler, db):
     r1 = await handler.execute(
         "ensure_task",

@@ -212,15 +212,14 @@ lanes) first, then OpenCode on the hosted Zen gateway (the `narrow-hosted`
 lane, `standard-high` only), which is a separate provider with its own
 availability. Repairs never go to either. A self-hosted model (a harness
 whose `provider` is `ollama`, such as local OpenCode) takes only low-stakes
-work: the policy's `local_models` gate drops it for a task of priority 150 or
-more, a bugfix in a project delivering through an integration train
-(`hierarchical_integration_mode` `hierarchy`, `train` or `development`), and a
-task an unfinished task waits on (`no_candidates` reason `local_model_gate`
-when nothing else remains). The hosted Zen gateway is not local. `aq doctor
---check stall.sweep` reports `high_priority_local_model` for work at or above
-the threshold that still sits on a local profile. Among what remains, the
-least-pressed candidate wins, and a tie goes to Codex, then Claude, then
-OpenCode, then hosted OpenCode.
+work: the policy's `local_models` gate drops it for a bugfix in a project
+delivering through an integration train (`hierarchical_integration_mode`
+`hierarchy`, `train` or `development`) and for a task an unfinished task waits
+on (`no_candidates` reason `local_model_gate` when nothing else remains). The
+hosted Zen gateway is not local. A task's priority never routes it: no lane
+and no local-model rule reads it, so it orders the claim frontier and nothing
+else. Among what remains, the least-pressed candidate wins, and a tie goes to
+Codex, then Claude, then OpenCode, then hosted OpenCode.
 
 When the classifier has to pick a class, its guidance is the playbook's
 "Classifying a task" section: **default to `standard-high`** for ordinary

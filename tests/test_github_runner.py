@@ -122,36 +122,42 @@ async def test_failure_warning_is_safe_and_throttled_across_calls(
         credentials, executable=str(executable), env={"GH_TOKEN": "ambient-secret"}, cwd=tmp_path
     )
     caplog.set_level(logging.WARNING, logger="src.git.github_cli")
+    background_logger = logging.getLogger("src.metrics.loop_watchdog")
+    background_logger.warning("Event loop heartbeat overdue")
 
     async def fail(repository=REPOSITORY, suffix=""):
         args = ["api", f"repos/{repository.full_name}{suffix}"]
+        # Background diagnostics can arrive while the CLI subprocess is running.
+        background_logger.warning("Event loop heartbeat overdue")
         with pytest.raises(GitHubAccessError) as caught:
             await runner.run(args, repository=repository)
         assert "HTTP" in str(caught.value)
 
-    await fail()
-    await fail()
-    await fail()
-    assert len(caplog.records) == 1
-    assert "credentials, HTTP 401" in caplog.text
-    assert f"credential_mode={mode} repository=acme/widgets" in caplog.text
+    with caplog.filtering(logging.Filter("src.git.github_cli")):
+        caplog.clear()
+        await fail()
+        await fail()
+        await fail()
+        assert len(caplog.records) == 1
+        assert "credentials, HTTP 401" in caplog.text
+        assert f"credential_mode={mode} repository=acme/widgets" in caplog.text
 
-    await fail(suffix="/pulls")  # A new category warns immediately.
-    await fail(other)  # Another repository has its own cooldown.
-    assert len(caplog.records) == 3
-    assert "permission, HTTP 403" in caplog.text
-    assert "repository=acme/other" in caplog.text
-    now[0] += 299
-    await fail()
-    assert len(caplog.records) == 3
-    now[0] += 1
-    await fail()
-    assert len(caplog.records) == 4
-    for private_text in (
-        "raw-private-diagnostic", "selected-secret", "other-secret", "ambient-secret",
-        "opaque-secret", "password", "Authorization", "https://",
-    ):
-        assert private_text not in caplog.text
+        await fail(suffix="/pulls")  # A new category warns immediately.
+        await fail(other)  # Another repository has its own cooldown.
+        assert len(caplog.records) == 3
+        assert "permission, HTTP 403" in caplog.text
+        assert "repository=acme/other" in caplog.text
+        now[0] += 299
+        await fail()
+        assert len(caplog.records) == 3
+        now[0] += 1
+        await fail()
+        assert len(caplog.records) == 4
+        for private_text in (
+            "raw-private-diagnostic", "selected-secret", "other-secret", "ambient-secret",
+            "opaque-secret", "password", "Authorization", "https://",
+        ):
+            assert private_text not in caplog.text
 
 
 def _pid_exists(pid: int) -> bool:

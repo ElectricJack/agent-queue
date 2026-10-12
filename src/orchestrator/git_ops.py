@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.task_templates import render_task_template
 from src.git.manager import GitError, RemoteRefState
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
@@ -57,6 +58,7 @@ class _DeliveryResolution:
     checked_refs: tuple[str, ...]
     no_work: bool = False
     error: str | None = None
+    infrastructure_failure: bool = False
 
 
 class GitOpsMixin:
@@ -769,12 +771,15 @@ class GitOpsMixin:
     async def _task_produces_no_code(self, ctx: PipelineContext) -> bool:
         """Return whether task metadata declares no code was intended.
 
-        Two signals, either is enough:
+        Three signals, any is enough:
 
         * the agent closed with ``--work-outcome no-op`` — its own statement
           that nothing was produced;
         * its effective profile declares ``read_only: true``: such profiles
-          do not commit, push, or open a PR on their own task branch.
+          do not commit, push, or open a PR on their own task branch;
+        * its effective profile declares ``needs_workspace: false``: a role
+          such as ``spec-ingest`` or ``triage`` writes database rows, not
+          source, and holds no ``git_push`` grant to publish its slot branch.
 
         Profile resolution follows the regular task path, including a
         project-scoped override.  The legacy review ids are retained only
@@ -794,7 +799,7 @@ class GitOpsMixin:
             )
             profile = None
         if profile is not None:
-            return bool(profile.read_only)
+            return bool(profile.read_only) or not profile.needs_workspace
         return (ctx.task.profile_id or "") in NO_CODE_PROFILE_IDS
 
     async def _task_uses_git(self, ctx: PipelineContext) -> bool:
@@ -918,6 +923,7 @@ class GitOpsMixin:
                 None,
                 (current_ref,),
                 error=f"Could not verify delivery commits on `{current_branch}`.",
+                infrastructure_failure=True,
             )
 
         if not assigned_branch or assigned_branch == current_branch:
@@ -943,6 +949,7 @@ class GitOpsMixin:
                 None,
                 (current_ref,),
                 error=ref_error,
+                infrastructure_failure=True,
             )
         if not assigned_ref:
             if current_count > 0:
@@ -974,6 +981,7 @@ class GitOpsMixin:
                 None,
                 checked_refs,
                 error=f"Could not verify delivery commits on `{assigned_ref}`.",
+                infrastructure_failure=True,
             )
         if current_count > 0 and assigned_count > 0:
             return _DeliveryResolution(
@@ -1138,6 +1146,8 @@ class GitOpsMixin:
                 return (ctx.pr_url, False)
             if not ctx.workspace_path or not await self._task_uses_git(ctx):
                 return (ctx.pr_url, True)
+            if await self._task_produces_no_code(ctx) and await self._task_proves_no_work(ctx):
+                return (ctx.pr_url, True)  # completion provenance rechecks containment
             try:
                 from src.integration.hierarchy import resolve_workspace_checkpoint
                 from src.database.queries.hierarchy_queries import HierarchyError
@@ -1352,6 +1362,7 @@ class GitOpsMixin:
                     has_remote=has_remote,
                 )
             except Exception as exc:
+                ctx.verification_infrastructure_failure = True
                 resolution = _DeliveryResolution(
                     None,
                     None,
@@ -1359,6 +1370,8 @@ class GitOpsMixin:
                     error=f"Could not resolve the task delivery ref: {exc}",
                 )
             if resolution.error:
+                if resolution.infrastructure_failure:
+                    ctx.verification_infrastructure_failure = True
                 failures.append((resolution.error, False))
                 delivery_guard_blocked = True
             for relevant_ref in resolution.checked_refs:
@@ -1369,6 +1382,8 @@ class GitOpsMixin:
                     has_remote=has_remote,
                 )
                 if delivery_failure:
+                    if not delivery_failure[1]:
+                        ctx.verification_infrastructure_failure = True
                     failures.append(delivery_failure)
                     delivery_guard_blocked = True
             if resolution.delivery_ref:
@@ -1416,6 +1431,7 @@ class GitOpsMixin:
             else None
         )
         if pr_mode and not pr_delivery_branch and not delivery_guard_blocked:
+            ctx.verification_infrastructure_failure = True
             failures.append(("Could not determine the task delivery branch.", False))
 
         if (
@@ -1443,6 +1459,7 @@ class GitOpsMixin:
                     workspace, strict=True
                 )
                 if has_uncommitted is None:
+                    ctx.verification_infrastructure_failure = True
                     failures.append(("Could not verify workspace status after merge.", False))
                     has_uncommitted = True
                 elif has_uncommitted:
@@ -1596,6 +1613,7 @@ class GitOpsMixin:
                             False,
                         )
                     )
+                    ctx.verification_infrastructure_failure = True
 
         # ── Final safety net: one last remediation sweep ─────────────────
         # Intermediate steps (merge, merge-abort, push attempts) may have
@@ -1604,11 +1622,13 @@ class GitOpsMixin:
         # building the failure list.
         has_uncommitted = await self.git.ahas_uncommitted_changes(workspace, strict=True)
         if has_uncommitted is None:
+            ctx.verification_infrastructure_failure = True
             failures.append(("Could not verify final workspace status.", False))
             has_uncommitted = True
         elif has_uncommitted:
             latest_branch = await self.git.aget_current_branch(workspace, strict=True)
             if not latest_branch:
+                ctx.verification_infrastructure_failure = True
                 failures.append(("Could not verify the final checked-out branch.", False))
             else:
                 current_branch = latest_branch
@@ -1676,6 +1696,7 @@ class GitOpsMixin:
                                 f"`aq task deliver --task-id {task.id} --reason ...`."
                             )
                         failures.append((message, False))
+                        ctx.verification_infrastructure_failure = True
                         repository = None
                     pr_url = confirmed_merged_pr_url
                     if repository is not None and not pr_url:
@@ -1703,6 +1724,7 @@ class GitOpsMixin:
                             default_branch,
                         )
                     elif not pr_url and integrated is None:
+                        ctx.verification_infrastructure_failure = True
                         failures.append(
                             (
                                 f"Could not verify whether `{pr_delivery_branch}` is already "
@@ -1782,6 +1804,7 @@ class GitOpsMixin:
                                 )
                             )
                     except GitError as e:
+                        ctx.verification_infrastructure_failure = True
                         failures.append(
                             (
                                 f"Could not verify remote `{default_branch}` head: {e}",
@@ -1810,6 +1833,7 @@ class GitOpsMixin:
         fixable = [(msg, f) for msg, f in failures if f]
         unfixable = [(msg, f) for msg, f in failures if not f]
         all_msgs = [msg for msg, _ in failures]
+        ctx.verification_issues = all_msgs
 
         if unfixable:
             # Unfixable issues present — block immediately, don't waste retries
@@ -2079,19 +2103,20 @@ class GitOpsMixin:
         # Build feedback message
         bullet_list = "\n".join(f"- {msg}" for msg, _ in failures)
         closing = (
-            "Please fix these issues when the task restarts."
+            render_task_template("git-verification-restart")
             if restart_wording
             else (
-                "Fix these issues in this workspace, then run `aq task close` again. "
-                "The task is still yours — it stays IN_PROGRESS under your claim."
+                render_task_template("git-verification-held")
             )
         )
         feedback = (
-            f"**Git Verification Feedback (auto-retry "
-            f"{retry_count + 1}/{max_retries}):**\n"
-            f"The system verified the git state after your work and found "
-            f"issues:\n{bullet_list}\n"
-            f"{closing}"
+            render_task_template(
+                "git-verification-feedback",
+                attempt=retry_count + 1,
+                max_retries=max_retries,
+                bullet_list=bullet_list,
+                closing=closing,
+            )
         )
 
         separator = "\n\n---\n"

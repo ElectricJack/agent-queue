@@ -33,6 +33,21 @@ _TOOL_CATEGORIES = _CATALOGUE["tool_categories"]
 # CommandHandler commands covered by hand-crafted CLI commands.
 # Auto-generation skips these to avoid duplicates.
 HANDCRAFTED_COVERAGE = {
+    "policy_export",
+    "policy_diff",
+    "policy_apply",
+    "create_project",
+    "remove_task",
+    "promote_schema",
+    "promote_validate",
+    "promote_rulesets",
+    "promote_request",
+    "promote_hotfix",
+    "promote_approve",
+    "promote_cancel",
+    "promote_repair",
+    "promote_status",
+    "promote_list",
     # pool_provider.py mounts schema-generated status/apply in a nested group
     # and translates preview's operator flags into structured arguments.
     "provider_allocation_status",
@@ -50,6 +65,8 @@ HANDCRAFTED_COVERAGE = {
     "restart_task",
     # tasks.py — `aq task create --graph|--from-spec|--dry-run`
     "create_task_graph",
+    # tasks.py — file-based or inline transactional change sets with a diff preview.
+    "task_batch_propose",
     # agent_surface.py — claim-aware worker-loop commands: positional task
     # ids, --claim-epoch fenced against .aq/claim.json (swarm-work-model §10).
     "task_claim",
@@ -97,6 +114,13 @@ HANDCRAFTED_COVERAGE = {
     "prime",
     # questions.py — exact question identity and the authenticated daemon scope.
     "wait_register",
+    "cron_register",
+    "cron_get",
+    "cron_list",
+    "cron_cancel",
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
     "message_wait",
     "wait_get",
     "wait_list",
@@ -114,9 +138,9 @@ HANDCRAFTED_COVERAGE = {
     "review_submit",
     "review_dispatch",
     # projects.py — composite/UX-heavy commands only
-    "edit_project",
     "set_default_branch",
     "onboard_project",
+    "bind_project_repository",
     # integration.py — positional identities and explicit rollout CAS fences.
     "integration_release_held_gate",
     "integration_status",
@@ -130,13 +154,8 @@ HANDCRAFTED_COVERAGE = {
     "integration_authorize_root",
     "integration_redrive_child",
     "integration_reopen_collection",
-    "integration_rebind_repair",
-    "integration_rebind_detached_repair",
-    "integration_recover_preserved_repair",
-    "integration_recover_parent_head",
     "integration_close_delivered_pr",
-    "integration_resolve_candidate_member",
-    "integration_recover_candidate_member",
+    "integration_record_root_noop",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list",
     "plugin_info",

@@ -76,7 +76,7 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
@@ -133,6 +133,15 @@ def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int 
 
 class GitError(Exception):
     pass
+
+
+class ChildPreparationConflict(GitError):
+    """A cleanly aborted child merge, with immutable repair inputs."""
+
+    def __init__(self, child_head, parent_head, merge_head, files, reason):
+        self.child_head, self.parent_head, self.merge_head = child_head, parent_head, merge_head
+        self.files = tuple(files)
+        super().__init__(reason)
 
 
 # ---------------------------------------------------------------------------
@@ -1927,8 +1936,11 @@ class GitManager:
         """Fetch an explicitly authorized origin without credentials in the checkout."""
         fetch_args = (
             ["fetch", "--no-tags", "--prune", "origin",
-             "+refs/heads/*:refs/remotes/origin/*"]
-            if all_heads else ["fetch", "origin"]
+             "+refs/heads/*:refs/remotes/origin/*",
+             "+refs/aq/provenance/*:refs/aq/provenance/*"]
+            if all_heads else ["fetch", "origin",
+                              "+refs/heads/*:refs/remotes/origin/*",
+                              "+refs/aq/provenance/*:refs/aq/provenance/*"]
         )
         if self._uses_existing_ssh(repository_url):
             from src.projects.github import GitHubError, parse_github_repository
@@ -2022,7 +2034,7 @@ class GitManager:
             if borrowable_objects is not None:
                 seeded_tips = await self._alend_fetch_objects(
                     imported, destination_git_dir, borrowable_objects,
-                    patterns=("refs/remotes/origin", "refs/tags"),
+                    patterns=("refs/remotes/origin", "refs/tags", "refs/aq/provenance"),
                     home=home, deadline=deadline,
                 )
             mode = "incremental" if borrowable_objects is not None else "full"
@@ -2034,7 +2046,8 @@ class GitManager:
                     # the checkout (and so reading its worker-writable config).
                     ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
                      f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
-                     "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"],
+                     "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*",
+                     "+refs/aq/provenance/*:refs/aq/provenance/*"],
                     home=home,
                     repository_url=source_url,
                     token=token,
@@ -2051,7 +2064,8 @@ class GitManager:
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                  f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force", "--prune",
-                 str(imported), "+refs/heads/*:refs/remotes/origin/*"],
+                 str(imported), "+refs/heads/*:refs/remotes/origin/*",
+                 "+refs/aq/provenance/*:refs/aq/provenance/*"],
                 home=home,
                 deadline=deadline,
             )
@@ -2064,12 +2078,13 @@ class GitManager:
             )
             imported_refs = await self._run_isolated_import_git(
                 [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
-                 "refs/heads", "refs/tags"],
+                 "refs/heads", "refs/tags", "refs/aq/provenance"],
                 home=home, deadline=deadline,
             )
             destination_refs = await self._run_isolated_import_git(
                 [f"--git-dir={destination_git_dir}", "for-each-ref",
-                 "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags"],
+                 "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags",
+                 "refs/aq/provenance"],
                 home=home, deadline=deadline,
             )
             imported_map = dict(
@@ -2809,13 +2824,25 @@ class GitManager:
             await run(["switch", "-c", branch, remote if remote in refs else parent_sha],
                       cwd=workspace)
         for head in ([remote] if remote in refs else []) + [parent_sha]:
+            child_head = await run(["rev-parse", "HEAD"], cwd=workspace)
+            merge_head = await run(["rev-parse", head], cwd=workspace)
             try:
                 await run(["merge", "--no-edit", "--no-autostash", head], cwd=workspace)
-            except GitError:
+            except GitError as exc:
+                files = (await run(
+                    ["diff", "--name-only", "--diff-filter=U"], cwd=workspace,
+                )).splitlines()
                 try:
                     await run(["merge", "--abort"], cwd=workspace)
                 except GitError:
                     pass  # A precondition failure need not have started a merge.
+                if files:
+                    if (await run(["status", "--porcelain"], cwd=workspace)
+                            or await run(["rev-parse", "HEAD"], cwd=workspace) != child_head):
+                        raise GitError("child conflict abort could not preserve a clean checkout")
+                    raise ChildPreparationConflict(
+                        child_head, parent_sha, merge_head, files, str(exc),
+                    ) from exc
                 raise
         await run(["merge-base", "--is-ancestor", parent_sha, "HEAD"], cwd=workspace)
 
@@ -3158,14 +3185,14 @@ class GitManager:
         self,
         checkout_path: str,
         pr_url: str,
-        method: str = "squash",
+        method: str = "merge",
         *,
         expected_head_oid: str | None = None,
         expected_base_ref: str | None = None,
         repository: GitHubRepositoryBinding | None = None,
     ) -> dict:
         """Merge only the validated head and base through the shared client."""
-        if method not in ("squash", "merge", "rebase"):
+        if method not in ("merge", "squash", "rebase"):
             return {"success": False, "sha": None, "error": f"invalid method: {method}"}
         if expected_head_oid is not None:
             expected_head_oid = expected_head_oid.lower()
@@ -3448,9 +3475,9 @@ class GitManager:
 
     async def apush_new_refs(
         self, checkout_path: str, tips: Mapping[str, str], *, remote: str = "origin",
-        repository_url: str | None = None,
+        repository_url: str | None = None, qualified: bool = False,
     ) -> dict[str, RemoteRefResult]:
-        """Create absent heads at exact commits in one transfer; read each back.
+        """Create absent heads or qualified provenance refs; read each back.
 
         Every head is leased to absence, so no existing head ever moves. The
         push is not atomic, so the returned post-transfer read settles each
@@ -3461,6 +3488,8 @@ class GitManager:
         for branch, tip in tips.items():
             if not isinstance(tip, str) or _OID_RE.fullmatch(tip) is None:
                 raise GitError("invalid immutable push tip")
+            if qualified and not branch.startswith("refs/aq/provenance/"):
+                raise GitError("immutable qualified push must name a provenance ref")
             updates.append((tip, _validate_ref(branch), _ZERO_OID))
         if not updates:
             return {}
@@ -3470,10 +3499,12 @@ class GitManager:
                 checkout_path, remote, repository_url=repository_url
             )
             if destination_url is None:
+                refs = {branch: branch if qualified else f"refs/heads/{branch}"
+                        for _tip, branch, _old in updates}
                 result = await self.arun_git_result(
                     ["push", remote,
-                     *(f"--force-with-lease=refs/heads/{branch}:{old}" for _t, branch, old in updates),
-                     *(f"{tip}:refs/heads/{branch}" for tip, branch, _old in updates)],
+                     *(f"--force-with-lease={refs[branch]}:{old}" for _t, branch, old in updates),
+                     *(f"{tip}:{refs[branch]}" for tip, branch, _old in updates)],
                     cwd=checkout_path,
                 )
                 if result.returncode != 0:
@@ -3483,10 +3514,12 @@ class GitManager:
                     checkout_path, destination_url=destination_url, token=token,
                     updates=updates,
                     _deadline=asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS,
+                    _qualified_refs=qualified,
                 )
         except (GitError, GitHubAccessError, TimeoutError) as exc:
             failure = str(exc) or "git push failed"
-        observed = await self.als_remote_refs(
+        observe = self.als_remote_qualified_refs if qualified else self.als_remote_refs
+        observed = await observe(
             checkout_path, [branch for _tip, branch, _old in updates], remote=remote,
             repository_url=repository_url,
         )
@@ -3506,6 +3539,162 @@ class GitManager:
             destination_git_dir, repository=repository, token=token,
             oid=oid, destination_ref=destination_ref,
         )
+
+    async def als_remote_tag_refs(
+        self, checkout_path: str, *, repository_url: str | None = None,
+    ) -> dict[str, str]:
+        """List remote tag objects and peels using this repository's read credentials."""
+        destination, token = await self._apush_destination(
+            checkout_path, "origin", repository_url=repository_url,
+        )
+        if destination is None:
+            result = await self.arun_git_result(
+                ["ls-remote", "--tags", "origin"], cwd=checkout_path,
+            )
+            if result.returncode:
+                raise GitError(result.stderr or "remote tag inventory failed")
+            output = result.stdout
+        else:
+            with tempfile.TemporaryDirectory(prefix="aq-app-tags-") as temporary:
+                home = Path(temporary)
+                home.chmod(0o700)
+                output = (await self._arun_authenticated_git(
+                    ["ls-remote", "--tags", destination], home=home,
+                    repository_url=destination, token=token,
+                    deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
+                    budget_seconds=self._GIT_TIMEOUT,
+                )).decode("utf-8")
+        found = {}
+        for line in output.splitlines():
+            oid, separator, ref = line.partition("\t")
+            if (not separator or not ref.startswith("refs/tags/")
+                    or not is_valid_git_oid(oid) or ref in found):
+                raise GitError("remote returned malformed or duplicate tag identity")
+            _validate_ref(ref.removesuffix("^{}"))
+            found[ref] = oid
+        return found
+
+    async def als_remote_qualified_refs(
+        self, checkout_path: str, refs: Sequence[str], *, remote: str = "origin",
+        repository_url: str | None = None,
+    ) -> dict[str, RemoteRefResult]:
+        """Read exact branch/tag/provenance refs with repository read authority."""
+        for ref in refs:
+            plain = ref.removesuffix("^{}")
+            if not plain.startswith(("refs/heads/", "refs/tags/", "refs/aq/provenance/")):
+                raise GitError("qualified ref must be a branch, tag or provenance ref")
+            _validate_ref(plain)
+        try:
+            destination, token = await self._apush_destination(
+                checkout_path, remote, repository_url=repository_url,
+            )
+            if destination is None:
+                result = await self.arun_git_result(
+                    ["ls-remote", remote, *refs], cwd=checkout_path,
+                )
+                if result.returncode:
+                    raise GitError(result.stderr or "qualified remote read failed")
+                output = result.stdout
+            else:
+                with tempfile.TemporaryDirectory(prefix="aq-app-ref-") as temporary:
+                    home = Path(temporary)
+                    home.chmod(0o700)
+                    output = (await self._arun_authenticated_git(
+                        ["ls-remote", destination, *refs], home=home,
+                        repository_url=destination, token=token,
+                        deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
+                        budget_seconds=self._GIT_TIMEOUT,
+                    )).decode("ascii")
+            found = {ref: [] for ref in refs}
+            for line in output.splitlines():
+                oid, separator, ref = line.partition("\t")
+                if separator and ref in found:
+                    if not is_valid_git_oid(oid):
+                        raise GitError("remote returned malformed OID")
+                    found[ref].append(oid)
+            if any(len(values) > 1 for values in found.values()):
+                raise GitError("remote returned duplicate qualified refs")
+            return {ref: RemoteRefResult(
+                RemoteRefState.PRESENT if values else RemoteRefState.ABSENT,
+                oid=values[0] if values else None,
+            ) for ref, values in found.items()}
+        except (GitError, GitHubAccessError, TimeoutError, UnicodeDecodeError) as exc:
+            return {ref: RemoteRefResult(RemoteRefState.ERROR, error=str(exc)) for ref in refs}
+
+    async def afetch_repository_tag_oid(
+        self, destination_git_dir: str, *, repository: GitHubRepositoryBinding,
+        oid: str, destination_ref: str,
+    ) -> str:
+        """Import an exact annotated tag in isolation, preserving its object identity."""
+        token = await self._atoken_for_repository(repository)
+        return await self._afetch_exact_oid_with_app_auth_to_url(
+            destination_git_dir, destination_url=f"https://github.com/{repository.full_name}.git",
+            token=token, oid=oid, destination_ref=destination_ref, _object_type="tag",
+        )
+
+    async def apush_qualified_ref(
+        self, checkout_path: str, *, ref: str, tip_oid: str,
+        expected_old_oid: str, repository: GitHubRepositoryBinding | None = None,
+        authority_deadline: float | None = None,
+    ) -> str:
+        """Publish a commit or annotated tag by exact lease; empty old means create-only.
+
+        Branch updates must fast-forward. Existing tags are immutable, including
+        lightweight tags. An uncertain transfer is settled by authenticated read-back.
+        """
+        if not ref.startswith(("refs/heads/", "refs/tags/")):
+            raise GitError("qualified ref must be a branch or tag")
+        _validate_ref(ref)
+        if not is_valid_git_oid(tip_oid) or (
+            expected_old_oid not in ("", _ZERO_OID) and not is_valid_git_oid(expected_old_oid)
+        ):
+            raise GitError("qualified push requires exact OIDs")
+        old = "" if expected_old_oid == _ZERO_OID else expected_old_oid
+        kind = await self._arun(["cat-file", "-t", tip_oid], cwd=checkout_path)
+        if ref.startswith("refs/tags/"):
+            if old or kind != "tag":
+                raise GitError("tag publication requires an annotated object and an absent ref")
+        elif kind != "commit" or (old and not await self._apush_is_ancestor(
+            checkout_path, old, tip_oid,
+        )):
+            raise GitError("qualified branch push must fast-forward an exact commit")
+        deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+        if authority_deadline is not None:
+            if (isinstance(authority_deadline, bool)
+                    or not isinstance(authority_deadline, (int, float))
+                    or not math.isfinite(authority_deadline)):
+                raise GitError("invalid authenticated Git authority deadline")
+            deadline = min(deadline, authority_deadline)
+        try:
+            self._remaining_app_push_budget(deadline)
+        except TimeoutError as exc:
+            raise GitError("authenticated Git push authority deadline expired") from exc
+        url = f"https://github.com/{repository.full_name}.git" if repository else None
+        if repository:
+            destination, token = url, await self._atoken_for_repository(repository)
+        else:
+            destination, token = await self._apush_destination(checkout_path, "origin")
+        failure = None
+        try:
+            async with asyncio.timeout_at(deadline):
+                if destination is None:
+                    await self._arun(
+                        ["push", "origin", f"--force-with-lease={ref}:{old}", f"{tip_oid}:{ref}"],
+                        cwd=checkout_path,
+                    )
+                else:
+                    await self._apush_refs_with_app_auth_to_url(
+                        checkout_path, destination_url=destination, token=token,
+                        updates=((tip_oid, ref, old),), _deadline=deadline, _qualified_refs=True,
+                    )
+        except (GitError, TimeoutError) as exc:
+            failure = exc
+        observed = (await self.als_remote_qualified_refs(
+            checkout_path, [ref], repository_url=url,
+        ))[ref]
+        if observed.state is RemoteRefState.PRESENT and observed.oid == tip_oid:
+            return tip_oid
+        raise GitError("qualified transfer read-back failed") from failure
 
     async def apush_repository_oid(
         self, checkout_path: str, *, repository: GitHubRepositoryBinding,
@@ -3540,6 +3729,7 @@ class GitManager:
         *,
         event_bus: EventBus | None = None,
         project_id: str | None = None,
+        repository_url: str | None = None,
     ) -> None:
         """Push ``HEAD`` to ``origin/<branch>``, creating the branch if needed.
 
@@ -3552,10 +3742,13 @@ class GitManager:
         This is a non-delivery recovery primitive: stranded-work preservation
         must save the complete commit even when it contains daemon-owned
         paths. Automatic task delivery must use
-        :meth:`apush_validated_delivery` instead.
+        :meth:`apush_validated_delivery` instead.  ``repository_url``, when
+        given, refuses a checkout whose ``origin`` names another repository.
         """
         tip = await self._aresolve_delivery_tip(checkout_path, "HEAD")
-        remote_ref_before = await self._apush_oid(checkout_path, tip, branch)
+        remote_ref_before = await self._apush_oid(
+            checkout_path, tip, branch, repository_url=repository_url
+        )
         await self._aemit_push_event(
             checkout_path,
             branch,
@@ -4096,6 +4289,17 @@ class GitManager:
             raise GitError("invalid expected target OID")
         await self._arun(["update-ref", "-d", ref, expected_old_oid], cwd=checkout_path)
 
+    async def adelete_remote_tracking_ref_exact(
+        self, checkout_path: str, *, ref: str, expected_old_oid: str
+    ) -> None:
+        """Remove an audited origin observation only when its tip is unchanged."""
+        ref = _validate_ref(ref, field="ref")
+        if not ref.startswith("refs/remotes/origin/"):
+            raise GitError("cleanup tracking ref must belong to origin")
+        if _OID_RE.fullmatch(expected_old_oid) is None:
+            raise GitError("invalid expected target OID")
+        await self._arun(["update-ref", "-d", ref, expected_old_oid], cwd=checkout_path)
+
     async def afetch_exact_oid_with_app_auth(
         self,
         destination_git_dir: str,
@@ -4123,6 +4327,7 @@ class GitManager:
         oid: str,
         destination_ref: str,
         timeout_seconds: float | None = None,
+        _object_type: str = "commit",
     ) -> str:
         """Fetch an exact commit in isolation, then import only that OID locally.
 
@@ -4141,6 +4346,8 @@ class GitManager:
         """
         if _OID_RE.fullmatch(oid) is None:
             raise GitError("invalid exact fetch OID")
+        if _object_type not in {"commit", "tag"}:
+            raise GitError("invalid exact fetch object type")
         if not destination_ref.startswith("refs/aq/"):
             raise GitError("exact fetch destination must be daemon recovery namespace")
         destination_ref = "refs/" + _validate_ref(destination_ref.removeprefix("refs/"))
@@ -4216,11 +4423,16 @@ class GitManager:
                 imported, home=home, deadline=deadline
             )
             verified = await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "rev-parse", "refs/aq/exact^{commit}"],
+                [f"--git-dir={imported}", "rev-parse", "refs/aq/exact"],
                 home=home, deadline=deadline,
             )
             if verified.decode("ascii", errors="replace") != oid:
                 raise GitError("authenticated exact Git fetch returned another object")
+            kind = await self._run_isolated_import_git(
+                [f"--git-dir={imported}", "cat-file", "-t", oid], home=home, deadline=deadline,
+            )
+            if kind.decode("ascii") != _object_type:
+                raise GitError("authenticated exact Git fetch returned another object type")
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                  f"--git-dir={destination}", "fetch", "--no-tags", "--force",
@@ -4228,7 +4440,7 @@ class GitManager:
                 home=home, deadline=deadline,
             )
             local = await self._run_isolated_import_git(
-                [f"--git-dir={destination}", "rev-parse", f"{destination_ref}^{{commit}}"],
+                [f"--git-dir={destination}", "rev-parse", destination_ref],
                 home=home, deadline=deadline,
             )
             if local.decode("ascii", errors="replace") != oid:
@@ -4412,7 +4624,7 @@ class GitManager:
                 command.extend(git_url if arg == repository_url else arg for arg in args)
                 async with operation_timeout:
                     phase = "subprocess_spawn"
-                    process = await asyncio.create_subprocess_exec(
+                    process = await self._spawn_isolated_git(
                         self._APP_GIT_EXECUTABLE,
                         *command,
                         cwd=str(home),
@@ -4540,6 +4752,23 @@ class GitManager:
                 raise GitError("authenticated Git acquisition failed: " + "; ".join(reasons))
             return output
 
+    async def _spawn_isolated_git(self, *args: str, **kwargs: Any) -> asyncio.subprocess.Process:
+        """Retain the process handle if cancellation interrupts subprocess startup."""
+        spawn = asyncio.create_task(asyncio.create_subprocess_exec(*args, **kwargs))
+        try:
+            return await asyncio.shield(spawn)
+        except asyncio.CancelledError:
+            # The child can already be running while asyncio connects its pipes.
+            # Finish acquiring its handle before closing inherited credential FDs
+            # or returning cancellation to the operation's caller.
+            process = None
+            # Preserve cancellation if startup itself failed.
+            with suppress(Exception):
+                process = await asyncio.shield(spawn)
+            if process is not None:
+                await self._kill_app_git_group(process)
+            raise
+
     @staticmethod
     async def _kill_app_git_group(process: asyncio.subprocess.Process) -> None:
         """Terminate and reap the isolated privileged process group."""
@@ -4628,7 +4857,7 @@ class GitManager:
             async with timeout:
                 if deadline is not None:
                     self._remaining_app_push_budget(deadline)
-                process = await asyncio.create_subprocess_exec(
+                process = await self._spawn_isolated_git(
                     "/usr/bin/git",
                     *args,
                     cwd=str(home),
@@ -4707,6 +4936,7 @@ class GitManager:
         token: str | None,
         updates: Sequence[tuple[str | None, str, str]],
         _deadline: float | None = None,
+        _qualified_refs: bool = False,
     ) -> None:
         """One isolated transfer of several ``(tip, branch, expected_old)`` updates.
 
@@ -4723,8 +4953,14 @@ class GitManager:
         validated: list[tuple[str | None, str, str]] = []
         for tip_oid, branch, expected_old_oid in updates:
             branch = _validate_ref(branch)
+            if _qualified_refs and not branch.startswith(
+                ("refs/heads/", "refs/tags/", "refs/aq/provenance/")
+            ):
+                raise GitError("qualified ref must be a branch, tag or provenance ref")
             for label, oid in (("expected target", expected_old_oid),):
-                if not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None:
+                if not (_qualified_refs and oid == "") and (
+                    not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None
+                ):
                     raise GitError(f"invalid {label} OID")
             if tip_oid is not None and (
                 not isinstance(tip_oid, str) or _OID_RE.fullmatch(tip_oid) is None
@@ -4770,13 +5006,18 @@ class GitManager:
             )
             if imports:
                 # One import carries every tip's graph; shared history is
-                # copied once rather than once per head.
+                # copied once rather than once per head.  Git 2.47+ ends a
+                # fetch with a detached ``maintenance run --auto``: it calls
+                # setsid, so killpg cannot reach it, and until it closes its
+                # inherited stdout it holds this command's pipe open.
                 await self._run_isolated_import_git(
                     [
                         "-c",
                         "protocol.allow=never",
                         "-c",
                         "protocol.file.allow=always",
+                        "-c",
+                        "maintenance.auto=false",
                         f"--git-dir={repository}",
                         "fetch",
                         "--no-tags",
@@ -4789,12 +5030,20 @@ class GitManager:
                 )
                 for tip_oid, ref in imports:
                     imported = await self._run_isolated_import_git(
-                        [f"--git-dir={repository}", "rev-parse", ref + "^{commit}"],
+                        [f"--git-dir={repository}", "rev-parse", ref],
                         home=home,
                         deadline=_deadline,
                     )
                     if imported.decode("ascii", errors="replace") != tip_oid:
                         raise GitError("authenticated Git push preparation failed")
+                    target = next(branch for tip, branch, _old in validated if tip == tip_oid)
+                    kind = await self._run_isolated_import_git(
+                        [f"--git-dir={repository}", "cat-file", "-t", tip_oid],
+                        home=home, deadline=_deadline,
+                    )
+                    expected_kind = "tag" if _qualified_refs and target.startswith("refs/tags/") else "commit"
+                    if kind.decode("ascii") != expected_kind:
+                        raise GitError("authenticated Git push preparation has wrong object type")
 
             topology = (
                 None
@@ -4863,13 +5112,14 @@ class GitManager:
                     "--no-verify",
                     destination_url,
                     *(
-                        f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}"
+                        f"--force-with-lease={branch if _qualified_refs else 'refs/heads/' + branch}:"
+                        f"{expected_old_oid}"
                         for _tip, branch, expected_old_oid in validated
                     ),
                     *(
-                        f"{tip_oid}:refs/heads/{branch}"
+                        f"{tip_oid}:{branch if _qualified_refs else 'refs/heads/' + branch}"
                         if tip_oid is not None
-                        else f":refs/heads/{branch}"
+                        else f":{branch if _qualified_refs else 'refs/heads/' + branch}"
                         for tip_oid, branch, _old in validated
                     ),
                 ]
@@ -4877,7 +5127,7 @@ class GitManager:
             try:
                 self._remaining_app_push_budget(_deadline)
                 async with asyncio.timeout_at(_deadline):
-                    process = await asyncio.create_subprocess_exec(
+                    process = await self._spawn_isolated_git(
                         self._APP_GIT_EXECUTABLE,
                         *arguments,
                         cwd=str(home),

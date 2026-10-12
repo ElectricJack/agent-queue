@@ -1,14 +1,14 @@
 """Open the pull request a completed train root still lacks.
 
-The train seats a root only once it has a pull request and an approved review
-of its exact head (``eligible_root_page_on``).  Two paths open that PR when
-the root completes -- ``ParentEpisodeRecords.complete_parent`` for an epic and the
-session close for a childless root -- and both are best-effort: a GitHub
+The train freezes a root only with an open exact-head PR, green PR checks and
+the boundary's required human reviews. Two paths open that PR when the root
+completes: ``EpicCompletions.settle`` for an epic and session close for a
+childless root. Both are best-effort: a GitHub
 failure must not undo a committed completion.
 
 :class:`RootPullRequestReconciler` is their retry.  Every interval it pages
-through completed train roots that have no PR but whose checkpoint names a
-finished head, and opens it through ``EpicPullRequestService``.  A root it
+through completed train roots that have no PR and a collected completion or
+legacy finished checkpoint, and opens it through ``EpicPullRequestService``. A root it
 cannot open (GitHub unavailable, head already on the default branch) is
 deferred with exponential backoff, so it costs one read per backoff window.
 
@@ -36,10 +36,12 @@ from src.database.tables import (
     projects,
     repos,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
     task_integration_checkpoints,
     tasks,
 )
+from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
 from src.logging_config import log_handled
@@ -70,7 +72,7 @@ def _has_children(task_id_column):
 
 
 def pr_ready_roots_statement(*, after_id: str | None, limit: int):
-    """Completed train roots with no PR whose checkpoint names a finished head.
+    """Completed train roots with no PR and a completion or finished checkpoint.
 
     A childless root is ready once its leaf checkpoint moved past its origin
     base; an epic once its aggregate verification completed.  A root already
@@ -106,7 +108,7 @@ def pr_ready_roots_statement(*, after_id: str | None, limit: int):
                 repos,
                 and_(repos.c.id == tasks.c.repo_id, repos.c.project_id == tasks.c.project_id),
             )
-            .join(
+            .outerjoin(
                 checkpoint,
                 and_(
                     checkpoint.c.task_id == tasks.c.id,
@@ -130,7 +132,11 @@ def pr_ready_roots_statement(*, after_id: str | None, limit: int):
             tasks.c.status == TaskStatus.COMPLETED.value,
             or_(tasks.c.pr_url.is_(None), func.trim(tasks.c.pr_url) == ""),
             tasks.c.branch_name.is_not(None),
-            or_(leaf_ready, parent_ready),
+            or_(leaf_ready, parent_ready, exists(select(task_completion_records.c.id).where(
+                task_completion_records.c.task_id == tasks.c.id,
+                task_completion_records.c.id.like("epic-%"),
+                task_completion_records.c.outcome == "pass",
+            ))),
             ~delivered,
         )
         .order_by(tasks.c.id)
@@ -512,7 +518,45 @@ class EpicPullRequestService:
         self._git = git_manager
         self._clock = clock
 
-    async def open_for_epic(self, epic_id: str) -> dict[str, Any]:
+    async def open_for_epic(self, epic_id: str, *,
+                            expected_head_sha: str | None = None) -> dict[str, Any]:
+        result = await self._open_for_epic(epic_id, expected_head_sha=expected_head_sha)
+        if result["outcome"] != "already_open":
+            return result
+        # A retained URL is descriptive state, not proof the PR remains open.
+        # Read GitHub outside the transaction and surface a recoverable blocker.
+        task = await self._db.get_task(epic_id)
+        repo = await self._db.get_repo(task.repo_id)
+        binding = await self._git.bind_github_repository(repo.url)
+        GitHubAccess.validate_pr_url(binding, result["pr_url"])
+        pull = await self._git._github_client(binding).pull_request(result["pr_url"])
+        if pull.get("state") == "closed":
+            return {**result, "outcome": "pr_closed",
+                    "reason": "stored pull request is closed; reopen it before root admission"}
+        if pull.get("state") != "open":
+            raise ValueError("GitHub pull request state is malformed")
+        return result
+
+    async def _open_for_epic(self, epic_id: str, *,
+                             expected_head_sha: str | None = None) -> dict[str, Any]:
+        if expected_head_sha is None and getattr(self._db, "_delivery_observer", None) is not None:
+            # The retry locates the source from the immutable completion ref,
+            # rather than treating a descriptive completion row as code truth.
+            from src.integration.delivery_truth import load_delivery_requests
+            from src.integration.train import TrainTarget
+            from src.integration.train_sources import project_snapshot
+
+            task = await self._db.get_task(epic_id)
+            repo = await self._db.get_repo(task.repo_id) if task and task.repo_id else None
+            if repo:
+                ref = "refs/heads/" + repo.default_branch.removeprefix("refs/heads/")
+                snapshot = await project_snapshot(self._db, TrainTarget(
+                    task.project_id, repo.id, ref))
+                requests = await load_delivery_requests(self._db, [epic_id],
+                    repository_id=repo.id, target_ref=ref, reduced=True)
+                if snapshot is not None and epic_id in requests:
+                    proof = await snapshot.is_delivered(requests[epic_id])
+                    expected_head_sha = proof.source_oid
         async with self._db.immediate() as conn:
             epic = (
                 await conn.execute(select(tasks).where(tasks.c.id == epic_id))
@@ -552,7 +596,11 @@ class EpicPullRequestService:
                 [*active_children, *archived_children], key=lambda child: child["id"]
             )
             checkpoint, origin = await self._source_rows_on(conn, epic)
-            if not children:
+            if expected_head_sha is not None:
+                if not _OID.fullmatch(expected_head_sha):
+                    return {"outcome": "invalid_head", "epic_id": epic_id}
+                head = expected_head_sha
+            elif not children:
                 source = leaf_root_source(
                     checkpoint, origin, branch=epic["branch_name"], repo_id=epic["repo_id"]
                 )
@@ -608,6 +656,12 @@ class EpicPullRequestService:
             )
 
         binding = await self._git.bind_github_repository(repository["url"])
+        if expected_head_sha is not None:
+            remote_head = await self._git.aremote_branch_head(
+                repository=binding, branch=epic["branch_name"].removeprefix("refs/heads/"))
+            if remote_head != expected_head_sha:
+                return {"outcome": "head_changed", "epic_id": epic_id,
+                        "head_sha": expected_head_sha, "remote_head_sha": remote_head}
         if head is not None:
             # A head already on the default branch (a fix-forward merged by
             # hand) has nothing to propose; GitHub would refuse the PR anyway.

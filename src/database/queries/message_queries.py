@@ -12,8 +12,9 @@ House rules observed here:
   ``tasks.is_plan_subtask``.
 - :meth:`MessageQueriesMixin.mark_delivered` is a compare-and-set: it only
   matches rows whose ``delivered_at IS NULL``.  That single predicate is the
-  idempotency guard against double delivery when a nudge and a
-  prompt-boundary inject race (spec §4, §13).
+  idempotency guard against duplicate delivery receipts when a recipient
+  read and an inbox/prime inject race (spec §4, §13). Notification reservation
+  has its own compare-and-set and leaves the body pending.
 """
 
 from __future__ import annotations
@@ -21,9 +22,10 @@ from __future__ import annotations
 import time
 import uuid
 
-from sqlalchemy import and_, insert, or_, select, update
+from sqlalchemy import and_, case, func, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import messages
+from src.database.tables import messages, projects
 from src.models import Message
 
 
@@ -55,11 +57,67 @@ def _row_to_message(row) -> Message:
         body_kind=row["body_kind"],
         pane_open=row["pane_open"],
         created_seq=row["created_seq"],
+        last_notified_at=row["last_notified_at"],
+        notification_attempts=row["notification_attempts"],
     )
 
 
 class MessageQueriesMixin:
     """Query mixin for ``messages``.  Expects ``self._engine``."""
+
+    async def _supervisor_recipient(self, conn, to_kind, to_id, project_id):
+        """Resolve opt-in routing without changing the sender's project context."""
+        recipient_project = None
+        if to_kind == "profile" and to_id == "supervisor":
+            recipient_project = project_id
+        elif to_kind == "session":
+            for prefix in ("supervisor-", "n-supervisor--"):
+                if to_id.startswith(prefix):
+                    suffix = to_id[len(prefix):]
+                    if suffix != "global":
+                        recipient_project = suffix
+                    break
+        if recipient_project:
+            enabled = (await conn.execute(select(projects.c.supervisor_enabled).where(
+                projects.c.id == recipient_project,
+            ))).scalar_one_or_none()
+            if enabled is False:
+                return "session", "supervisor-global"
+        return to_kind, to_id
+
+    async def redirect_disabled_supervisor_messages(self, *, conn=None) -> int:
+        """Route unread event notices and old backlog to the global supervisor.
+
+        Internal producers can insert notices in their own transaction. Delivery
+        and inbox commands apply this same policy before consuming those rows.
+        Delivered but unread messages become pending again, so an abandoned
+        supervisor turn cannot swallow a worker's report.
+        """
+        disabled_recipient = select(projects.c.id).where(
+            projects.c.supervisor_enabled.is_(False),
+            or_(
+                and_(
+                    messages.c.to_kind == "session",
+                    projects.c.id != "global",
+                    messages.c.to_id.in_([
+                        "supervisor-" + projects.c.id,
+                        "n-supervisor--" + projects.c.id,
+                    ]),
+                ),
+                and_(
+                    messages.c.to_kind == "profile", messages.c.to_id == "supervisor",
+                    messages.c.project_id == projects.c.id,
+                ),
+            ),
+        ).exists()
+        stmt = update(messages).where(
+            messages.c.read_at.is_(None), messages.c.archived_at.is_(None),
+            disabled_recipient,
+        ).values(to_kind="session", to_id="supervisor-global", delivered_at=None, via=None)
+        if conn is not None:
+            return (await conn.execute(stmt)).rowcount
+        async with self._engine.begin() as owned:
+            return (await owned.execute(stmt)).rowcount
 
     async def create_message(
         self,
@@ -97,6 +155,9 @@ class MessageQueriesMixin:
             pane_open=pane_open,
         )
         async with self._engine.begin() as conn:
+            msg.to_kind, msg.to_id = await self._supervisor_recipient(
+                conn, msg.to_kind, msg.to_id, msg.project_id,
+            )
             result = await conn.execute(
                 insert(messages).values(
                     id=msg.id,
@@ -136,11 +197,16 @@ class MessageQueriesMixin:
         to_id: str,
         *,
         limit: int = 50,
+        notification_at: float | None = None,
+        notification_delays: tuple[float, ...] = (),
     ) -> list[Message]:
         """Undelivered, unarchived messages for one recipient.
 
         Ordered by ``priority`` ascending (lower delivers first) then
         ``created_at`` ascending — the delivery order the engine consumes.
+
+        The notification caller supplies its retry delays. Apply eligibility
+        before the limit so unread mail in backoff cannot starve newer mail.
         """
         stmt = (
             select(messages)
@@ -150,6 +216,59 @@ class MessageQueriesMixin:
                     messages.c.to_id == to_id,
                     messages.c.delivered_at.is_(None),
                     messages.c.archived_at.is_(None),
+                )
+            )
+            .order_by(messages.c.priority.asc(), messages.c.created_at.asc())
+            .limit(limit)
+        )
+        if notification_at is not None and notification_delays:
+            delay = case(
+                *((messages.c.notification_attempts <= index + 1, value)
+                  for index, value in enumerate(notification_delays[:-1])),
+                else_=notification_delays[-1],
+            )
+            stmt = stmt.where(or_(
+                messages.c.body_kind == "schedule_prompt",
+                messages.c.last_notified_at.is_(None),
+                messages.c.last_notified_at + delay <= notification_at,
+            ))
+        async with self._engine.begin() as conn:
+            result = await conn.execute(stmt)
+            return [_row_to_message(r) for r in result.mappings().fetchall()]
+
+    async def get_consumed_messages(
+        self,
+        to_kind: str,
+        to_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[Message]:
+        """Rows this recipient already consumed — the re-read path.
+
+        :meth:`get_pending_messages` is the delivery queue: it answers "what
+        has not been handed over yet".  A worker whose inject consumed
+        delivery before its own output rendered (a crashed harness parser, a
+        truncated pane, a killed turn) has a pending queue of zero and no way
+        back to the bodies it already burned.  This is that way back.
+
+        A row counts as consumed once ``delivered_at`` or ``archived_at`` is
+        set.  Archived rows are included deliberately: ``archive_after_inject``
+        sweeps them in the same pass that marks them delivered, so those are
+        precisely the bodies a crashed inject hides from every other read.
+
+        Ordered like the pending queue (``priority`` then ``created_at``) so a
+        re-read reads in the same order the worker would have seen them.
+        """
+        stmt = (
+            select(messages)
+            .where(
+                and_(
+                    messages.c.to_kind == to_kind,
+                    messages.c.to_id == to_id,
+                    or_(
+                        messages.c.delivered_at.is_not(None),
+                        messages.c.archived_at.is_not(None),
+                    ),
                 )
             )
             .order_by(messages.c.priority.asc(), messages.c.created_at.asc())
@@ -216,9 +335,79 @@ class MessageQueriesMixin:
                         messages.c.read_at.is_(None),
                     )
                 )
-                .values(read_at=time.time())
+                .values(
+                    read_at=time.time(),
+                    delivered_at=func.coalesce(messages.c.delivered_at, time.time()),
+                )
             )
             return result.rowcount > 0
+
+    async def claim_message_notification(
+        self, message_id: str, *, now: float, retry_delay: float,
+    ) -> bool:
+        """Reserve an attempt before touching the terminal, without consuming mail."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(update(messages).where(
+                messages.c.id == message_id,
+                messages.c.delivered_at.is_(None),
+                messages.c.read_at.is_(None),
+                messages.c.archived_at.is_(None),
+                or_(messages.c.last_notified_at.is_(None),
+                    messages.c.last_notified_at <= now - retry_delay),
+            ).values(
+                last_notified_at=now,
+                notification_attempts=messages.c.notification_attempts + 1,
+                via="nudge",
+            ))
+            return result.rowcount > 0
+
+    async def escalate_unread_message(self, message_id: str) -> Message | None:
+        """Copy an unanswered notification to global supervision exactly once.
+
+        Lock the source against a racing acknowledgment; deterministic alert IDs
+        make retries and daemon restarts idempotent. Never consume the source.
+        """
+        async with self._engine.begin() as conn:
+            source = (await conn.execute(select(messages).where(
+                messages.c.id == message_id,
+                messages.c.delivered_at.is_(None),
+                messages.c.read_at.is_(None),
+                messages.c.archived_at.is_(None),
+                messages.c.notification_attempts >= 3,
+            ).with_for_update())).mappings().first()
+            if source is None or source["body_kind"] == "delivery_alert":
+                return None
+            result = await conn.execute(pg_insert(messages).values(
+                id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, f'aq:delivery-alert:{message_id}').hex}",
+                project_id=source["project_id"],
+                from_kind="system", from_id="delivery-engine",
+                to_kind="session", to_id="supervisor-global", priority=source["priority"],
+                body_kind="delivery_alert", created_at=time.time(),
+                subject=f"Unread message: {source['subject'] or message_id}",
+                body=(f"Message {message_id} to {source['to_kind']}:{source['to_id']} "
+                      f"has not been read after {source['notification_attempts']} notification "
+                      "attempts. Inspect the recipient's authentication and delivery path. "
+                      "The original remains pending. Original body:\n\n" + source["body"]),
+            ).on_conflict_do_nothing(index_elements=[messages.c.id]).returning(messages))
+            row = result.mappings().first()
+            return _row_to_message(row) if row else None
+
+    async def get_collaboration_read_messages(
+        self, thread_id: str, *, project_id: str, task_id: str, message_ids: list[str],
+    ) -> list[Message]:
+        """Recipient copies whose bodies or thread notices were returned by a read."""
+        copies = [or_(messages.c.id == key, messages.c.id.startswith(key + ":"))
+                  for key in message_ids]
+        visible = messages.c.body_kind.in_(("collaboration_invite", "collaboration_closed"))
+        if copies:
+            visible = or_(visible, and_(messages.c.body_kind == "collaboration", or_(*copies)))
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(select(messages).where(
+                messages.c.project_id == project_id, messages.c.thread_id == thread_id,
+                messages.c.to_kind == "task", messages.c.to_id == task_id,
+                messages.c.read_at.is_(None), messages.c.archived_at.is_(None), visible,
+            ))).mappings().all()
+            return [_row_to_message(row) for row in rows]
 
     async def archive_messages(self, message_ids: list[str]) -> int:
         """Archive the given messages.  Returns the number newly archived.
@@ -279,6 +468,7 @@ class MessageQueriesMixin:
         include_archived: bool = False,
         since: float | None = None,
         limit: int = 100,
+        session_addresses: list[str] | None = None,
     ) -> list[Message]:
         """List messages newest-first; system_only selects NULL-project records.
 
@@ -303,6 +493,12 @@ class MessageQueriesMixin:
             conditions.append(messages.c.archived_at.is_(None))
         if since is not None:
             conditions.append(messages.c.created_at > since)
+
+        if session_addresses is not None:
+            conditions.append(or_(
+                and_(messages.c.to_kind == "session", messages.c.to_id.in_(session_addresses)),
+                and_(messages.c.from_kind == "session", messages.c.from_id.in_(session_addresses)),
+            ))
 
         stmt = select(messages)
         if conditions:

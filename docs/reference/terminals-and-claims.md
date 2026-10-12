@@ -19,7 +19,7 @@ interchangeable.
 | **Transcript stream** | SSE, `GET /api/sessions/{id}/stream` | the harness's normalized conversation, replayed then tailed | one file tail per connection |
 | **Live pane** | SSE, `GET /api/sessions/{id}/pane` | a full `capture-pane` screen, redrawn on each frame | one poll loop per *watched session*, shared across viewers |
 | **Interactive terminal** | WebSocket, `/ws/terminal/{id}` | raw terminal bytes, and typing | one disposable attach client per connection |
-| **Phone input** | WebSocket, `/ws/terminal/{id}/input` | typing only; the phone watches the live pane | a few tmux commands per write, no client |
+| **Input only** | WebSocket, `/ws/terminal/{id}/input` | typing only, no output; kept for dashboard builds from before phones attached | a few tmux commands per write, no client |
 
 Read-only inspection from the command line uses the first two:
 
@@ -48,7 +48,7 @@ nobody is watching.
 | `sessions.pane_stream_lines` | `60` | lines captured per frame |
 
 Each frame is a *whole screen*, not a delta, so the client replaces rather than
-appends ([`usePaneStream.ts`](../../dashboard/src/ws/usePaneStream.ts)):
+appends:
 
 ```text
 {source:"pane", type:"screen",  screen, seq, ts}
@@ -56,10 +56,9 @@ appends ([`usePaneStream.ts`](../../dashboard/src/ws/usePaneStream.ts)):
 {source:"pane", type:"error",   message, seq, ts}
 ```
 
-Colour comes from tmux's own `capture-pane -e` (SGR sequences only) and is
-rendered directly — tmux has already done the terminal emulation, so
-[`LivePaneConsole`](../../dashboard/src/components/LivePaneConsole.tsx) needs no
-emulator and keeps no scrollback.
+Colour comes from tmux's own `capture-pane -e` (SGR sequences only). This
+endpoint remains for external clients and older dashboard builds. Current
+dashboard terminal panes all use the interactive terminal below.
 
 ### The interactive terminal
 
@@ -110,35 +109,61 @@ probe explains opaque handshake failures without attaching a PTY. Watch-only
 pane streams also recover from a CLOSED EventSource and retain the last screen.
 See the [reconnection contract](../specs/terminal-reconnection.md).
 
-### Typing from a phone
+### From a phone
 
-A phone never attaches. Agent windows run with `window-size latest`, so any
-attached client, even one flagged `ignore-size` (tmux ignores that flag while it
-is the only client, and agents run detached), sizes the agent's real window to
-the phone and leaves it there. Below 768 px, and on every focus route, the
-dashboard watches the live pane
-([`WatchTerminal.tsx`](../../dashboard/src/components/WatchTerminal.tsx)). It
-opens **Watch only** on every visit. **Type** adds an input bar and a key strip
-(Esc, Tab, Ctrl-C, ↑, ↓, Enter, 1–3) and opens `/ws/terminal/{id}/input`.
+There is one terminal component in the dashboard:
+[`InteractiveTerminal.tsx`](../../dashboard/src/components/InteractiveTerminal.tsx).
+The host shell, agent and pool windows, task terminal links, session detail,
+focus session and session-peek pane all render it at every viewport. It owns
+xterm, the host shell's options and palette (`terminalSetup.ts`), fit, socket,
+input handling and touch scrolling. There is no phone-specific renderer or
+chrome. Type focuses xterm's textarea; Enter and Ctrl+C are in its details.
 
-That socket is the same handler with `input_only`, behind every gate in the
-table above; the dashboard server's loopback-only rule covers the whole
-`/ws/terminal/` prefix. The differences are:
+Columns and rows fit the terminal area using the host shell's FitAddon and
+fixed 12 px font. Rotation and visualViewport keyboard changes refit it and
+send resize frames to the session's PTY. The keyboard's bottom boundary is
+measured from the terminal area's top, including page and pane headers.
+Below 768 px, an attach adds two options that wide attaches omit:
 
-* The handshake takes no size, and the ready frame carries `mode: "input"`.
-* There is no output and no `ack`, and a `resize` control is refused (`4400`).
-* The client ([`src/sessions/terminal_input.py`](../../src/sessions/terminal_input.py))
-  creates no tmux client. Before every write it re-checks the instance-token
-  fence and leaves copy mode. Keystrokes go through `send-keys -H` (a single
-  arrow key by name, so tmux encodes it for the pane's cursor-key mode). A
-  bracketed paste (`ESC[200~ … ESC[201~`, 64 KiB) goes through a unique buffer
-  and `paste-buffer -p`: tmux brackets it only if the app asked for bracketed
-  paste, and turns LF into CR.
+* `restore_size=1`. Agent windows run with `window-size latest`, so an attach
+  sizes the agent's real window, and tmux keeps the last size once every client
+  has left. Before attaching, the client records the window's size and
+  `window-size` policy in the session option `@aq_restore_size`, followed by
+  the client pids of the phones attached under that record. A record that
+  names an attached phone is kept, so a second phone does not record the
+  first one's size. When the last client detaches, it resizes the window back,
+  restores the policy and unsets the option. A phone that leaves with only
+  desktop viewers still attached unsets it: they keep the window at their own
+  size.
+* `history=N` (0–10 000; the phone sends 2 000). After the generation checks,
+  up to N lines of the pane's history (`capture-pane -e -J`, at most 4 MiB) go
+  out ahead of the attach output, under the same output credit, framed so they
+  land in the viewer's scrollback. The client also appends
+  `xterm-256color:indn@` to the server's `terminal-overrides` (once), so tmux
+  scrolls with line feeds and each scrolled line reaches the viewer's
+  scrollback. `CSI n S`, which tmux would otherwise send, discards those lines.
 
-The browser sends a line and its Enter as two writes about 150 ms apart,
-because a TUI reads a burst that ends in CR as a paste. A multi-line entry goes
-as one bracketed paste. Design:
-[mobile interactive terminal](../superpowers/specs/2026-09-26-mobile-interactive-terminal-design.md).
+Any other value for either option is refused with `4400`. The compact viewer
+keeps tmux out of the alternate screen (which has no scrollback). A touch drag
+scrolls the terminal's buffer with momentum, and a tap focuses xterm's own
+textarea. Input and paste follow the host shell's attach path. Refused viewers
+see the connection error with input disabled. Ended sessions link to their
+transcripts. There is no watch/type mode or separate pane-stream fallback.
+Design: [shared terminal](../superpowers/specs/2026-10-08-mobile-terminal-design.md).
+The [evidence bundle](../reports/mobile-terminal-host-shell-parity-2026-10-09/README.md)
+includes Playwright comparisons and phone screenshots.
+
+`/ws/terminal/{id}/input` is still served, for dashboard builds from before
+phones attached. It is the same handler with `input_only`, behind every gate in
+the table above (the dashboard server's loopback-only rule covers the whole
+`/ws/terminal/` prefix). The handshake takes no size, the ready frame carries
+`mode: "input"`, there is no output and no `ack`, and a `resize` is refused
+(`4400`). Its client
+([`src/sessions/terminal_input.py`](../../src/sessions/terminal_input.py))
+creates no tmux client. Before every write it re-checks the instance-token
+fence and leaves copy mode. It types through `send-keys -H` and puts bracketed
+pastes through `paste-buffer -p`
+([earlier design](../superpowers/specs/2026-09-26-mobile-interactive-terminal-design.md)).
 
 Starting a terminal for an agent that has no live session is a separate,
 explicit act, and requires global admin:

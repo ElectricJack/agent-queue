@@ -104,6 +104,14 @@ retain their existing Git behavior and never receive a GitHub App token.
 
 `GH_TOKEN` overriding stored credentials is documented by
 [GitHub CLI](https://cli.github.com/manual/gh_help_environment).
+LOCAL cutover and promotion remote validation explicitly use a separate operator
+login to read repository ruleset detail when GitHub hides `bypass_actors` from the
+App's read permission. This reader issues only repository-bound ruleset GETs.
+It supplements the actor list only when the App and operator observations match
+on ruleset id and every public policy field; the App's own bypass result is kept.
+Hidden or null actor lists cannot prove empty bypass or form a reversible cutover
+baseline. Service and worker reads retain the configured credential authority.
+
 AQ does not run `gh auth login`, `logout`, `setup-git` or `auth token` as part
 of normal operation, and does not persist an App token in `hosts.yml`.
 
@@ -289,6 +297,23 @@ them; failed launched calls do. Endpoint cardinality and per-second buckets are
 bounded, with excess endpoints aggregated under `other endpoints` and excess
 CLI operations under `gh other commands`. A non-API `gh` invocation may
 make several HTTP requests; its counter measures invocations only.
+
+Ordinary task PR creation reuses an exact existing request. If the sole matching
+request was closed without merging, reopen that same request after validating
+its repository, base, head branch and published head SHA. The worker command's
+existing held-task branch authorization still applies. Retaining the request
+preserves its closure discussion and history. Attempt the reopen once and
+reconcile its state before reporting success or retrying on a later invocation;
+an uncertain reopen never triggers a second write in the same invocation.
+Conflicting identities or multiple matching requests remain refusals.
+
+Delivery-proof PR cleanup must leave unfinished tasks' requests open, even when
+their current head is already content-equivalent to the default branch. Match
+tasks by PR URL and by canonical branch in the designated repository, including
+tasks that have not yet saved their PR URL. Completed or failed tasks with an
+attached session, assigned agent or locked workspace also retain their PR.
+Check this during preview and again under the project and task locks before any
+cleanup comment or close, so reopening a task invalidates an earlier preview.
 
 ## 7. Shared `gh` execution contract
 

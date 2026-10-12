@@ -28,7 +28,7 @@ from src.database.tables import (
 )
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
-from src.integration.subjects import (
+from src.integration.runtime_contracts import (
     AdmissionPredicate,
     Decision,
     EjectArgs,
@@ -463,7 +463,7 @@ class RootEngineOwnership:
 
 def root_engine_guard(
     resource: str, *, outcome="wait", result_model=None, refusal=None, publisher=False,
-    aborted_pr_cleanup=False,
+    aborted_pr_cleanup=False, promoted_train_cleanup=False,
 ):
     """Require an active root visit for shared mutation primitives.
 
@@ -513,6 +513,11 @@ def root_engine_guard(
             # owner must not strand this independent, immutable cleanup work.
             if (aborted_pr_cleanup and batch is not None and batch["lifecycle"] == "aborted"
                     and bound.get("kind", "audit_pr") == "audit_pr"):
+                return await method(self, *args, **kwargs)
+            # Train cleanup uses immutable inputs and its own per-ref leases,
+            # without a legacy root subject or promotion intent.
+            if (promoted_train_cleanup and batch is not None
+                    and batch["target_ref"] is not None and batch["lifecycle"] == "promoted"):
                 return await method(self, *args, **kwargs)
             try:
                 async with RootEngineOwnership(db).operation(repository_id, publisher=publisher):

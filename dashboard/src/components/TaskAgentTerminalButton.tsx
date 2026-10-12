@@ -22,7 +22,7 @@ export default function TaskAgentTerminalButton({ task, onOpen }: {
   );
   if (!agent || isError) return null;
 
-  // Focus routes never attach: the link opens the phone terminal, watch only until Type.
+  // On focus routes the link opens the phone terminal.
   if (mode === "watch") {
     return (
       <Link

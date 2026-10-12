@@ -62,3 +62,25 @@ async def test_get_proposal_returns_shape(db, client_factory):
     assert body["status"] == "ready"
     assert body["tasks"] == payload["tasks"]
     assert body["edges"] == []
+
+
+async def test_get_proposal_exposes_complete_review_and_receipt(db, client_factory):
+    payload = {
+        "edits": [{"task_id": "existing", "action": "pause"}],
+        "remove_edges": [{"from": "existing", "to": "old", "dep_type": "blocks"}],
+        "comments": [{"task_id": "existing", "body": "Reviewed finding"}],
+        "diff": {"tasks": [{"task_id": "existing", "before": {"status": "READY"},
+                            "after": {"status": "PAUSED"}}]},
+        "receipt": {"task_ids": [], "edited_task_ids": ["existing"]},
+        "expected": {"versions": {"existing": "12345"}},
+    }
+    prop_id = await proposal_queries.insert_proposal(
+        db, project_id="p1", source="change:test", payload=payload, status="committed",
+    )
+    async with client_factory() as client:
+        response = await client.get(f"/api/proposals/{prop_id}")
+    assert response.status_code == 200
+    body = response.json()
+    for key in ("edits", "remove_edges", "comments", "diff", "receipt"):
+        assert body[key] == payload[key]
+    assert "expected" not in body

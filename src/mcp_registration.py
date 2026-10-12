@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXCLUDED_COMMANDS = {
+    "reconcile_agent_cron",
+    "cron_delivery_begin",
+    "cron_delivery_finish",
     # Trusted daemon facts carry a SourceCIObservation, never agent-authored JSON.
     "observe_integration_source_ci",
     # Parent reconciler visit dispatch.  The authority is the process-bound
@@ -363,6 +366,7 @@ def register_command_tools(
         """Create a closure that delegates to CommandHandler.execute()."""
 
         async def handler(**kwargs):
+            kwargs = {key: value for key, value in kwargs.items() if not key.startswith("_")}
             ctx = server_ref.get_context()
             ch = ctx.request_context.lifespan_context["command_handler"]
             if cmd_name in {"question_list", "question_answer", "question_escalate"}:

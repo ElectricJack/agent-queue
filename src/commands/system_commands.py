@@ -212,69 +212,40 @@ class SystemCommandsMixin:
             return {"error": "Intelligence class could not be retired"}
 
     async def _cmd_get_stuck_tasks(self, args: dict) -> dict:
-        """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their
-        per-status threshold.
+        """Read aged active tasks, orphaned workers and unroutable READY tasks.
 
-        This replaces the previous multi-step "list_tasks + time arithmetic"
-        procedure in the ``system-health-check`` playbook with a single,
-        deterministic lookup.  Detection runs entirely in the database —
-        the caller does no time math.
-
-        Args
-        ----
-        assigned_threshold_seconds: int
-            Max seconds a task may stay ASSIGNED before being flagged
-            stuck.  Default 1800 (30 minutes).
-        in_progress_threshold_seconds: int
-            Max seconds a task may stay IN_PROGRESS before being flagged
-            stuck.  Default 7200 (2 hours).
-        now: float
-            Reference timestamp (seconds since epoch).  Defaults to
-            ``time.time()``; playbooks typically pass the trigger event's
-            ``tick_time`` so repeated invocations are deterministic.
-        project_id: str, optional
-            Filter — when provided, only stuck tasks in the given project
-            are returned.  When omitted, all projects are scanned.
-
-        Returns
-        -------
-        dict with keys:
-            ``stuck``: list of ``{id, project_id, status, assigned_agent,
-            updated_at, seconds_in_state}`` dicts, ordered by
-            ``updated_at`` ascending (oldest first).
-            ``now_used``: the reference timestamp actually applied.
-            ``thresholds``: ``{assigned, in_progress}`` showing which
-            thresholds were applied.
+        Paused projects, containers and approved human holds are excluded.
+        The existing 30m/2h time-in-state thresholds remain configurable;
+        orphan (20m) and failed-route (30m) detection are additional signals.
+        No task state, notification receipt or message is written here.
         """
-        assigned_threshold = int(args.get("assigned_threshold_seconds", 1800))
-        in_progress_threshold = int(args.get("in_progress_threshold_seconds", 7200))
-        now = float(args.get("now", time.time()))
+        from src.commands.principal import current_principal
+        from src.database.queries.stall_watch_queries import read_snapshot
+        from src.stall_watch import READY_AFTER, detect, format_summary
+
+        assigned = int(args.get("assigned_threshold_seconds", 1800))
+        in_progress = int(args.get("in_progress_threshold_seconds", 7200))
+        now = float(args["now"]) if args.get("now") is not None else time.time()
         project_id = args.get("project_id") or None
-
-        stuck = await self.db.get_stuck_active_tasks(
-            assigned_threshold_seconds=assigned_threshold,
-            in_progress_threshold_seconds=in_progress_threshold,
-            now=now,
-            project_id=project_id,
-        )
-
+        principal = current_principal()
+        if principal and principal.project_id:
+            if project_id and project_id != principal.project_id:
+                return {"success": False, "error": "out of scope: project_id"}
+            project_id = principal.project_id
+        snapshot = await read_snapshot(self.db, project_id)
+        # Only old READY leaves need canonical route/frontier explanations.
+        # A failed read fails this tick instead of sending an incomplete list.
+        for task in snapshot.tasks.values():
+            if (task["status"] == "READY" and now - task["updated_at"] > READY_AFTER
+                    and task["id"] not in snapshot.held | snapshot.containers):
+                result = await self._cmd_explain_task({"task_id": task["id"]})
+                if result.get("error") or result.get("success") is False:
+                    return {"success": False, "error": f"Stall watch explain failed: {result}"}
+                snapshot.reasons[task["id"]] = result["reasons"]
+        stuck = detect(snapshot, now, assigned=assigned, in_progress=in_progress)
         return {
-            "stuck": [
-                {
-                    "id": task.id,
-                    "project_id": task.project_id,
-                    "status": task.status.value,
-                    "assigned_agent": task.assigned_agent_id,
-                    "updated_at": task.updated_at,
-                    "seconds_in_state": now - task.updated_at,
-                }
-                for task in stuck
-            ],
-            "now_used": now,
-            "thresholds": {
-                "assigned": assigned_threshold,
-                "in_progress": in_progress_threshold,
-            },
+            "success": True, "stuck": stuck, "summary": format_summary(stuck),
+            "now_used": now, "thresholds": {"assigned": assigned, "in_progress": in_progress},
         }
 
     async def _cmd_get_config(self, args: dict) -> dict:
@@ -347,18 +318,22 @@ class SystemCommandsMixin:
     async def _cmd_preview_portable_config(self, args: dict) -> dict:
         """Show the reviewed, non-secret configuration that bundle export would use."""
         from src.portable_config import PortableBundleError, bundle_preview
+        from src.portable_setup import collect_setup
 
         path = self.orchestrator.config._config_path
         if not path or not os.path.exists(path):
             return {"error": "No config file path is set on this daemon."}
         try:
-            return bundle_preview(path, self.config.data_dir)
-        except PortableBundleError as exc:
+            setup = await collect_setup(self.db, self.config.data_dir)
+            result = await asyncio.to_thread(bundle_preview, path, self.config.data_dir, setup=setup)
+            return {"success": True, **result}
+        except (PortableBundleError, ValueError, OSError) as exc:
             return {"error": str(exc)}
 
     async def _cmd_export_portable_config(self, args: dict) -> dict:
         """Export the curated preview as a versioned ``.aqbundle`` archive."""
         from src.portable_config import PortableBundleError, export_bundle
+        from src.portable_setup import collect_setup
 
         destination = args.get("destination")
         path = self.orchestrator.config._config_path
@@ -367,8 +342,12 @@ class SystemCommandsMixin:
         if not path or not os.path.exists(path):
             return {"error": "No config file path is set on this daemon."}
         try:
-            return export_bundle(destination, path, self.config.data_dir)
-        except PortableBundleError as exc:
+            setup = await collect_setup(self.db, self.config.data_dir)
+            result = await asyncio.to_thread(
+                export_bundle, destination, path, self.config.data_dir, setup=setup
+            )
+            return {"success": True, **result}
+        except (PortableBundleError, ValueError, OSError) as exc:
             return {"error": str(exc)}
 
     async def _cmd_import_portable_config(self, args: dict) -> dict:
@@ -391,16 +370,20 @@ class SystemCommandsMixin:
                 conflict=args.get("conflict", "keep"),
                 dry_run=bool(args.get("dry_run", False)),
             )
-        except PortableBundleError as exc:
+        except (PortableBundleError, ValueError, OSError) as exc:
             return {"error": str(exc)}
+        if result.get("applied") and result.get("intelligence_classes"):
+            result["class_reload"] = await self._reload_intelligence_classes()
         imported = set(result.get("config_sections", []))
         result["requires_restart"] = sorted(imported - HOT_RELOADABLE_SECTIONS)
+        if result.get("pending_policy_sources"):
+            result["requires_restart"].append("vault policy registries")
         if result.get("applied") and imported & HOT_RELOADABLE_SECTIONS:
             watcher = self.orchestrator._config_watcher
             if watcher:
                 reloaded = await watcher.reload()
                 result["applied_sections"] = reloaded.get("applied", []) or []
-        return result
+        return {"success": "error" not in result, **result}
 
     async def _cmd_update_config(self, args: dict) -> dict:
         """Replace one top-level section in the YAML config and reload.
@@ -829,7 +812,7 @@ class SystemCommandsMixin:
             running_task_ids = list(orch._running_tasks.keys())
             for task_id in running_task_ids:
                 try:
-                    await orch.stop_task(task_id)
+                    await orch.stop_task(task_id, reason="stopped by forced shutdown")
                 except Exception as e:
                     logger.warning("Error force-stopping task %s: %s", task_id, e)
         else:
@@ -892,7 +875,7 @@ class SystemCommandsMixin:
             "waited_for_tasks": wait_for_tasks and running_count > 0,
         }
 
-    async def _cmd_update_and_restart(self, args: dict) -> dict:
+    async def _update_and_restart_legacy(self, args: dict) -> dict:
         """Pull the latest source from git and restart the daemon."""
         reason = args.get("reason", "No reason provided")
         wait_for_tasks = args.get("wait_for_tasks", False)
@@ -943,21 +926,25 @@ class SystemCommandsMixin:
             return {"error": f"TypeScript client generation failed: {stderr}"}
 
         running_count = len(orch._running_tasks)
+        was_paused = orch._paused
+        restarting = False
+        try:
+            if wait_for_tasks and running_count > 0:
+                orch._paused = True
+                await orch._emit_text_notify(
+                    f"🔄 **Daemon update & restart pending** — waiting for {running_count} "
+                    f"running task(s) to complete\n**Reason:** {reason}"
+                )
+                await orch.wait_for_running_tasks(timeout=300)
 
-        if wait_for_tasks and running_count > 0:
-            # Pause orchestrator so no new tasks are scheduled, then wait
-            orch._paused = True
-            await orch._emit_text_notify(
-                f"🔄 **Daemon update & restart pending** — waiting for {running_count} "
-                f"running task(s) to complete\n**Reason:** {reason}"
-            )
-            await orch.wait_for_running_tasks(timeout=300)
-
-        # Log the update/restart reason to the notification channel
-        await orch._emit_text_notify(f"🔄 **Daemon update & restart initiated** — {reason}")
-        # Trigger restart
-        orch._restart_requested = True
-        os.kill(os.getpid(), signal.SIGTERM)
+            await orch._emit_text_notify(f"🔄 **Daemon update & restart initiated** — {reason}")
+            orch._restart_requested = True
+            os.kill(os.getpid(), signal.SIGTERM)
+            restarting = True
+        finally:
+            if not restarting:
+                orch._paused = was_paused
+                orch._restart_requested = False
         return {
             "status": "updating",
             "message": "Update pulled and daemon restart initiated",
@@ -965,6 +952,84 @@ class SystemCommandsMixin:
             "reason": reason,
             "waited_for_tasks": wait_for_tasks and running_count > 0,
         }
+
+    async def _cmd_update_and_restart(self, args: dict) -> dict:
+        """Opt into release selection only with a configured tag family."""
+        if not self.config.deploy.tag_glob:
+            return await self._update_and_restart_legacy(args)
+        import subprocess
+        import sys
+
+        from src.install.update import UpdateRefused, plan_update
+
+        reason = args.get("reason", "No reason provided")
+        wait_for_tasks = args.get("wait_for_tasks", False)
+        orch = self.orchestrator
+        repo_dir = Path(__file__).resolve().parents[2]
+        state_dir = Path(self.config.data_dir)
+        try:
+            plan = await asyncio.to_thread(
+                plan_update, repo_dir, state_dir=state_dir,
+                tag_glob=self.config.deploy.tag_glob,
+                promotion_target=self.config.deploy.target,
+            )
+        except UpdateRefused as refused:
+            return {"success": False, "error": refused.reason, "remediation": refused.remediation}
+        if plan.up_to_date:
+            return {"success": True, "status": "up_to_date", "commit": plan.current}
+
+        running_count = len(orch._running_tasks)
+        was_paused = orch._paused
+        launched = False
+        try:
+            if wait_for_tasks and running_count > 0:
+                orch._paused = True
+                await orch._emit_text_notify(
+                    f"🔄 **Daemon update pending** — waiting for {running_count} "
+                    f"running task(s) to complete\n**Reason:** {reason}"
+                )
+                await orch.wait_for_running_tasks(timeout=300)
+
+            # The fresh updater rechecks the checkout under its own lock.
+            # It must outlive the daemon; awaiting it here deadlocks on aq stop.
+            log = state_dir / "update.log"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            env = scrub_env_from_config(
+                self.config, explicit={"AQ_INSTALL_STATE_DIR": str(state_dir)}
+            ).env
+            try:
+                with log.open("ab") as output:
+                    process = await asyncio.create_subprocess_exec(
+                        sys.executable, "-m", "src.cli.app", "update", "--yes",
+                        cwd=str(repo_dir), env=env, stdin=subprocess.DEVNULL,
+                        stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
+                    )
+            except OSError as error:
+                return {"success": False, "error": f"could not start aq update: {error}"}
+
+            async def restore_scheduling() -> None:
+                try:
+                    await process.wait()
+                finally:
+                    # If this daemon is still alive, the update did not replace
+                    # it. Refusal, up-to-date races and all failures must unpause.
+                    orch._paused = was_paused
+
+            asyncio.ensure_future(restore_scheduling())
+            launched = True
+            await orch._emit_text_notify(
+                f"🔄 **Daemon update started** — {plan.upstream} at {plan.target[:9]}\n"
+                f"**Reason:** {reason}\n**Log:** {log}"
+            )
+            return {
+                "success": True, "status": "updating", "pid": process.pid,
+                "message": "Operator updater started; read update.log for the outcome",
+                "selector": plan.upstream, "commit": plan.target, "log": str(log),
+                "reason": reason, "waited_for_tasks": wait_for_tasks and running_count > 0,
+            }
+        finally:
+            if not launched:
+                orch._paused = was_paused
 
     # -----------------------------------------------------------------------
     # File / shell commands -- sandboxed filesystem and shell access for the

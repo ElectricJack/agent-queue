@@ -25,9 +25,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.task_templates import render_task_template
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     archived_tasks,
+    integration_batches,
     integration_branch_owners,
     integration_child_dispositions,
     integration_episode_receipt_acceptances,
@@ -62,12 +64,13 @@ from src.integration.models import (
 )
 from src.integration.observe import ParentReadiness
 from src.integration.outbox import enqueue_integration_event
-from src.integration.parent_engine import (
+from src.integration.owner_guards import (
     active_parent_scope,
     parent_checkpoint_allowed_on,
     parent_engine_guard,
 )
-from src.integration.subjects import (
+from src.integration.promotion_steps import FlowSchema, flow_targets, protected_changes
+from src.integration.runtime_contracts import (
     HeadIdentity,
     JournalMode,
     Primitive,
@@ -84,10 +87,6 @@ from src.playbooks.artifact_ref import ArtifactRef
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 logger = logging.getLogger(__name__)
-
-
-
-
 
 
 class ReceiptProjection(BaseModel):
@@ -570,6 +569,8 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
             raise HierarchyError("invalid", f"hierarchical integration policy is invalid: {exc}") from exc
         boundary = policy.parent
         route = boundary.route
+        if route is None:
+            raise HierarchyError("invalid", "parent route is not configured")
         artifact_row = (
             await conn.execute(
                 select(playbook_artifacts).where(
@@ -813,8 +814,7 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                             project_id=parent["project_id"],
                             title=f"Verify aggregate for {task_id}",
                             description=(
-                                "Verify the exact collected aggregate and record trusted "
-                                "integration check evidence."
+                                render_task_template("aggregate-verifier")
                             ),
                             status=TaskStatus.PAUSED,
                             repo_id=checkpoint["repository_id"],
@@ -1117,12 +1117,18 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
         async with self.db._engine.connect() as conn:
             route = (
                 await conn.execute(
-                    select(tasks.c.parent_task_id, projects.c.hierarchical_integration_mode)
+                    select(tasks.c.parent_task_id, tasks.c.pr_url,
+                           projects.c.hierarchical_integration_mode)
                     .join(projects, projects.c.id == tasks.c.project_id)
                     .where(tasks.c.id == task_id)
                 )
             ).one_or_none()
         if route is None or route.parent_task_id is not None or route.hierarchical_integration_mode != "train":
+            return result
+        # Completion is already durable and its PR was recorded. Admission
+        # owns subsequent GitHub liveness checks; a retry must remain idempotent
+        # even while GitHub is unavailable or the PR has since closed.
+        if result["outcome"] == "already_completed" and route.pr_url:
             return result
 
         from src.integration.root_pull_requests import EpicPullRequestService
@@ -1341,8 +1347,6 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
         }
 
 
-
-
 class PolicyActivation:
     """Current project inputs; existing subjects retain their frozen artifact."""
 
@@ -1358,18 +1362,34 @@ class PolicyActivation:
         expected_generation: int,
         reason: str,
         operator_id: str,
+        promotion_manifest: dict[str, Any] | None = None,
+        dry_run: bool = False,
+        cutover=None,
     ) -> dict[str, Any]:
-        """Activate repository and policy inputs behind the project generation CAS."""
+        """Activate repository and policy inputs behind the project generation CAS.
+
+        A ``promotion_flow`` update is re-validated against the fenced default
+        branch (layer 3 only when ``promotion_manifest`` is given) and refused
+        while a protected change meets an open promotion or live work holds a
+        new target (§3.11). ``dry_run`` runs every refusal check and returns
+        ``checked`` without writing, so network work such as creating the flow's
+        targets happens outside the fence and the write re-checks behind the
+        same generation. The private cutover hook instead holds generation and
+        target locks through ref preparation and its atomic binding/data fixes;
+        ordinary callers retain the strict repository barrier.
+        """
         allowed = {
             "integration_repository",
             "integration_repository_id",
             "hierarchical_integration_policy",
             "integration_mode",
             "hierarchical_integration_mode",
+            "promotion_flow",
         }
         if not updates or set(updates) - allowed:
             raise ValueError(
-                "only repository, review mode, and hierarchical policy are configurable here"
+                "only repository, review mode, hierarchical policy, and promotion flow "
+                "are configurable here"
             )
         if expected_generation < 0:
             raise ValueError("expected integration generation must be non-negative")
@@ -1417,6 +1437,11 @@ class PolicyActivation:
             generation = int(project["hierarchical_integration_generation"])
             if generation != expected_generation:
                 return {"outcome": "stale", "project_id": project_id, "generation": generation}
+            if cutover is not None:
+                refusal = await cutover.check_on(conn, project)
+                if refusal:
+                    return {"project_id": project_id, "generation": generation, **refusal}
+                updates["repo_default_branch"] = cutover.default_branch
             effective_mode = mode or project["hierarchical_integration_mode"]
             if "hierarchical_integration_policy" in updates:
                 raw_policy = updates["hierarchical_integration_policy"]
@@ -1442,7 +1467,8 @@ class PolicyActivation:
                         raise ValueError("integration route profile fields are deprecated: "
                                          + ", ".join(deprecated))
                     for boundary in (policy.parent, policy.root):
-                        if not boundary.route.is_available_to_project(project_id):
+                        if (boundary.route is not None
+                                and not boundary.route.is_available_to_project(project_id)):
                             raise ValueError("integration route is scoped to another project")
                     configured_policy = policy.model_dump(mode="json")
                 updates["hierarchical_integration_policy"] = configured_policy
@@ -1491,7 +1517,8 @@ class PolicyActivation:
                         "generation": generation,
                         "error": "integration repository URL must be canonical GitHub HTTPS",
                     }
-                project_branch = str(project["repo_default_branch"] or "")
+                project_branch = str(updates.get("repo_default_branch",
+                                                project["repo_default_branch"]) or "")
                 if repository_config["default_branch"] != project_branch:
                     return {
                         "outcome": "blocked",
@@ -1529,9 +1556,30 @@ class PolicyActivation:
                     repository_row[field] != repository_config[field]
                     for field in ("url", "default_branch")
                 )
-            if repository_changed and await self._has_active_work_on(conn, project_id):
+            if repository_changed and await self._has_active_work_on(
+                conn, project_id, allow_epics=cutover is not None and cutover.allow_epics,
+            ):
                 return {"outcome": "busy", "project_id": project_id, "generation": generation,
                         "error": "a live subject retains the repository"}
+            if "promotion_flow" in updates:
+                if has_repository_config:
+                    default_branch = repository_config["default_branch"]
+                else:
+                    default_branch = (
+                        await conn.scalar(select(repos.c.default_branch).where(
+                            repos.c.id == repository_id)) if repository_id is not None else None
+                    ) or project["repo_default_branch"]
+                refusal = await self._flow_refusal(
+                    conn, project, updates, default_branch=str(default_branch or ""),
+                    manifest=promotion_manifest)
+                if refusal is not None:
+                    return {"project_id": project_id, "generation": generation, **refusal}
+            if dry_run:
+                return {"outcome": "checked", "project_id": project_id,
+                        "generation": generation, "updates": dict(updates)}
+            if cutover is not None:
+                await cutover.prepare()
+                await cutover.write_on(conn, project)
             if has_repository_config:
                 values = {"url": repository_config["url"],
                           "default_branch": repository_config["default_branch"]}
@@ -1552,6 +1600,8 @@ class PolicyActivation:
             ).values(**updates, hierarchical_integration_generation=generation + 1))
             if changed.rowcount != 1:
                 raise RuntimeError("policy activation lost its generation fence")
+            if cutover is not None:
+                await cutover.verify_on(conn, generation + 1)
             effective = mode or project["hierarchical_integration_mode"]
             if effective == "train":
                 await self.db.lock_integration_schedule_on(
@@ -1580,25 +1630,88 @@ class PolicyActivation:
         )
 
 
+    async def _flow_refusal(self, conn, project, updates, *, default_branch, manifest):
+        result = FlowSchema.validate(
+            updates["promotion_flow"], default_branch=default_branch, manifest=manifest)
+        problems = [p for p in result.problems if manifest is not None or p.layer < 3]
+        if problems:
+            return {"outcome": "invalid", "error": problems[0].code,
+                    "problems": [problem.as_dict() for problem in problems]}
+        flow, stored = result.flow, project["promotion_flow"]
+        for change in protected_changes(stored, flow):
+            batch = (await conn.execute(select(
+                integration_batches.c.id, integration_batches.c.request_id
+            ).where(
+                integration_batches.c.project_id == project["id"],
+                integration_batches.c.trigger == "promotion",
+                integration_batches.c.target_ref == f"refs/heads/{change['target']}",
+                integration_batches.c.intent != "aborted",
+                integration_batches.c.lifecycle != "promoted",
+            ).limit(1))).first()
+            if batch is not None:
+                return {"outcome": "in_use", "error": "promotion_flow_in_use", **change,
+                        "batch_id": batch.id, "request_id": batch.request_id}
+        added = sorted(set(flow_targets(flow)) - set(flow_targets(stored)))
+        if added and await self._has_active_work_on(conn, project["id"], branches=added):
+            return {"outcome": "busy", "error": "repository_busy", "targets": added}
+        updates["promotion_flow"] = flow
+        return None
+
     async def has_active_work(self, project_id):
         async with self.db._engine.connect() as conn:
             return await self._has_active_work_on(conn, project_id)
 
     @staticmethod
-    async def _has_active_work_on(conn, project_id):
-        for statement in (
-            select(integration_subjects.c.id).where(
-                integration_subjects.c.project_id == project_id,
-                integration_subjects.c.phase != "done"),
-            select(integration_branch_owners.c.id).join(
-                repos, repos.c.id == integration_branch_owners.c.repository_id
-            ).where(repos.c.project_id == project_id,
-                    integration_branch_owners.c.handoff_state != "released",
-                    ~terminal_reservation_clause()),
-            select(integration_promotion_intents.c.id).where(
+    async def _has_active_work_on(conn, project_id, *, branches=None, allow_epics=False):
+        """Whether live work holds the repository or, given ``branches``, any of them.
+
+        The strict project-wide path also counts open train batches (F10).
+        """
+        # Open as the train counts it (``train_sources._open_batch_rows``).
+        open_batches = select(integration_batches.c.id).where(
+            integration_batches.c.project_id == project_id,
+            integration_batches.c.target_ref.is_not(None),
+            integration_batches.c.intent != "aborted",
+            integration_batches.c.lifecycle != "promoted")
+        subjects = select(integration_subjects.c.id).where(
+            integration_subjects.c.project_id == project_id,
+            integration_subjects.c.phase != "done")
+        owners = select(integration_branch_owners.c.id).join(
+            repos, repos.c.id == integration_branch_owners.c.repository_id
+        ).where(repos.c.project_id == project_id,
+                integration_branch_owners.c.handoff_state != "released",
+                ~terminal_reservation_clause(allow_cleanup_history=True))
+        if branches is not None:
+            refs = [f"refs/heads/{branch}" for branch in branches]
+            statements = (
+                subjects.where(integration_subjects.c.target_ref.in_(refs)),
+                owners.where(integration_branch_owners.c.ref.in_([*branches, *refs])),
+                open_batches.where(integration_batches.c.target_ref.in_(refs)),
+            )
+        else:
+            intents = select(integration_promotion_intents.c.id).where(
                 integration_promotion_intents.c.project_id == project_id,
-                integration_promotion_intents.c.state.not_in(("committed", "conflict", "superseded"))),
-        ):
+                integration_promotion_intents.c.state.not_in(
+                    ("committed", "conflict", "superseded")))
+            if allow_epics:
+                subjects = subjects.where(
+                    or_(integration_subjects.c.target_ref.is_(None),
+                        ~integration_subjects.c.target_ref.startswith("refs/heads/aq/epic/")))
+                owners = owners.where(
+                    ~integration_branch_owners.c.ref.startswith("aq/epic/"),
+                    ~integration_branch_owners.c.ref.startswith("refs/heads/aq/epic/"))
+                open_batches = open_batches.where(
+                    ~integration_batches.c.target_ref.startswith("refs/heads/aq/epic/"))
+                intents = intents.where(
+                    ~integration_promotion_intents.c.target_branch.startswith("aq/epic/"),
+                    ~integration_promotion_intents.c.target_branch.startswith("refs/heads/aq/epic/"))
+            statements = (
+                subjects,
+                owners,
+                intents,
+                open_batches,
+            )
+        for statement in statements:
             if await conn.scalar(statement.limit(1)) is not None:
                 return True
         return False

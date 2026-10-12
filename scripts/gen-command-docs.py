@@ -370,7 +370,7 @@ def render_index(contracts: dict[str, Any], existing: str | None) -> str:
     for name in sorted(contracts):
         grouped[family(name)].append(name)
 
-    lines = [START, BANNER, "", "## The commands", "", f"{len(contracts)} commands are registered."]
+    lines = [START, BANNER, "", "## The commands"]
     for key, heading in FAMILIES:
         names = grouped[key]
         if not names:

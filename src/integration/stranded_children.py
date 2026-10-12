@@ -270,17 +270,6 @@ async def _diagnose_snapshot_on(conn, task_id: str) -> tuple[dict[str, Any] | No
     return snapshot, {**base, "outcome": "stranded", "reason": reason}
 
 
-async def diagnose_on(conn, task_id: str) -> dict[str, Any]:
-    """Read-only: whether *task_id* is a completed child nothing will deliver.
-
-    The outcome vocabulary matches ``open_for_epic``'s so one caller can log it
-    and the sweep can print it unchanged: ``stranded`` is the only outcome that
-    means "open it a pull request".
-    """
-    _, diagnosis = await _diagnose_snapshot_on(conn, task_id)
-    return diagnosis
-
-
 class StrandedChildPullRequestService:
     """Open one pull request to the default branch for a stranded child."""
 

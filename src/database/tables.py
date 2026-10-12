@@ -56,7 +56,12 @@ projects = Table(
     Column("discord_control_channel_id", Text, nullable=True),
     Column("repo_url", Text, nullable=True, server_default=""),
     Column("repo_default_branch", Text, nullable=True, server_default="main"),
+    # Separate from the frozen hierarchical integration policy (D12).
+    Column("promotion_flow", JSONB(none_as_null=True), nullable=True),
+    # Read-side rebinding of immutable pre-cutover root origins, not provenance.
+    Column("default_branch_cutover", JSONB(none_as_null=True), nullable=True),
     Column("preferred_provider", Text, nullable=True),
+    Column("supervisor_enabled", Boolean, nullable=False, server_default=false()),
     # The router binding (mandatory-routing spec §8, revision a00000000043):
     # every project names the routing playbook that routes its tasks.  There
     # is no project default profile; ``default_profile_id`` was dropped.
@@ -733,7 +738,7 @@ integration_source_ci = Table(
 # ---------------------------------------------------------------------------
 
 GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task", "routing", "review")
-GATE_STATUSES = ("open", "resolved", "expired")
+GATE_STATUSES = ("open", "resolved", "expired", "cancelled")
 
 gates = Table(
     "gates",
@@ -745,7 +750,7 @@ gates = Table(
     Column("question", Text, nullable=False, server_default=""),
     Column("await_id", Text, nullable=True),
     Column("timeout_at", Float, nullable=True),
-    Column("status", Text, nullable=False, server_default="open"),  # open|resolved|expired
+    Column("status", Text, nullable=False, server_default="open"),
     Column("resolved_by", Text, nullable=True),
     Column("resolution", Text, nullable=True),
     Column("created_at", Float, nullable=False),
@@ -839,6 +844,11 @@ doc_reviews = Table(
     Column("decided_by", Text, nullable=True),
     Column("decided_at", Float, nullable=True),
     Column("decision_note", Text, nullable=True),
+    # The last withdrawal survives reopening; events retain earlier withdrawals.
+    Column("withdrawn_by", Text, nullable=True),
+    Column("withdrawn_at", Float, nullable=True),
+    Column("withdrawn_via", Text, nullable=True),
+    Column("withdrawal_reason", Text, nullable=True),
     # The last revision announced on Discord: the review outbox (spec §9).
     Column("notified_revision", Integer, nullable=False, server_default="0"),
     Column("created_at", Float, nullable=False),
@@ -860,6 +870,7 @@ doc_review_revisions = Table(
     # The submitted markdown with any leading frontmatter stripped.
     Column("content", Text, nullable=False),
     Column("content_sha256", Text, nullable=False),
+    Column("spec_kind", Text, nullable=True),
     Column("submitted_by", Text, nullable=False),  # principal label
     Column("submitted_task_id", Text, nullable=True),
     Column("changes_note", Text, nullable=True),
@@ -874,6 +885,10 @@ doc_review_revisions = Table(
     # approval stores in the artifact store.  NULL for every other review.
     Column("playbook", JSON, nullable=True),
     Column("playbook_artifact", Text, nullable=True),
+    CheckConstraint(
+        "spec_kind IS NULL OR spec_kind IN ('design', 'implementation')",
+        name="ck_doc_review_revisions_spec_kind",
+    ),
 )
 
 # Image evidence belongs to the submitted review revision, not the source task.
@@ -1448,6 +1463,11 @@ sessions = Table(
     Column("claim_phase_at", Float, nullable=True),
     Column("last_claim_epoch", Integer, nullable=True),
     Column("last_claim_result", Text, nullable=True),
+    Column("claim_failure_count", Integer, nullable=False, server_default="0"),
+    Column("claim_failure_reason", Text, nullable=True),
+    Column("claim_failure_at", Float, nullable=True),
+    # Session-wide refusal streak/cooldown, independent of a failed task's backoff.
+    Column("claim_refusal", JSONB, nullable=True),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch
@@ -1531,6 +1551,8 @@ messages = Table(
     Column("created_at", Float, nullable=False),
     Column("delivered_at", Float, nullable=True),
     Column("read_at", Float, nullable=True),
+    Column("last_notified_at", Float, nullable=True),
+    Column("notification_attempts", Integer, nullable=False, server_default="0"),
     Column("archive_after_inject", Integer, nullable=False, server_default="0"),
     Column("archived_at", Float, nullable=True),
     Column("reply_to_id", Text, ForeignKey("messages.id"), nullable=True),
@@ -3030,6 +3052,33 @@ task_integration_checkpoints = Table(
     ),
 )
 
+branch_retirements = Table(
+    "branch_retirements",
+    metadata,
+    # No FKs: an explicit decision and its audit outlive tasks and repositories.
+    Column("id", Text, primary_key=True),
+    Column("request_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("task_id", Text, nullable=True),
+    Column("branch", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=True),
+    Column("requested_at", Float, nullable=False),
+    Column("state", Text, nullable=False, server_default="pending"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=False, server_default="0"),
+    Column("last_error", Text, nullable=True),
+    Column("evidence", JSONB, nullable=False, server_default="{}"),
+    CheckConstraint(
+        "state IN ('pending', 'complete', 'conflict', 'withdrawn')",
+        name="ck_branch_retirements_state",
+    ),
+    CheckConstraint("attempts >= 0", name="ck_branch_retirements_attempts"),
+    UniqueConstraint("request_id", "repository_id", "branch"),
+    Index("ix_branch_retirements_due", "state", "next_attempt_at"),
+)
+
 task_branch_origins = Table(
     "task_branch_origins",
     metadata,
@@ -3043,6 +3092,11 @@ task_branch_origins = Table(
     Column("parent_repository_id", Text, nullable=True),
     Column("parent_ref", Text, nullable=True),
     Column("base_sha", Text, nullable=False),
+    # The filing base stays immutable. Record the refreshed parent/default
+    # heads used at worker start separately from that provenance.
+    Column("base_refresh", JSONB, nullable=True),
+    # Exact prerequisite heads used by a child, separate from its filing origin.
+    Column("stack_snapshot", JSONB, nullable=True),
     Column("creation_generation", Integer, nullable=False),
     Column("reserved", Boolean, nullable=False, server_default=false()),
     Column("materialized", Boolean, nullable=False, server_default=false()),
@@ -3086,6 +3140,63 @@ task_branch_origins = Table(
         "ix_task_branch_origins_discard_due",
         "discard_next_attempt_at",
         postgresql_where=text("discard_state = 'pending'"),
+    ),
+)
+
+#: Retained predecessor audit history. Unfinished decisions are imported once
+#: into branch_retirements with their original SHA as a deletion precondition.
+branch_deletion_audit = Table(
+    "branch_deletion_audit",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=True),
+    Column("task_id", Text, nullable=True),
+    Column("branch", Text, nullable=False),
+    Column("head_sha", Text, nullable=False),
+    # Why the branch went: obsolete_close | cancel | fail_close | supersede |
+    # abort | delete.
+    Column("reason", Text, nullable=False),
+    # Human explanation carried from the decision that abandoned the work.
+    Column("detail", Text, nullable=True),
+    # What became of the recorded ref: pending (recorded, deletion not yet
+    # confirmed) | deleted | held | failed | moved.  A ``pending`` row is the
+    # durable intent: a daemon that dies between recording and deleting leaves
+    # one behind, and the drain retries it.
+    Column("outcome", Text, nullable=False),
+    # Why a held/failed/moved row was not deleted, and the bundle holding the
+    # tip when it was not reachable from the default branch.
+    Column("detail_reason", Text, nullable=True),
+    Column("backup_path", Text, nullable=True),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=True),
+    Column("recorded_at", Float, nullable=False),
+    Column("deleted_at", Float, nullable=True),
+    CheckConstraint(
+        "reason IN ('obsolete_close', 'cancel', 'fail_close', 'supersede', 'abort', 'delete')",
+        name="ck_branch_deletion_audit_reason",
+    ),
+    CheckConstraint(
+        "outcome IN ('pending', 'deleted', 'held', 'failed', 'moved')",
+        name="ck_branch_deletion_audit_outcome",
+    ),
+    CheckConstraint(
+        "attempts >= 0",
+        name="ck_branch_deletion_audit_attempts",
+    ),
+    CheckConstraint(
+        "length(head_sha) = 40 AND head_sha = lower(head_sha)",
+        name="ck_branch_deletion_audit_head_sha",
+    ),
+    Index(
+        "ix_branch_deletion_audit_branch",
+        "project_id",
+        "branch",
+    ),
+    Index(
+        "ix_branch_deletion_audit_due",
+        "next_attempt_at",
+        postgresql_where=text("outcome = 'pending'"),
     ),
 )
 
@@ -3466,6 +3577,9 @@ integration_batches = Table(
     Column("ci_evidence_id", Text, nullable=True),
     Column("final_main_sha", Text, nullable=True),
     Column("human_abort_reason", Text, nullable=True),
+    # Only authorized eject or daemon supersede writes this release instruction.
+    # It outlives task metadata and never changes the frozen source manifest.
+    Column("ejection_record", JSONB(none_as_null=True), nullable=True),
     Column("policy_snapshot", JSON, nullable=False),
     Column("artifact_snapshot", JSON, nullable=False),
     Column("cleanup_state", Text, nullable=False),
@@ -5348,6 +5462,46 @@ test_selection_promotions = Table(
     ),
 )
 
+
+# Durable recurring prompts, including projectless named supervisors. Soft
+# owner references preserve history after session/claim turnover.
+agent_cron = Table(
+    "agent_cron",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
+    Column("session_id", Text, nullable=False),
+    Column("session_instance_token", Text, nullable=False),
+    Column("owner_task_id", Text, nullable=True),
+    Column("claim_epoch", Integer, nullable=False, server_default="0"),
+    Column("idempotency_key", Text, nullable=False),
+    Column("prompt", Text, nullable=False),
+    Column("recurrence", JSONB, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("created_at", Float, nullable=False),
+    Column("next_fire_at", Float, nullable=False),
+    Column("checked_at", Float, nullable=False, server_default="0"),
+    Column("stopped_at", Float, nullable=True),
+    Column("tick_count", Integer, nullable=False, server_default="0"),
+    Column("coalesced_count", Integer, nullable=False, server_default="0"),
+    Column("pending_message_id", Text, nullable=True),
+    Column("pending_until", Float, nullable=True),
+    Column("delivery_attempts", Integer, nullable=False, server_default="0"),
+    Column("next_attempt_at", Float, nullable=False, server_default="0"),
+    Column("last_delivery_at", Float, nullable=True),
+    Column("last_delivery_status", Text, nullable=True),
+    Column("last_error", Text, nullable=True),
+    CheckConstraint("state IN ('active','cancelled','expired')", name="ck_agent_cron_state"),
+    CheckConstraint(
+        "delivery_attempts >= 0 AND delivery_attempts <= 5 AND claim_epoch >= 0",
+        name="ck_agent_cron_attempts_epoch",
+    ),
+    UniqueConstraint(
+        "session_id", "session_instance_token", "idempotency_key",
+        name="uq_agent_cron_idempotency",
+    ),
+    Index("idx_agent_cron_scan", "state", "checked_at", "next_fire_at"),
+)
 
 # Durable agent-owned waits. Soft owner/source references survive archival and
 # claim turnover; delivery receipts live exclusively on the result message.

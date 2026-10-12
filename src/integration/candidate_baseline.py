@@ -45,10 +45,11 @@ from typing import Any
 
 from sqlalchemy import select, update
 
+from src.task_templates import render_task_template
 from src.database.tables import integration_batches
 from src.integration.batches import candidate_ref
 from src.integration.checks import ChecksResult, ChecksState, Conclusion, ExactChecks
-from src.integration.subjects import HeadIdentity
+from src.integration.runtime_contracts import HeadIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -353,27 +354,23 @@ def red_brief(
     lines = [f"Required checks are red on candidate {candidate_sha}."]
     if baseline.unavailable:
         lines += [
-            "The target baseline is unavailable; these failures are not attributed to the batch.",
-            "Repair these failing required checks on the candidate:",
+            render_task_template("candidate-baseline-unavailable"),
             *describe(tuple(sorted(names))),
         ]
         return "\n".join(lines)
     lines += [
         f"The candidate was built on target {baseline.target_sha}.",
-        "Repair these failing required checks, which the target does not also fail:",
+        render_task_template("candidate-baseline-owned"),
         *describe(baseline.repairable),
     ]
     if baseline.pre_existing:
         lines += [
-            ("These failing required checks also fail on the target commit above. They are "
-             "pre-existing failures this repair does not own: no change in this batch can turn "
-             "them green, so do not spend the repair on them."),
+            (render_task_template("candidate-baseline-pre-existing")),
             *describe(baseline.pre_existing),
         ]
     if baseline.unproven:
         lines += [
-            ("These failing required checks have no final verdict on the target commit above, "
-             "so nothing is attributed to this batch for them either:"),
+            (render_task_template("candidate-baseline-unproven")),
             *describe(baseline.unproven),
         ]
     return "\n".join(lines)

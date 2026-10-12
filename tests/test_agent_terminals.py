@@ -218,7 +218,7 @@ async def test_supervisor_restart_failed_stop_preserves_prior_token(handler, mon
 
 
 async def test_supervisor_restart_project_session_preserves_scope(handler):
-    await handler.db.create_project(Project(id="p", name="P"))
+    await handler.db.create_project(Project(id="p", name="P", supervisor_enabled=True))
     lens = handler.orchestrator.session_lens
     assert await lens.ensure_started(kind="session", target_id="supervisor-p", project_id="p")
     result = await handler.execute("supervisor_restart", {"name": "supervisor-p", "resume": True})

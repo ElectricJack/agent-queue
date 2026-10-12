@@ -21,9 +21,11 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.task_templates import render_task_template
 from src.database.tables import (
     agents,
     archived_tasks,
+    escalations,
     integration_attestation_publications,
     integration_batch_members,
     integration_batches,
@@ -60,7 +62,7 @@ from src.integration.green_continuation import (
 from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy, RepairPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
-from src.integration.parent_engine import parent_engine_guard, parent_stage_at_entry
+from src.integration.owner_guards import parent_engine_guard, parent_stage_at_entry
 from src.models import Task, TaskStatus, TaskType
 from src.playbooks.artifact_ref import ArtifactRef
 
@@ -86,7 +88,8 @@ class OrdinaryRepairService:
     """Allocate once under the batch/target locks, through CommandHandler.
 
     The train supplies a freshly observed head and trusted exact green SHA.
-    Attempts guide policy/priority; they never limit allocation or green.
+    Attempts select the primary/debug budget or a supervisor escalation;
+    they never prevent a green head from settling the repair.
     A default-branch sync is a single ordinary filing per batch, identified by
     its dedup key; a spent sync returns to the pre-existing-failure blocker.
     Ordinary routing, claims, workspace recovery and task close own the worker
@@ -103,10 +106,12 @@ class OrdinaryRepairService:
         self, batch_id: str, *, target_ref: str, head_sha: str,
         green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
         intelligence_class: str | None = None, priority: int = 100,
+        policy: RepairPolicy | None = None,
         brief: str = "", ttl_seconds: float = 480,
         authorize: Callable[[], Awaitable[bool]] | None = None,
         completion_blocker: Callable[[str, str], Awaitable[dict | None]] | None = None,
         sync_default_branch: dict[str, Any] | None = None,
+        existing_only: bool = False,
     ) -> dict:
         from src.integration.batches import candidate_ref
 
@@ -144,6 +149,7 @@ class OrdinaryRepairService:
 
             # Green is settled before querying tasks, counters or stop proofs.
             if green_sha == head_sha:
+                await self._settle_green_on(conn, batch_id, head_sha)
                 owner = await self.locks.lock_on(conn, target)
                 return answer("busy" if lease_is_live(owner) else "green")
 
@@ -188,8 +194,15 @@ class OrdinaryRepairService:
                     # ordinary claim recovery owns requeue/retry and unsaved work.
                     if live_lease and owner["holder"] != current_id:
                         return answer("busy")
-                    if not live_lease and current["status"] in {"DEFINED", "READY", "PAUSED",
-                                                               "BLOCKED"}:
+                    if not live_lease and current["status"] in {
+                        "DEFINED", "READY", "PAUSED", "BLOCKED",
+                    }:
+                        claimed = await conn.scalar(select(sessions.c.id).where(
+                            sessions.c.task_id == current_id,
+                            or_(sessions.c.state != "stopped", sessions.c.claim_phase.is_not(None)),
+                        ).limit(1))
+                        if claimed is not None:
+                            return answer("exists", task_id=current_id, lease_expired=True)
                         # The previous prepare/recovery may have released the
                         # lease. Restore this exact filing, never a new attempt.
                         # The task lock excludes a new claim while we grant it;
@@ -206,6 +219,8 @@ class OrdinaryRepairService:
                             live_lease = True
                     return answer("exists", task_id=current_id,
                                   lease_expired=not live_lease)
+            if existing_only:
+                return answer("none")
             if sync_default_branch:
                 # Ordinary filing identity survives archival. Keep the one-sync
                 # bound under the batch lock, across candidate generations and
@@ -219,6 +234,10 @@ class OrdinaryRepairService:
                         return answer("sync_exhausted", task_id=previous)
             if live_lease:
                 return answer("busy")
+            stage = policy.allocation_stage(attempt) if policy else None
+            if stage == "human":
+                incident = await self._escalate_on(conn, batch, policy, head_sha)
+                return answer("human_required", escalation_id=incident["id"])
             # The train must prove a published exact start before a task can
             # become claimable. Hold batch intent and ref acquisition locks
             # across this bounded observation and the ordinary filing.
@@ -252,6 +271,12 @@ class OrdinaryRepairService:
             repair_input = {"batch_id": batch_id, "attempt": attempt,
                             "repository_id": batch["repository_id"], "target_ref": target_ref,
                             "starting_sha": head_sha}
+            if policy:
+                seconds = policy.primary_seconds if stage == "primary" else policy.debug_seconds
+                if stage == "debug":
+                    intelligence_class = policy.debug_intelligence_class
+                repair_input.update(stage=stage, budget_seconds=seconds)
+                brief += (render_task_template("ordinary-repair-budget", stage=stage, seconds=seconds))
             if sync_default_branch:
                 repair_input["sync_default_branch"] = dict(sync_default_branch)
             fence = await self.locks.acquire_on(
@@ -260,10 +285,12 @@ class OrdinaryRepairService:
             await self.db.create_task(Task(
                 id=task_id, project_id=batch["project_id"], repo_id=batch["repository_id"],
                 title=f"Repair {batch_id} (attempt {attempt})",
-                description=(f"{brief}\n\nRepair the observed head on {target_ref}. Publish with "
-                             "the managed lease and close with ordinary publication evidence. "
-                             "The train observes the current head and exact checks.\n\n"
-                             + json.dumps(repair_input, sort_keys=True)),
+                description=(render_task_template(
+                    "ordinary-repair",
+                    brief=brief,
+                    target_ref=target_ref,
+                    repair_input=json.dumps(repair_input, sort_keys=True),
+                )),
                 task_type=TaskType.BUGFIX, priority=priority,
                 branch_name=target_ref.removeprefix("refs/heads/"),
                 class_hint=intelligence_class, created_by_kind="system", created_by_id=batch_id,
@@ -277,6 +304,76 @@ class OrdinaryRepairService:
                 integration_batches.c.id == batch_id,
             ).values(repair_attempt_count=attempt, updated_at=self.clock()))
             return answer("filed", task_id=task_id, fence=fence.model_dump(mode="json"))
+
+    async def _escalate_on(self, conn, batch, policy: RepairPolicy, head_sha: str) -> dict:
+        """One incident and supervisor notice per batch, atomic with allocation."""
+        batch_id, now = batch["id"], self.clock()
+        incident_id = "escalation-" + ordinary_repair_id(batch_id, 1)
+        summary = f"Repair budget exhausted for batch {batch_id}"
+        decision = (f"Choose eject for a member of batch {batch_id}, or abort-batch for the "
+                    "whole batch. The train still observes the candidate and clears this "
+                    "escalation if it becomes green.")
+        incident, created = await self.db.create_escalation(conn=conn,
+            id=incident_id, project_id=batch["project_id"], source_kind="integration_repair",
+            source_identity=batch_id, incident_key=f"repair-exhausted:{batch_id}",
+            supervisor_owner=f"supervisor-{batch['project_id']}", summary=summary,
+            task_title=f"Restore delivery of batch {batch_id}",
+            investigation=(f"{batch['repair_attempt_count']} ordinary repairs were filed "
+                           f"({policy.primary_attempts} primary, {policy.debug_attempts} debug). "
+                           f"Candidate: {head_sha}; target: {batch['target_ref']}."),
+            decision_requested=decision, choices=["eject", "abort-batch"], severity="high",
+            now=now,
+        )
+        if not created:
+            return incident
+        await conn.execute(pg_insert(messages).values(
+            id="msg-" + incident_id, project_id=batch["project_id"],
+            from_kind="system", from_id="integration-train", to_kind="session",
+            to_id=incident["supervisor_owner"], subject=summary,
+            body=f"{summary}\n{incident['investigation']}\n{decision}\nIncident: {incident_id}",
+            thread_id=incident_id, priority=100, created_at=now, archive_after_inject=1,
+            body_kind="integration_repair_exhausted",
+        ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+        # The initial human delivery is already in the same transaction.
+        return dict(incident)
+
+    async def _settle_green_on(self, conn, batch_id: str, head_sha: str) -> None:
+        from src.database.queries.escalation_queries import OPEN_ESCALATION_STATES
+
+        now = self.clock()
+        await conn.execute(update(escalations).where(
+            escalations.c.id == "escalation-" + ordinary_repair_id(batch_id, 1),
+            escalations.c.source_kind == "integration_repair",
+            escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
+        ).values(
+            state="resolved", revision=escalations.c.revision + 1,
+            updated_at=now, terminal_at=now,
+            terminal_outcome=f"Batch {batch_id} candidate became green or delivered.",
+            terminal_evidence={"batch_id": batch_id, "candidate_sha": head_sha},
+        ))
+
+    async def settle_green(self, batch_id: str, head_sha: str) -> None:
+        """Clear an exhausted repair from exact checks/Git, without an allocation."""
+        async with self.db.immediate() as conn:
+            batch = await conn.scalar(select(integration_batches.c.id).where(
+                integration_batches.c.id == batch_id,
+            ).with_for_update())
+            if batch:
+                await self._settle_green_on(conn, batch_id, head_sha)
+
+    async def recover_reservation(
+        self, batch_id: str, *, target_ref: str, head_sha: str,
+        authorize: Callable[[], Awaitable[bool]], held: bool = False,
+    ) -> dict:
+        """Restore a detached repair's lease even while candidate checks are pending.
+
+        Recovery uses the allocator's batch/task/ref locks and publication proof,
+        but cannot file a successor or consume an allocation.
+        """
+        return await self.allocate(
+            batch_id, target_ref=target_ref, head_sha=head_sha,
+            authorize=authorize, held=held, existing_only=True,
+        )
 
     async def input(self, task_id: str) -> dict | None:
         """Read the immutable ordinary task input for workspace/managed push ports."""
@@ -519,11 +616,6 @@ class RepairService:
         self._archive_cursor = archived["next_after"]
         return [row["task_id"] for row in released]
 
-    async def reconcile_accepted_delegates(self, now: float, *, limit: int = 100) -> list[str]:
-        from src.integration.accepted_repair import reconcile_stopped_accepted_delegates
-
-        return await reconcile_stopped_accepted_delegates(self.db, now, limit=limit)
-
     async def reserve_batch_operation_on(
         self, conn, batch_id: str, *, now: float | None = None
     ) -> dict[str, Any]:
@@ -568,6 +660,8 @@ class RepairService:
             raise ValueError("batch is outside enabled hierarchical integration scope")
         policy = HierarchicalIntegrationPolicy.model_validate(batch["policy_snapshot"])
         boundary = policy.root
+        if boundary.route is None:
+            raise ValueError("batch route is not configured")
         artifact = (
             await conn.execute(
                 select(playbook_artifacts).where(
@@ -1056,82 +1150,6 @@ class RepairService:
             )
         ).scalars().all()
         return str(intent_ids[0]) if len(intent_ids) == 1 else None
-
-    async def continue_current_parent_conflict_on(
-        self,
-        conn,
-        operation: dict[str, Any],
-        stage: dict[str, Any],
-        *,
-        project_id: str,
-        now: float,
-        validate_only: bool = False,
-    ) -> dict[str, Any]:
-        """Continue a resumed parent repair from its one current conflict.
-
-        Recovery owns the parent-state transition and already holds the
-        operation, parent, owner, and project locks. It must not reconstruct
-        a conflict from an event that may name a completed prior delegate.
-        Instead, resolve exactly one durable conflict while those locks are
-        held, then reuse the ordinary continuation checks below.
-        """
-        if operation["target_kind"] != "parent":
-            return {"outcome": "none"}
-        parent = (
-            await conn.execute(
-                select(tasks)
-                .where(tasks.c.id == operation["parent_task_id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        if parent is None:
-            return {"outcome": "stale"}
-        conflicts = (
-            await conn.execute(
-                select(integration_promotion_intents)
-                .where(
-                    integration_promotion_intents.c.operation_key == operation["id"],
-                    integration_promotion_intents.c.target_task_id == parent["id"],
-                    integration_promotion_intents.c.repository_id == parent["repo_id"],
-                    integration_promotion_intents.c.target_branch == parent["branch_name"],
-                    integration_promotion_intents.c.state.in_(("conflict", "resolution_reserved")),
-                )
-                .order_by(integration_promotion_intents.c.id)
-                .limit(2)
-                .with_for_update()
-            )
-        ).mappings().all()
-        if not conflicts:
-            return {"outcome": "none"}
-        if len(conflicts) != 1 or conflicts[0]["state"] != "conflict":
-            return {"outcome": "stale"}
-        conflict = dict(conflicts[0])
-        continuation = (stage["dossier"] or {}).get("continuations", [])
-        if (
-            continuation
-            and continuation[-1].get("intent_id") == conflict["id"]
-            and continuation[-1].get("starting_sha") == conflict["expected_target"]
-            and stage["trigger_id"] == conflict["id"]
-            and stage["starting_sha"] == conflict["expected_target"]
-        ):
-            return {"outcome": "already_continued"}
-        result = await self._continue_parent_stage_on(
-            conn,
-            operation=operation,
-            stage=stage,
-            starting_sha=conflict["expected_target"],
-            trigger_id=conflict["id"],
-            project_id=project_id,
-            now=now,
-            allow_blocked_parent=validate_only,
-            validate_only=validate_only,
-        )
-        if result is None:
-            return {"outcome": "stale"}
-        if validate_only:
-            return {"outcome": "ready"}
-        value, transition = result
-        return {"outcome": "continued", "value": value, "transition": transition}
 
     async def _continue_parent_stage_on(
         self,
@@ -1820,9 +1838,8 @@ class RepairService:
             .on_conflict_do_nothing(index_elements=[messages.c.id])
         )
 
-    @staticmethod
     async def _escalate_unstaged_parent_red_on(
-        conn, *, operation: dict[str, Any], evidence: dict[str, Any], now: float
+        self, conn, *, operation: dict[str, Any], evidence: dict[str, Any], now: float
     ) -> None:
         """Surface a live red the mechanism refused to stage.
 
@@ -1837,36 +1854,22 @@ class RepairService:
         ).mappings().one_or_none()
         if parent is None:
             return
-        await conn.execute(
-            pg_insert(messages)
-            .values(
-                id=f"msg-unstaged-parent-red-{operation['id']}-{evidence['id']}",
-                project_id=parent["project_id"],
-                from_kind="system",
-                from_id="integration-repair",
-                to_kind="session",
-                to_id=f"supervisor-{parent['project_id']}",
-                subject=(
-                    f"Parent {operation['parent_task_id']} is red with no repair stage"
-                ),
-                body=(
-                    f"Run {evidence['run_id']} failed the required checks for "
-                    f"{operation['parent_task_id']} at generation "
-                    f"{evidence['parent_generation']}, head {evidence['parent_head_sha']}, "
-                    f"and operation {operation['id']} could not open a repair stage for it. "
-                    f"No writer is scheduled; this needs an operator."
-                ),
-                created_at=now,
-                priority=80,
-                archive_after_inject=1,
-                body_kind="integration_unstaged_parent_red",
-            )
-            .on_conflict_do_nothing(index_elements=[messages.c.id])
+        await self._stage_notice_on(
+            conn, operation, project_id=parent["project_id"], priority=80,
+            key=f"unstaged-parent-red-{operation['id']}-{evidence['id']}",
+            subject=f"Parent {operation['parent_task_id']} is red with no repair stage",
+            body=(
+                f"Run {evidence['run_id']} failed the required checks for "
+                f"{operation['parent_task_id']} at generation "
+                f"{evidence['parent_generation']}, head {evidence['parent_head_sha']}, "
+                f"and operation {operation['id']} could not open a repair stage for it. "
+                f"No writer is scheduled; this needs an operator."
+            ),
+            now=now, body_kind="integration_unstaged_parent_red",
         )
 
-    @staticmethod
     async def _escalate_stuck_batch_on(
-        conn, operation, *, failures: int, now: float
+        self, conn, operation, *, failures: int, now: float
     ) -> None:
         """Notify the supervisor once after three consecutive counted failures.
 
@@ -1889,27 +1892,16 @@ class RepairService:
             )
         ).scalars().all()
         age_seconds = max(0, int(now - batch["created_at"]))
-        await conn.execute(
-            pg_insert(messages)
-            .values(
-                id=f"msg-stuck-batch-{operation['batch_id']}",
-                project_id=batch["project_id"],
-                from_kind="system",
-                from_id="integration-repair",
-                to_kind="session",
-                to_id=f"supervisor-{batch['project_id']}",
-                subject=f"Integration batch {operation['batch_id']} needs attention",
-                body=(
-                    f"Integration batch {operation['batch_id']} has {failures} consecutive "
-                    f"failed repair checks after {age_seconds} seconds. "
-                    f"Members: {', '.join(members) or '(none)'}"
-                ),
-                created_at=now,
-                priority=50,
-                archive_after_inject=1,
-                body_kind="integration_stuck_batch",
-            )
-            .on_conflict_do_nothing(index_elements=[messages.c.id])
+        await self._stage_notice_on(
+            conn, operation, project_id=batch["project_id"],
+            key=f"stuck-batch-{operation['batch_id']}",
+            subject=f"Integration batch {operation['batch_id']} needs attention",
+            body=(
+                f"Integration batch {operation['batch_id']} has {failures} consecutive "
+                f"failed repair checks after {age_seconds} seconds. "
+                f"Members: {', '.join(members) or '(none)'}"
+            ),
+            now=now, body_kind="integration_stuck_batch",
         )
 
     async def _settle_resolved_parent_dispatch(self, operation_id):
@@ -3368,12 +3360,18 @@ class RepairService:
         if batch is None or batch["lifecycle"] != "building":
             return False
         revision = (await conn.execute(
-            select(integration_candidate_revisions.c.state).where(
+            select(
+                integration_candidate_revisions.c.state,
+                integration_candidate_revisions.c.repair_parent_revision,
+            ).where(
                 integration_candidate_revisions.c.batch_id == batch["id"],
                 integration_candidate_revisions.c.revision == batch["current_revision"],
             )
-        )).scalar_one_or_none()
-        if revision != "constructing":
+        )).mappings().one_or_none()
+        # A successor rebuild inherits the existing repair deadline. It must not
+        # acquire the grace reserved for an interrupted initial construction.
+        if (revision is None or revision["state"] != "constructing"
+                or revision["repair_parent_revision"] is not None):
             return False
         event_id = (
             f"integration-construction-redrive:{operation['id']}:0:"
@@ -4194,15 +4192,16 @@ class RepairService:
 
     async def _stage_notice_on(
         self, conn, operation: dict[str, Any], *, key: str, subject: str, body: str,
-        body_kind: str, now: float,
+        body_kind: str, now: float, project_id: str | None = None, priority: int = 50,
     ) -> None:
         """One supervisor message per *key*, however often the condition recurs."""
-        project_id = await self._operation_project_id_on(conn, operation)
+        if project_id is None:
+            project_id = await self._operation_project_id_on(conn, operation)
         await conn.execute(pg_insert(messages).values(
             id=f"msg-{key}", project_id=project_id,
             from_kind="system", from_id="integration-repair", to_kind="session",
             to_id=f"supervisor-{project_id}", subject=subject, body=body,
-            created_at=now, priority=50, archive_after_inject=1, body_kind=body_kind,
+            created_at=now, priority=priority, archive_after_inject=1, body_kind=body_kind,
         ).on_conflict_do_nothing(index_elements=[messages.c.id]))
 
     async def due_stages(
@@ -5988,103 +5987,73 @@ class RepairService:
         candidate_line = (
             f"Candidate SHA: {candidate_ci['candidate_sha']}"
             if candidate_ci["candidate_built"]
-            else "Candidate SHA: not built yet (the candidate is still being constructed)"
+            else render_task_template("candidate-not-built")
         )
         identity = (
-            f"Batch: {candidate_ci['batch_id']}\n"
-            f"Candidate revision: {candidate_ci['revision']} "
-            f"(revision state: {candidate_ci['state']})\n"
-            f"{candidate_line}\n"
-            f"Construction base: {candidate_ci['construction_base_sha']}\n"
-            f"{run_line}\n\n"
+            render_task_template(
+                "candidate-ci-identity",
+                batch_id=candidate_ci["batch_id"],
+                revision=candidate_ci["revision"],
+                state=candidate_ci["state"],
+                candidate_line=candidate_line,
+                construction_base_sha=candidate_ci["construction_base_sha"],
+                run_line=run_line,
+            )
         )
         if candidate_ci["conclusion"] == "success":
             return (
-                "\n\n## Candidate CI is green — push nothing\n\n"
-                f"{identity}"
-                "Candidate CI already passed on this exact candidate. There is nothing "
-                "to repair: the frozen dossier records no required-check failure, and "
-                "none exists.\n\n"
-                "Protocol: push nothing at all to the batch branch, do not rebase, and "
-                "close this stage pass-unchanged now; the daemon publishes under its "
-                "fence. A fix after a green result cannot be bound to this candidate; "
-                "it would force a superseding revision and abort the batch. Ask the "
-                "supervisor only if the run above cannot be read at all."
+                render_task_template("candidate-ci-green", identity=identity)
             )
         if candidate_ci["conclusion"] is None:
             cause = (
-                "The frozen dossier's failed checks, logs and attempted commands are empty "
-                "BECAUSE candidate CI has not reported yet. There is nothing on record to "
-                "repair. Do not push, do not rebase, and do not fabricate a fix.\n\n"
+                render_task_template("candidate-ci-unobserved")
             )
         elif candidate_ci["conclusion"] == "failure":
             cause = (
-                "Candidate CI reported a failure for this candidate, but the daemon has "
-                "not recorded that failure in this stage's dossier yet, so its failed "
-                "checks are still empty. Read the run above before acting; do not push, "
-                "do not rebase, and do not fabricate a fix from the empty dossier.\n\n"
+                render_task_template("candidate-ci-unrecorded-failure")
             )
         else:
             cause = (
-                "The frozen dossier records no required-check failure for this exact "
-                "candidate. There is nothing on record to repair beyond the observation "
-                "above. Do not push, do not rebase, and do not fabricate a fix.\n\n"
+                render_task_template("candidate-ci-no-failure")
             )
         return (
-            "\n\n## Awaiting candidate CI — no failure is on record yet\n\n"
-            f"{identity}"
-            f"{cause}"
-            "Protocol:\n"
-            "1. Check the candidate CI status for the revision above before acting "
-            "(read the run above with your CI read; `aq git ci-baseline-status` covers "
-            "branch baselines, not this candidate).\n"
-            "2. While the candidate is still being built or the run is pending, missing, "
-            "cancelled or inconclusive: push nothing at all to the batch branch, and close "
-            "this stage pass-unchanged when CI turns green; the daemon publishes under its "
-            "fence.\n"
-            "3. If and only if a required check on the exact candidate SHA fails: "
-            "then repair, record the failed checks, and submit through "
-            "aq integration resolve-candidate-member as usual.\n"
-            "A fix after a green result cannot be bound to this candidate; it would "
-            "force a superseding revision instead. Ask the supervisor only if the "
-            "candidate CI run for this exact SHA cannot be read at all."
+            render_task_template("candidate-ci-awaiting", identity=identity, cause=cause)
         )
 
     @staticmethod
     def _delegate_description(operation, repair_stage, *, conflict=None, candidate_ci=None) -> str:
         description = (
-            "Execute the frozen hierarchical-integration repair stage.\n\n"
-            f"Operation: {operation['id']}\n"
-            f"Stage: {repair_stage['ordinal']}\n"
-            f"Starting SHA: {repair_stage['starting_sha']}\n"
-            f"Dossier: {repair_stage['dossier']}"
+            render_task_template(
+                "integration-repair-stage",
+                operation_id=operation["id"],
+                ordinal=repair_stage["ordinal"],
+                starting_sha=repair_stage["starting_sha"],
+                dossier=repair_stage["dossier"],
+            )
         )
         refiles = (repair_stage["dossier"] or {}).get("writer_refiles")
         if refiles:
             description += (
-                "\n\nThis stage was refiled at the same ordinal: its previous writer "
-                f"(claim epoch {refiles[-1]['claim_epoch']}) stopped without publishing "
-                "anything. Start from the published stage head."
+                render_task_template("integration-repair-refiled", previous_claim_epoch=refiles[-1]["claim_epoch"])
             )
         progress = (repair_stage["dossier"] or {}).get("preserved_progress")
         if progress:
             description += (
-                "\n\nResume the preserved unpublished progress at "
-                f"{progress['ref']} ({progress['sha']}). The workspace starts at this exact tip. "
-                f"Frozen members already present as ancestors: {progress['completed_member_ordinals']}. "
-                "Keep those merges and finish only the remaining work. The original partial head "
-                "still anchors the complete repair commit range and candidate submission. "
-                "Preservation is not candidate acceptance: exact candidate CI and publication "
-                "still use the frozen subject, manifest, and current delegate fence."
+                render_task_template(
+                    "integration-repair-preserved-progress",
+                    progress_ref=progress["ref"],
+                    progress_sha=progress["sha"],
+                    completed_member_ordinals=progress["completed_member_ordinals"],
+                )
             )
         description += RepairService._candidate_ci_section(candidate_ci)
         if not conflict:
             return description
         if conflict.get("members"):
             merge_start = (
-                "Continue at the preserved tip and merge every frozen source head still absent in "
+                render_task_template("batch-conflict-resume")
                 if progress
-                else "Start at the partial head and merge EVERY remaining frozen source head in "
+                else render_task_template("batch-conflict-start")
             )
             manifest = "\n".join(
                 f"- {member['ordinal']}: {member['task_id']}, base {member['source_base_sha']}, "
@@ -6092,48 +6061,32 @@ class RepairService:
                 for member in conflict["members"]
             )
             return (
-                f"{description}\n\n## Complete batch conflict repair\n\n"
-                f"Batch: {conflict['batch_id']}\nRevision: {conflict['revision']}\n"
-                f"Partial head: {conflict['partial_head_sha']}\n\n{manifest}\n\n{merge_start}"
-                "manifest order in this workspace. Resolve all conflicts together, preserving "
-                "the intended features. Retain every source head as an ancestor of the final "
-                "head. You may edit any necessary repair file, including earlier features and "
-                "migrations; re-chain colliding migration revisions and check alembic heads. "
-                "Regenerate generated artifacts from resolved sources; never hand-merge them. "
-                "Run focused checks, commit repairs, and record the complete first-parent "
-                "range with git rev-list --first-parent --reverse PARTIAL_HEAD..HEAD.\n\n"
-                "Submit through aq integration resolve-candidate-member with "
-                "--resolved-head-sha HEAD --resolved-tree-sha TREE and one "
-                "--repair-commit-sha per first-parent commit. The frozen policy makes this "
-                "a complete batch resolution; the daemon derives all authority and publishes "
-                "under its fence. Do not push the integration branch or main yourself. "
-                "Candidate CI must pass on the exact resulting SHA before promotion."
+                render_task_template(
+                    "batch-conflict-repair",
+                    description=description,
+                    batch_id=conflict["batch_id"],
+                    revision=conflict["revision"],
+                    partial_head_sha=conflict["partial_head_sha"],
+                    manifest=manifest,
+                    merge_start=merge_start,
+                )
             )
         member_start = (
-            "Continue from the exact preserved tip above. "
-            if progress else "Start from the exact partial head above. "
+            render_task_template("member-conflict-resume")
+            if progress else render_task_template("member-conflict-start")
         )
         return (
-            f"{description}\n\n"
-            "## Candidate member conflict\n\n"
-            f"Batch: {conflict['batch_id']}\n"
-            f"Candidate revision: {conflict['revision']}\n"
-            f"Member ordinal: {conflict['ordinal']}\n"
-            f"Partial head: {conflict['partial_head_sha']}\n"
-            f"Member source base: {conflict['source_base_sha']}\n"
-            f"Member reviewed head: {conflict['source_head_sha']}\n\n"
-            f"{member_start}Resolve only this member's conflict, "
-            "commit the repair as a linear non-merge range, and do not push the integration "
-            "branch yourself. Record `git rev-parse HEAD`, `git rev-parse HEAD^{tree}`, and "
-            "each commit from `git rev-list --reverse PARTIAL_HEAD..HEAD`, then run:\n\n"
-            "    aq integration resolve-candidate-member \\\n"
-            "      --resolved-head-sha RESOLVED_HEAD_SHA \\\n"
-            "      --resolved-tree-sha RESOLVED_TREE_SHA \\\n"
-            "      --repair-commit-sha REPAIR_COMMIT_SHA\n\n"
-            "Repeat `--repair-commit-sha` in oldest-to-newest order for every repair commit. "
-            "The command derives the batch, member, operation, partial head, claim, workspace, "
-            "and branch fence from this authenticated assignment; never supply or push a "
-            "replacement lineage by hand."
+            render_task_template(
+                "candidate-member-conflict",
+                description=description,
+                batch_id=conflict["batch_id"],
+                revision=conflict["revision"],
+                ordinal=conflict["ordinal"],
+                partial_head_sha=conflict["partial_head_sha"],
+                source_base_sha=conflict["source_base_sha"],
+                source_head_sha=conflict["source_head_sha"],
+                member_start=member_start,
+            )
         )
 
     async def _current_batch_subject_rows_on(self, conn, operation):
@@ -6210,7 +6163,8 @@ class RepairService:
             "manifest": manifest,
             "branch_sha": starting_sha,
             "required_checks": boundary.required_checks.model_dump(mode="json"),
-            "artifact": boundary.route.artifact.model_dump(mode="json"),
+            "artifact": (boundary.route.artifact.model_dump(mode="json")
+                         if boundary.route is not None else None),
             "receipts": receipts,
             "repair_commits": [],
             "failed_checks": [],
@@ -6240,33 +6194,17 @@ class RepairService:
                 {"evidence_id": evidence["id"], "checks": evidence["checks"]}
             )
         updated["failed_checks"] = failed_checks
-        updated["logs"] = list(updated.get("logs", [])) + [
-            {
-                "evidence_id": evidence["id"],
-                "producer_id": evidence["producer_id"],
-                "workflow_id": evidence["workflow_id"],
-                "run_id": evidence["run_id"],
-                "attempt": int(evidence["attempt"]),
-            }
-        ]
-        updated["hypotheses"] = list(updated.get("hypotheses", [])) + [
-            {
-                "evidence_id": evidence["id"],
-                "classification": evidence["classification"],
-                "conclusion": evidence["conclusion"],
-            }
-        ]
-        updated["commands_attempted"] = list(updated.get("commands_attempted", [])) + [
-            {
-                "workflow_id": evidence["workflow_id"],
-                "run_id": evidence["run_id"],
-                "attempt": int(evidence["attempt"]),
-                "required_check_version": evidence["required_check_version"],
-            }
-        ]
-        budget = dict(updated.get("budget", {}))
-        budget["attempts"] = attempts
-        updated["budget"] = budget
+        metadata = dict(evidence, evidence_id=evidence["id"], attempt=int(evidence["attempt"]))
+        sections = {
+            "logs": ("evidence_id", "producer_id", "workflow_id", "run_id", "attempt"),
+            "hypotheses": ("evidence_id", "classification", "conclusion"),
+            "commands_attempted": ("workflow_id", "run_id", "attempt", "required_check_version"),
+        }
+        for section, fields in sections.items():
+            updated[section] = list(updated.get(section, [])) + [
+                {field: metadata[field] for field in fields}
+            ]
+        updated["budget"] = dict(updated.get("budget", {}), attempts=attempts)
         return updated
 
     async def _current_receipts_on(self, conn, operation) -> list[dict[str, Any]]:
@@ -6281,12 +6219,7 @@ class RepairService:
             )
         rows = (await conn.execute(statement)).mappings().all()
         return [
-            {
-                "id": row["id"],
-                "source_task_id": row["source_task_id"],
-                "disposition": row["disposition"],
-                "after_sha": row["after_sha"],
-            }
+            {key: row[key] for key in ("id", "source_task_id", "disposition", "after_sha")}
             for row in sorted(rows, key=lambda item: item["id"])
         ]
 
@@ -6681,6 +6614,8 @@ class RepairService:
         if operation["target_kind"] not in {"parent", "batch"}:
             raise _RepairInvariant("repair target kind is corrupt")
         boundary = policy.parent if operation["target_kind"] == "parent" else policy.root
+        if boundary.route is None:
+            raise _RepairInvariant("repair route is not configured")
         if (
             operation["artifact_snapshot"]
             != boundary.route.artifact.model_dump(mode="json")

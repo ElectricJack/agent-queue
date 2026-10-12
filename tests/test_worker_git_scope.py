@@ -12,7 +12,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, create_autospec
+from unittest.mock import ANY, AsyncMock, create_autospec
+
+import asyncio
 
 import pytest
 
@@ -264,6 +266,52 @@ async def test_a_network_origin_is_never_its_own_authority(worker_git):
     result = await w.handler.execute("git_push", w.scoped())
     assert result["error"] == "task has no authorized repository"
     _assert_no_network(w.git)
+
+
+async def test_audited_first_binding_enables_existing_worker_publication(worker_git, monkeypatch):
+    w = worker_git
+    await w.db.update_project("p", repo_url="")
+    w.git.aget_remote_url.return_value = "https://github.com/evil/other.git"
+    github = AsyncMock()
+    monkeypatch.setattr(w.handler, "_github_client", lambda: github)
+    bound = await w.handler.execute("bind_project_repository", {
+        "project_id": "p", "repo_url": _REPOSITORY, "expected_repo_url": "",
+        "reason": "authorize the repository created after init",
+    })
+    assert bound["success"]
+    result = await w.handler.execute("git_push", w.scoped())
+    assert "error" not in result
+    assert w.git.apush_validated_delivery.await_args.kwargs["repository_url"] == f"{_REPOSITORY}.git"
+
+
+async def test_binding_refuses_an_inflight_worker_push(worker_git, tmp_path, monkeypatch):
+    w = worker_git
+    await w.db.update_project("p", repo_url="")
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    w.git.aget_remote_url.return_value = str(origin)
+    github = AsyncMock()
+    monkeypatch.setattr(w.handler, "_github_client", lambda: github)
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def push(*args, **kwargs):
+        started.set()
+        await finish.wait()
+        return _TIP
+
+    w.git.apush_validated_delivery.side_effect = push
+    running = asyncio.create_task(w.handler.execute("git_push", w.scoped()))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        bound = await w.handler.execute("bind_project_repository", {
+            "project_id": "p", "repo_url": _REPOSITORY, "expected_repo_url": "",
+            "reason": "authorize repository",
+        })
+        assert bound["error_code"] == "repository_publication_busy"
+        assert (await w.db.get_project("p")).repo_url == ""
+    finally:
+        finish.set()
+        await running
 
 
 async def test_a_local_origin_may_stand_in_for_a_missing_record(worker_git, tmp_path):
@@ -606,3 +654,54 @@ async def test_conflict_commands_require_live_parent_repair(env, monkeypatch, co
     lookup.assert_awaited_once_with('t1', session_id='s1')
     await db.update_task('t1', status=TaskStatus.COMPLETED)
     assert await check_request_scope(command, args, scope, db=db) is not None
+
+
+async def test_worker_pull_updates_only_its_checkout(worker_git):
+    w = worker_git
+    w.git.aget_current_branch.return_value = "aq/calm-ember-48"
+    result = await w.handler.execute("git_pull", w.scoped(branch="main"))
+    assert "error" not in result
+    w.git.apull_branch.assert_awaited_once_with(
+        w.work_dir, "main", repository_url=_REPOSITORY,
+    )
+
+
+async def test_worker_pull_cannot_change_main_checkout(worker_git):
+    w = worker_git
+    w.git.aget_current_branch.return_value = "main"
+    result = await w.handler.execute("git_pull", w.scoped(branch="main"))
+    assert "not this session's task branch" in result["error"]
+    w.git.apull_branch.assert_not_awaited()
+
+
+async def test_worker_pull_scope_is_own_workspace(env):
+    db, scope = env
+    assert await check_request_scope("git_pull", {"branch": "main"}, scope, db=db) is None
+    assert await check_request_scope(
+        "git_pull", {"workspace": "base"}, scope, db=db,
+    ) == "out of scope: workspace mismatch"
+
+
+@pytest.mark.parametrize("event,invoke_ai,allowed", [
+    ({}, False, True),
+    ({"project_id": "other"}, False, False),
+    ({"task_id": "other"}, False, False),
+    ({}, True, False),
+])
+async def test_worker_dry_run_fences_synthetic_context(worker_git, event, invoke_ai, allowed):
+    from unittest.mock import AsyncMock, patch
+
+    w = worker_git
+    w.handler.config.playbooks.enabled = True
+    with patch.object(w.handler, "_run_v2_artifact", new=AsyncMock(return_value={"dry_run": True})) as run:
+        result = await w.handler.execute("dry_run_playbook", w.scoped(
+            playbook_id="routing", event=event, invoke_ai=invoke_ai,
+        ))
+    if allowed:
+        assert result == {"dry_run": True}
+        assert run.await_args.args[1]["project_id"] == "p"
+        assert run.await_args.args[1]["task_id"] == "t1"
+        assert run.await_args.kwargs == {"dry_run": True, "invoke_ai": False}
+    else:
+        assert "error" in result
+        run.assert_not_awaited()
