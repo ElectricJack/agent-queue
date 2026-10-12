@@ -675,6 +675,7 @@ from .install_profile_response import InstallProfileResponse
 from .install_profile_response_422 import InstallProfileResponse422
 from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
+from .intelligence_class_policy import IntelligenceClassPolicy
 from .intelligence_class_reference import IntelligenceClassReference
 from .intelligence_class_reference_kind import IntelligenceClassReferenceKind
 from .inventory_root_spec import InventoryRootSpec
@@ -1176,6 +1177,7 @@ from .policy_file_preview import PolicyFilePreview
 from .policy_review_receipt import PolicyReviewReceipt
 from .pool_gauges import PoolGauges
 from .pool_instance_status import PoolInstanceStatus
+from .pool_policy import PoolPolicy
 from .pool_project_cap import PoolProjectCap
 from .pool_project_status import PoolProjectStatus
 from .pool_provider_unavailable import PoolProviderUnavailable
@@ -1191,6 +1193,7 @@ from .pool_set_enabled_response_422 import PoolSetEnabledResponse422
 from .pool_set_lifecycle_request import PoolSetLifecycleRequest
 from .pool_set_lifecycle_response import PoolSetLifecycleResponse
 from .pool_set_lifecycle_response_422 import PoolSetLifecycleResponse422
+from .pool_settings import PoolSettings
 from .pool_status_request import PoolStatusRequest
 from .pool_status_response import PoolStatusResponse
 from .pool_status_response_422 import PoolStatusResponse422
@@ -1234,10 +1237,13 @@ from .project_doctor_request import ProjectDoctorRequest
 from .project_doctor_response import ProjectDoctorResponse
 from .project_doctor_response_422 import ProjectDoctorResponse422
 from .project_graph_response import ProjectGraphResponse
+from .project_policy import ProjectPolicy
 from .project_ready_request import ProjectReadyRequest
 from .project_ready_response import ProjectReadyResponse
 from .project_ready_response_422 import ProjectReadyResponse422
 from .project_root_info import ProjectRootInfo
+from .project_settings import ProjectSettings
+from .project_settings_integration_preferences import ProjectSettingsIntegrationPreferences
 from .project_summary import ProjectSummary
 from .promote_note_request import PromoteNoteRequest
 from .promote_note_response import PromoteNoteResponse
@@ -1430,6 +1436,7 @@ from .reopen_with_feedback_response_422 import ReopenWithFeedbackResponse422
 from .reparent_task_request import ReparentTaskRequest
 from .reparent_task_response import ReparentTaskResponse
 from .reparent_task_response_422 import ReparentTaskResponse422
+from .repo_settings import RepoSettings
 from .report_brief_request import ReportBriefRequest
 from .report_brief_response import ReportBriefResponse
 from .report_brief_response_422 import ReportBriefResponse422
@@ -2593,6 +2600,7 @@ __all__ = (
     "InstallProfileResponse422",
     "IntelligenceClassModel",
     "IntelligenceClassModelMapping",
+    "IntelligenceClassPolicy",
     "IntelligenceClassReference",
     "IntelligenceClassReferenceKind",
     "InventoryRootSpec",
@@ -3092,6 +3100,7 @@ __all__ = (
     "PolicyReviewReceipt",
     "PoolGauges",
     "PoolInstanceStatus",
+    "PoolPolicy",
     "PoolProjectCap",
     "PoolProjectStatus",
     "PoolProviderUnavailable",
@@ -3107,6 +3116,7 @@ __all__ = (
     "PoolSetLifecycleRequest",
     "PoolSetLifecycleResponse",
     "PoolSetLifecycleResponse422",
+    "PoolSettings",
     "PoolStatusRequest",
     "PoolStatusResponse",
     "PoolStatusResponse422",
@@ -3148,10 +3158,13 @@ __all__ = (
     "ProjectDoctorResponse",
     "ProjectDoctorResponse422",
     "ProjectGraphResponse",
+    "ProjectPolicy",
     "ProjectReadyRequest",
     "ProjectReadyResponse",
     "ProjectReadyResponse422",
     "ProjectRootInfo",
+    "ProjectSettings",
+    "ProjectSettingsIntegrationPreferences",
     "ProjectSummary",
     "PromoteNoteRequest",
     "PromoteNoteResponse",
@@ -3368,6 +3381,7 @@ __all__ = (
     "ReportSubmitRequest",
     "ReportSubmitResponse",
     "ReportSubmitResponse422",
+    "RepoSettings",
     "RequiredChecks",
     "RerouteDecision",
     "RerouteUndone",

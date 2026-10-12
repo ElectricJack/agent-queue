@@ -33,15 +33,29 @@ inheritance. The local operator exports a
 project through `policy_export`, previews exact files, and acknowledges the
 preview checksum before writing a directory or `.aqpolicy` zip.
 
-Only six typed adapters participate: reviewed playbook source and compiled
+Typed adapters participate: reviewed playbook source and compiled
 artifact; agent profile settings and project overrides; promotion flow; CI check
 and test-selection policy; routing preferences; and spec, plan and formula
-templates. Adapters read fixed policy locations and explicit fields. They never
+templates; intelligence classes, pool settings and project/repository settings.
+Adapters read fixed policy locations and explicit fields. They never
 walk arbitrary vault content, serialize operator config, copy memory/history,
-account bindings, secrets, GitHub credentials, provider availability or pool sizes.
+account bindings, secrets, GitHub credentials or observed provider availability.
+Class definitions and configured pool enabled/min/max/min-per-project/claim limits
+accompany routing and profile dependencies. Pool values come from the database,
+including overrides newer than the vault file. Derived workers carry their
+template/class/harness identity and pool policy, never a flattened profile.
+Classes and pools have global runtime scope; project placement retains a draft.
+Global placement validates classes and profiles together before any file write,
+reconstructs derived stubs and synchronizes their configured pool state.
+Project settings include routing bindings, scheduling/budget/review/integration
+policy and repository URL/default-branch bindings. Personal Git identities,
+Discord/account bindings, repository trust identities, paths and runtime counters
+are excluded. Project settings imports remain pending configuration, subject to
+the existing authorized project and integration commands.
 Enabled system playbooks and referenced profile templates accompany project policy with
 system-origin labels. Required playbook dependencies must have reviewed artifacts.
-Derived worker rungs are regenerated locally rather than exported or overwritten.
+Derived worker profile bodies are regenerated locally from their exported
+identity and configured pool policy.
 
 Legacy compiled artifacts may lack retained Markdown. Startup backfills missing
 source files once per artifact using only digest-matching sources from the fixed

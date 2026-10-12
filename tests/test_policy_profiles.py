@@ -20,6 +20,7 @@ from src.database.tables import projects
 from src.policy_profiles.archive import files, pack, read_bundle, write_bundle
 from src.policy_profiles.models import Bundle, PromotionPolicy, TemplatePolicy
 from src.policy_profiles.service import item
+from src.profiles.sync import sync_profile_text_to_db
 
 MORNING = Path("tests/fixtures/playbooks/v2/morning-report")
 FLOW = [{"id": "release", "source": "main", "target": "stable", "type": "request"}]
@@ -388,6 +389,7 @@ nodes:
         "ci_test",
         "routing",
         "template",
+        "project_settings",
     }
     text = json.dumps(bundle)
     assert "SECRET" not in text and "PERSONAL" not in text and "github_app_id" not in text
@@ -905,6 +907,91 @@ Local personal reflection
         },
     )
     assert not result["success"] and not (vault / "agent-types/invalid/profile.md").exists()
+
+
+async def test_policy_roundtrip_includes_classes_and_live_derived_pool_settings(env):
+    from src.profiles.catalog import CatalogProfile, render_rung_stub
+    from src.profiles.parser import update_config_keys
+
+    handler, vault, _ = env
+    class_text = '''---
+id: portable
+name: Portable
+customized: true
+---
+```json
+{"codex":{"model":"operator-model","reasoning_effort":"high"}}
+```
+'''
+    class_path = put(vault, "intelligence-classes/portable.md", class_text)
+    template = put(vault, "agent-types/worker-codex/profile.md", '''---
+id: worker-codex
+name: Worker
+template: true
+---
+## Config
+```json
+{"harness":"codex","lifecycle":"pool","min_active":2,"max_active":4}
+```
+''')
+    rung = render_rung_stub(CatalogProfile(
+        id="portable-codex", provider_id="codex", harness="codex", intelligence_class="portable",
+        name="Portable worker", source_profile_id="worker-codex",
+    ))
+    rung = update_config_keys(rung, {"lifecycle": "pool", "min_active": 2, "max_active": 4})
+    path = put(vault, "agent-types/portable-codex/profile.md", rung)
+    assert (await sync_profile_text_to_db(rung, handler.db, source_path=str(path))).success
+    await handler.db.update_profile(
+        "portable-codex", enabled=False, min_active=1, max_active=None,
+        min_per_project=1, max_claims_per_session=5,
+    )
+    result = await handler.execute("policy_export", {"project_id": "source"})
+    assert result["success"], result
+    bundle = result["bundle"]
+    by_id = {entry["id"]: entry for entry in bundle["items"]}
+    assert "agent_settings:system:portable-codex" not in by_id
+    settings = by_id["pool:system:portable-codex"]["payload"]["settings"]
+    assert settings["enabled"] is False and settings["max_active"] is None
+    assert settings["extends"] == "worker-codex" and settings["default_class"] == "portable"
+    assert "intelligence_class:system:portable" in by_id
+    assert "project_settings:project:settings" in by_id
+    await handler.db.delete_profile("portable-codex")
+    for source in (path, template, class_path):
+        source.unlink()
+    selections = {
+        entry["id"]: {"scope": "global" if entry["original_scope"] == "system" else "project"}
+        for entry in bundle["items"]
+    }
+    args, data = await preview(handler, bundle, selections=selections)
+    acknowledge(args, data, scope="global", overwrite=True)
+    # Project metadata and routing remain destination-project drafts.
+    for entry in bundle["items"]:
+        if entry["original_scope"] == "project":
+            args["selections"][entry["id"]]["scope"] = "project"
+    applied = await handler.execute("policy_apply", args)
+    assert applied["success"], applied
+    restored = await handler.db.get_profile("portable-codex")
+    assert (restored.enabled, restored.min_active, restored.max_active,
+            restored.min_per_project, restored.max_claims_per_session) == (False, 1, None, 1, 5)
+    assert restored.default_class == "portable" and restored.harness == "codex"
+    assert "operator-model" in class_path.read_text()
+    assert "project_settings:project:settings" in applied["pending_configuration"]
+
+
+def test_older_policy_agent_payload_checksums_still_roundtrip():
+    from src.policy_profiles.models import AgentConfig, PolicyAgentSettings, checksum
+
+    bundle = simple_bundle(item("worker", "system", PolicyAgentSettings(
+        name="Worker", config=AgentConfig(harness="codex"),
+    ))).model_dump(mode="json")
+    payload = bundle["items"][0]["payload"]
+    payload.pop("pool")
+    for key in ("enabled", "min_active", "max_active", "min_per_project", "max_claims_per_session",
+                "mode", "wake_mode", "idle_timeout", "max_session_age", "allow_base_checkout"):
+        payload["config"].pop(key)
+    bundle["items"][0]["checksum"] = checksum(payload)
+    verified = Bundle.model_validate(bundle)
+    assert read_bundle(pack(verified)) == verified
 
 
 async def test_global_profile_sync_failure_retains_draft_and_identical_retry_syncs(

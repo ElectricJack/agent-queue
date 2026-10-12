@@ -15260,8 +15260,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Write a versioned, validated .aqbundle containing only portable tuning and global profile definitions. Run preview_portable_config first to curate the exported defaults.",
-        "description": "Write a versioned, validated .aqbundle containing only portable tuning and global profile definitions. Run preview_portable_config first to curate the exported defaults.",
+        "summary": "Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes, pool settings, projects and policy sources. Preview exclusions with preview_portable_config.",
+        "description": "Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes, pool settings, projects and policy sources. Preview exclusions with preview_portable_config.",
         "operationId": "export_portable_config",
         "requestBody": {
           "content": {
@@ -15818,8 +15818,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default; use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.",
-        "description": "Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default; use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.",
+        "summary": "Validate and import portable configuration, profiles, classes, pools and projects. Existing customization is kept by default; conflict=replace merges portable settings while preserving destination credentials and paths, and conflict=error reports collisions. Imported policy sources still require normal review and setup.",
+        "description": "Validate and import portable configuration, profiles, classes, pools and projects. Existing customization is kept by default; conflict=replace merges portable settings while preserving destination credentials and paths, and conflict=error reports collisions. Imported policy sources still require normal review and setup.",
         "operationId": "import_portable_config",
         "requestBody": {
           "content": {
@@ -16053,8 +16053,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain. Project data, history, paths, credentials, and secrets are excluded.",
-        "description": "Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain. Project data, history, paths, credentials, and secrets are excluded.",
+        "summary": "Preview portable configuration, global profiles, intelligence classes, configured pools, projects, repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime history are excluded.",
+        "description": "Preview portable configuration, global profiles, intelligence classes, configured pools, projects, repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime history are excluded.",
         "operationId": "preview_portable_config",
         "requestBody": {
           "content": {
@@ -21424,7 +21424,8 @@
                 "type": "string",
                 "enum": [
                   "task",
-                  "pool"
+                  "pool",
+                  "named"
                 ]
               },
               {
@@ -21505,6 +21506,116 @@
               }
             ],
             "title": "Read Only"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "min_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Active"
+          },
+          "max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Active"
+          },
+          "min_per_project": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Per Project"
+          },
+          "max_claims_per_session": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Claims Per Session"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "wake_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wake Mode"
+          },
+          "idle_timeout": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Timeout"
+          },
+          "max_session_age": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Session Age"
+          },
+          "allow_base_checkout": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Base Checkout"
           }
         },
         "additionalProperties": false,
@@ -29595,7 +29706,10 @@
               "promotion_flow",
               "ci_test",
               "routing",
-              "template"
+              "template",
+              "intelligence_class",
+              "pool",
+              "project_settings"
             ],
             "title": "Type"
           },
@@ -40533,6 +40647,26 @@
         ],
         "title": "IntelligenceClassModel"
       },
+      "IntelligenceClassPolicy": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "intelligence_class",
+            "title": "Type",
+            "default": "intelligence_class"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "title": "IntelligenceClassPolicy"
+      },
       "IntelligenceClassReference": {
         "properties": {
           "kind": {
@@ -40660,7 +40794,10 @@
               "promotion_flow",
               "ci_test",
               "routing",
-              "template"
+              "template",
+              "intelligence_class",
+              "pool",
+              "project_settings"
             ],
             "title": "Type"
           },
@@ -40696,6 +40833,15 @@
               },
               {
                 "$ref": "#/components/schemas/TemplatePolicy"
+              },
+              {
+                "$ref": "#/components/schemas/IntelligenceClassPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/PoolPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/ProjectPolicy"
               }
             ],
             "title": "Payload",
@@ -40704,7 +40850,10 @@
               "mapping": {
                 "agent_settings": "#/components/schemas/PolicyAgentSettings",
                 "ci_test": "#/components/schemas/CITestPolicy",
+                "intelligence_class": "#/components/schemas/IntelligenceClassPolicy",
                 "playbook": "#/components/schemas/PlaybookPolicy",
+                "pool": "#/components/schemas/PoolPolicy",
+                "project_settings": "#/components/schemas/ProjectPolicy",
                 "promotion_flow": "#/components/schemas/PromotionPolicy",
                 "routing": "#/components/schemas/RoutingPreferences",
                 "template": "#/components/schemas/TemplatePolicy"
@@ -54120,6 +54269,16 @@
           "config": {
             "$ref": "#/components/schemas/AgentConfig"
           },
+          "pool": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PoolSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "capabilities": {
             "anyOf": [
               {
@@ -54513,6 +54672,25 @@
         ],
         "title": "PoolInstanceStatus",
         "description": "One active or quarantined session belonging to a worker pool."
+      },
+      "PoolPolicy": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "pool",
+            "title": "Type",
+            "default": "pool"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/PoolSettings"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "settings"
+        ],
+        "title": "PoolPolicy"
       },
       "PoolProjectCap": {
         "properties": {
@@ -55058,6 +55236,102 @@
           "success"
         ],
         "title": "PoolSetLifecycleResponse"
+      },
+      "PoolSettings": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "min_active": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Active"
+          },
+          "max_active": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Active"
+          },
+          "min_per_project": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Per Project"
+          },
+          "max_claims_per_session": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Claims Per Session"
+          },
+          "derived": {
+            "type": "boolean",
+            "title": "Derived",
+            "default": false
+          },
+          "extends": {
+            "type": "string",
+            "title": "Extends",
+            "default": ""
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "default_class": {
+            "type": "string",
+            "title": "Default Class",
+            "default": ""
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle",
+            "default": "task"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PoolSettings"
       },
       "PoolStatusRequest": {
         "properties": {
@@ -56329,6 +56603,25 @@
         "type": "object",
         "title": "ProjectGraphResponse"
       },
+      "ProjectPolicy": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "project_settings",
+            "title": "Type",
+            "default": "project_settings"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ProjectSettings"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "settings"
+        ],
+        "title": "ProjectPolicy"
+      },
       "ProjectReadyRequest": {
         "properties": {
           "project_id": {
@@ -56456,6 +56749,111 @@
           "path"
         ],
         "title": "ProjectRootInfo"
+      },
+      "ProjectSettings": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "credit_weight": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Credit Weight",
+            "default": 1.0
+          },
+          "max_concurrent_agents": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Max Concurrent Agents",
+            "default": 2
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "ACTIVE"
+          },
+          "budget_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Limit"
+          },
+          "repo_url": {
+            "type": "string",
+            "title": "Repo Url",
+            "default": ""
+          },
+          "repo_default_branch": {
+            "type": "string",
+            "title": "Repo Default Branch",
+            "default": "main"
+          },
+          "assignment_playbook_id": {
+            "type": "string",
+            "title": "Assignment Playbook Id",
+            "default": "default-assignment-routing"
+          },
+          "integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode"
+          },
+          "review_delegate_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Delegate To"
+          },
+          "preferred_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Provider"
+          },
+          "repos": {
+            "items": {
+              "$ref": "#/components/schemas/RepoSettings"
+            },
+            "type": "array",
+            "title": "Repos",
+            "default": []
+          },
+          "integration_preferences": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Integration Preferences",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "ProjectSettings"
       },
       "ProjectSummary": {
         "properties": {
@@ -63071,6 +63469,35 @@
           "task_id"
         ],
         "title": "ReparentTaskResponse"
+      },
+      "RepoSettings": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type",
+            "default": "clone"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "default": ""
+          },
+          "default_branch": {
+            "type": "string",
+            "title": "Default Branch",
+            "default": "main"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "RepoSettings"
       },
       "ReportBriefRequest": {
         "properties": {

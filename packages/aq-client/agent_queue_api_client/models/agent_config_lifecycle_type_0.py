@@ -2,6 +2,7 @@ from enum import Enum
 
 
 class AgentConfigLifecycleType0(str, Enum):
+    NAMED = "named"
     POOL = "pool"
     TASK = "task"
 

@@ -65,11 +65,15 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ImportPortableConfigRequest,
 ) -> Response[ImportPortableConfigResponse422 | PortableConfigResponse]:
-    """Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default;
-    use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.
+    """Validate and import portable configuration, profiles, classes, pools and projects. Existing
+    customization is kept by default; conflict=replace merges portable settings while preserving
+    destination credentials and paths, and conflict=error reports collisions. Imported policy sources
+    still require normal review and setup.
 
-     Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default;
-    use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.
+     Validate and import portable configuration, profiles, classes, pools and projects. Existing
+    customization is kept by default; conflict=replace merges portable settings while preserving
+    destination credentials and paths, and conflict=error reports collisions. Imported policy sources
+    still require normal review and setup.
 
     Args:
         body (ImportPortableConfigRequest):
@@ -98,11 +102,15 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ImportPortableConfigRequest,
 ) -> ImportPortableConfigResponse422 | PortableConfigResponse | None:
-    """Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default;
-    use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.
+    """Validate and import portable configuration, profiles, classes, pools and projects. Existing
+    customization is kept by default; conflict=replace merges portable settings while preserving
+    destination credentials and paths, and conflict=error reports collisions. Imported policy sources
+    still require normal review and setup.
 
-     Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default;
-    use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.
+     Validate and import portable configuration, profiles, classes, pools and projects. Existing
+    customization is kept by default; conflict=replace merges portable settings while preserving
+    destination credentials and paths, and conflict=error reports collisions. Imported policy sources
+    still require normal review and setup.
 
     Args:
         body (ImportPortableConfigRequest):
@@ -126,11 +134,15 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ImportPortableConfigRequest,
 ) -> Response[ImportPortableConfigResponse422 | PortableConfigResponse]:
-    """Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default;
-    use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.
+    """Validate and import portable configuration, profiles, classes, pools and projects. Existing
+    customization is kept by default; conflict=replace merges portable settings while preserving
+    destination credentials and paths, and conflict=error reports collisions. Imported policy sources
+    still require normal review and setup.
 
-     Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default;
-    use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.
+     Validate and import portable configuration, profiles, classes, pools and projects. Existing
+    customization is kept by default; conflict=replace merges portable settings while preserving
+    destination credentials and paths, and conflict=error reports collisions. Imported policy sources
+    still require normal review and setup.
 
     Args:
         body (ImportPortableConfigRequest):
@@ -157,11 +169,15 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ImportPortableConfigRequest,
 ) -> ImportPortableConfigResponse422 | PortableConfigResponse | None:
-    """Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default;
-    use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.
+    """Validate and import portable configuration, profiles, classes, pools and projects. Existing
+    customization is kept by default; conflict=replace merges portable settings while preserving
+    destination credentials and paths, and conflict=error reports collisions. Imported policy sources
+    still require normal review and setup.
 
-     Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default;
-    use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.
+     Validate and import portable configuration, profiles, classes, pools and projects. Existing
+    customization is kept by default; conflict=replace merges portable settings while preserving
+    destination credentials and paths, and conflict=error reports collisions. Imported policy sources
+    still require normal review and setup.
 
     Args:
         body (ImportPortableConfigRequest):
