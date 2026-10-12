@@ -2832,8 +2832,8 @@ class SessionReconciler:
             if (row is None or row.instance_token != observed.instance_token
                     or row.lifecycle != "named" or row.state not in {"starting", "running"}):
                 continue
+            provider = self._provider_for(row)
             if row.desired_state == "sleeping":
-                provider = self._provider_for(row)
                 if provider is None:
                     continue
                 try:
