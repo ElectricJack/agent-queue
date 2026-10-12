@@ -1238,8 +1238,8 @@ class ProfileCommandsMixin:
 
         Two modes:
 
-        - Full reseed (default): overwrites the whole vault file with the
-          shipped default — the explicit, opt-in counterpart to startup
+        - Full reseed (default): restores the shipped vault file while
+          preserving its existing display name — the explicit, opt-in counterpart to startup
           seeding, which never overwrites.  The existing file is copied to
           ``profile.md.bak-<epoch>`` before being replaced unless
           ``backup=False``.
