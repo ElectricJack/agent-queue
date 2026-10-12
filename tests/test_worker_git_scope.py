@@ -637,7 +637,7 @@ async def test_old_custom_worker_profile_reports_and_merges_missing_grants(tmp_p
     'integration_resolve_conflict', 'integration_push_conflict_resolution',
 ])
 @pytest.mark.parametrize('assignment', ['parent', 'batch', 'inactive', 'ordinary'])
-async def test_conflict_commands_require_live_parent_repair(env, monkeypatch, command, assignment):
+async def test_retired_conflict_commands_are_denied_for_every_assignment(env, monkeypatch, command, assignment):
     from unittest.mock import AsyncMock
 
     db, scope = env
@@ -649,9 +649,9 @@ async def test_conflict_commands_require_live_parent_repair(env, monkeypatch, co
     monkeypatch.setattr(db, 'get_repair_filing_scope', lookup)
     args = {'intent_id': 'intent', 'fence': {}}
     result = await check_request_scope(command, args, scope, db=db)
-    assert (result is None) == (assignment == 'parent')
+    assert result == f"out of scope: {command}"
     assert args == {'intent_id': 'intent', 'fence': {}}
-    lookup.assert_awaited_once_with('t1', session_id='s1')
+    lookup.assert_not_awaited()
     await db.update_task('t1', status=TaskStatus.COMPLETED)
     assert await check_request_scope(command, args, scope, db=db) is not None
 

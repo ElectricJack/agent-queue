@@ -54,13 +54,6 @@ DEFAULT_EXCLUDED_COMMANDS = {
     "cron_delivery_finish",
     # Trusted daemon facts carry a SourceCIObservation, never agent-authored JSON.
     "observe_integration_source_ci",
-    # Parent reconciler visit dispatch.  The authority is the process-bound
-    # exclusion the reconciler holds for its own visit (``active_parent_scope``),
-    # not the payload, so an MCP client could only ever be told ``unauthorized``.
-    # The reconciler's own adapters call it through CommandHandler; it keeps a
-    # fallback schema so the generated CLI command (``aq system
-    # integration-parent-action``) can name the subject and the primitive.
-    "integration_parent_action",
     "reconcile_agent_waits",  # daemon-only bounded durable scan
     "reconcile_collaborations",  # daemon-only expiry and retention
     "integration_train_tick",  # daemon-only git-first train dispatch

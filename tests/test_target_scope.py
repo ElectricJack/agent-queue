@@ -501,7 +501,6 @@ _FOREIGN_TARGETS = [
     ("integration_reopen_collection", {"task_id": "foreign", "reason": "recover"}),
     ("integration_reevaluate_repair", {"operation_id": "op-other"}),
     ("integration_release", {"batch_id": "batch-other"}),
-    ("integration_recover_candidate_member", {"reservation_id": "res-other"}),
     ("integration_release_owner", {"owner_row_id": "owner-other"}),
     ("integration_eject", {"batch_id": "batch-other", "task_id": "foreign", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-other", "gate_id": "gate-p"}),
@@ -514,7 +513,6 @@ _OWN_TARGETS = [
     ("integration_reopen_collection", {"task_id": "own", "reason": "recover"}),
     ("integration_reevaluate_repair", {"operation_id": "op-p"}),
     ("integration_release", {"batch_id": "batch-p"}),
-    ("integration_recover_candidate_member", {"reservation_id": "res-p"}),
     ("integration_release_owner", {"owner_row_id": "owner-p"}),
     ("integration_eject", {"batch_id": "batch-p", "task_id": "own", "reason": "x"}),
     ("integration_release_held_gate", {"subject_id": "subject-p", "gate_id": "gate-p"}),
@@ -896,25 +894,6 @@ async def test_a_session_with_null_project_is_refused(db):
     )
 
 
-@pytest.mark.parametrize(
-    "command", ["integration_reconcile_promotion", "integration_push_conflict_resolution"]
-)
-@pytest.mark.parametrize(
-    ("intent_id", "expected_error"),
-    [
-        ("intent-p", None),
-        ("intent-other", "targets another project (intent_id belongs to other)"),
-        ("intent-null-p", None),
-        ("intent-null-other", "targets another project (intent_id belongs to other)"),
-        ("intent-null-missing-repo", "targets a row owned by no project"),
-    ],
-)
-async def test_promotion_intent_ownership_uses_repository_when_project_is_null(
-    db, command, intent_id, expected_error
-):
-    error = await check_request_scope(command, {"intent_id": intent_id}, _scope("p"), db=db)
-
-    assert error == (None if expected_error is None else f"out of scope: {command} {expected_error}")
 
 
 @pytest.mark.parametrize("argument", sorted(TARGET_RESOLVERS))

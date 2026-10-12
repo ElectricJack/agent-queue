@@ -417,22 +417,6 @@ class IntegrationCommandsMixin:
             return _failure("blocked", str(exc))
         return _with_reason(result["outcome"] == "reverifying", result)
 
-    async def _cmd_integration_parent_action(self, args: dict) -> dict:
-        """Internal visit dispatch: process-bound engine scope is the authority."""
-        from src.integration.owner_guards import active_parent_scope
-        from src.integration.runtime_contracts import Subject
-
-        row = await self.db.get_integration_subject(args.get("subject_id"))
-        if row is None or row["version"] != args.get("expected_version"):
-            return _failure("stale", "parent subject version changed")
-        subject = Subject.from_row(row)
-        if not active_parent_scope(self.db, subject.task_id):
-            return _failure("unauthorized", "parent action needs the active visit exclusion")
-        runtime = getattr(self.orchestrator, "parent_subject_runtime", None)
-        if runtime is None:
-            return _failure("unavailable", "parent runtime unavailable")
-        value = await runtime.adapters.perform(self, subject, args["request"])
-        return {"success": not value.is_unknown, "value": value.model_dump(mode="json")}
 
     async def _cmd_integration_train_tick(self, args: dict) -> dict:
         """Start one level-triggered visit per idle target (git_first: active).

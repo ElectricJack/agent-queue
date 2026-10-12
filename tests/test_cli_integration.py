@@ -234,45 +234,6 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail(ci
     assert "members" not in data
 
 
-
-
-
-
-
-
-def test_rebind_repair_apply_requires_previewed_head_before_transport():
-    from src.cli.app import cli
-
-    client = _client({"outcome": "rebound"})
-    with patch("src.cli.integration._get_client", return_value=client):
-        result = CliRunner().invoke(
-            cli, ["integration", "rebind-repair", "--task-id", "repair-t", "--apply"]
-        )
-
-    assert result.exit_code == 2
-    assert "--apply requires --head from dry-run" in result.output
-    client.execute.assert_not_called()
-
-
-def test_rebind_detached_repair_apply_requires_previewed_identity_before_transport():
-    from src.cli.app import cli
-
-    client = _client({"outcome": "rebound"})
-    with patch("src.cli.integration._get_client", return_value=client):
-        result = CliRunner().invoke(cli, [
-            "integration", "rebind-detached-repair", "op-1", "--apply",
-            "--remote-head", "a" * 40, "--reason", "frozen head unpublished",
-        ])
-
-    assert result.exit_code == 2
-    assert "--apply requires --stage, --remote-head and --reason" in result.output
-    client.execute.assert_not_called()
-
-
-
-
-
-
 def test_operator_guide_uses_only_real_operational_commands_and_options():
     from src.cli.app import cli
 
@@ -281,7 +242,7 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
     ).read_text()
     required = (
         "aq integration status PROJECT_ID",
-        "aq integration resolve-candidate-member",
+        "aq integration seal-now",
         "aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON",
         "aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON",
     )
@@ -291,8 +252,9 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
 
     for leaf in (
         "status",
-        "resolve-candidate-member",
-        "recover-candidate-member",
+        "seal-now",
+        "pause-batch",
+        "resume-batch",
     ):
         result = CliRunner().invoke(cli, ["integration", leaf, "--help"])
         assert result.exit_code == 0, (leaf, result.output)
@@ -437,7 +399,11 @@ def test_integration_help_excludes_retired_controls():
     commands = cli.commands["integration"].commands
     for retired in ("flush", "enable", "resume", "abort", "retry-cleanup",
                     "develop", "adopt", "onboard-train", "shadow-report",
-                    "adopt-legacy-deliveries", "bind-legacy-repositories", "materialize-root"):
+                    "adopt-legacy-deliveries", "bind-legacy-repositories", "materialize-root",
+                    "resolve-candidate-member", "recover-candidate-member", "rebind-repair",
+                    "rebind-detached-repair", "recover-preserved-repair", "recover-parent-head",
+                    "build-candidate", "promote-main", "seal", "schedule-due",
+                    "resolve-conflict", "push-conflict-resolution", "reconcile-promotion"):
         assert retired not in commands
     assert {"status", "engine-transfer", "release-held-gate", "pause-batch", "resume-batch",
             "eject", "seal-now"} <= commands.keys()

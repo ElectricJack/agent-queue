@@ -4260,13 +4260,11 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:598ad857b51b11624553835432579a102cee3d9e92105e1b409e3646b986d78d",
+      "digest": "sha256:4a9840104dbd3a82de10c6c4aa5b87607984ab7b2c96b1e109a252afb2f56a8d",
       "imports": [
         "src.commands.contracts.models",
         "src.commands.contracts.registry",
         "src.commands.principal",
-        "src.git.manager",
-        "src.integration.repository_git",
         "src.playbooks.definition",
         "src.playbooks.executors",
         "src.playbooks.executors.base",
@@ -4334,13 +4332,13 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "digest": "sha256:5d6e8c738e0df060a2128cbe7dde9d6d4a38aef2bfe608bf56c3aab1aef4112c",
+      "digest": "sha256:1981509a032f20cf879acfee1ae4b7a45c9c3b1ae3b3bf7fc0ffa42341bc7e81",
       "imports": [
         "src.api.codegen",
         "src.api.execute",
         "src.cli.auto_commands",
+        "src.commands.contracts",
         "src.commands.handler",
-        "src.integration.runtime_contracts",
         "src.mcp_registration",
         "src.tools.definitions"
       ],
@@ -7195,14 +7193,12 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:349249d47b8f2ff6b39680847463a8af749d17a863750cbc07dde24ab80019a1",
+      "digest": "sha256:dbee61fc02509dcd843d2738f1c50326b6bd004f22988ade4b40a24f360170be",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.tables",
-        "src.integration.parent_adapters",
-        "src.integration.runtime_contracts",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",

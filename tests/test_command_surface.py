@@ -394,30 +394,6 @@ class TestNoArgumentlessCommandsByAccident:
             f"method: {', '.join(orphans)}"
         )
 
-    def test_parent_action_fallback_names_every_primitive(self):
-        """The parent visit dispatch is excluded from MCP, so its fallback is
-        the only place the primitive set reaches a transport — a stale enum here
-        would refuse callers the reconciler itself accepts."""
-        from src.integration.runtime_contracts import Primitive
-        from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
-
-        request = _FALLBACK_INPUT_SCHEMAS["integration_parent_action"]["properties"][
-            "request"
-        ]
-        assert set(request["properties"]["primitive"]["enum"]) == {
-            primitive.value for primitive in Primitive
-        }
-
-    def test_parent_action_stays_off_the_agent_surface(self):
-        """Its authority is the process-bound visit exclusion, not the payload,
-        so no MCP client can satisfy it; the CLI keeps the schema instead."""
-        from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _FALLBACK_INPUT_SCHEMAS
-
-        assert "integration_parent_action" in DEFAULT_EXCLUDED_COMMANDS
-        assert "integration_parent_action" not in {
-            definition["name"] for definition in _ALL_TOOL_DEFINITIONS
-        }
-        assert _FALLBACK_INPUT_SCHEMAS["integration_parent_action"]["properties"]
 
     def test_fallback_schemas_never_shadow_a_typed_definition(self):
         """One schema per command — a typed definition wins, so a fallback
@@ -543,3 +519,22 @@ class TestSessionCommandsHaveOneCliSpelling:
         from src.cli.auto_commands import HANDCRAFTED_COVERAGE
 
         assert "session_input" not in HANDCRAFTED_COVERAGE
+
+
+def test_retired_publisher_commands_have_no_handler_contract_or_transport_schema():
+    """Retirement removes every entry point, including daemon-only discovery."""
+    from src.commands.contracts import CONTRACTS
+    from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
+
+    retired = {
+        "delivery_promote", "integration_build_candidate", "integration_promote_main",
+        "integration_parent_action", "integration_push_conflict_resolution",
+        "integration_reconcile_promotion", "integration_resolve_conflict",
+        "integration_resolve_candidate_member", "integration_recover_candidate_member",
+        "integration_rebind_repair", "integration_rebind_detached_repair",
+        "integration_recover_preserved_repair", "integration_recover_parent_head",
+        "integration_recover_unwritten_resolution", "integration_schedule_due", "integration_seal",
+    }
+    assert retired.isdisjoint(_command_names())
+    assert retired.isdisjoint(CONTRACTS.names())
+    assert retired.isdisjoint(_FALLBACK_INPUT_SCHEMAS)

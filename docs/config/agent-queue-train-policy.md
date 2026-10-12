@@ -1,8 +1,13 @@
-# Agent Queue train policy handoff
+# Historical Agent Queue train policy handoff
 
-The project-scoped bundles in `src/prompts/reviewed_playbooks/` are compiled
-against the current V2 command and event registries. The parent route handles
-the current `integration_complete_parent` outcomes, including idempotent
+This config and its activation examples record the retired subject engines.
+The reviewed bundles are archived in `docs/history/legacy-train-policies/` and
+cannot be imported against the current command registry. Use the active Git-first
+train described in [the runbook](../guides/git-first-train-runbook.md).
+
+At the time of this handoff, the project-scoped bundles were compiled
+against the then-current V2 command and event registries. The parent route handled
+the `integration_complete_parent` outcomes, including idempotent
 `already_completed` and terminal `failed`. The policy JSON binds their exact
 artifact identities and the sixteen `Tests (...)`, `E2E CLI (...)` and
 `Dashboard (typecheck/build)` checks from
@@ -33,9 +38,9 @@ operations retain their frozen policy snapshots. A worker's workflow change
 does not update an installed project policy. See
 [App-mode check-set rotation](app-mode-train.md#95-changing-the-required-check-set-rotation).
 
-The bundles are copied to `vault/reviewed-playbooks/<id>/` when the deployed
-daemon seeds reviewed bundles. Only a project-scoped supervisor or local
-operator should run the following commands. Review the manifest and source
+The former seeding path copied these bundles to `vault/reviewed-playbooks/<id>/`.
+The following commands record that historical activation procedure; they are
+not valid setup instructions for the current train. Review the manifest and source
 first. Do not change the project's development mode until the approved cutover
 prerequisites allow a drain; that mode is the current publisher's validation
 gate. Use the fresh integration generation for every mutation.
