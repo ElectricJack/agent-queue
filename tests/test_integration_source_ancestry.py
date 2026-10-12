@@ -43,7 +43,9 @@ import os
 from tests.test_integration_review_evidence import review_case  # noqa: F401 (fixture)
 
 FRESH, KEEN = "fresh-flare-12", "keen-beacon-16"
-REVIEWED_ARTIFACTS = Path(__file__).resolve().parents[1] / "src" / "prompts" / "reviewed_playbooks"
+HISTORICAL_ARTIFACTS = (
+    Path(__file__).resolve().parents[1] / "docs" / "history" / "legacy-train-policies"
+)
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -201,9 +203,9 @@ async def _sealed_events(db, prefix: str):
 
 
 def test_reviewed_root_train_still_ends_moved_construction_failed():
-    """The graph gives these outcomes no continuation; the durable state must."""
+    """The archived graphs record why moved-source recovery needed durable state."""
     for playbook in ("root-train", "agent-queue-root-train"):
-        artifact = json.loads((REVIEWED_ARTIFACTS / playbook / "artifact.json").read_text())
+        artifact = json.loads((HISTORICAL_ARTIFACTS / playbook / "artifact.json").read_text())
         transitions = artifact["steps"]["construct-and-test--build"]["transitions"]
         assert transitions["source_moved"] == "construct-and-test--failed"
         assert transitions["base_moved"] == "construct-and-test--failed"
