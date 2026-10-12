@@ -4443,7 +4443,12 @@ class TaskCommandsMixin:
 
                 reservation = await reserve_canonical_task_branch(self.db, task.id)
                 if reservation["outcome"] not in {"acquired", "already_reserved"}:
-                    return {"error": f"Cannot restart integration task: {reservation['reason']}"}
+                    return {"error": (
+                        f"Cannot restart integration task: {reservation['reason']}. "
+                        "For a stopped writer, preview "
+                        f"aq integration release-owner --task-id {task.id} --dry-run; "
+                        "apply only after its provider-backed proof succeeds, then retry restart."
+                    )}
         old_status = task.status.value
         await self.db.transition_task(
             args["task_id"],

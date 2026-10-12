@@ -20,6 +20,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -41,6 +43,8 @@ from src.orchestrator.worktree_manager import (
     slot_path,
     task_branch_name,
 )
+from src.orchestrator.execution import ExecutionMixin
+from src.orchestrator.workspace_attachments import detach_slot_for_integration_handoff
 
 
 # ───────────────────────────────── fixtures ──────────────────────────────
@@ -1311,6 +1315,43 @@ class TestRestoreSlotAfterTask:
 
         assert not (git_dir / "index.lock").exists()
         assert _git(["status", "--porcelain"], cwd=d) == ""
+
+    @pytest.mark.parametrize("dirty", [False, True])
+    def test_failed_close_preserves_the_published_tip_until_handoff(
+        self, mgr, base_ws, kind, db, dirty
+    ):
+        """Restoring onto origin/main must not invalidate the exact-tip proof."""
+        slot = asyncio.run(mgr.create_slot(base_ws, kind, 0))
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-1")))
+        path = Path(slot.workspace_path)
+        (path / "work.py").write_text("print(1)\n")
+        _git(["add", "work.py"], cwd=path)
+        _git(["commit", "-m", "task progress"], cwd=path)
+        _git(["push", "origin", "aq/tsk-1"], cwd=path)
+        tip = _git(["rev-parse", "HEAD"], cwd=path)
+        assert tip != _git(["rev-parse", "origin/main"], cwd=path)
+        if dirty:
+            (path / "work.py").write_text("unfinished\n")
+        orchestrator = SimpleNamespace(
+            _slot_workspace_at=AsyncMock(return_value=slot),
+            _worktree_slots=lambda: mgr,
+        )
+
+        async def close_handoff():
+            assert await ExecutionMixin._restore_slot_before_handoff_proof(
+                orchestrator, str(path), "tsk-1"
+            )
+            assert _git(["rev-parse", "HEAD"], cwd=path) == tip
+            assert await detach_slot_for_integration_handoff(
+                db, mgr.git, mgr._git_mutex, slot, expected_branch="aq/tsk-1"
+            )
+
+        asyncio.run(close_handoff())
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path) == "HEAD"
+        assert _git(["rev-parse", "HEAD"], cwd=path) == tip
+        assert _git(["status", "--porcelain"], cwd=path) == ""
+        if dirty:
+            assert "unfinished" in db.contexts[-1]["content"]
 
 
 class TestSalvageUnpushedCommits:

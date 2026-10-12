@@ -453,6 +453,20 @@ unpublished work and releases only a proved stopped attachment. It refuses a
 live writer, reused checkout or changed fence. Repair handoff and retry remain
 Subject decisions under the frozen policy and unchanged stage budget.
 
+A project supervisor can use this control for a task left
+`BLOCKED/session_close_hard_failure` with `integration_handoff_unproven`. Review
+the dry-run result, then remove `--dry-run` to release the stopped attachment.
+If its session is still live, stop that exact session through the normal session
+control and wait for confirmed termination; a stopped database status alone is
+insufficient. Release preserves the task's failure status. After reviewing the
+failure, use `aq task restart TASK_ID` for an intentional retry. `aq task recover`
+does not automatically retry a hard failure.
+
+Failed-close cleanup keeps HEAD at the task tip until handoff verifies and
+detaches it. A live pool worker uses its claim and checkout proof, while a
+task-lifecycle worker also needs a provider stop proof. This protocol is the
+same for every harness and model.
+
 `aq task restart TASK_ID` is the supported restart for a stopped repair
 delegate: it redispatches the delegate's current stage through the same fenced
 handoff, so the delegate returns to the pool claim frontier holding its exact

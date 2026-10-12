@@ -2488,8 +2488,9 @@ async def _fail_close_orchestrator(orchestrator_factory, tmp_path, monkeypatch, 
         return_value=StrandedWork(status="clean")
     )
 
-    async def _restore(slot, *, task_id=None):
+    async def _restore(slot, *, task_id=None, detach_pushed_branch=True):
         events.append(f"restore:{slot.id}:{task_id}")
+        assert not detach_pushed_branch
         state["dirty"] = False
         return False
 
