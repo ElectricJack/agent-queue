@@ -148,6 +148,11 @@ async def test_the_reduced_path_writes_no_ref_journal(legacy_events):
 def test_reduced_module_reads_no_checkpoint_and_writes_no_journal(module):
     """Static proof: the active path never names a checkpoint or journal table."""
     tree = ast.parse((ROOT / module).read_text())
+    if module == "src/integration/reviews.py":
+        # TreeReviews stays free of checkpoints. The retained evidence producer
+        # now shares this module and proves historical source snapshots.
+        tree = next(node for node in tree.body
+                    if isinstance(node, ast.ClassDef) and node.name == "TreeReviews")
     named: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
@@ -156,6 +161,8 @@ def test_reduced_module_reads_no_checkpoint_and_writes_no_journal(module):
             named.update(alias.name for alias in node.names)
         elif isinstance(node, ast.Attribute):
             named.add(node.attr)
+        elif isinstance(node, ast.Name):
+            named.add(node.id)
     assert not [name for name in named if "checkpoint" in name], module
     assert not [name for name in named if "journal" in name], module
 
@@ -177,17 +184,6 @@ def test_the_selector_installs_no_diagnostics_in_active_mode():
     assert diagnostics_for(SimpleNamespace(git_first="shadow"), object(), object()) is not None
 
 
-def test_shadow_never_acts_on_a_subject_the_reconciler_does_not_own():
-    """Diagnostics run only for a reconciler-owned subject, and are read-only.
-
-    The reconciler gates the optional comparison on ownership and records it
-    only in the log and the correlation context, so shadow can never become a
-    second writer or a policy input.
-    """
-    source = (ROOT / "src/integration/reconciler.py").read_text()
-    assert "subject.engine is SubjectEngine.RECONCILER" in source
-    assert "self._diagnostics(subject, facts)" in source
-    assert "Diagnostic failure must not change the authoritative policy" in source
 
 
 # -- Compatible schema --------------------------------------------------------

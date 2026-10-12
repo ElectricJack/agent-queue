@@ -16,7 +16,7 @@ from src.database.tables import (
     projects,
     repos,
 )
-from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan
+from src.integration.ci_producers import LocalValidationPlan
 from src.integration.development import DevelopmentPolicy
 from src.integration.development_adapter import (
     DevelopmentFrontier,
@@ -26,14 +26,12 @@ from src.integration.development_adapter import (
 )
 from src.integration.development_policy import PinnedDevelopmentPolicy, render_development_policy
 from src.integration.models import BranchKey, Fence
-from src.integration.ownership import BranchOwnership
 from src.integration.runtime_contracts import (
     AdmissionPredicate,
     CIEvidence,
     CIState,
     HoldFacts,
     GateFacts,
-    JournalMode,
     MemberFacts,
     MemberRef,
     MergeMembersArgs,
@@ -54,7 +52,6 @@ from src.integration.runtime_contracts import (
 from src.playbooks.definition import ProjectScope, load_definition_json, source_digest
 from src.playbooks.integration_policy import IntegrationPolicyFacts, policy_from_markdown
 from tests.db_fixtures import lease_dsn
-from tests.test_integration_ci_producers import JobClient
 
 BASE, A, B, C = (letter * 40 for letter in "abcd")
 
@@ -298,7 +295,7 @@ def adapter(db, pinned, frontier, *, shared=None):
     )
 
 
-async def test_hosted_rate_limit_in_development_observer_schedules_retry_without_attempt(db):
+async def test_hosted_rate_limit_in_development_observer_preserves_retry_identity(db):
     from src.git.github_contracts import GitHubAccessError
     from src.integration.ci_producers import HostedCIProducer
     from tests.test_integration_ci_producers import github
@@ -315,34 +312,9 @@ async def test_hosted_rate_limit_in_development_observer_schedules_retry_without
     with pytest.raises(GitHubAccessError) as caught:
         await a.observe(s)
     assert caught.value is error
-    await a.reconciler(mode=JournalMode.ACTIVE).visit(s.id)
-    current = Subject.from_row(await db.get_integration_subject(s.id))
-    assert current.phase == s.phase and current.generation == s.generation
-    assert current.schedule.next_due_at > 100
-    assert current.budget == s.budget
-    rows = await db.list_integration_subject_journal(s.id)
-    assert rows and all(row["outcome"] not in {"green", "red"} for row in rows)
-    assert all(not row["payload"].get("is_attempt") for row in rows)
 
 
-async def test_seal_is_idempotent_frozen_and_shadow_never_files_or_merges(db):
-    pinned = pinned_policy()
-    s = subject(pinned)
-    await store_subject(db, s, pinned)
-    a = adapter(db, pinned, DevelopmentFrontier((member("a"),)))
-    reconciler = a.reconciler(mode=JournalMode.SHADOW)
-    await reconciler.visit(s.id)
-    rows = await db.list_integration_subject_journal(s.id)
-    assert [r["entry_kind"] for r in rows] == ["decision"]
-    assert rows[0]["primitive"] == Primitive.SEAL.value
-    current = Subject.from_row(await db.get_integration_subject(s.id))
-    result = await a.seal(current, seal_args())
-    assert result.outcome == "sealed"
-    a.frontier_for.return_value = DevelopmentFrontier((member("a", B),))
-    await a.seal(current, seal_args())
-    frontier = await a._frontier(current, await a._journal(current))
-    assert frontier.members[0].facts.head_sha == A
-    assert frontier.members[0].facts.held
+
 
 
 @pytest.mark.parametrize("admission", [
@@ -389,101 +361,10 @@ async def test_conflict_parks_one_exact_source_and_independent_member_keeps_buil
     )
 
 
-async def test_successful_merge_installs_exact_identity_and_preserves_generation_budget(db):
-    pinned = pinned_policy()
-    s = subject(pinned, SubjectPhase.BUILDING, writer=WriterLease(
-        status=WriterStatus.STOPPED, task_id="repair"), budget=WriterBudget(
-            ordinal=3, intelligence_class="standard-high", started_at=0, deadline_at=1))
-    await store_subject(db, s, pinned)
-    shared = PrimitivePorts({Primitive.GIT_MERGE_MEMBERS: AsyncMock(return_value=PrimitiveOutcome(
-        primitive=Primitive.GIT_MERGE_MEMBERS, outcome="merged", detail={"head": C},
-    ))})
-    a = adapter(db, pinned, DevelopmentFrontier((member("a"),)), shared=shared)
-    reconciler = a.reconciler(mode=JournalMode.ACTIVE)
-    # Avoid job I/O in this building-only visit; the observation has no CI.
-    a.producer_for = AsyncMock(return_value=SimpleNamespace(
-        observe=AsyncMock(return_value=CIEvidence(head_sha=s.head_sha, state=CIState.NONE))))
-    await reconciler.visit(s.id)
-    current = Subject.from_row(await db.get_integration_subject(s.id))
-    assert (current.head_sha, current.base_sha, current.generation, current.phase) == (
-        C, BASE, 1, SubjectPhase.TESTING,
-    )
-    assert current.writer.status is WriterStatus.NONE
-    assert current.budget.ordinal == 3
 
 
-async def test_local_checks_advance_sequentially_and_publish_only_after_all_green(db, monkeypatch):
-    pinned = pinned_policy(commands=["ruff check src", "npm run build"])
-    s = subject(pinned, SubjectPhase.TESTING)
-    await store_subject(db, s, pinned)
-    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch=s.target_ref),
-                                     s.id, "collector")
-    client = JobClient()
-
-    async def read_jobs(_, subject, keys):
-        return await client.read(subject, keys)
-
-    monkeypatch.setattr(LocalCIProducer, "_read_jobs", read_jobs)
-    publish = AsyncMock(return_value=PrimitiveOutcome(
-        primitive=Primitive.GIT_PUBLISH, outcome="published"))
-    a = adapter(db, pinned, DevelopmentFrontier((member("a"),)), shared=PrimitivePorts({
-        Primitive.GIT_PUBLISH: publish,
-    }))
-    a.job_client = client
-    now = [100]
-    a.clock = lambda: now[0]
-    reconciler = a.reconciler(mode=JournalMode.ACTIVE)
-
-    async def visit():
-        await reconciler.visit(s.id)
-        now[0] += 301
-
-    await visit()  # request first command
-    assert len(client.calls) == 1
-    client.complete()
-    await visit()  # observe pending: command two still absent
-    publish.assert_not_awaited()
-    await visit()  # submit second command
-    assert len(client.calls) == 2
-    client.complete(1)
-    await visit()  # exact all-green observation
-    publish.assert_not_awaited()
-    await visit()  # guarded publish
-    assert publish.await_count == 1
-    current = Subject.from_row(await db.get_integration_subject(s.id))
-    assert current.phase is SubjectPhase.PUBLISHED
-    assert all(call["input_ref"] == B for call in client.calls)
 
 
-async def test_infrastructure_retry_has_new_job_identity_without_repair_generation(db, monkeypatch):
-    pinned = pinned_policy(commands=["ruff check src"])
-    s = subject(pinned, SubjectPhase.TESTING)
-    await store_subject(db, s, pinned)
-    client = JobClient()
-
-    async def read_jobs(_, subject, keys):
-        return await client.read(subject, keys)
-
-    monkeypatch.setattr(LocalCIProducer, "_read_jobs", read_jobs)
-    file_writer = AsyncMock()
-    a = adapter(db, pinned, DevelopmentFrontier((member("a"),)), shared=PrimitivePorts({
-        Primitive.WRITER_FILE: file_writer,
-    }))
-    a.job_client = client
-    now = [100]
-    a.clock = lambda: now[0]
-    reconciler = a.reconciler(mode=JournalMode.ACTIVE)
-    await reconciler.visit(s.id)
-    client.complete(infra_reason="run_timeout")
-    now[0] += 301
-    await reconciler.visit(s.id)
-    now[0] += 301
-    await reconciler.visit(s.id)
-    assert len(client.calls) == 2
-    assert client.calls[0]["idempotency_key"] != client.calls[1]["idempotency_key"]
-    current = Subject.from_row(await db.get_integration_subject(s.id))
-    assert current.budget is None and current.generation == 0
-    file_writer.assert_not_awaited()
 
 
 
@@ -765,99 +646,3 @@ def test_runtime_loads_retained_reviewed_source_after_vault_changes(tmp_path):
     vault_path.unlink()
     assert load_pinned_development_policy(config, ref.artifact_sha256,
                                          pinned.definition).settings == pinned.settings
-
-
-async def test_factory_admits_pushed_source_and_uses_subject_pinned_retained_store(db, tmp_path):
-    """Exercise the shipped factory with real Git and no base checkout."""
-    from src.database import tables as t
-    from src.git.github_contracts import GitHubRepositoryBinding
-    from src.integration.development import DevelopmentPrimitives
-    from src.integration.development_runtime import development_runtime_for
-    from src.integration.runtime_contracts import AncestryArgs, AncestryQuery
-    from src.models import Project, RepoConfig, RepoSourceType
-    from src.playbooks.artifact_store import ArtifactStore
-    from tests.test_integration_gitops import LocalGit, commit, git
-
-    remote, work = tmp_path / "remote.git", tmp_path / "source"
-    git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
-    git(tmp_path, "clone", str(remote), str(work))
-    git(work, "config", "user.name", "Tester")
-    git(work, "config", "user.email", "tester@example.test")
-    base = commit(work, {"base.txt": "base\n"})
-    git(work, "push", "origin", "HEAD:main")
-    head = commit(work, {"alpha.txt": "alpha\n"})
-    git(work, "push", "origin", "HEAD:aq/alpha")
-    await db.create_project(Project(id="p", name="Development factory"))
-    await db.create_repo(RepoConfig(
-        id="repo", project_id="p", source_type=RepoSourceType.CLONE,
-        url=str(remote), default_branch="main",
-    ))
-    assert (await db.get_repo("repo")).checkout_base_path == ""
-    async with db.immediate() as conn:
-        await conn.execute(insert(t.tasks).values(
-            id="alpha", project_id="p", repo_id="repo", title="Alpha",
-            description="", status="COMPLETED", branch_name="aq/alpha",
-            created_at=1, updated_at=2,
-        ))
-        await conn.execute(insert(t.task_branch_origins).values(
-            id="origin-alpha", task_id="alpha", repository_id="repo",
-            base_sha=base, creation_generation=0, reserved=True, created_at=1,
-        ))
-        await conn.execute(insert(t.task_integration_checkpoints).values(
-            task_id="alpha", repository_id="repo", branch="aq/alpha",
-            checkpoint_sha=head, generation=0, updated_at=2,
-        ))
-    regenerate = "scripts/regenerate-generated.sh --check"
-    pinned = pinned_policy(regenerate=regenerate)
-    root = subject(pinned, SubjectPhase.BUILDING, head_sha=base, base_sha=base)
-    await store_subject(db, root, pinned)
-    config = SimpleNamespace(
-        integration=SimpleNamespace(reconciler_active=True),
-        compiled_root=str(tmp_path / "compiled"), vault_root=str(tmp_path / "vault"),
-    )
-    artifacts = ArtifactStore(config.compiled_root)
-    ref = artifacts.put(
-        pinned.definition, source_digest=pinned.definition.source_hash,
-        contract_fingerprint="sha256:" + "b" * 64,
-        profile_fingerprint="test", compiler_build="test",
-    )
-    artifacts.put_source(ref.artifact_sha256, pinned.source)
-    transport = LocalGit(remote)
-    primitives = DevelopmentPrimitives(db, data_dir=tmp_path / "data", git=transport)
-    orchestrator = SimpleNamespace(
-        config=config, db=db, git=transport, development_integration=primitives,
-        integration_app_client=SimpleNamespace(repository=GitHubRepositoryBinding(123, "test/repo")),
-        _load_playbook_artifact=lambda sha: artifacts.load(sha),
-        _root_subject_session_probe=AsyncMock(), _command_handler=AsyncMock(),
-    )
-    runtime = development_runtime_for(orchestrator)
-    frontier = await runtime.adapter.frontier_for(root)
-    assert [(m.facts.task_id, m.pushed) for m in frontier.members] == [("alpha", True)]
-    assert [m.task_id for m in ordered_development_members(frontier, 10)] == ["alpha"]
-    repository = await runtime.adapter.repository_for(root)
-    git(repository.store, "config", "user.name", "Tester")
-    git(repository.store, "config", "user.email", "tester@example.test")
-    outcome = await runtime.adapter.shared.invoke(root, MergeMembersArgs(
-        target_ref=root.target_ref, base_sha=base,
-        members=(MemberRef(task_id="alpha", head_sha=head, base_sha=base),),
-    ))
-    assert outcome.outcome == "merged", outcome
-    # Batch construction writes no journal; the pinned command rides the retained store.
-    assert repository.regenerate == regenerate
-    ancestry = await runtime.adapter.shared.invoke(root, AncestryArgs(
-        repository_id="repo", queries=(AncestryQuery(ancestor=base, descendant=head),),
-    ))
-    assert ancestry.outcome == "facts", ancestry
-    assert ancestry.detail["queries"][0]["is_ancestor"] is True
-    assert git(remote, "rev-parse", "refs/heads/main") == base
-
-
-def test_active_train_cannot_construct_development_subject_runtime():
-    from src.integration.development_runtime import development_runtime_for
-
-    # No DB, providers or artifact loader exist: the protocol guard must win
-    # before any legacy factory wiring can be accessed.
-    orchestrator = SimpleNamespace(config=SimpleNamespace(
-        integration=SimpleNamespace(git_first="active", reconciler_active=True),
-    ))
-    assert development_runtime_for(orchestrator) is None

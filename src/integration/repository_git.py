@@ -128,3 +128,18 @@ class RepositoryGit:
             raise PromotionSourceMoved("reviewed source tree cannot be resolved")
         return oid
 
+
+
+    async def _resolution_commit_range(
+        self, store: Path, expected_target: str, resolved_head: str
+    ) -> list[str]:
+        result = await self.git.arun_git_result(
+            ["rev-list", "--reverse", f"{expected_target}..{resolved_head}"],
+            cwd=str(store),
+            env={"LC_ALL": "C"},
+            lock_held=True,
+        )
+        commits = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if result.returncode != 0 or any(not _OID_RE.fullmatch(oid) for oid in commits):
+            raise PromotionRuntimeError((result.stderr or "commit range failed").strip())
+        return commits

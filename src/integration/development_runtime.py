@@ -1,12 +1,11 @@
-"""Durable Development frontier, shared Git ports and active reconciler visits.
+"""Retained Development policy, frontier and shared Git ports.
 
-Retained operations remain observation facts. New subjects pin reviewed policy
-and own publication through their durable engine and branch fences.
+The active train shares the pin and repository helpers here. Historical
+operations remain read-only observation facts for recovery and cleanup.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -33,19 +32,17 @@ from src.integration.development import (
 )
 from src.integration.development_adapter import (
     DevelopmentFrontier,
-    DevelopmentIntegrationAdapter,
     DevelopmentMember,
 )
 from src.integration.development_policy import PinnedDevelopmentPolicy
 from src.integration.engine import RootEngineOwnership
-from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
+from src.integration.gitops import GitOperations, RetainedRepository
 from src.integration.ownership import BranchOwnershipError
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.runtime_contracts import (
     CleanupArgs,
     GateArgs,
     HeadIdentity,
-    JournalMode,
     MemberFacts,
     PolicyArtifactPin,
     Primitive,
@@ -55,17 +52,13 @@ from src.integration.runtime_contracts import (
     Subject,
     SubjectEngine,
     SubjectKind,
-    SubjectPhase,
-    SubjectSchedule,
     WriterBudget,
     WriterFileArgs,
     WriterLease,
     WriterStatus,
     budget_values,
-    subject_key,
     writer_values,
 )
-from src.jobs.adapters import PublisherJobs
 
 logger = logging.getLogger(__name__)
 
@@ -1093,181 +1086,6 @@ class DevelopmentWriterProjection:
         return changed is not None
 
 
-class DevelopmentSubjectRuntime:
-    """Service-owned active visits over durable Development subjects."""
-
-    def __init__(
-        self,
-        db,
-        adapter: DevelopmentIntegrationAdapter,
-        *,
-        policy: Callable[[str], Awaitable[PinnedDevelopmentPolicy]] | None = None,
-        active: bool = False,
-        shadow: bool = False,
-        diagnostics=None,
-        page_size: int = 20,
-        clock: Callable[[], float] = time.time,
-    ) -> None:
-        if not (active or shadow):
-            raise ValueError("a development runtime needs at least one loop")
-        self.db, self.adapter, self.policy, self.clock = db, adapter, policy, clock
-        self.cursor, self.page_size = "", page_size
-        from src.integration.reconciler import ScopedIntegrationDB
-
-        scoped_db = ScopedIntegrationDB(db, (DEVELOPMENT_MODE,))
-        self.loops = [
-            adapter.reconciler(mode=mode, subject_db=scoped_db, diagnostics=diagnostics)
-            for enabled, mode in ((active, JournalMode.ACTIVE),)
-            if enabled
-        ]
-
-    def subscribe(self, bus) -> None:
-        for loop in self.loops:
-            loop.subscribe(bus)
-
-    async def stop(self) -> None:
-        for loop in self.loops:
-            await loop.stop()
-
-    async def tick(self, now: float, *, background: bool = False) -> None:
-        await self.seed(now)
-        await self.project_writers()
-        gate_ids = await self._resolved_gates()
-        if gate_ids:
-            await self.db.wake_integration_subjects(now=now, gate_ids=gate_ids)
-        for loop in self.loops:
-            await loop.tick(now, background=background)
-
-    async def project_writers(self) -> None:
-        """Mirror each live subject's filed repair before its visit reads it."""
-        projection = DevelopmentWriterProjection(self.db, clock=self.clock)
-        async with self.db._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        select(t.integration_subjects.c.id)
-                        .join(t.projects, t.projects.c.id == t.integration_subjects.c.project_id)
-                        .where(
-                            t.projects.c.hierarchical_integration_mode == DEVELOPMENT_MODE,
-                            t.integration_subjects.c.kind.in_(DEVELOPMENT_SUBJECT_KINDS),
-                            t.integration_subjects.c.phase != SubjectPhase.DONE.value,
-                        )
-                        .order_by(t.integration_subjects.c.id)
-                        .limit(self.page_size)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-        for subject_id in rows:
-            row = await self.db.get_integration_subject(subject_id)
-            if row is None:
-                continue
-            subject = Subject.from_row(row)
-            try:
-                await projection.project(subject)
-            except (ValueError, LookupError):
-                logger.debug("development writer projection skipped %s", subject_id)
-
-    async def _resolved_gates(self) -> list[str]:
-        async with self.db._engine.connect() as conn:
-            return list(
-                (
-                    await conn.execute(
-                        select(t.gates.c.id)
-                        .join(
-                            t.integration_subjects,
-                            t.integration_subjects.c.gate_id == t.gates.c.id,
-                        )
-                        .join(t.projects, t.projects.c.id == t.integration_subjects.c.project_id)
-                        .where(
-                            t.projects.c.hierarchical_integration_mode == DEVELOPMENT_MODE,
-                            t.integration_subjects.c.kind.in_(DEVELOPMENT_SUBJECT_KINDS),
-                            t.integration_subjects.c.phase != SubjectPhase.DONE.value,
-                            t.integration_subjects.c.next_due_at.is_(None),
-                            t.gates.c.status == "resolved",
-                        )
-                        .order_by(t.gates.c.id)
-                        .limit(100)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
-    async def seed(self, now: float) -> None:
-        """Bounded creation from current project settings; never an activation.
-
-        A project is seeded only once a reviewed, imported ``development``
-        artifact pins its scope. Each new subject starts under the reconciler
-        and retains that exact artifact throughout its lifecycle.
-        """
-        async with self.db._engine.connect() as conn:
-            projects = (
-                (
-                    await conn.execute(
-                        select(t.projects)
-                        .where(
-                            t.projects.c.id > self.cursor,
-                            t.projects.c.hierarchical_integration_mode == DEVELOPMENT_MODE,
-                            t.projects.c.integration_repository_id.is_not(None),
-                        )
-                        .order_by(t.projects.c.id)
-                        .limit(self.page_size)
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        self.cursor = projects[-1]["id"] if len(projects) == self.page_size else ""
-        for project in projects:
-            try:
-                await self._seed_project(project, now)
-            except (ValueError, FileNotFoundError, KeyError, BranchOwnershipError):
-                logger.debug("development subject unavailable for %s", project["id"])
-
-    async def _seed_project(self, project, now: float) -> None:
-        pin = project_development_pin(project)
-        repository_id = project["integration_repository_id"]
-        if pin is None or self.policy is None:
-            return
-        pinned = await self.policy(pin.artifact_sha256)
-        if pinned.definition.scope.project_id != project["id"]:
-            return
-        repository = await self.db.get_repo(repository_id)
-        if repository is None:
-            return
-        key = subject_key(SubjectKind.ROOT_BATCH, repository_id, pin.artifact_sha256)
-        async with self.db._engine.connect() as conn:
-            prior = (
-                await conn.execute(
-                    select(t.integration_subjects.c.id).where(
-                        t.integration_subjects.c.project_id == project["id"],
-                        t.integration_subjects.c.subject_key == key,
-                    )
-                )
-            ).first()
-        if prior is not None:
-            return
-        subject = Subject(
-            id="development-subject-"
-            + key.removeprefix(f"{SubjectKind.ROOT_BATCH.value}:").replace(":", "-"),
-            project_id=project["id"],
-            repository_id=repository_id,
-            kind=SubjectKind.ROOT_BATCH,
-            subject_key=key,
-            engine=SubjectEngine.RECONCILER,
-            policy=pin,
-            phase=SubjectPhase.ADMITTING,
-            target_ref="refs/heads/" + repository.default_branch.removeprefix("refs/heads/"),
-            schedule=SubjectSchedule.progress(now=now, max_wait_seconds=3600),
-            created_at=now,
-            updated_at=now,
-        )
-        async with self.db.immediate() as conn:
-            await self.db.ensure_integration_subject_on(conn, subject.to_row())
-
-
 def project_development_pin(project) -> PolicyArtifactPin | None:
     """The project's reviewed, imported Development artifact pin.
 
@@ -1310,106 +1128,16 @@ async def development_repository(
     )
 
 
-def development_runtime_for(orchestrator):
-    """Construct the Development adapter over the daemon's existing owners.
-
-    Returns ``None`` when active visits are disabled. Pausing visits preserves
-    durable reconciler ownership and never starts another publisher.
-    """
-    config = orchestrator.config.integration
-    if getattr(config, "git_first", "shadow") == "active" or not config.reconciler_active:
-        return None
-    from src.integration.observe import (
-        DatabaseObservationReader,
-        GitObservationReader,
-        IntegrationObserver,
-    )
-    from src.playbooks.integration_policy import IntegrationPolicyFacts
-    from src.integration.shadow import diagnostics_for
-
-    primitives = orchestrator.development_integration
-    app = getattr(orchestrator, "integration_app_client", None)
-    repository_binding = getattr(app, "repository", None)
-
-    async def policy_for(artifact_sha256: str) -> PinnedDevelopmentPolicy:
-        definition = await asyncio.to_thread(orchestrator._load_playbook_artifact, artifact_sha256)
-        return await asyncio.to_thread(
-            load_pinned_development_policy, orchestrator.config, artifact_sha256, definition
-        )
-
-    async def retained_repository(subject: Subject) -> RetainedRepository:
-        # Subject-scoped on purpose: the rebuild command and timeout come from
-        # this subject's own pinned reviewed source, never from current project
-        # settings and never from a value another call left behind.
-        settings = (await policy_for(subject.policy.artifact_sha256)).settings
-        repo = await orchestrator.db.get_repo(subject.repository_id)
-        if repo is None:
-            raise ValueError(f"development repository {subject.repository_id} is gone")
-        binding = GitHubRepositoryBinding(
-            repository_id=repository_binding.repository_id,
-            full_name=repository_binding.full_name,
-        )
-        return await development_repository(primitives, repo, binding, settings)
-
-    async def repository_for(subject: Subject) -> RetainedRepository:
-        repository = await retained_repository(subject)
-        await retain_candidate(orchestrator.git, repository.store, subject)
-        return repository
-
-    adapter = DevelopmentIntegrationAdapter(
-        orchestrator.db,
-        observe=IntegrationObserver(
-            DatabaseObservationReader(orchestrator.db),
-            GitObservationReader(orchestrator.git),
-            facts_type=IntegrationPolicyFacts,
-            session_probe=orchestrator._root_subject_session_probe,
-        ).observe,
-        frontier_for=DevelopmentFrontierReader(
-            orchestrator.db, git=RetainedGitReads(orchestrator.git, primitives, orchestrator.db)
-        ),
-        policy_for=policy_for,
-        repository_for=repository_for,
-        shared_ports=PrimitivePorts(),
-        job_client=PublisherJobs(lambda: orchestrator._command_handler),
-    )
-    git_operations = GitOperations(
-        orchestrator.db,
-        git=orchestrator.git,
-        repository=retained_repository,
-        authority=SubjectGitAuthority(
-            orchestrator.db, trusted_green=DevelopmentTrustedGreen(adapter.producer_for)
-        ),
-    )
-    DevelopmentPrimitiveAdapters(
-        orchestrator.db,
-        development=primitives,
-        git_operations=git_operations,
-        commands=lambda: orchestrator._command_handler,
-        backup_dir=primitives.backup_dir,
-        frontier_for=adapter.frontier_for,
-    ).bind(adapter.shared)
-    return DevelopmentSubjectRuntime(
-        orchestrator.db,
-        adapter,
-        policy=policy_for,
-        active=config.reconciler_active,
-        shadow=False,
-        diagnostics=diagnostics_for(config, orchestrator.db, orchestrator.git),
-    )
-
-
 __all__ = [
     "CANDIDATE_REF",
     "DEVELOPMENT_MODE",
     "DEVELOPMENT_SUBJECT_KINDS",
     "DevelopmentFrontierReader",
     "DevelopmentPrimitiveAdapters",
-    "DevelopmentSubjectRuntime",
     "DevelopmentTrustedGreen",
     "DevelopmentWriterProjection",
     "RetainedGitReads",
     "development_repository",
-    "development_runtime_for",
     "landed_revisions",
     "parked_revisions",
     "project_development_pin",

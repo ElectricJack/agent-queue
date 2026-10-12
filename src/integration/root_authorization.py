@@ -169,7 +169,7 @@ class RootAuthorization:
 
     async def _state(self, conn, task_id: str) -> dict[str, Any]:
         """Classify one task; ``candidate`` carries the exact source to record."""
-        from src.integration.review_evidence import ReviewEvidenceProducer
+        from src.integration.reviews import ReviewEvidenceProducer
 
         task = (
             await conn.execute(

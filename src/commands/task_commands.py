@@ -4642,7 +4642,7 @@ class TaskCommandsMixin:
             session = await self.db.get_session(session_id) if session_id else None
             if review_task is not None and review_task.profile_id in REVIEW_PROFILE_IDS:
                 from src.database.queries.hierarchy_queries import HierarchyError
-                from src.integration.review_evidence import ReviewEvidenceProducer
+                from src.integration.reviews import ReviewEvidenceProducer
 
                 try:
                     review_evidence_snapshot = await ReviewEvidenceProducer(
@@ -4677,7 +4677,7 @@ class TaskCommandsMixin:
         if review_evidence_snapshot is None:
             await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
         else:
-            from src.integration.review_evidence import ReviewEvidenceProducer
+            from src.integration.reviews import ReviewEvidenceProducer
 
             async with self.db.immediate() as conn:
                 transition = await ReviewEvidenceProducer(
