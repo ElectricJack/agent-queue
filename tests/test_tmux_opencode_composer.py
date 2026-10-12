@@ -95,8 +95,11 @@ class OpenCodePane:
         render_captures=1,
         swallow=False,
         moving=False,
+        sidebar=False,
     ):
         self.width = width
+        self.composer_width = width - 35 if sidebar else width
+        self.sidebar = sidebar
         self.height = height
         self.draft = draft
         self.agent = agent
@@ -125,7 +128,7 @@ class OpenCodePane:
         self._shrunk = False
 
     def _input_rows(self) -> list[str]:
-        chunk = self.width - 5
+        chunk = self.composer_width - 5
         return [self.draft[i : i + chunk] for i in range(0, len(self.draft), chunk)] or [""]
 
     def screen(self) -> tuple[list[str], int, int]:
@@ -133,12 +136,17 @@ class OpenCodePane:
         box = (
             ["  ┃"]
             + [f"  ┃  {row}" if row else "  ┃" for row in rows]
-            + ["  ┃", f"  ┃  {self.agent}", "  ╹" + "▀" * (self.width - 3)]
+            + ["  ┃", f"  ┃  {self.agent}", "  ╹" + "▀" * (self.composer_width - 3)]
             + ["   ~/repo:main                                   tab agents  ctrl+p commands", ""]
         )
         top = self.height - len(box)
         lines = self.transcript[-top:] + [""] * max(0, top - len(self.transcript)) + box
         cursor_x, cursor_y = 5 + len(rows[-1]), top + len(rows)
+        if self.sidebar:
+            # OpenCode 1.18.35: the worktree path wraps down the sidebar
+            # beside the blank padding/input rows of the composer.
+            for offset, text in enumerate(("~/repo/slot-17", "aq/sidebar-task", "main")):
+                lines[top + offset] = lines[top + offset].ljust(self.composer_width + 3) + text
         if self.residue is not None:
             lines[top] = f"  ┃{self.residue[0]}"
             lines[top + 2] = f"  ┃{self.residue[1]}"
@@ -273,6 +281,9 @@ class TestBoxRecognition:
     def test_an_idle_box_is_an_empty_composer(self):
         assert is_empty(OpenCodePane())
 
+    def test_an_idle_box_beside_the_sidebar_is_empty(self):
+        assert is_empty(OpenCodePane(width=120, sidebar=True))
+
     def test_the_prefix_as_the_harness_file_spells_it_is_recognised(self):
         lines, x, y = OpenCodePane().screen()
         screen = render(lines)
@@ -335,6 +346,12 @@ class TestInputRegion:
         pane = OpenCodePane(draft=text)
         return render(pane.screen()[0])
 
+    def test_sidebar_text_is_outside_the_input_region(self):
+        pane = OpenCodePane(width=120, sidebar=True)
+        screen = render(pane.screen()[0])
+        assert not tmux_module._composer_input(screen, BAR).strip()
+        assert _composer_preview(screen, BAR) == AGENT
+
     def test_a_wrapped_reminder_in_the_box_is_pending(self):
         # Every wrapped row carries the bar, which a whitespace-only squash
         # left between the marker's halves.
@@ -364,6 +381,29 @@ class TestInputRegion:
 
 
 class TestNudge:
+    async def test_an_idle_sidebar_box_gets_the_message_pointer_submitted(self):
+        pane = OpenCodePane(width=120, sidebar=True)
+        pointer = "Handle `aq message status msg-03ada317c23149a9b1d4581ec4ecfb55 --json`."
+        await provider_for(pane).nudge(handle(), pointer)
+        assert pane.submitted == [pointer]
+        assert pane.repaints == 0
+        assert "AQ_PENDING_SUBMIT" not in pane.environment
+
+    async def test_a_real_draft_beside_the_sidebar_is_preserved(self):
+        pane = OpenCodePane(width=120, sidebar=True, draft="my own draft")
+        with pytest.raises(NudgeDeferred):
+            await provider_for(pane).nudge(handle(), REMINDER)
+        assert pane.draft == "my own draft"
+        assert keys(pane) == []
+        assert pane.submitted == []
+
+    async def test_shell_mode_beside_the_sidebar_is_never_typed_into(self):
+        pane = OpenCodePane(width=120, sidebar=True, agent="Shell")
+        with pytest.raises(NudgeDeferred):
+            await provider_for(pane).nudge(handle(), REMINDER)
+        assert keys(pane) == []
+        assert pane.shell_commands == []
+
     async def test_an_idle_box_gets_the_reminder_typed_and_submitted(self):
         pane = OpenCodePane()
         await provider_for(pane).nudge(handle(), REMINDER)
