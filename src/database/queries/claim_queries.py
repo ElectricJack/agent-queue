@@ -649,6 +649,7 @@ class ClaimQueryMixin:
             sessions.c.task_id.is_(None),
             sessions.c.claim_phase.is_(None),
             sessions.c.desired_state == "running",
+            func.coalesce(sessions.c.claim_refusal["retry_at"].as_float(), 0) <= now,
         ]
         if cap is not None:
             cond.append(sessions.c.claims < cap)
@@ -672,6 +673,9 @@ class ClaimQueryMixin:
         record = _row_to_session(row)
         if took:
             return "slot", record
+        if (record.claim_phase != "active" and record.claim_refusal
+                and record.claim_refusal["retry_at"] > now):
+            return "claim_refusal", record
         if record.claim_phase in ("active", "preparing", "claiming"):
             return record.claim_phase, record
         if record.desired_state != "running":
@@ -1046,8 +1050,8 @@ class ClaimQueryMixin:
         in the activation transaction. A failed preparation leaves no branch
         that a later close could mistake for a usable checkout.
 
-        Successful activation resets the refusal streak and clears stale
-        ``needs_attention`` metadata. With *clear_preparation_metadata*, it
+        Successful activation resets both refusal streaks and clears stale
+        ``claim_refusal`` and ``needs_attention`` metadata. With *clear_preparation_metadata*, it
         also deletes the pause/checkpoint and backoff keys in
         ``CLAIM_PREPARATION_METADATA_KEYS`` in that same transaction.
         """
@@ -1087,6 +1091,7 @@ class ClaimQueryMixin:
                     claim_failure_count=0,
                     claim_failure_reason=None,
                     claim_failure_at=None,
+                    claim_refusal=None,
                 )
             )
             row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()

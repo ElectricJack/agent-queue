@@ -1479,6 +1479,8 @@ class SessionRecord:
     claim_failure_count: int = 0
     claim_failure_reason: str | None = None
     claim_failure_at: float | None = None
+    #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
+    claim_refusal: dict | None = None
 
     llm_provider: str | None = None
     model: str | None = None

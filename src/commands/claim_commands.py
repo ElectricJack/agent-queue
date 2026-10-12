@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import replace
 
@@ -243,6 +244,8 @@ class ClaimCommandsMixin:
         # worker is finishing current work.  The conversion marks each live
         # worker stopped; reject a fresh claim before it can take new work.
         if session.lifecycle == "pool" and session.desired_state == "stopped":
+            if session.claim_refusal and session.claim_refusal["count"] >= 2:
+                return self._refusal_response(session, None)
             return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is draining", session)
         if not want_id and not args.get("next"):
             return {"success": False, "error": "task_id or next=true is required"}
@@ -256,14 +259,6 @@ class ClaimCommandsMixin:
         # false, but it does not hand out work -- otherwise the flag that
         # stops ``_reconcile_pools`` from launching pool workers would still
         # let an already-running one keep pulling tasks.
-        if not getattr(self.config.swarm, "enabled", True):
-            return {
-                "success": False,
-                "result": ClaimResult.NOT_ADMISSIBLE.value,
-                "reason": "swarm_disabled",
-                "task": None,
-                "claim_epoch": None,
-            }
         scope = self._current_scope or {}
         session_id = scope.get("session_id") or (
             args.get("session_id") if scope.get("elevated", True) else None
@@ -304,6 +299,8 @@ class ClaimCommandsMixin:
         deadline = time.monotonic() + wait
 
         if session.lifecycle == "task":
+            if not getattr(self.config.swarm, "enabled", True):
+                return self._simple(ClaimResult.NOT_ADMISSIBLE, "swarm_disabled", session)
             if session.task_id and want_id in (None, session.task_id):
                 task = await self.db.get_task(session.task_id)
                 return await self._claimed_response(task, task.claim_epoch, session)
@@ -317,6 +314,10 @@ class ClaimCommandsMixin:
         refresh_routing = False
 
         while True:
+            if session.desired_state == "stopped":
+                if session.claim_refusal and session.claim_refusal["count"] >= 2:
+                    return self._refusal_response(session, cap)
+                return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is draining", session, cap)
             if refresh_routing:
                 # Long-poll wakes may follow profile/class edits. Keep the
                 # session's frozen launch settings but refresh its
@@ -349,16 +350,34 @@ class ClaimCommandsMixin:
             # blocks for the full wait even though it could have woken up.
             admission_waiter = self.orchestrator.bus.waiter(_ADMISSION_EVENTS)
             try:
-                reason = self._admission_reason(project)
+                reason = (
+                    "swarm_disabled" if not getattr(self.config.swarm, "enabled", True)
+                    else self._admission_reason(project)
+                )
+                refusal = session.claim_refusal
+                if refusal and refusal["result"] == ClaimResult.NOT_ADMISSIBLE.value and (
+                    refusal["reason"] != reason
+                ):
+                    await self.db.update_session(session.id, claim_refusal=None)
+                    session = replace(session, claim_refusal=None)
+                    refusal = None
+                if refusal and session.claim_phase != "active":
+                    remaining = refusal["retry_at"] - time.time()
+                    if remaining > 0:
+                        if time.monotonic() >= deadline:
+                            return self._refusal_response(session, cap)
+                        await admission_waiter.wait(min(
+                            remaining, max(0.0, deadline - time.monotonic())
+                        ))
+                        session = await self.db.get_session(session.id) or session
+                        project = await self.db.get_project(session.project_id)
+                        continue
                 if reason:
                     if time.monotonic() >= deadline:
-                        return {
-                            "success": False,
-                            "result": ClaimResult.NOT_ADMISSIBLE.value,
-                            "reason": reason,
-                            "task": None,
-                            "claim_epoch": None,
-                        }
+                        return await self._record_claim_refusal(
+                            self._simple(ClaimResult.NOT_ADMISSIBLE, reason, session, cap),
+                            session, cap,
+                        )
                     await admission_waiter.wait(max(0.0, deadline - time.monotonic()))
                     project = await self.db.get_project(session.project_id)
                     continue
@@ -409,8 +428,9 @@ class ClaimCommandsMixin:
                     )
                     if settled is None:
                         return outcome
+                    session = await self.db.get_session(session.id) or session
                     continue  # re-run: active → claimed; released → new attempt
-                return outcome
+                return await self._record_claim_refusal(outcome, session, cap)
             finally:
                 waiter.close()
 
@@ -639,6 +659,8 @@ class ClaimCommandsMixin:
         conflict_task_id: str | None = None  # a specific task_id held by someone else
         async with self.db.immediate() as conn:
             kind, row = await self.db.take_claim_slot(conn, session.id, now=now, cap=cap)
+            if kind == "claim_refusal":
+                return self._refusal_response(row, cap)
             if kind == "active":
                 if want_id and want_id != row.task_id:
                     return self._simple(
@@ -1470,6 +1492,36 @@ class ClaimCommandsMixin:
         return await self._claimed_response(task, epoch, fresh, cap)
 
     # -- helpers -------------------------------------------------------------------
+
+    async def _record_claim_refusal(self, outcome, session, cap):
+        if outcome["result"] not in {
+            ClaimResult.PREPARE_FAILED.value, ClaimResult.NOT_ADMISSIBLE.value,
+        }:
+            return outcome
+        current = await self.db.record_claim_refusal(
+            session.id, result=outcome["result"], reason=outcome.get("reason", ""), now=time.time(),
+        )
+        if current is None or current.claim_refusal is None or current.claim_phase == "active":
+            return outcome
+        return self._refusal_response(current, cap)
+
+    def _refusal_response(self, session, cap):
+        refusal = session.claim_refusal
+        draining = session.desired_state == "stopped"
+        result = ClaimResult.DRAIN_REQUESTED if draining else ClaimResult(refusal["result"])
+        outcome = self._simple(result, refusal["reason"], session, cap)
+        outcome["retry_after"] = max(0, math.ceil(refusal["retry_at"] - time.time()))
+        outcome["refusal_count"] = refusal["count"]
+        outcome["instructions"] = (
+            "Repeated claim blocker: report it once to the project supervisor. "
+            "Run `aq session drain-ack` and exit; do not claim again."
+            if draining else
+            "Respect retry_after before another claim attempt. If refusal_count >= 2, "
+            "report this blocker once to the project supervisor and end the turn "
+            "awaiting the supervisor's inbox delivery. Preserve any held preparation; "
+            "do not keep polling claims or inboxes."
+        )
+        return outcome
 
     def _session_block(self, row, cap=None) -> dict:
         if row is None:

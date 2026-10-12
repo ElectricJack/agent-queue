@@ -1039,6 +1039,9 @@ class TaskClaimResponse(BaseModel):
     session: ClaimSessionSummary = ClaimSessionSummary()
     reason: str | None = None
     error: str | None = None
+    retry_after: int | None = None
+    refusal_count: int | None = None
+    instructions: str | None = None
 
 
 class TaskBatchCommitResponse(BaseModel):

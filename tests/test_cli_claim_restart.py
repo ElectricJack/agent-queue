@@ -63,3 +63,15 @@ def test_claim_ambiguous_response_is_not_replayed():
     assert result.exit_code != 0
     assert client.execute.await_count == 1
     sleep.assert_not_awaited()
+
+
+def test_claim_renders_refusal_cooldown_and_instructions():
+    result, client, sleep = invoke_claim([{
+        "result": "prepare_failed", "reason": "checkout blocker", "retry_after": 300,
+        "refusal_count": 2, "instructions": "Report once and register a durable message wait.",
+    }], json_mode=False)
+    assert result.exit_code == 0, result.output
+    assert "retry_after=300s; refusal_count=2" in result.output
+    assert "Report once and register a durable message wait." in result.output
+    assert client.execute.await_count == 1
+    sleep.assert_not_awaited()

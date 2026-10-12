@@ -13373,10 +13373,10 @@
       "line": 1105,
       "owner": "ClaimQueryMixin.activate_claim",
       "call": "delete",
-      "owner_fingerprint": "d0265cec92e403d80ad6ba1766b772cb51b4e65db8d34c3a6563f36ea116d5f3",
+      "owner_fingerprint": "d755f0b9f2b9d90f37419496ea854b1cb57e649db6094e95e5c78a187842aa86",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary deletion of stale attention and preparation-backoff metadata after guarded claim activation; session/task locks still precede activation and cleanup. Re-reviewed for the successful-activation reset of refusal count/reason/timestamp and PostgreSQL-only UPDATE RETURNING: neither changes this metadata delete or adds ref publication, replay authority or delivery lifecycle."
+      "reason": "Ordinary deletion of stale attention and preparation-backoff metadata after guarded PostgreSQL claim activation. Re-reviewed for clearing both session refusal budgets atomically: locks and admission guards remain before writes, with no remote OID, publication intent, ref replay or duplicate delivery lifecycle authority."
     },
     "src/database/queries/event_queries.py::EventQueryMixin._insert_event_row::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "line": 50,

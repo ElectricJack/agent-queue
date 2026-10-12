@@ -132,6 +132,8 @@ class TestCrud:
             restarts=2,
             quarantined_at=99.0,
             sleep_reason="rate_limit",
+            claim_refusal={"result": "prepare_failed", "reason": "checkout", "count": 1,
+                           "retry_at": 200.0},
         )
         await db.create_session(row)
         got = await db.get_session("sess1")
@@ -160,6 +162,48 @@ class TestCrud:
         await db.create_session(_session())
         await db.delete_session("sess1")
         assert await db.get_session("sess1") is None
+
+
+class TestClaimRefusal:
+    @pytest.mark.parametrize("phase", [None, "preparing"])
+    async def test_slot_cas_cannot_bypass_a_newly_recorded_cooldown(self, db, phase):
+        await db.create_session(_session(lifecycle="pool", claim_phase=phase))
+        saved = await db.record_claim_refusal(
+            "sess1", result="prepare_failed", reason="checkout", now=100,
+        )
+        async with db.immediate() as conn:
+            kind, row = await db.take_claim_slot(conn, "sess1", now=101, cap=None)
+        assert kind == "claim_refusal"
+        assert row.claim_phase == phase
+        assert row.claim_refusal == saved.claim_refusal
+
+    async def test_concurrent_cooldown_replays_count_once_and_preserve_deadline(self, db):
+        await db.create_session(_session(lifecycle="pool"))
+        results = await asyncio.gather(*(
+            db.record_claim_refusal("sess1", result="prepare_failed", reason="checkout", now=100)
+            for _ in range(8)
+        ))
+        assert all(row.claim_refusal == results[0].claim_refusal for row in results)
+        assert results[0].claim_refusal == {
+            "result": "prepare_failed", "reason": "checkout", "count": 1, "retry_at": 160,
+        }
+        results = await asyncio.gather(*(
+            db.record_claim_refusal("sess1", result="prepare_failed", reason="checkout", now=161)
+            for _ in range(8)
+        ))
+        assert all(row.desired_state == "stopped" for row in results)
+        assert all(row.claim_refusal == {
+            "result": "prepare_failed", "reason": "checkout", "count": 2, "retry_at": 461,
+        } for row in results)
+
+    async def test_late_failure_cannot_drain_a_successfully_activated_claim(self, db):
+        await db.create_task(Task(id="work", project_id="p1", title="Work", description=""))
+        await db.create_session(_session(lifecycle="pool", task_id="work", claim_phase="active"))
+        row = await db.record_claim_refusal(
+            "sess1", result="prepare_failed", reason="stale failure", now=100,
+        )
+        assert row.claim_refusal is None
+        assert (row.desired_state, row.task_id, row.claim_phase) == ("running", "work", "active")
 
 
 class TestNameResolution:

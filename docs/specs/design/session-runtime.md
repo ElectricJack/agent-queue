@@ -258,6 +258,10 @@ the [supervisor-agent](supervisor-agent.md) routing story settled first.
 
 ### 4.3 Heartbeats, leases, and the stall ladder
 
+Idle sessions stop on their second identical preparation/admission blocker under the
+session cooldown guard (worker-pools §4); retained preparations preserve their
+ownership and use the separate quarantine budget below.
+
 Pool claim preparation has a separate persisted refusal budget. Three consecutive
 preparation failures with the same reason, in the same session, request a drain and
 disable that session's workspace. Empty-frontier polls and admission waits neither
