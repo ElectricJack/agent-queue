@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from sqlalchemy import exists, insert, literal, or_, select, update
 from sqlalchemy.exc import DBAPIError
 
+from src.task_templates import render_task_template
 from src.database.tables import (
     projects,
     repos,
@@ -1130,23 +1131,25 @@ class StackedBranches:
                 repo_id=origin["repository_id"],
                 title=f"Repair prerequisite stack for {task['id']}",
                 description=(
-                    f"Preserve dependent {task['id']} at {head}. Your isolated branch starts "
-                    "there. Merge these current prerequisite heads, resolve conflicts, push and close: "
-                    + json.dumps(proofs, sort_keys=True)
-                    + (
-                        f"\nMerge parent head {preparation_conflict['parent_head']} as well. "
-                        f"Conflicting paths: {json.dumps(preparation_conflict['files'])}. "
-                        "Preserve every listed head as an ancestor of your result. "
-                        "Resolve source files first, then run scripts/regenerate-generated.sh; "
-                        "never hand-merge generated artifacts. Do not implement the dependent's work."
-                        if preparation_conflict else ""
-                    )
-                    + (
-                        f"\nExact child {preparation_conflict['child_head']} conflicts with "
-                        f"overlay {preparation_conflict['overlay_head']}. The retained input store "
-                        "will be fetched into your checkout during preparation. Merge that exact "
-                        "overlay and retain both heads; do not substitute current branch tips."
-                        if preparation_conflict and preparation_conflict.get("overlay_head") else ""
+                    render_task_template(
+                        "prerequisite-stack-repair",
+                        task_id=task["id"],
+                        head=head,
+                        prerequisite_heads=json.dumps(proofs, sort_keys=True),
+                        parent_conflict=render_task_template(
+                            "prerequisite-parent-conflict",
+                            parent_head=preparation_conflict["parent_head"],
+                            conflicting_files=json.dumps(preparation_conflict["files"]),
+                        )
+                        if preparation_conflict
+                        else "",
+                        overlay_conflict=render_task_template(
+                            "prerequisite-overlay-conflict",
+                            child_head=preparation_conflict["child_head"],
+                            overlay_head=preparation_conflict["overlay_head"],
+                        )
+                        if preparation_conflict and preparation_conflict.get("overlay_head")
+                        else "",
                     )
                 ),
                 task_type=TaskType.BUGFIX,

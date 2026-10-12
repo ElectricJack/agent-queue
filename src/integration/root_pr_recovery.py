@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.task_templates import render_task_template
 from src.database.tables import (
     archived_tasks,
     integration_source_ci,
@@ -40,17 +41,21 @@ class RootPRCheckFailure:
     checks: ChecksResult
 
     def feedback(self) -> str:
-        lines = [f"Required PR checks failed on {self.source_sha}: {self.pr_url}"]
+        lines = []
         for check in self.checks.checks:
             if check.conclusion is not Conclusion.FAILURE:
                 continue
             lines.append(f"- {check.name}: failure {check.run_url or ''}".rstrip())
             for test_id in check.detail.get("failing_test_ids", ()):
                 lines.append(f"  FAILED {test_id}")
-        lines.append("Fix the reported failures on your assigned branch, run only focused "
-                     "checks (the failing tests and tests covering your change; CI runs "
-                     "the broad sweep), publish, and close with verification evidence.")
-        return "\n".join(lines)
+        return render_task_template(
+            "root-pr-check-repair",
+            source_sha=self.source_sha,
+            source_base_sha=self.source_base_sha,
+            pr_url=self.pr_url,
+            policy_generation=self.policy_generation,
+            checks="\n".join(lines),
+        )
 
 
 async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> dict:

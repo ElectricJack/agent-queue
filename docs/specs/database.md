@@ -425,7 +425,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `credit_weight` | REAL | NOT NULL DEFAULT 1.0 | Scheduler weight |
 | `max_concurrent_agents` | INTEGER | NOT NULL DEFAULT 2 | Cap on parallel agents |
 | `status` | TEXT | NOT NULL DEFAULT 'ACTIVE' | One of: ACTIVE, PAUSED, ARCHIVED |
-| `supervisor_enabled` | BOOLEAN | NOT NULL DEFAULT false | Opt-in project supervisor; false for new and existing projects. Disabled projects route supervisor messages to the global supervisor, and reconciliation stops their live project supervisor after its current turn. Added by Alembic `a00000000092` ([project supervisor contract](../superpowers/specs/2026-10-12-project-supervisor-opt-in.md)) |
+| `supervisor_enabled` | BOOLEAN | NOT NULL DEFAULT false | Opt-in project supervisor; false for new and existing projects. Disabled projects route supervisor messages to the global supervisor, and reconciliation stops their live project supervisor after its current turn. Added by Alembic `a00000000094` ([project supervisor contract](../superpowers/specs/2026-10-12-project-supervisor-opt-in.md)) |
 | `total_tokens_used` | INTEGER | NOT NULL DEFAULT 0 | Cumulative token counter |
 | `budget_limit` | INTEGER | nullable | Max tokens allowed (NULL = unlimited) |
 | `workspace_path` | TEXT | nullable | **Deprecated/unused.** Legacy column kept for backward compatibility; workspace paths are now managed via the `workspaces` table. |

@@ -205,6 +205,9 @@ async def run(
         )
 
     config = load_config(config_path, profile=profile)
+    from src.task_templates import bind_task_templates
+
+    bind_task_templates(config.data_dir)
     logger.info(
         "Starting with env=%s, profile=%s",
         config.env,

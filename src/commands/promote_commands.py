@@ -14,6 +14,7 @@ from pathlib import Path
 
 from sqlalchemy import func, insert, select, update
 
+from src.task_templates import render_task_template
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.commands.supervisor_authority import integration_operator
 from src.database.tables import (
@@ -423,14 +424,16 @@ class PromoteCommandsMixin:
                 task = Task(
                     id="", project_id=project.id, repo_id=repository.id,
                     title=f"Prepare {step['id']} {version}", task_type=TaskType.CHORE,
-                    description=(f"Prepare version {version} on {repository.default_branch}. "
-                                 f"Bump {step['versioning']['source']}; keep mirrored versions equal, "
-                                 + ("draft the configured notes from metadata.notes_input "
-                                    "(aq task show <own id> --json), and " if draft is not None else "")
-                                 + "regenerate artifacts affected by the bump. Read only your own task. "
-                                 "Commit and publish through the ordinary PR-gated train.\n\n"
-                                 + (f"Notes path: {step['notes']['path'].format(version=version)}\n"
-                                    + (draft or "") if draft is not None else "")),
+                    description=(render_task_template(
+                        "promotion-prepare",
+                        version=version,
+                        default_branch=repository.default_branch,
+                        version_source=step["versioning"]["source"],
+                        notes_instructions=render_task_template("promotion-draft-notes") if draft is not None else "",
+                        notes_details=f"Notes path: {step['notes']['path'].format(version=version)}\n" + (draft or "")
+                        if draft is not None
+                        else "",
+                    )),
                     dedup_key=key, created_by_kind=PREPARE_CONTEXT,
                     created_by_id=_requester_identity(current_principal() or TRUSTED_LOCAL),
                 )

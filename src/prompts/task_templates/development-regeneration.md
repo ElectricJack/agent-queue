@@ -1,0 +1,1 @@
+Files marked merge={{generated_merge_driver}} in .gitattributes are generated: never hand-merge them. Take either side (`git checkout --ours -- <path>`), resolve the source files, then run `{{command}}` and commit what it writes. 

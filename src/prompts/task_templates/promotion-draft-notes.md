@@ -1,0 +1,1 @@
+draft the configured notes from metadata.notes_input (aq task show <own id> --json), and 

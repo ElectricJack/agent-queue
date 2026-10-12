@@ -38,6 +38,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
+from src.task_templates import render_task_template
 from src.git.github_contracts import GitHubAccessError, rate_limit_cause
 from src.integration.batches import (
     Batch,
@@ -270,35 +271,24 @@ def conflict_brief(
     lines = [
         f"The batch merge conflicted while building the starting head {starting_sha}.",
         (f"Conflict scope: {conflict_scope}. " + (
-            "Resolve the conflicting member's changes while preserving the other members."
+            render_task_template("train-conflict-member-scope")
             if conflict_scope == "member" else
-            "Resolve conflicts across the whole frozen batch, considering every member."
+            render_task_template("train-conflict-batch-scope")
         )),
         (f"Conflicting member: {conflict}" + (f" (source {source})" if source else "")
          + (f"; reason: {reason}" if reason else "") + ".") if conflict
         else (f"Conflicting merge; reason: {reason or 'not reported by the merge'}."),
         "Conflicting files:" if files else "Conflicting files: not reported by the merge.",
         *(f"  - {name}" for name in files),
-        ("Already merged into the starting head (do not merge them again):" if merged
+        (render_task_template("train-conflict-carried") if merged
          else "Nothing is merged into the starting head yet."),
         *numbered(merged),
-        "Still to merge onto the starting head, in this order:" if remaining
+        render_task_template("train-conflict-remaining") if remaining
         else "Every frozen member is already merged into the starting head.",
         *numbered(remaining),
-        (f"Resolve the conflict, then merge every member listed above onto the "
-         f"starting head {starting_sha} in that order. Do not stop once the "
-         "conflict is resolved, or once the checks on the starting head are "
-         "green: a repaired head without every remaining member cannot close "
-         "successfully or advance the target."),
-        (f"Generated files are regenerated, never hand-merged: resolve a conflict "
-         f"in a path carrying the merge=aq-generated attribute in .gitattributes by "
-         "taking either side while merging the sources, then running the repository's "
-         f"regeneration command ({REGENERATION_COMMAND} by default) once after every "
-         "remaining member is merged. Never resolve generated conflict markers by hand."),
-        "Before publishing, verify that every frozen source listed above is an ancestor "
-        "of HEAD. Keep all merge parents; do not squash, rebase or cherry-pick the inputs. "
-        "Run the required checks on the complete repaired candidate. The train still "
-        "requires its exact candidate checks and publication gates before advancing the target.",
+        (render_task_template("train-conflict-complete", starting_sha=starting_sha)),
+        (render_task_template("train-conflict-regenerate", regeneration_command=REGENERATION_COMMAND)),
+        render_task_template("train-conflict-verify"),
     ]
     return "\n".join(line for line in lines if line)
 
@@ -309,24 +299,21 @@ def sync_default_branch_brief(
 ) -> str:
     """Merge the verified default head without losing any frozen batch input."""
     lines = [
-        (f"The epic's pre-existing required-check failures are fixed on the verified "
-         f"default branch {decision['ref']} at {decision['sha']}."),
+        (render_task_template(
+            "train-default-sync-observation", decision_ref=decision["ref"], decision_sha=decision["sha"]
+        )),
         "Required checks passed on that exact default head:",
         *(f"  - {name}" for name in decision["checks"]),
-        (f"Fetch {decision['ref']} and merge the pinned commit {decision['sha']} into "
-         f"the candidate starting at {starting_sha}. Merge this exact commit even if "
-         "the default branch moves afterwards; do not substitute an unverified head."),
-        "Resolve conflicts while preserving every frozen member:",
+        (render_task_template(
+            "train-default-sync-merge",
+            decision_ref=decision["ref"],
+            decision_sha=decision["sha"],
+            starting_sha=starting_sha,
+        )),
         *(f"  - {member.task_id} (source {member.source_sha})" for member in members),
-        ("Keep the starting candidate and all these sources in the repaired history; "
-         "do not reset the candidate to the default branch or drop a member."),
-        (f"Generated files are regenerated, never hand-merged: resolve their sources "
-         f"and run the repository's regeneration command ({REGENERATION_COMMAND} by "
-         "default) for paths marked merge=aq-generated in .gitattributes."),
-        ("Publish the repaired candidate with the managed lease. It must pass the "
-         "unchanged trusted required checks and attestation on its own exact SHA "
-         "before the train can advance the epic. Default-branch evidence only "
-         "authorizes this merge; it does not satisfy candidate checks."),
+        (render_task_template("train-default-sync-preserve")),
+        (render_task_template("train-default-sync-regenerate", regeneration_command=REGENERATION_COMMAND)),
+        (render_task_template("train-default-sync-publish")),
     ]
     if decision.get("conflicting_files"):
         lines.append(conflict_brief({
@@ -957,17 +944,13 @@ class IntegrationTrain:
         if missing_push:
             source = missing_push.get("repair_source_ref", "the repository's default branch")
             brief = (
-                f"CI did not trigger on the exact candidate {head}. {missing_push['reason']}\n"
-                f"Fetch {source} and review its .github/workflows changes against this candidate. "
-                "Merge or apply the missing workflow changes as an ordinary commit on the "
-                "candidate, preserving intentional branch-specific changes and every frozen "
-                "batch member. Ensure the workflows providing the required checks trigger on "
-                f"push to {candidate_ref(batch.id)}. Publish the new candidate head with the "
-                "managed lease so GitHub creates a push run for that exact SHA. "
-                "Keep the trusted producer, required check names and attestation unchanged; "
-                "workflow_dispatch and checks on another SHA cannot satisfy this repair. "
-                "If the workflows already allow the candidate ref, diagnose path filters, "
-                "push credentials or GitHub availability before changing workflow content."
+                render_task_template(
+                    "train-ci-not-triggered",
+                    head=head,
+                    missing_push_reason=missing_push["reason"],
+                    source=source,
+                    candidate_ref=candidate_ref(batch.id),
+                )
             )
         _progress("allocate_repair")
         repair = await self.repair.allocate(batch.id, target_ref=(

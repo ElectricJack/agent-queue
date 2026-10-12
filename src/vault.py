@@ -1460,6 +1460,11 @@ def ensure_default_templates(data_dir: str) -> dict:
     _write_if_missing("profile-template.md", PROFILE_TEMPLATE)
     _write_if_missing("playbook-template.md", PLAYBOOK_TEMPLATE)
 
+    from src.task_templates import SHIPPED_TASK_TEMPLATES
+
+    for template in sorted(SHIPPED_TASK_TEMPLATES.glob("*.md")):
+        _write_if_missing(os.path.join("tasks", template.name), template.read_text(encoding="utf-8"))
+
     # Starter knowledge packs (profiles spec §4)
     for agent_type, files in _STARTER_KNOWLEDGE.items():
         for filename, content in files.items():

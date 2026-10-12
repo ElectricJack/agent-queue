@@ -528,6 +528,26 @@ class TestListDirectory:
 
 
 class TestWriteFile:
+    async def test_edit_template_and_render_through_command_scope(self, handler, config, monkeypatch):
+        from pathlib import Path
+
+        from src.task_templates import render_task_template
+
+        target = Path(config.data_dir) / "vault" / "templates" / "tasks" / "aggregate-verifier.md"
+        content = "Supervisor instructions: verify the selected aggregate."
+        result = await handler.execute("write_file", {"path": str(target), "content": content})
+        assert "error" not in result
+        assert result["written"] == len(content)
+        assert await handler._validate_path(str(target)) == str(target)
+
+        async def render(_args):
+            return {"success": True, "description": render_task_template("aggregate-verifier")}
+
+        monkeypatch.setattr(handler, "_cmd_get_status", render)
+        rendered = await handler.execute("get_status", {})
+        assert rendered["description"] == content
+        assert "Verify the exact collected aggregate" in render_task_template("aggregate-verifier")
+
     async def test_basic_write(self, handler, workspace_dir):
         """Write content to a new file."""
         target = workspace_dir / "output.txt"

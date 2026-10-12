@@ -23,6 +23,7 @@ import os
 import time
 from dataclasses import dataclass
 
+from src.task_templates import render_task_template
 from src.git.ci_gate import GREEN, PENDING, RED, UNKNOWN, classify_rollup
 from src.models import TaskStatus
 
@@ -249,39 +250,21 @@ def render_repair_task(
         if more > 0:
             lines.append(f"- ... and {more} more")
     else:
-        lines += ["", "No pytest node ids could be read from the job logs; read the run."]
+        lines += ["", render_task_template("ci-repair-no-test-ids")]
     if in_flight:
         lines += [
             "",
-            (
-                "Other failures on this branch already belong to in-flight repair "
-                f"task(s) {', '.join(in_flight)}. This task owns only the failures listed "
-                "above; leave the rest to those tasks."
-            ),
+            render_task_template("ci-repair-other-owners", task_ids=", ".join(in_flight)),
         ]
-    lines += [
-        "",
-        "## What to do",
-        f"Make `{ref}` green again with the smallest change that does it. Reproduce the",
-        "failure at the head sha above first; if it does not reproduce, say so in the close",
-        "summary with the evidence and do not change code. Fix the actual defect, not the",
-        "test, unless the test is asserting something that is no longer true. Land the fix",
-        "through a pull request against the default branch; never push to it directly.",
-        "If this project uses an integration train, submit the repair PR for its normal",
-        "review and train collection; do not merge the repair PR yourself. The train owns",
-        "candidate CI, bounded repair, and promotion. Do not create a parallel merge path.",
-        "Do not bundle unrelated work. If the failure is outside this repository's control",
-        "(a runner outage, a rate limit), close with outcome fail and failure-class hard",
-        "and say why, so the sentinel escalates to a human instead of filing another attempt.",
-        "",
-        "## Acceptance criteria",
-        "- The failing checks above pass on the PR head"
-        if not in_flight
-        else "- The failing tests above pass on the PR head",
-        "- The change touches only what the failure required",
-        f"- This is attempt {attempt} for this failure signature",
-    ]
-    return title, "\n".join(lines)
+    return title, render_task_template(
+        "ci-repair",
+        facts="\n".join(lines),
+        ref=ref,
+        attempt=attempt,
+        acceptance=render_task_template(
+            "ci-repair-accept-tests" if in_flight else "ci-repair-accept-checks"
+        ),
+    )
 
 
 def _string_list(value: object) -> list[str] | None:

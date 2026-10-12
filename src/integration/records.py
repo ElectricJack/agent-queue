@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.task_templates import render_task_template
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     archived_tasks,
@@ -813,8 +814,7 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                             project_id=parent["project_id"],
                             title=f"Verify aggregate for {task_id}",
                             description=(
-                                "Verify the exact collected aggregate and record trusted "
-                                "integration check evidence."
+                                render_task_template("aggregate-verifier")
                             ),
                             status=TaskStatus.PAUSED,
                             repo_id=checkpoint["repository_id"],

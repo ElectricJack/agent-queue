@@ -17,6 +17,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.task_templates import render_task_template
 from src.plugins.base import InternalPlugin, PluginPermission
 
 if TYPE_CHECKING:
@@ -1243,14 +1244,13 @@ class VibeCopPlugin(InternalPlugin):
                                         f"in {project_name}"
                                     ),
                                     "description": (
-                                        f"Vibecop weekly scan found {error_count} "
-                                        f"error-severity finding(s) in project "
-                                        f"{project_name}.\n\n"
-                                        f"Workspace: {workspace_path}\n\n"
-                                        f"Findings:\n{summary}\n\n"
-                                        f"Run `vibecop_scan` on the workspace to see "
-                                        f"full details, then fix all error-severity "
-                                        f"findings."
+                                        render_task_template(
+                                            "vibecop-repair",
+                                            error_count=error_count,
+                                            project_name=project_name,
+                                            workspace_path=workspace_path,
+                                            summary=summary,
+                                        )
                                     ),
                                     "priority": 5,
                                 },

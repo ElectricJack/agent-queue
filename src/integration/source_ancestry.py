@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from src.task_templates import render_task_template
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.git.manager import GitError, is_valid_git_oid
 
@@ -122,20 +123,17 @@ def repair_feedback(observation: SourceAncestryObservation) -> str:
         f"in batch {observation.batch_id}" if observation.batch_id else "at admission"
     )
     return (
-        f"Integration withdrew this source {found}: {describe(observation)}. The train "
-        "merges `recorded base..head` onto main, so a head that does not descend from its "
-        "recorded base can never be built; the history on this branch dropped the base it "
-        "was created from.\n\n"
-        f"Repair on {branch} without discarding the reviewed commits: fetch origin and merge "
-        f"the recorded base `{source['base']}` into the branch (`git merge {source['base']}`; "
-        "merging the current default branch also works, because it contains the base). "
-        "Do not rebase, squash away or force-push the existing history. Resolve conflicts, "
-        "regenerate generated files, re-run the focused checks with `aq test`, publish with "
-        "`aq git push` and close again; the new head is a new source identity and is "
-        "admitted normally once `merge-base --is-ancestor` holds.\n"
-        f"Withdrawn identity: base {source['base']}, head {source['head']}, generation "
-        f"{source['generation']}, PR {source.get('pr_url') or '(none)'}, evidence "
-        f"{rejection_evidence_id(observation)}."
+        render_task_template(
+            "source-ancestry-repair",
+            found=found,
+            observation_details=describe(observation),
+            branch=branch,
+            source_base=source["base"],
+            source_head=source["head"],
+            source_generation=source["generation"],
+            pr_url=source.get("pr_url") or "(none)",
+            evidence_id=rejection_evidence_id(observation),
+        )
     )
 
 

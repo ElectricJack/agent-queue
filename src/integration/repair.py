@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.task_templates import render_task_template
 from src.database.tables import (
     agents,
     archived_tasks,
@@ -275,9 +276,7 @@ class OrdinaryRepairService:
                 if stage == "debug":
                     intelligence_class = policy.debug_intelligence_class
                 repair_input.update(stage=stage, budget_seconds=seconds)
-                brief += (f"\n\nRepair stage: {stage}; work budget: {seconds} seconds. "
-                          "Publish any progress and close with ordinary evidence within this "
-                          "budget; the train re-observes the head before choosing the next repair.")
+                brief += (render_task_template("ordinary-repair-budget", stage=stage, seconds=seconds))
             if sync_default_branch:
                 repair_input["sync_default_branch"] = dict(sync_default_branch)
             fence = await self.locks.acquire_on(
@@ -286,10 +285,12 @@ class OrdinaryRepairService:
             await self.db.create_task(Task(
                 id=task_id, project_id=batch["project_id"], repo_id=batch["repository_id"],
                 title=f"Repair {batch_id} (attempt {attempt})",
-                description=(f"{brief}\n\nRepair the observed head on {target_ref}. Publish with "
-                             "the managed lease and close with ordinary publication evidence. "
-                             "The train observes the current head and exact checks.\n\n"
-                             + json.dumps(repair_input, sort_keys=True)),
+                description=(render_task_template(
+                    "ordinary-repair",
+                    brief=brief,
+                    target_ref=target_ref,
+                    repair_input=json.dumps(repair_input, sort_keys=True),
+                )),
                 task_type=TaskType.BUGFIX, priority=priority,
                 branch_name=target_ref.removeprefix("refs/heads/"),
                 class_hint=intelligence_class, created_by_kind="system", created_by_id=batch_id,
@@ -5986,103 +5987,73 @@ class RepairService:
         candidate_line = (
             f"Candidate SHA: {candidate_ci['candidate_sha']}"
             if candidate_ci["candidate_built"]
-            else "Candidate SHA: not built yet (the candidate is still being constructed)"
+            else render_task_template("candidate-not-built")
         )
         identity = (
-            f"Batch: {candidate_ci['batch_id']}\n"
-            f"Candidate revision: {candidate_ci['revision']} "
-            f"(revision state: {candidate_ci['state']})\n"
-            f"{candidate_line}\n"
-            f"Construction base: {candidate_ci['construction_base_sha']}\n"
-            f"{run_line}\n\n"
+            render_task_template(
+                "candidate-ci-identity",
+                batch_id=candidate_ci["batch_id"],
+                revision=candidate_ci["revision"],
+                state=candidate_ci["state"],
+                candidate_line=candidate_line,
+                construction_base_sha=candidate_ci["construction_base_sha"],
+                run_line=run_line,
+            )
         )
         if candidate_ci["conclusion"] == "success":
             return (
-                "\n\n## Candidate CI is green — push nothing\n\n"
-                f"{identity}"
-                "Candidate CI already passed on this exact candidate. There is nothing "
-                "to repair: the frozen dossier records no required-check failure, and "
-                "none exists.\n\n"
-                "Protocol: push nothing at all to the batch branch, do not rebase, and "
-                "close this stage pass-unchanged now; the daemon publishes under its "
-                "fence. A fix after a green result cannot be bound to this candidate; "
-                "it would force a superseding revision and abort the batch. Ask the "
-                "supervisor only if the run above cannot be read at all."
+                render_task_template("candidate-ci-green", identity=identity)
             )
         if candidate_ci["conclusion"] is None:
             cause = (
-                "The frozen dossier's failed checks, logs and attempted commands are empty "
-                "BECAUSE candidate CI has not reported yet. There is nothing on record to "
-                "repair. Do not push, do not rebase, and do not fabricate a fix.\n\n"
+                render_task_template("candidate-ci-unobserved")
             )
         elif candidate_ci["conclusion"] == "failure":
             cause = (
-                "Candidate CI reported a failure for this candidate, but the daemon has "
-                "not recorded that failure in this stage's dossier yet, so its failed "
-                "checks are still empty. Read the run above before acting; do not push, "
-                "do not rebase, and do not fabricate a fix from the empty dossier.\n\n"
+                render_task_template("candidate-ci-unrecorded-failure")
             )
         else:
             cause = (
-                "The frozen dossier records no required-check failure for this exact "
-                "candidate. There is nothing on record to repair beyond the observation "
-                "above. Do not push, do not rebase, and do not fabricate a fix.\n\n"
+                render_task_template("candidate-ci-no-failure")
             )
         return (
-            "\n\n## Awaiting candidate CI — no failure is on record yet\n\n"
-            f"{identity}"
-            f"{cause}"
-            "Protocol:\n"
-            "1. Check the candidate CI status for the revision above before acting "
-            "(read the run above with your CI read; `aq git ci-baseline-status` covers "
-            "branch baselines, not this candidate).\n"
-            "2. While the candidate is still being built or the run is pending, missing, "
-            "cancelled or inconclusive: push nothing at all to the batch branch, and close "
-            "this stage pass-unchanged when CI turns green; the daemon publishes under its "
-            "fence.\n"
-            "3. If and only if a required check on the exact candidate SHA fails: "
-            "then repair, record the failed checks, and submit through "
-            "aq integration resolve-candidate-member as usual.\n"
-            "A fix after a green result cannot be bound to this candidate; it would "
-            "force a superseding revision instead. Ask the supervisor only if the "
-            "candidate CI run for this exact SHA cannot be read at all."
+            render_task_template("candidate-ci-awaiting", identity=identity, cause=cause)
         )
 
     @staticmethod
     def _delegate_description(operation, repair_stage, *, conflict=None, candidate_ci=None) -> str:
         description = (
-            "Execute the frozen hierarchical-integration repair stage.\n\n"
-            f"Operation: {operation['id']}\n"
-            f"Stage: {repair_stage['ordinal']}\n"
-            f"Starting SHA: {repair_stage['starting_sha']}\n"
-            f"Dossier: {repair_stage['dossier']}"
+            render_task_template(
+                "integration-repair-stage",
+                operation_id=operation["id"],
+                ordinal=repair_stage["ordinal"],
+                starting_sha=repair_stage["starting_sha"],
+                dossier=repair_stage["dossier"],
+            )
         )
         refiles = (repair_stage["dossier"] or {}).get("writer_refiles")
         if refiles:
             description += (
-                "\n\nThis stage was refiled at the same ordinal: its previous writer "
-                f"(claim epoch {refiles[-1]['claim_epoch']}) stopped without publishing "
-                "anything. Start from the published stage head."
+                render_task_template("integration-repair-refiled", previous_claim_epoch=refiles[-1]["claim_epoch"])
             )
         progress = (repair_stage["dossier"] or {}).get("preserved_progress")
         if progress:
             description += (
-                "\n\nResume the preserved unpublished progress at "
-                f"{progress['ref']} ({progress['sha']}). The workspace starts at this exact tip. "
-                f"Frozen members already present as ancestors: {progress['completed_member_ordinals']}. "
-                "Keep those merges and finish only the remaining work. The original partial head "
-                "still anchors the complete repair commit range and candidate submission. "
-                "Preservation is not candidate acceptance: exact candidate CI and publication "
-                "still use the frozen subject, manifest, and current delegate fence."
+                render_task_template(
+                    "integration-repair-preserved-progress",
+                    progress_ref=progress["ref"],
+                    progress_sha=progress["sha"],
+                    completed_member_ordinals=progress["completed_member_ordinals"],
+                )
             )
         description += RepairService._candidate_ci_section(candidate_ci)
         if not conflict:
             return description
         if conflict.get("members"):
             merge_start = (
-                "Continue at the preserved tip and merge every frozen source head still absent in "
+                render_task_template("batch-conflict-resume")
                 if progress
-                else "Start at the partial head and merge EVERY remaining frozen source head in "
+                else render_task_template("batch-conflict-start")
             )
             manifest = "\n".join(
                 f"- {member['ordinal']}: {member['task_id']}, base {member['source_base_sha']}, "
@@ -6090,48 +6061,32 @@ class RepairService:
                 for member in conflict["members"]
             )
             return (
-                f"{description}\n\n## Complete batch conflict repair\n\n"
-                f"Batch: {conflict['batch_id']}\nRevision: {conflict['revision']}\n"
-                f"Partial head: {conflict['partial_head_sha']}\n\n{manifest}\n\n{merge_start}"
-                "manifest order in this workspace. Resolve all conflicts together, preserving "
-                "the intended features. Retain every source head as an ancestor of the final "
-                "head. You may edit any necessary repair file, including earlier features and "
-                "migrations; re-chain colliding migration revisions and check alembic heads. "
-                "Regenerate generated artifacts from resolved sources; never hand-merge them. "
-                "Run focused checks, commit repairs, and record the complete first-parent "
-                "range with git rev-list --first-parent --reverse PARTIAL_HEAD..HEAD.\n\n"
-                "Submit through aq integration resolve-candidate-member with "
-                "--resolved-head-sha HEAD --resolved-tree-sha TREE and one "
-                "--repair-commit-sha per first-parent commit. The frozen policy makes this "
-                "a complete batch resolution; the daemon derives all authority and publishes "
-                "under its fence. Do not push the integration branch or main yourself. "
-                "Candidate CI must pass on the exact resulting SHA before promotion."
+                render_task_template(
+                    "batch-conflict-repair",
+                    description=description,
+                    batch_id=conflict["batch_id"],
+                    revision=conflict["revision"],
+                    partial_head_sha=conflict["partial_head_sha"],
+                    manifest=manifest,
+                    merge_start=merge_start,
+                )
             )
         member_start = (
-            "Continue from the exact preserved tip above. "
-            if progress else "Start from the exact partial head above. "
+            render_task_template("member-conflict-resume")
+            if progress else render_task_template("member-conflict-start")
         )
         return (
-            f"{description}\n\n"
-            "## Candidate member conflict\n\n"
-            f"Batch: {conflict['batch_id']}\n"
-            f"Candidate revision: {conflict['revision']}\n"
-            f"Member ordinal: {conflict['ordinal']}\n"
-            f"Partial head: {conflict['partial_head_sha']}\n"
-            f"Member source base: {conflict['source_base_sha']}\n"
-            f"Member reviewed head: {conflict['source_head_sha']}\n\n"
-            f"{member_start}Resolve only this member's conflict, "
-            "commit the repair as a linear non-merge range, and do not push the integration "
-            "branch yourself. Record `git rev-parse HEAD`, `git rev-parse HEAD^{tree}`, and "
-            "each commit from `git rev-list --reverse PARTIAL_HEAD..HEAD`, then run:\n\n"
-            "    aq integration resolve-candidate-member \\\n"
-            "      --resolved-head-sha RESOLVED_HEAD_SHA \\\n"
-            "      --resolved-tree-sha RESOLVED_TREE_SHA \\\n"
-            "      --repair-commit-sha REPAIR_COMMIT_SHA\n\n"
-            "Repeat `--repair-commit-sha` in oldest-to-newest order for every repair commit. "
-            "The command derives the batch, member, operation, partial head, claim, workspace, "
-            "and branch fence from this authenticated assignment; never supply or push a "
-            "replacement lineage by hand."
+            render_task_template(
+                "candidate-member-conflict",
+                description=description,
+                batch_id=conflict["batch_id"],
+                revision=conflict["revision"],
+                ordinal=conflict["ordinal"],
+                partial_head_sha=conflict["partial_head_sha"],
+                source_base_sha=conflict["source_base_sha"],
+                source_head_sha=conflict["source_head_sha"],
+                member_start=member_start,
+            )
         )
 
     async def _current_batch_subject_rows_on(self, conn, operation):

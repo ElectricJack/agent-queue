@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from src.task_templates import render_task_template
 from src.integration.models import HierarchicalIntegrationPolicy
 
 logger = logging.getLogger(__name__)
@@ -219,26 +220,19 @@ def repair_description(observation):
         if item["name"] in evidence["failing_checks"]
     )
     return (
-        f"Authorized source CI repair for task {observation.task_id}, PR {source['pr_url']}.\n"
-        f"Repository {source['repository_id']}; source branch {source['branch']}; "
-        f"exact source base {source['base']}, head {source['head']}, "
-        f"checkpoint generation {source['generation']}.\n"
-        f"Observed {observation.state} under policy generation {observation.policy_generation}.\n"
-        f"Failing/cancelled checks:\n{checks}\n\n"
-        "Work in your assigned root branch. Fetch and merge the exact source head "
-        "above, preserving it as an ancestor; resolve all necessary code, test, "
-        "migration and generated-artifact issues. Use the failed check links and "
-        "record concrete failures and fixes. A red run is repairable only because at "
-        "least one required check genuinely failed; any cancelled check listed beside "
-        "it is infrastructure and is never fixed in code or counted as success. "
-        "Re-chain colliding migration "
-        "revisions and regenerate generated files. Run only focused checks with aq test: "
-        "the failing tests and the tests that cover the code you changed. Do not run "
-        "broad area or full suites; this branch's CI runs the broad sweep. Publish "
-        "your assigned branch and close with exact test evidence. "
-        "The delivery service observes this branch's own exact CI and queues further "
-        "bounded repair if needed; only its fully checked candidate can reach main. "
-        "Do not rewrite the source branch or publish main."
+        render_task_template(
+            "source-ci-repair",
+            task_id=observation.task_id,
+            source_pr_url=source["pr_url"],
+            source_repository_id=source["repository_id"],
+            source_branch=source["branch"],
+            source_base=source["base"],
+            source_head=source["head"],
+            source_generation=source["generation"],
+            state=observation.state,
+            policy_generation=observation.policy_generation,
+            checks=checks,
+        )
     )
 
 
