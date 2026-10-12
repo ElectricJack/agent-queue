@@ -70,6 +70,12 @@ _INTEGRATION_LIVE = ("active", "escalated", "human_required")
 _INTEGRATION_ENDED = ("completed", "cancelled")
 
 
+async def _recovery_row(conn, query, *, required=False):
+    """Read a mapping without changing the query's locks or cardinality contract."""
+    rows = (await conn.execute(query)).mappings()
+    return rows.one() if required else rows.first()
+
+
 def _incident_id(task, attempt, reason):
     """Stable identity for one failure generation, including no-attempt failures."""
     generation = (
@@ -397,12 +403,8 @@ class TaskRecoveryQueryMixin:
         )
         rows = (
             await conn.execute(
-                select(
-                    operation.c.id,
-                    operation.c.state,
-                    operation.c.active_stage,
-                    operation.c.parent_task_id,
-                )
+                select(operation.c.id, operation.c.state, operation.c.active_stage,
+                       operation.c.parent_task_id)
                 .where(or_(delegate, operation.c.parent_task_id == task["id"]))
                 .order_by(operation.c.updated_at.desc(), operation.c.id)
             )
@@ -410,11 +412,9 @@ class TaskRecoveryQueryMixin:
         live = next((r for r in rows if r["state"] in _INTEGRATION_LIVE), None)
         if live is not None:
             ordinal = int(live["active_stage"])
-            current = (
-                await conn.execute(
-                    select(stage).where(stage.c.operation_id == live["id"], stage.c.ordinal == ordinal)
-                )
-            ).mappings().first()
+            current = await _recovery_row(conn, select(stage).where(
+                stage.c.operation_id == live["id"], stage.c.ordinal == ordinal,
+            ))
             current = dict(current) if current is not None else {}
             policy = current.get("policy") or {}
             return {
@@ -435,14 +435,8 @@ class TaskRecoveryQueryMixin:
                     else "stage_runtime"
                 ),
             }
-        ended = next(
-            (
-                r
-                for r in rows
-                if r["state"] in _INTEGRATION_ENDED and r["parent_task_id"] != task["id"]
-            ),
-            None,
-        )
+        ended = next((r for r in rows if r["state"] in _INTEGRATION_ENDED
+                      and r["parent_task_id"] != task["id"]), None)
         if ended is not None:
             return {
                 "kind": "retired",
@@ -533,10 +527,8 @@ class TaskRecoveryQueryMixin:
 
     async def _supersede_stale_task_recovery_incident(self, task_id, expected_id):
         async with self.immediate() as conn:
-            task = (
-                (await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update()))
-                .mappings()
-                .first()
+            task = await _recovery_row(
+                conn, select(tasks).where(tasks.c.id == task_id).with_for_update(),
             )
             if task is None:
                 return
@@ -855,18 +847,8 @@ class TaskRecoveryQueryMixin:
             )
 
     async def decide_task_recovery(
-        self,
-        task_id,
-        incident_id,
-        decision,
-        reason,
-        *,
-        author_kind,
-        author_id,
-        project_id=None,
-        stopped_session=None,
-        expected_hold_at=None,
-        operator_handoff=False,
+        self, task_id, incident_id, decision, reason, *, author_kind, author_id,
+        project_id=None, stopped_session=None, expected_hold_at=None, operator_handoff=False,
     ):
         """Atomically fence, record and optionally requeue one failed attempt."""
         result = None
@@ -877,10 +859,8 @@ class TaskRecoveryQueryMixin:
                 if identity is None or (project_id is not None and identity != project_id):
                     raise ValueError("Task not found or out of scope")
                 await self.lock_hierarchy_project(conn, identity)
-            task = (
-                (await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update()))
-                .mappings()
-                .first()
+            task = await _recovery_row(
+                conn, select(tasks).where(tasks.c.id == task_id).with_for_update(),
             )
             if not task or (project_id is not None and task["project_id"] != project_id):
                 raise ValueError("Task not found or out of scope")
@@ -918,23 +898,12 @@ class TaskRecoveryQueryMixin:
                     )
                 if operator_handoff:
                     handoff = await self._guard_operator_handoff(
-                        conn,
-                        task,
-                        meta,
-                        attempt,
-                        incident,
-                        stopped_session,
+                        conn, task, meta, attempt, incident, stopped_session,
                         releasing_hold=releasing_hold,
                     )
                 await self._guard_task_recovery(
-                    conn,
-                    task,
-                    meta,
-                    attempt,
-                    incident,
-                    stopped_session,
-                    releasing_hold=releasing_hold,
-                    operator_handoff=bool(handoff),
+                    conn, task, meta, attempt, incident, stopped_session,
+                    releasing_hold=releasing_hold, operator_handoff=bool(handoff),
                 )
                 if handoff:
                     await self._upsert_meta(
@@ -1015,37 +984,18 @@ class TaskRecoveryQueryMixin:
         }
 
     async def _guard_operator_handoff(
-        self,
-        conn,
-        task,
-        meta,
-        attempt,
-        incident,
-        stopped_session,
-        *,
-        releasing_hold=False,
+        self, conn, task, meta, attempt, incident, stopped_session, *, releasing_hold=False,
     ):
         """Resume or an explicit supervisor-hold release consumes an audited handoff."""
         from src.git.manager import is_valid_git_oid
 
         if releasing_hold:
-            held_by = (
-                (
-                    await conn.execute(
-                        select(sessions).where(
-                            sessions.c.id == incident.get("decided_by"),
-                            sessions.c.profile_id == "supervisor",
-                            sessions.c.lifecycle == "named",
-                            or_(
-                                sessions.c.project_id.is_(None),
-                                sessions.c.project_id == task["project_id"],
-                            ),
-                        )
-                    )
-                )
-                .mappings()
-                .first()
-            )
+            held_by = await _recovery_row(conn, select(sessions).where(
+                sessions.c.id == incident.get("decided_by"),
+                sessions.c.profile_id == "supervisor",
+                sessions.c.lifecycle == "named",
+                or_(sessions.c.project_id.is_(None), sessions.c.project_id == task["project_id"]),
+            ))
             hold_comment = await conn.scalar(
                 select(task_comments.c.id).where(
                     task_comments.c.id == "comment-" + incident["id"],
@@ -1059,21 +1009,13 @@ class TaskRecoveryQueryMixin:
                 raise ValueError(
                     "Operator handoff may explicitly release only an audited supervisor recovery hold"
                 )
-        row = (
-            (
-                await conn.execute(
-                    select(sessions).where(sessions.c.id == attempt["session_id"]).with_for_update()
-                )
-            )
-            .mappings()
-            .first()
+        row = await _recovery_row(
+            conn, select(sessions).where(sessions.c.id == attempt["session_id"]).with_for_update(),
         )
         route = task["route"] or {}
         override = route.get("override") or {}
-        project = (
-            (await conn.execute(select(projects).where(projects.c.id == task["project_id"])))
-            .mappings()
-            .one()
+        project = await _recovery_row(
+            conn, select(projects).where(projects.c.id == task["project_id"]), required=True,
         )
         if (
             (incident.get("decision") is not None and not releasing_hold)
@@ -1100,44 +1042,18 @@ class TaskRecoveryQueryMixin:
                 "Resume requires an operator-released worker handoff and explicit route override"
             )
         branch = task["branch_name"]
-        owner = (
-            (
-                await conn.execute(
-                    select(integration_branch_owners)
-                    .where(
-                        integration_branch_owners.c.repository_id == task["repo_id"],
-                        integration_branch_owners.c.ref == branch,
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .first()
-        )
-        origin = (
-            (
-                await conn.execute(
-                    select(task_branch_origins).where(
-                        task_branch_origins.c.task_id == task["id"],
-                        task_branch_origins.c.repository_id == task["repo_id"],
-                        task_branch_origins.c.retired_at.is_(None),
-                    )
-                )
-            )
-            .mappings()
-            .first()
-        )
-        checkpoint = (
-            (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id == task["id"]
-                    )
-                )
-            )
-            .mappings()
-            .first()
-        )
+        owner = await _recovery_row(conn, select(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == task["repo_id"],
+            integration_branch_owners.c.ref == branch,
+        ).with_for_update())
+        origin = await _recovery_row(conn, select(task_branch_origins).where(
+            task_branch_origins.c.task_id == task["id"],
+            task_branch_origins.c.repository_id == task["repo_id"],
+            task_branch_origins.c.retired_at.is_(None),
+        ))
+        checkpoint = await _recovery_row(conn, select(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == task["id"],
+        ))
         if (
             not owner
             or owner["owner_id"] != task["id"]
@@ -1156,22 +1072,11 @@ class TaskRecoveryQueryMixin:
             or checkpoint["state"] == "verifying"
         ):
             raise ValueError("The producer's canonical branch and released fence must still agree")
-        audit = (
-            (
-                await conn.execute(
-                    select(integration_owner_recoveries)
-                    .where(
-                        integration_owner_recoveries.c.owner_row_id == owner["id"],
-                        integration_owner_recoveries.c.task_id == task["id"],
-                        integration_owner_recoveries.c.outcome == "preserved_and_released",
-                    )
-                    .order_by(integration_owner_recoveries.c.created_at.desc())
-                    .limit(1)
-                )
-            )
-            .mappings()
-            .first()
-        )
+        audit = await _recovery_row(conn, select(integration_owner_recoveries).where(
+            integration_owner_recoveries.c.owner_row_id == owner["id"],
+            integration_owner_recoveries.c.task_id == task["id"],
+            integration_owner_recoveries.c.outcome == "preserved_and_released",
+        ).order_by(integration_owner_recoveries.c.created_at.desc()).limit(1))
         from src.integration.owner_recovery import recovery_ref_allowed
 
         evidence = audit["evidence"] if audit else {}
@@ -1223,27 +1128,13 @@ class TaskRecoveryQueryMixin:
         self, conn, task, meta, attempt, incident, stopped_session, *, releasing_hold=False,
         operator_handoff=False,
     ):
-        row = (
-            (
-                await conn.execute(
-                    select(sessions)
-                    .where(
-                        sessions.c.id == attempt["session_id"],
-                    )
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .first()
+        row = await _recovery_row(
+            conn, select(sessions).where(sessions.c.id == attempt["session_id"]).with_for_update(),
         )
         if (
             not row
             or not stopped_session
-            or stopped_session
-            != {
-                "id": row["id"],
-                "instance_token": row["instance_token"],
-            }
+            or stopped_session != {"id": row["id"], "instance_token": row["instance_token"]}
             or row["state"] not in ("stopped", "quarantined")
         ):
             raise ValueError("The exact old worker's termination must be confirmed")
@@ -1277,14 +1168,9 @@ class TaskRecoveryQueryMixin:
             or int(meta.get(COUNT_KEY, 0)) >= MAX_RECOVERIES
         ):
             raise ValueError("Recovery retry budget exhausted; operator review required")
-        project = (
-            (
-                await conn.execute(
-                    select(projects).where(projects.c.id == task["project_id"]).with_for_update()
-                )
-            )
-            .mappings()
-            .one()
+        project = await _recovery_row(
+            conn, select(projects).where(projects.c.id == task["project_id"]).with_for_update(),
+            required=True,
         )
         if project["status"] != "ACTIVE":
             raise ValueError("Project is paused")
@@ -1293,20 +1179,13 @@ class TaskRecoveryQueryMixin:
             and project["total_tokens_used"] >= project["budget_limit"]
         ):
             raise ValueError("Project token budget exhausted")
-        if (
-            await conn.execute(
-                select(project_constraints.c.project_id).where(
-                    project_constraints.c.project_id == task["project_id"],
-                    project_constraints.c.pause_scheduling == 1,
-                )
-            )
-        ).first():
+        if await _recovery_row(conn, select(project_constraints.c.project_id).where(
+            project_constraints.c.project_id == task["project_id"],
+            project_constraints.c.pause_scheduling == 1,
+        )):
             raise ValueError("Project scheduling is paused")
         eligible = apply_label_filters(
-            select(tasks.c.id).where(
-                tasks.c.id == task["id"],
-                ~blocked_predicate(),
-            ),
+            select(tasks.c.id).where(tasks.c.id == task["id"], ~blocked_predicate()),
             exclude_hold=True,
         )
         if (await conn.execute(eligible)).first() is None:
