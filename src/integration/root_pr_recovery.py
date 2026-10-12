@@ -47,8 +47,9 @@ class RootPRCheckFailure:
             lines.append(f"- {check.name}: failure {check.run_url or ''}".rstrip())
             for test_id in check.detail.get("failing_test_ids", ()):
                 lines.append(f"  FAILED {test_id}")
-        lines.append("Fix the reported failures on your assigned branch, run focused and "
-                     "relevant area checks, publish, and close with verification evidence.")
+        lines.append("Fix the reported failures on your assigned branch, run only focused "
+                     "checks (the failing tests and tests covering your change; CI runs "
+                     "the broad sweep), publish, and close with verification evidence.")
         return "\n".join(lines)
 
 
