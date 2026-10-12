@@ -12,6 +12,12 @@ the sender's project context can differ. The global address remains global.
 Internal event notices and existing unread backlog obey the same routing.
 Read or archived history is unchanged.
 
+Provider failover notices remain once per batch per project. Their stable
+`reroute:<batch>:<project>` thread identifies an already sent notice regardless
+of its current recipient, including after enabling or disabling a project
+supervisor. Projects sharing the global supervisor still receive separate
+notices in their own threads.
+
 The session lens refuses direct cold starts and wakes of disabled project
 supervisors. Disabling records stop intent; reconciliation waits for the
 current turn to finish, then stops the instance. This also drains project

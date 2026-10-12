@@ -1200,6 +1200,12 @@ replay and the five-minute timer never notify twice:
 | Discord, passively | the hourly digest | any half change or batch in the window | `collect_digest_activity` gains a producer over `provider_availability_transitions` and `task_reroutes`, emitting `WorkFact`s in the already-declared, producer-less `system` category with stable keys `provider:<key>:<generation>` / `reroute:<batch_id>`. A system fact makes a window eligible on its own: an outage in a quiet hour is exactly what the digest is for. |
 | Discord, actively | a durable escalation (the `escalation_create` row, written by the daemon), `source_kind = "provider_availability"`, `source_identity = "<provider>:<generation>"`, `incident_key = "provider:<provider>:<generation>"` | **only when a human must act**: `unauthenticated`; `failing` for longer than `notify.escalate_failing_after_seconds`; or every provider unavailable per D15. Never for `exhausted` with a known `until` — there is nothing to decide. | severity `high` (`critical` when everything is down); `decision_requested` is the remediation. Filed under the project with the most affected tasks (ties by id), because escalations are project-scoped; with no affected task, none is filed. Resolved by the same command when the provider leaves that state. |
 
+Project supervisors are opt-in. A disabled project's notice routes to
+`session:supervisor-global` while retaining its project context and
+`reroute:<batch>:<project>` thread. Deduplication uses that thread regardless
+of recipient changes or read/archive state, so a later sweep never repeats
+the notice and projects sharing the global supervisor keep separate notices.
+
 **As built (`bold-rapids.6`).** The escalation half lives in
 `ProviderAvailabilityService.reconcile_escalations`
 (`src/providers/availability_service.py`), run by

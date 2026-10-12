@@ -1309,7 +1309,7 @@ class ProviderRerouteService:
         thread_id = f"reroute:{batch}:{project_id}"
         to_id = f"supervisor-{project_id}"
         try:
-            if await self.db.reroute_notice_sent(thread_id, "session", to_id):
+            if await self.db.reroute_notice_sent(thread_id):
                 return None
         except Exception:
             logger.debug("provider reroute: notice check failed", exc_info=True)

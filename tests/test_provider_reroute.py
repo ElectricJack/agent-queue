@@ -27,7 +27,7 @@ import pytest
 
 from src.config import ProviderFailoverConfig
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, Task, TaskStatus
+from src.models import Agent, AgentProfile, Project, Task, TaskStatus
 from src.providers.availability import AVAILABLE, DEGRADED, DISABLED, EXHAUSTED, UNAUTHENTICATED
 from src.providers.intent import CLASS_ONLY, PINNED, PREFERRED
 from src.providers.reroute import (
@@ -582,9 +582,11 @@ async def test_capacity_spill_counts_as_automatic_without_blacklisting_source(or
     assert await orch.db.task_reroute_stats([]) == {}
 
 
-async def test_acceptance_codex_unavailable(orch):
+@pytest.mark.parametrize("supervisor_enabled", [False, True])
+async def test_acceptance_codex_unavailable(orch, supervisor_enabled):
     """The epic's criterion: preferred moves, pinned holds with a reason, astra
     holds, and every move is recorded and reversible."""
+    await orch.db.update_project("p-1", supervisor_enabled=supervisor_enabled)
     await _task(orch, "pref", "standard-high-codex", intent=PREFERRED, priority=10)
     await _task(orch, "pin", "standard-high-codex", intent=PINNED)
     await _task(orch, "astra", "astra-high-codex", cls="astra-high")
@@ -621,11 +623,22 @@ async def test_acceptance_codex_unavailable(orch):
     assert codex["rerouted"] == 1 and codex["batch_id"] == result["batch_ids"][0]
 
     # One supervisor notice for the project, once per batch.
-    notices = await orch.db.list_messages(to_kind="session", to_id="supervisor-p-1")
+    recipient = "supervisor-p-1" if supervisor_enabled else "supervisor-global"
+    thread = f"reroute:{result['batch_ids'][0]}:p-1"
+    notices = await orch.db.list_messages(thread_id=thread)
     assert len(notices) == 1 and "pref" in notices[0].body and "pin" in notices[0].body
+    assert (notices[0].to_kind, notices[0].to_id, notices[0].project_id) == (
+        "session", recipient, "p-1",
+    )
     again = await handler.execute("provider_reroute", {})
     assert again["outcome"] == "held" and again["notices"] == []
-    assert len(await orch.db.list_messages(to_kind="session", to_id="supervisor-p-1")) == 1
+    # A changed recipient and archived history still refer to this one notice.
+    await orch.db.update_project("p-1", supervisor_enabled=not supervisor_enabled)
+    await orch.db.redirect_disabled_supervisor_messages()
+    await orch.db.archive_messages([notices[0].id])
+    again = await handler.execute("provider_reroute", {})
+    assert again["outcome"] == "held" and again["notices"] == []
+    assert len(await orch.db.list_messages(thread_id=thread, include_archived=True)) == 1
 
     # The pinned task explains itself (D18).
     hold = await orch.provider_availability.hold_for(await orch.db.get_task("pin"))
@@ -644,6 +657,32 @@ async def test_acceptance_codex_unavailable(orch):
     rows = await orch.db.list_task_reroutes(task_id="pref")
     assert [r["reason_code"] for r in rows] == ["operator_undo", "provider_unavailable"]
     assert rows[1]["undone_at"] is not None
+
+
+async def test_batch_notices_remain_project_scoped_at_the_global_supervisor(orch):
+    await orch.db.create_project(Project(id="p-2", name="P2"))
+    await _task(orch, "first", "standard-high-codex", priority=10)
+    await _task(orch, "second", "standard-high-codex", priority=20)
+    await orch.db.update_task("second", project_id="p-2")
+    await _codex_down(orch)
+    handler = _handler(orch)
+
+    result = await handler.execute("provider_reroute", {})
+    assert {item["task_id"] for item in result["moved"]} == {"first", "second"}
+    [batch] = result["batch_ids"]
+    notices = await orch.db.list_messages(to_kind="session", to_id="supervisor-global")
+    notices = [notice for notice in notices if notice.thread_id in {
+        f"reroute:{batch}:p-1", f"reroute:{batch}:p-2",
+    }]
+    assert len(notices) == 2
+    assert {notice.id for notice in notices} == set(result["notices"])
+    by_project = {notice.project_id: notice for notice in notices}
+    assert set(by_project) == {"p-1", "p-2"}
+    assert "first" in by_project["p-1"].body and "second" not in by_project["p-1"].body
+    assert "second" in by_project["p-2"].body and "first" not in by_project["p-2"].body
+
+    again = await handler.execute("provider_reroute", {})
+    assert again["notices"] == []
 
 
 async def test_failover_and_undo_stay_inside_a_routed_tasks_candidates(orch):
