@@ -9,6 +9,26 @@ def config_dir(tmp_path):
     return tmp_path
 
 
+@pytest.mark.parametrize("seconds", [0, 120, 600])
+def test_ready_frontier_attention_threshold_loads(config_dir, seconds):
+    from src.config import WorkGraphConfig
+
+    assert WorkGraphConfig().frontier_rejected_after_seconds == 600
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "work_graph": {"frontier_rejected_after_seconds": seconds},
+        "discord": {"bot_token": "x", "guild_id": "1"},
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    config = load_config(str(config_file))
+    assert config.work_graph.frontier_rejected_after_seconds == seconds
+    assert config.work_graph.validate() == []
+    assert any(
+        error.field == "frontier_rejected_after_seconds"
+        for error in WorkGraphConfig(frontier_rejected_after_seconds=-1).validate()
+    )
+
+
 @pytest.mark.parametrize("value", ["shadow", "active"])
 def test_git_first_selector_loads_without_activating_ownership(config_dir, value):
     from src.config import IntegrationConfig

@@ -163,7 +163,10 @@ def _frontier_where(
     predicates = [
         tasks.c.project_id == project_id,
         tasks.c.status == TaskStatus.READY.value,
-        *_frontier_predicates(hierarchy_mode).values(),
+        *claim_frontier_predicates(
+            {project_id: hierarchy_mode} if hierarchy_mode is not None else None,
+            hierarchy_mode=hierarchy_mode,
+        ).values(),
     ]
     if router_ready is not None:
         predicates.append(route_claimable(router_ready))
@@ -456,10 +459,10 @@ def _claim_preparation_predicates():
     }
 
 
-def claim_frontier_predicates(hierarchy_modes=None):
+def claim_frontier_predicates(hierarchy_modes=None, *, hierarchy_mode=None):
     """All profile-independent acceptance filters, including candidate preparation."""
     predicates = {
-        **_frontier_predicates(),
+        **_frontier_predicates(hierarchy_mode),
         **_claim_preparation_predicates(),
         "hold_label": apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
     }
@@ -523,6 +526,7 @@ class ClaimQueryMixin:
 
     async def claim_frontier_exclusions(
         self, task_id: str, *, router_ready: bool | None = None, cached_only: bool = False,
+        hierarchy_modes=None,
     ) -> list[dict]:
         """Evaluate the real claim filters for one READY task, without scheduler guesses.
 
@@ -532,7 +536,7 @@ class ClaimQueryMixin:
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
         unavailable = {}
-        modes = await hierarchy_frontier_modes(
+        modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
             self, task_id=task_id, cached_only=cached_only,
             **({"display_unavailable": unavailable} if cached_only else {}),
         )
@@ -805,7 +809,6 @@ class ClaimQueryMixin:
         default widening an unrouted task onto any pool.
         """
         profile_ok = tasks.c.profile_id == profile_id
-        preparation_predicates = _claim_preparation_predicates()
 
         def candidate(*, pinned: bool):
             stmt = (
@@ -813,7 +816,6 @@ class ClaimQueryMixin:
                 .where(
                     _frontier_where(project_id, hierarchy_mode, router_ready=bool(router_ready)),
                     profile_ok,
-                    *preparation_predicates.values(),
                 )
                 .order_by(
                     tasks.c.priority.asc(),
@@ -827,7 +829,6 @@ class ClaimQueryMixin:
                 stmt = stmt.where(tasks.c.id.not_in(excluded_task_ids))
             if pinned:
                 stmt = stmt.where(tasks.c.affinity_agent_id == agent_id)
-            stmt = apply_label_filters(stmt, exclude_hold=True)
             if enforce_routing:
                 # The task row is the route (assignment-routing-as-playbook
                 # spec §2): a worker fixed on a class takes only tasks
@@ -2234,7 +2235,6 @@ class ClaimQueryMixin:
         )
         if allowed_task_ids is not None:
             stmt = stmt.where(tasks.c.id.in_(allowed_task_ids))
-        stmt = apply_label_filters(stmt, exclude_hold=True)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).fetchall()
         return {pid: int(n) for pid, n in rows}
