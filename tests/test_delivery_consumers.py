@@ -770,8 +770,13 @@ async def test_registered_prerequisite_observer_releases_pool_demand_without_rec
         assert not any(r["code"] == "frontier_sibling_prerequisite_not_delivered"
                        for r in await db.claim_frontier_exclusions("dependent", cached_only=True))
         run.assert_not_awaited()
-    # Reopening after observation must not return a former parent head.
-    await db.transition_task("done", TaskStatus.IN_PROGRESS, force=True)
+    # Delivered identity is fenced, including a forced reopen. Simulate an
+    # out-of-band status change to retain the stale-observation regression.
+    with pytest.raises(HierarchyError, match="delivery_target_fixed"):
+        await db.transition_task("done", TaskStatus.IN_PROGRESS, force=True)
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "done")
+                           .values(status=TaskStatus.IN_PROGRESS.value))
     with pytest.raises(ValueError, match="delivery is not current"):
         await db.hierarchy_prerequisite_delivery_head("dependent")
 
@@ -1035,3 +1040,219 @@ async def test_frontier_freshness_failure_does_not_poison_unchecked_targets(
     assert uninspected.target_ref not in unchecked._freshness
     assert (await observer._snapshot(peer, max_age=30, cached_only=True)).error is None
     assert (await observer._snapshot(uninspected, max_age=30, cached_only=True)).error is None
+
+
+@pytest.fixture
+async def active_git_world(world, tmp_path):
+    """Production observer registration, real Git, and no delivery receipts."""
+    from sqlalchemy import select
+
+    from src.database.tables import task_branch_origins, task_delivery_receipts
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "active",
+                                truth=GitTruth(transport))
+    db.set_prerequisite_observer(observer)
+    git(origin.clone, "push", "origin", "main:aq/epic")
+    base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="train", hierarchical_integration_desired_mode="train",
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(
+            branch_name="aq/epic", repo_id="r",
+        ))
+        for tid in ("done", "reopened"):
+            await conn.execute(insert(task_branch_origins).values(
+                id=f"origin-{tid}", task_id=tid, repository_id="r", branch_name=f"aq/{tid}",
+                parent_task_id="epic", parent_repository_id="r", parent_ref="aq/epic",
+                base_sha=base, creation_generation=0, reserved=True, materialized=True,
+                created_at=time.time(),
+            ))
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+    yield db, origin, observer
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+
+
+async def test_git_first_archive_uses_default_containment_without_receipts(active_git_world):
+    db, origin, _observer = active_git_world
+    assert await db.archive_task("done")
+    # Its parent now contains the new child source, but main still does not.
+    git(origin.clone, "checkout", "-q", "-B", "aq/epic", "origin/main")
+    git(origin.clone, "merge", "-q", "--no-ff", "-m", "Collect reopened", "aq/reopened")
+    git(origin.clone, "push", "origin", "aq/epic")
+    with pytest.raises(HierarchyError) as refused:
+        await db.archive_task("reopened")
+    assert refused.value.code == "integration_undelivered"
+    assert (await db.get_task("reopened")).status is TaskStatus.COMPLETED
+
+
+async def test_git_first_archive_revalidates_target_without_receipts(active_git_world):
+    db, _origin, _observer = active_git_world
+    view = await db.observe_removal_delivery(["done"])
+    await db.update_repo("r", default_branch="elsewhere")
+    with pytest.raises(HierarchyError) as refused:
+        await db.archive_task("done", delivery=view)
+    assert refused.value.code == "integration_undelivered"
+
+
+async def test_git_first_mutation_fences_delivered_subtrees_without_receipts(active_git_world):
+    db, _origin, _observer = active_git_world
+    with pytest.raises(HierarchyError) as refused:
+        await db.transition_task("done", TaskStatus.IN_PROGRESS, force=True)
+    assert refused.value.code == "delivery_target_fixed"
+    assert (await db.get_task("done")).status is TaskStatus.COMPLETED
+    # An undelivered current completion remains reopenable.
+    await db.transition_task("reopened", TaskStatus.IN_PROGRESS, force=True)
+    assert (await db.get_task("reopened")).status is TaskStatus.IN_PROGRESS
+
+
+async def test_git_first_mutation_rejects_stale_view_without_receipts(active_git_world):
+    db, _origin, _observer = active_git_world
+    view = await db.observe_removal_delivery(["reopened"], for_mutation=True)
+    await db.update_task("epic", branch_name="aq/changed")
+    async with db.immediate() as conn:
+        with pytest.raises(HierarchyError) as refused:
+            await db.guard_integration_mutation("reopened", "reopen", conn=conn, delivery=view)
+    assert refused.value.code == "delivery_unknown"
+
+
+async def test_git_first_mutation_rejects_unknown_proof_without_receipts(active_git_world):
+    db, _origin, _observer = active_git_world
+    # Git contains the source, but the task is bound to a foreign repository.
+    with pytest.raises(HierarchyError) as refused:
+        await db.transition_task("wrong", TaskStatus.IN_PROGRESS, force=True)
+    assert refused.value.code == "delivery_unknown"
+    assert (await db.get_task("wrong")).status is TaskStatus.COMPLETED
+
+
+async def test_git_first_reparent_guard_uses_git_view_without_receipts(active_git_world, monkeypatch):
+    """Isolate the delivery fence after the independent started/materialized fences."""
+    from src.integration.hierarchy import HierarchyIntegration
+
+    db, _origin, observer = active_git_world
+    view = await observer.observe(["done"])
+    hierarchy = HierarchyIntegration(db)
+    monkeypatch.setattr(hierarchy, "_locked_origin", AsyncMock(return_value={"materialized": False}))
+    monkeypatch.setattr(hierarchy, "_task_row", AsyncMock(return_value={"status": "READY"}))
+    async with db.immediate() as conn:
+        with pytest.raises(HierarchyError) as refused:
+            await hierarchy._assert_reparentable(conn, "done", "r", delivery=view)
+    assert refused.value.code == "delivery_target_fixed"
+
+
+@pytest.mark.parametrize("contained", [True, False])
+async def test_git_first_child_redrive_reads_parent_without_receipts(active_git_world, contained):
+    from src.integration.child_delivery import ChildDelivery
+
+    db, _origin, _observer = active_git_world
+    # The parent has no PAUSED collection episode; no legacy service is needed.
+    assert (await db.get_task("epic")).status is not TaskStatus.PAUSED
+    delivery = ChildDelivery(db, None, collect=AsyncMock(side_effect=AssertionError("legacy collect")))
+    result = await delivery.run("done" if contained else "reopened", dry_run=False)
+    assert result["outcome"] == "nothing_to_redrive"
+    assert ("already delivered" if contained else "train owns delivery") in result["reason"]
+    delivery.collect.assert_not_awaited()
+    with pytest.raises(HierarchyError, match="never reissues receipts"):
+        await delivery._reissue_receipt({}, "old")
+
+
+async def _make_delivered_root(db, origin):
+    from sqlalchemy import delete
+
+    from src.database.tables import task_dependencies, task_integration_checkpoints
+
+    head = git(origin.clone, "rev-parse", "origin/aq/done")
+    async with db._engine.begin() as conn:
+        await conn.execute(delete(task_dependencies).where(
+            task_dependencies.c.task_id == "done", task_dependencies.c.dep_type == "parent-child",
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == "done").values(
+            parent_task_id=None, pr_url="https://example.test/pull/1", updated_at=time.time() - 7200,
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="done", repository_id="r", branch="aq/done", checkpoint_sha=head,
+            generation=0, updated_at=time.time() - 7200,
+        ))
+    await db.create_task(Task(id="done-child", project_id="p", title="organizational",
+                              description="", status=TaskStatus.COMPLETED, parent_task_id="done"))
+
+
+@pytest.mark.parametrize("warm", [True, False])
+async def test_git_first_task_show_reports_delivered_root_without_receipts(
+    active_git_world, tmp_path, monkeypatch, warm,
+):
+    from types import SimpleNamespace
+
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig
+
+    db, origin, observer = active_git_world
+    await _make_delivered_root(db, origin)
+    if warm:
+        await observer.observe(["done"])
+    run = AsyncMock(side_effect=AssertionError("task show launched Git"))
+    monkeypatch.setattr(observer.git, "arun_git_result", run)
+    config = AppConfig(data_dir=str(tmp_path))
+    config.integration.git_first = "active"
+    handler = CommandHandler(SimpleNamespace(db=db, config=config), config)
+    db.list_integration_delivery_receipts = AsyncMock(side_effect=AssertionError("receipt read"))
+    result = await handler._cmd_task_show({"task_id": "done"})
+    assert result["integration_delivery"]["outcome"] == ("delivered" if warm else "working")
+    assert result["integration_delivery"]["receipts"] == []
+    db.list_integration_delivery_receipts.assert_not_awaited()
+    run.assert_not_awaited()
+
+
+async def test_git_first_doctor_ignores_delivered_root_without_receipts(active_git_world, monkeypatch):
+    import importlib
+
+    from src.config import AppConfig
+    from src.doctor.models import DoctorContext
+    from src.doctor.stall_checks import _find_unadmitted_parents
+
+    db, origin, _observer = active_git_world
+    await _make_delivered_root(db, origin)
+    observed = AsyncMock(side_effect=AssertionError("delivered root probed for admission"))
+    monkeypatch.setattr(importlib.import_module("src.doctor.stall_checks"),
+                        "_parent_pr_observation", observed)
+    config = AppConfig()
+    config.integration.git_first = "active"
+    ctx = DoctorContext(db=db, config=config)
+    assert await _find_unadmitted_parents(ctx) == []
+    observed.assert_not_awaited()
+
+
+async def test_git_first_epic_worker_frontier_uses_cached_git_modes_without_receipts(active_git_world):
+    from src.database.tables import task_branch_origins
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.integration.epic_delivery import EpicDeliveryProjection
+
+    db, origin, _observer = active_git_world
+    await db.create_task(Task(id="dependent", project_id="p", title="dependent", description="",
+                              repo_id="r", branch_name="aq/dependent", status=TaskStatus.READY))
+    async with db._engine.begin() as conn:
+        await db.set_parent("dependent", "epic", conn=conn, integration_authorized=True)
+    await db.add_dependency("dependent", "done")
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="dependent-origin", task_id="dependent", repository_id="r",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="r",
+            parent_ref="aq/epic", base_sha=git(origin.clone, "rev-parse", "main"),
+            creation_generation=0, reserved=True, materialized=True, created_at=time.time(),
+        ))
+    await hierarchy_frontier_modes(db, project_ids={"p"})
+    async with db._engine.connect() as conn:
+        workers = await EpicDeliveryProjection(db)._workers_on(conn, ["dependent"])
+    assert "sibling_prerequisite_not_delivered" not in workers["dependent"].exclusions
+
+
+async def test_missing_git_observer_warns_offline_frontier_reader(active_git_world, caplog):
+    db, _origin, _observer = active_git_world
+    db.set_prerequisite_observer(None)
+    await db.claim_frontier_exclusions("done")
+    assert "No Git prerequisite observer" in caplog.text
+    assert "invalid when integration.git_first is active" in caplog.text

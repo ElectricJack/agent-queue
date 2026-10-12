@@ -1465,7 +1465,34 @@ class HierarchyQueryMixin:
                     task_delivery_receipts.c.target_task_id.not_in(ids),
                 )
             )
-        delivered = (await conn.execute(delivered_stmt.limit(1))).first()
+        from src.integration.delivery_observer import delivery_sensitive_ids, prerequisite_observer
+        from src.integration.delivery_truth import DeliveryState
+
+        if prerequisite_observer(self) is not None and mutation != "archive":
+            sensitive = await delivery_sensitive_ids(conn, ids, hierarchical=True)
+            verified = await delivery.verified_on(conn, sensitive) if delivery is not None else {}
+            if sensitive - verified.keys() or any(
+                proof.state is DeliveryState.UNKNOWN for proof in verified.values()
+            ):
+                raise HierarchyError(
+                    "delivery_unknown", f"{mutation} requires current Git delivery evidence",
+                )
+            internal_refs = set()
+            if rollover_operation is not None:
+                branches = (await conn.execute(select(tasks.c.branch_name).where(
+                    tasks.c.id.in_(ids), tasks.c.branch_name.is_not(None),
+                ))).scalars()
+                internal_refs = {"refs/heads/" + branch.removeprefix("refs/heads/")
+                                 for branch in branches}
+            delivered = any(
+                proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}
+                and proof.request.target_ref not in internal_refs
+                for proof in verified.values()
+            )
+        elif prerequisite_observer(self) is not None:
+            delivered = False  # Archive already proved default-target delivery above.
+        else:
+            delivered = (await conn.execute(delivered_stmt.limit(1))).first()
         if delivered and mutation != "archive":
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would change delivered branch identity"

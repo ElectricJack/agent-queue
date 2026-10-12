@@ -601,6 +601,11 @@ class ChildDelivery:
     async def _diagnose(
         self, task_id: str
     ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
+        from src.integration.delivery_observer import prerequisite_observer
+
+        observer = prerequisite_observer(self.db)
+        if observer is not None:
+            return await self._diagnose_git(task_id, observer)
         async with self.db._engine.connect() as conn:
             snapshot = await _snapshot_on(conn, task_id)
             if snapshot is None:
@@ -744,6 +749,47 @@ class ChildDelivery:
             )
         return diagnosis, snapshot, tree
 
+    async def _diagnose_git(self, task_id, observer):
+        """The Git-first train owns collection; receipts and parent episodes do not."""
+        async with self.db._engine.connect() as conn:
+            snapshot = await _snapshot_on(conn, task_id)
+        if snapshot is None:
+            return {"outcome": "not_found", "task_id": task_id}, None, None
+        parent = snapshot["parent"] or {}
+        base = {
+            "task_id": task_id, "project_id": snapshot["project_id"],
+            "parent_task_id": snapshot["parent_task_id"], "branch": snapshot["branch"],
+            "parent_branch": parent.get("branch_name"), "head_sha": snapshot["head_sha"],
+            "base_sha": snapshot["base_sha"],
+        }
+        if (snapshot["mode"] not in MANAGED_MODES or snapshot["parent_task_id"] is None
+                or snapshot["status"] != TaskStatus.COMPLETED.value):
+            return {**base, "outcome": "not_eligible",
+                    "reason": "not a completed child in hierarchy or train mode"}, snapshot, None
+        if not parent.get("branch_name"):
+            return {**base, "outcome": "blocked",
+                    "reason": "the parent's target branch is missing"}, snapshot, None
+        view = await observer.observe([task_id])
+        fresh = await view.fresh()
+        async with self.db._engine.connect() as conn:
+            current = await _snapshot_on(conn, task_id)
+            verified = await view.verified_on(conn, [task_id]) if fresh else {}
+        proof = verified.get(task_id)
+        if (current is None or _snapshot_identity(current) != _snapshot_identity(snapshot)
+                or proof is None or proof.request.target_ref !=
+                "refs/heads/" + parent["branch_name"].removeprefix("refs/heads/")):
+            return {**base, "outcome": "blocked",
+                    "reason": "current parent containment could not be verified in Git"}, snapshot, None
+        from src.integration.delivery_truth import DeliveryState
+
+        if proof.state is DeliveryState.UNKNOWN:
+            return {**base, "outcome": "blocked", "reason": proof.reason}, snapshot, None
+        return {
+            **base, "outcome": "nothing_to_redrive",
+            "reason": ("already delivered into the parent (Git containment)" if proof.satisfied
+                       else "the Git-first train owns delivery of this pending child"),
+        }, snapshot, None
+
     async def _prove(self, snapshot: dict[str, Any]) -> tuple[str, str]:
         """Return the remote tip and tree of the child's head, or say why not."""
         head = snapshot["head_sha"]
@@ -810,6 +856,10 @@ class ChildDelivery:
         stale_receipt_id: str,
     ) -> tuple[dict[str, Any], bool]:
         """Acknowledge the same incorporated head for a newer task completion."""
+        from src.integration.delivery_observer import prerequisite_observer
+
+        if prerequisite_observer(self.db) is not None:
+            raise HierarchyError("git_first", "Git-first delivery never reissues receipts")
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, snapshot["project_id"])
             current = await _snapshot_on(conn, snapshot["task_id"])

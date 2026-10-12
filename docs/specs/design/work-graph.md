@@ -164,6 +164,23 @@ preparation. Movement retries admission without persisting a delivery projection
 The receipt-based SQL helper exists temporarily only for consumers still awaiting
 migration; it is not part of `tasks.is_blocked` or development admission.
 
+With Git-first active, archive guards observe completed artifacts throughout the
+subtree against the configured default target, then revalidate each identity in
+the removal transaction. Parent containment alone cannot permit archive. Reopen
+and reparent delivery fences use the current parent/default target; contained
+sources fix that delivery identity, and unavailable or stale mutation evidence
+refuses the change. Shadow mode retains its receipt fences. Task-show delivery,
+unadmitted-parent diagnostics and epic worker frontier projections use the same
+Git observers; interactive projections reuse only cached evidence. A hierarchy
+frontier reader without a registered Git observer warns explicitly that its
+legacy receipt answer is invalid under active Git-first.
+
+`integration redrive-child` in active Git-first mode diagnoses current parent
+containment without requiring a paused legacy collecting parent. It reports
+already contained work or pending delivery owned by the train, and never
+reissues receipts or invokes the legacy collector. Unknown Git proof remains a
+visible blocker.
+
 ### 4.2 Recompute triggers
 
 Recomputed **in the same transaction** as the mutation, Beads-style (`issueops/blocked_state.py` semantics):

@@ -57,7 +57,7 @@ from src.integration.delivery_truth import (
 
 logger = logging.getLogger(__name__)
 
-def development_delivery_scope(task):
+def development_delivery_scope(task, *, modes=("development",)):
     """``EXISTS``: *task*'s completed work must reach its project's target.
 
     The graph half of the old ``_development_delivery_pending``: a development
@@ -74,6 +74,10 @@ def development_delivery_scope(task):
     unknown until migrated).  Anything else is an organizational container with
     no artifact of its own, exactly as
     :class:`~src.integration.delivery_truth.DeliverySnapshot` rules.
+
+    The optional modes arm lets active Git-first removal/mutation consumers
+    select hierarchy artifacts with the same scope rules. Admission readers
+    retain the development-only default.
     """
     from src.database.queries.blocked_state import obsolete_marker
     from src.integration.publishable_artifact import legacy_artifact
@@ -93,7 +97,7 @@ def development_delivery_scope(task):
         .select_from(project.join(repo, repo.c.id == project.c.integration_repository_id))
         .where(
             project.c.id == task.c.project_id,
-            project.c.hierarchical_integration_mode == "development",
+            project.c.hierarchical_integration_mode.in_(modes),
             or_(
                 task.c.repo_id.is_(None),
                 task.c.repo_id == repo.c.id,
@@ -110,8 +114,10 @@ def development_delivery_scope(task):
     )
 
 
-async def delivery_sensitive_ids(conn, task_ids: Iterable[str]) -> set[str]:
-    """The COMPLETED tasks among *task_ids* whose delivery git must prove."""
+async def delivery_sensitive_ids(
+    conn, task_ids: Iterable[str], *, hierarchical: bool = False,
+) -> set[str]:
+    """Completed artifacts whose delivery Git must prove, optionally in hierarchy modes."""
     ids = sorted(set(task_ids))
     if not ids:
         return set()
@@ -119,7 +125,10 @@ async def delivery_sensitive_ids(conn, task_ids: Iterable[str]) -> set[str]:
         select(tasks.c.id).where(
             tasks.c.id.in_(ids),
             tasks.c.status == "COMPLETED",
-            development_delivery_scope(tasks),
+            development_delivery_scope(
+                tasks, modes=("development", "hierarchy", "train") if hierarchical
+                else ("development",),
+            ),
         )
     )
     return set(rows.scalars())
@@ -440,6 +449,14 @@ async def hierarchy_frontier_modes(
 
     observer = prerequisite_observer(db)
     if observer is None:
+        # Standalone databases do not carry integration.git_first configuration.
+        # Warn about the conditional fallback without adding reads to the
+        # observer-free frontier's single-query fast path.
+        logger.warning(
+            "No Git prerequisite observer is registered: hierarchy frontier reads "
+            "fall back to legacy receipts. These answers are invalid when "
+            "integration.git_first is active; use the daemon's registered observer.",
+        )
         return {}
     if task_id is not None:
         task = await db.get_task(task_id)
