@@ -178,6 +178,7 @@ class TestSessionTokenStore:
         tok = await store.mint(session_id="s1", task_id=None, project_id=None)
         assert await store.revoke_session("s1") == 1
         assert await store.validate(tok) is None
+        assert store.auth_health("s1")["state"] == "failed"
         await db.close()
 
     async def test_validate_refresh_observes_other_store_revocation_while_cached_validate_does_not(
@@ -227,6 +228,7 @@ class TestSessionTokenStore:
             expires_at=time.time() - 3600,
         )
         assert await store.validate(pt) is None
+        assert store.auth_health("s2")["status_code"] == 401
         await db.close()
 
     async def test_cache_short_circuits_second_validate(self, tmp_path, monkeypatch):
@@ -1405,4 +1407,48 @@ async def test_unassigned_session_token_only_allows_prime_and_schema_on_both_sur
             assert "no assigned project" in r.json()["error"]
             assert ch._recorded == []
     finally:
+        await db.close()
+
+
+def test_auth_health_is_bounded_expires_and_recovers(monkeypatch):
+    from unittest.mock import MagicMock
+
+    now = 1000.0
+    monkeypatch.setattr("src.api.auth.time.time", lambda: now)
+    store = SessionTokenStore(MagicMock())
+    assert store.auth_health("sup")["state"] == "unknown"
+    store.record_auth_result("sup", 403)
+    assert store.auth_health("sup")["state"] == "failed"
+    now += 1
+    store.record_auth_result("sup", 200)
+    assert store.auth_health("sup")["state"] == "healthy"
+    now += 901
+    assert store.auth_health("sup")["state"] == "unknown"
+    for i in range(1100):
+        store.record_auth_result(f"sup-{i}", 401)
+    assert len(store._auth_health) == 1024
+
+
+async def test_middleware_records_session_auth_failure_and_success(tmp_path):
+    db, store, ch, app = await _seed_app(tmp_path)
+    try:
+        token = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+        with TestClient(app) as client:
+            rejected = client.post("/api/execute", headers={"Authorization": f"Bearer {token}"},
+                                   json={"command": "task_show", "args": {"task_id": "other"}})
+            assert rejected.status_code == 403, rejected.text
+            assert store.auth_health("s1")["state"] == "failed"
+            accepted = client.post("/api/execute", headers={"Authorization": f"Bearer {token}"},
+                                   json={"command": "task_show", "args": {"task_id": "t1"}})
+            assert accepted.status_code == 200, accepted.text
+            assert store.auth_health("s1")["state"] == "healthy"
+            unknown = client.post("/api/execute", headers={"Authorization": "Bearer aqs_unknown"},
+                                  json={"command": "task_show", "args": {"task_id": "t1"}})
+            assert unknown.status_code == 401
+            assert store.auth_health("s1")["state"] == "healthy"
+    finally:
+        deps._orchestrator = None
+        deps._command_handler = None
+        deps._token_store = None
+        deps._require_session_token = False
         await db.close()

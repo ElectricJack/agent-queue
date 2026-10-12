@@ -758,6 +758,7 @@ class MessageCommandsMixin:
             include_archived=bool(args.get("include_archived", False)),
             since=since,
             limit=limit,
+            session_addresses=args.get("session_addresses"),
         )
         return {
             "count": len(rows),

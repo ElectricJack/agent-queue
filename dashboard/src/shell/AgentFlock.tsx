@@ -5,7 +5,7 @@ import { useAgentFlock, useEditAgent, useFlockSubagents, type FlockAgent } from 
 import { usePoolSetEnabled } from "../api/hooks";
 import EnableToggle from "../pages/agents/EnableToggle";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
-import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
+import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents, SupervisorHealth, supervisorScope } from "../pages/agents/AgentMetadata";
 import { OutsidePoolBadge, PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
 import { isPoolAgent, outsideSessionAgent, outsideSessionName, poolDisplayName, useDebouncedBusyPoolEntries, usePoolFlock, type PoolEntry } from "../pages/agents/pools";
 import { useShellPreferences } from "./useShellPreferences";
@@ -114,8 +114,10 @@ export default function AgentFlock() {
                   </span>
                   <AgentEligibility agent={agent} />
                   <AgentWaitingQuestion agent={agent} />
-                  <span className="block truncate text-gray-400" title={agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? "Supervises all AQ projects" : "Idle — no assigned task")}>
-                    {agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? "Supervises all AQ projects" : "Idle — no assigned task")}
+                  <SupervisorHealth agent={agent} />
+                  {agent.role === "supervisor" && <span className="block">Harness: {agent.harness || "unknown"}</span>}
+                  <span className="block truncate text-gray-400" title={agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? supervisorScope(agent) : "Idle — no assigned task")}>
+                    {agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? supervisorScope(agent) : "Idle — no assigned task")}
                   </span>
                   {agent.enabled === false && (
                     <span className="block text-amber-300">
@@ -124,13 +126,13 @@ export default function AgentFlock() {
                   )}
                 </span>
               </button>
-              <EnableToggle
+              {!agent.session_backed && <EnableToggle
                 enabled={agent.enabled !== false}
                 subject={agent.name}
                 pending={pending}
                 error={failed ? failed.message : null}
                 onChange={(next) => editAgent.mutate({ agent_id: agent.id, enabled: next })}
-              />
+              />}
               </div>
             );
           })}

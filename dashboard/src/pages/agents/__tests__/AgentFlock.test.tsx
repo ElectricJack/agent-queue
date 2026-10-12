@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(), listIntelligenceClasses: vi.fn(),
   sessionInput: vi.fn(), sessionPrune: vi.fn(), startAgentTerminal: vi.fn(), supervisorRestart: vi.fn(),
   poolStatus: vi.fn(), poolScale: vi.fn(), sessionList: vi.fn(),
+  getSessionMessagesApiSessionsNameMessagesGet: vi.fn(), postSessionMessageApiSessionsNameMessagePost: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
 function agent(id: string, name: string): FlockAgent {
@@ -970,5 +971,87 @@ describe("supervisor restart", () => {
     renderFlock("/agents?agent=b", true);
     const worker = await screen.findByRole("region", { name: "Builder agent window" });
     expect(within(worker).queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
+  });
+});
+
+describe("project supervisor messages", () => {
+  it("lists all 13 unlinked supervisors with their project, activity and auth health", async () => {
+    roster = [...roster, ...Array.from({ length: 13 }, (_, index) => ({
+      ...agent("session:sup-" + index, "Supervisor · project-" + index),
+      profile_id: "supervisor", role: "supervisor", state: "running", project_id: "project-" + index,
+      session_id: "sup-" + index, session_backed: true, session_address: "supervisor-project-" + index,
+      idle_seconds: 90, last_activity: 100, auth_health: { state: index === 3 ? "failed" : "unknown", status_code: index === 3 ? 401 : null },
+    }))];
+    renderFlock();
+    for (let index = 0; index < 13; index++) {
+      const row = await screen.findByRole("button", { name: "Open Supervisor · project-" + index });
+      expect(within(row).getByText("Supervises project-" + index)).toBeInTheDocument();
+      expect(within(row).getByText(/Idle: 1m · Last activity:/)).toBeInTheDocument();
+      expect(within(row).getByText("Harness: claude")).toBeInTheDocument();
+    }
+    const failed = screen.getByRole("button", { name: "Open Supervisor · project-3" });
+    expect(within(failed).getByText("Auth: failed (HTTP 401)")).toHaveClass("text-red-400");
+    expect(screen.queryByRole("switch", { name: /Supervisor · project-3/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the exact terminal, sends via the project relay, and shows delivered, read and replied states", async () => {
+    HTMLElement.prototype.scrollTo = vi.fn();
+    const { __dispatchEventForTests } = await import("../../../ws/useEventStream");
+    let messages: Record<string, unknown>[] = [{
+      id: "cli-message", from_kind: "user", from_id: "cli", to_kind: "session", to_id: "supervisor-project-one",
+      body: "Unread CLI request", thread_id: "cli-thread", project_id: "project-one", created_at: 10,
+      delivered_at: null, read_at: null,
+    }];
+    let failure: { at: number; reason: string; deferred: boolean } | null = {
+      at: 11, reason: "nudge transport failed", deferred: false,
+    };
+    api.getSessionMessagesApiSessionsNameMessagesGet.mockImplementation(async () => ({ data: {
+      success: true, session: "supervisor-project-one", project_id: "project-one", count: messages.length,
+      messages, delivery_failure: failure,
+    } }));
+    api.postSessionMessageApiSessionsNameMessagePost.mockImplementation(async ({ body }) => {
+      messages = [...messages, { id: "sent", ...body, from_kind: "user", from_id: "dashboard",
+        to_kind: "session", to_id: "supervisor-project-one", project_id: "project-one", created_at: Date.now() / 1000 }];
+      return { data: { success: true, message_id: "sent", state: "queued" } };
+    });
+    roster.push({ ...agent("session:sup-one", "Supervisor · project-one"), profile_id: "supervisor",
+      role: "supervisor", project_id: "project-one", session_id: "sup-one", session_backed: true,
+      session_address: "supervisor-project-one" });
+    renderFlock("/agents", true);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Supervisor · project-one" }));
+    const window = await screen.findByRole("region", { name: "Supervisor · project-one agent window" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    expect(new URL(TerminalSocketMock.instances[0]!.url).pathname).toBe("/ws/terminal/sup-one");
+    expect(within(window).queryByRole("tab", { name: "Settings" })).not.toBeInTheDocument();
+    fireEvent.click(within(window).getByRole("tab", { name: "Messages" }));
+    expect(await within(window).findByText("Unread CLI request")).toBeInTheDocument();
+    expect(within(window).getByRole("alert")).toHaveTextContent("nudge transport failed");
+    expect(within(window).getByText("Delivery failed · awaiting retry")).toBeInTheDocument();
+    expect(api.getSessionMessagesApiSessionsNameMessagesGet).toHaveBeenCalledWith({
+      path: { name: "supervisor-project-one" }, query: { since: undefined, limit: 200, thread_id: undefined, supervisor_only: true }, throwOnError: true,
+    });
+    fireEvent.change(within(window).getByRole("textbox", { name: "Message the supervisor" }), { target: { value: "Status please" } });
+    fireEvent.click(within(window).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.postSessionMessageApiSessionsNameMessagePost).toHaveBeenCalledWith({
+      path: { name: "supervisor-project-one" }, body: { body: "Status please", from: "dashboard", from_kind: "user", thread_id: "dashboard:project-one" }, throwOnError: true,
+    }));
+    await waitFor(() => expect(within(window).getByText("Queued · unread")).toBeInTheDocument());
+    failure = null;
+    messages = messages.map((msg) => msg.id === "sent" ? { ...msg, delivered_at: 20 } : msg);
+    act(() => __dispatchEventForTests({ _event_type: "message.delivered", event_type: "message.delivered",
+      message_id: "sent", project_id: "project-one", method: "nudge" }));
+    expect(await within(window).findByText("Delivered · unread")).toBeInTheDocument();
+    messages = messages.map((msg) => msg.id === "sent" ? { ...msg, read_at: 21 } : msg);
+    act(() => __dispatchEventForTests({ _event_type: "message.delivered", event_type: "message.delivered",
+      message_id: "sent", project_id: "project-one", method: "inject" }));
+    expect(await within(window).findByText("Read")).toBeInTheDocument();
+    messages = [...messages, { id: "reply", from_kind: "session", from_id: "supervisor-project-one",
+      to_kind: "user", to_id: "dashboard", body: "Everything is running", project_id: "project-one",
+      thread_id: "dashboard:project-one", reply_to_id: "sent", created_at: Date.now() / 1000 + 1 }];
+    act(() => __dispatchEventForTests({ _event_type: "message.replied", event_type: "message.replied",
+      message_id: "sent", reply_id: "reply", project_id: "project-one" }));
+    expect(await within(window).findByText("Everything is running")).toBeInTheDocument();
+    expect(within(window).getByText("Replied")).toBeInTheDocument();
+    expect(within(window).queryByRole("alert")).not.toBeInTheDocument();
   });
 });

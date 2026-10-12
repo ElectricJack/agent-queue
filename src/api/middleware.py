@@ -79,6 +79,7 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
                 ):
                     client_host = request.client.host if request.client else None
                     if client_host not in ("127.0.0.1", "::1", "localhost"):
+                        store.record_auth_result(scope.session_id, 403)
                         return JSONResponse(
                             {"ok": False, "error": "token restricted to loopback"},
                             status_code=403,
@@ -107,7 +108,11 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
         with operator_viewer_context(request_operator_viewer(request), surface=surface):
             if scope.kind == "session" and scope.session_id:
                 with structlog.contextvars.bound_contextvars(session_id=scope.session_id):
-                    return await call_next(request)
+                    response = await call_next(request)
+                    if store is not None and (response.status_code < 400
+                                              or response.status_code in {401, 403}):
+                        store.record_auth_result(scope.session_id, response.status_code)
+                    return response
             return await call_next(request)
 
 

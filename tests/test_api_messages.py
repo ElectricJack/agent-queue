@@ -490,3 +490,57 @@ async def test_global_supervisor_can_send_to_a_real_project(handler):
                    "project_id": "agent-queue", "elevated": True},
     })
     assert reply["reply"]["project_id"] == "agent-queue"
+
+
+async def test_supervisor_pane_filters_before_limit_and_shows_reply_and_failed_delivery(client, handler):
+    import time
+    from types import SimpleNamespace
+
+    from src.messages.delivery import MessageDeliveryEngine
+    from src.models import SessionRecord
+
+    now = time.time()
+    await handler.db.create_session(SessionRecord(
+        id="project-supervisor", name="n-supervisor--agent-queue", project_id="agent-queue",
+        profile_id="supervisor", lifecycle="named", state="running", harness="codex",
+        provider="tmux", work_dir="/tmp", epoch="e", instance_token="i", started_at=now,
+    ))
+    handler.orchestrator.session_lens = SimpleNamespace(nudge_failure=lambda sid: {
+        "at": now, "reason": "terminal delivery unavailable", "deferred": False,
+    } if sid == "project-supervisor" else None)
+    inbound = await handler.db.create_message(
+        project_id="agent-queue", from_kind="user", from_id="cli", to_kind="session",
+        to_id="project-supervisor", body="Earlier CLI message", thread_id="cli-thread",
+    )
+    await handler.db.mark_delivered(inbound.id, via="nudge")
+    reply = await handler._cmd_message_reply({"message_id": inbound.id, "body": "Supervisor reply"})
+    # A newer worker message must not consume a slot in the supervisor's LIMIT.
+    await handler.db.create_message(
+        project_id="agent-queue", from_kind="user", from_id="cli", to_kind="session",
+        to_id="worker", body="Worker traffic",
+    )
+    response = client.get("/api/sessions/supervisor-agent-queue/messages?supervisor_only=true&limit=2")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert {row["id"] for row in data["messages"]} == {inbound.id, reply["reply_id"]}
+    original = next(row for row in data["messages"] if row["id"] == inbound.id)
+    assert original["delivered_at"] and original["read_at"]
+    assert data["delivery_failure"]["reason"] == "terminal delivery unavailable"
+    sent = client.post("/api/sessions/supervisor-agent-queue/message", json={
+        "body": "Dashboard request", "from": "dashboard", "thread_id": "dashboard:agent-queue",
+    })
+    assert sent.status_code == 200, sent.text
+    queued = await handler.db.get_message(sent.json()["message_id"])
+    assert queued.to_id == "supervisor-agent-queue" and queued.delivered_at is None
+    transport = SimpleNamespace(activity=AsyncMock(return_value="idle"),
+                                nudge=AsyncMock(return_value=True))
+    engine = MessageDeliveryEngine(handler.db, transport, handler.config.messages)
+    await engine.run_delivery_pass()
+    assert (await handler.db.get_message(queued.id)).delivered_at is not None
+    assert any(call.kwargs["target_id"] == "supervisor-agent-queue"
+               and call.kwargs["project_id"] == "agent-queue"
+               and queued.id in call.kwargs["text"]
+               for call in transport.nudge.await_args_list)
+    await handler._cmd_message_reply({"message_id": queued.id, "body": "Dashboard response"})
+    response = client.get("/api/sessions/supervisor-agent-queue/messages?supervisor_only=true")
+    assert any(row["body"] == "Dashboard response" for row in response.json()["messages"])

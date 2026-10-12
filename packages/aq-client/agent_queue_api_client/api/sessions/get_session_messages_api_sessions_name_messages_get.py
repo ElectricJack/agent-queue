@@ -6,10 +6,8 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.get_session_messages_api_sessions_name_messages_get_response_get_session_messages_api_sessions_name_messages_get import (
-    GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet,
-)
 from ...models.http_validation_error import HTTPValidationError
+from ...models.session_messages_response import SessionMessagesResponse
 from ...types import UNSET, Response, Unset
 
 
@@ -20,6 +18,7 @@ def _get_kwargs(
     since: float | None | Unset = UNSET,
     limit: int | Unset = 100,
     include_archived: bool | Unset = False,
+    supervisor_only: bool | Unset = False,
 ) -> dict[str, Any]:
 
     params: dict[str, Any] = {}
@@ -42,6 +41,8 @@ def _get_kwargs(
 
     params["include_archived"] = include_archived
 
+    params["supervisor_only"] = supervisor_only
+
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
@@ -57,17 +58,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> (
-    GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet
-    | HTTPValidationError
-    | None
-):
+) -> HTTPValidationError | SessionMessagesResponse | None:
     if response.status_code == 200:
-        response_200 = (
-            GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet.from_dict(
-                response.json()
-            )
-        )
+        response_200 = SessionMessagesResponse.from_dict(response.json())
 
         return response_200
 
@@ -84,10 +77,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[
-    GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet
-    | HTTPValidationError
-]:
+) -> Response[HTTPValidationError | SessionMessagesResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -104,10 +94,8 @@ def sync_detailed(
     since: float | None | Unset = UNSET,
     limit: int | Unset = 100,
     include_archived: bool | Unset = False,
-) -> Response[
-    GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet
-    | HTTPValidationError
-]:
+    supervisor_only: bool | Unset = False,
+) -> Response[HTTPValidationError | SessionMessagesResponse]:
     """Get Session Messages
 
      Poll the conversation for a session.
@@ -123,13 +111,14 @@ def sync_detailed(
         since (float | None | Unset):
         limit (int | Unset):  Default: 100.
         include_archived (bool | Unset):  Default: False.
+        supervisor_only (bool | Unset):  Default: False.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet | HTTPValidationError]
+        Response[HTTPValidationError | SessionMessagesResponse]
     """
 
     kwargs = _get_kwargs(
@@ -138,6 +127,7 @@ def sync_detailed(
         since=since,
         limit=limit,
         include_archived=include_archived,
+        supervisor_only=supervisor_only,
     )
 
     response = client.get_httpx_client().request(
@@ -155,11 +145,8 @@ def sync(
     since: float | None | Unset = UNSET,
     limit: int | Unset = 100,
     include_archived: bool | Unset = False,
-) -> (
-    GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet
-    | HTTPValidationError
-    | None
-):
+    supervisor_only: bool | Unset = False,
+) -> HTTPValidationError | SessionMessagesResponse | None:
     """Get Session Messages
 
      Poll the conversation for a session.
@@ -175,13 +162,14 @@ def sync(
         since (float | None | Unset):
         limit (int | Unset):  Default: 100.
         include_archived (bool | Unset):  Default: False.
+        supervisor_only (bool | Unset):  Default: False.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet | HTTPValidationError
+        HTTPValidationError | SessionMessagesResponse
     """
 
     return sync_detailed(
@@ -191,6 +179,7 @@ def sync(
         since=since,
         limit=limit,
         include_archived=include_archived,
+        supervisor_only=supervisor_only,
     ).parsed
 
 
@@ -202,10 +191,8 @@ async def asyncio_detailed(
     since: float | None | Unset = UNSET,
     limit: int | Unset = 100,
     include_archived: bool | Unset = False,
-) -> Response[
-    GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet
-    | HTTPValidationError
-]:
+    supervisor_only: bool | Unset = False,
+) -> Response[HTTPValidationError | SessionMessagesResponse]:
     """Get Session Messages
 
      Poll the conversation for a session.
@@ -221,13 +208,14 @@ async def asyncio_detailed(
         since (float | None | Unset):
         limit (int | Unset):  Default: 100.
         include_archived (bool | Unset):  Default: False.
+        supervisor_only (bool | Unset):  Default: False.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet | HTTPValidationError]
+        Response[HTTPValidationError | SessionMessagesResponse]
     """
 
     kwargs = _get_kwargs(
@@ -236,6 +224,7 @@ async def asyncio_detailed(
         since=since,
         limit=limit,
         include_archived=include_archived,
+        supervisor_only=supervisor_only,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -251,11 +240,8 @@ async def asyncio(
     since: float | None | Unset = UNSET,
     limit: int | Unset = 100,
     include_archived: bool | Unset = False,
-) -> (
-    GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet
-    | HTTPValidationError
-    | None
-):
+    supervisor_only: bool | Unset = False,
+) -> HTTPValidationError | SessionMessagesResponse | None:
     """Get Session Messages
 
      Poll the conversation for a session.
@@ -271,13 +257,14 @@ async def asyncio(
         since (float | None | Unset):
         limit (int | Unset):  Default: 100.
         include_archived (bool | Unset):  Default: False.
+        supervisor_only (bool | Unset):  Default: False.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet | HTTPValidationError
+        HTTPValidationError | SessionMessagesResponse
     """
 
     return (
@@ -288,5 +275,6 @@ async def asyncio(
             since=since,
             limit=limit,
             include_archived=include_archived,
+            supervisor_only=supervisor_only,
         )
     ).parsed
