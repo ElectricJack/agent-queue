@@ -117,7 +117,7 @@ def create_app(
     app = FastAPI(
         title="Agent Q API",
         description="REST API for the agent-queue daemon.",
-        version="0.1.0",
+        version="0.1.1",
         docs_url=None,
         redoc_url=None,
     )
