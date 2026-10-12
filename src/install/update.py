@@ -351,6 +351,28 @@ def _plan_deploy(
             "selected release is older than the installed code",
             "Rerun with --allow-rollback to roll back code while keeping the database.",
         )
+    from dataclasses import replace
+    from .deploy import validate_boundary
+
+    boundaries = {}
+    for boundary in (record or {}).get("breaking_migrations", []):
+        validate_boundary(boundary)
+        boundaries[boundary["tag_oid"]] = boundary
+    for boundary in selector.migration_boundaries(
+        head=current if rollback else selection.commit,
+    ):
+        boundaries[boundary["tag_oid"]] = boundary
+    if rollback:
+        for boundary in boundaries.values():
+            if not _git(execute, checkout, "merge-base", "--is-ancestor",
+                        boundary["commit"], selection.commit).ok:
+                raise UpdateRefused(
+                    f"rollback_crosses_breaking_migration: {boundary['tag']} was admitted "
+                    f"with a breaking migration override by {boundary['admission']['override']['github_login']}",
+                    "--allow-rollback cannot cross this boundary. Select code at or after "
+                    "the breaking release; database recovery is a separate operator decision.",
+                )
+    selection = replace(selection, breaking_migrations=tuple(boundaries.values()))
     changed = selector.git("diff", "--name-only", current, selection.commit)
     subjects = selector.git("log", "--format=%h %s", f"{current}..{selection.commit}")
     return UpdatePlan(
@@ -968,6 +990,18 @@ def _recover(
     return report
 
 
+def migration_boundary_descriptions(plan: UpdatePlan) -> list[str]:
+    if not plan.selection:
+        return []
+    return [
+        f"Breaking migration boundary {boundary['tag']} "
+        f"({boundary['commit'][:9]}): operator "
+        f"{boundary['admission']['override']['github_login']}; "
+        "--allow-rollback across this release is disabled"
+        for boundary in plan.selection.breaking_migrations
+    ]
+
+
 def describe(
     plan: UpdatePlan, *, backup: bool, daemon_running: bool, dashboard_server_running: bool = False
 ) -> list[str]:
@@ -987,6 +1021,7 @@ def describe(
             "Includes database migrations: "
             + ("the database is backed up first" if backup else "NO backup (--no-backup)")
         )
+    lines.extend(migration_boundary_descriptions(plan))
     if plan.dependencies:
         lines.append("Reinstalls Python dependencies")
     if plan.dashboard_inputs:

@@ -281,7 +281,13 @@ async def test_normal_worker_cannot_assemble_cross_task_notes_or_prepare(promote
 async def test_request_pr_renders_source_summary_and_migration_guidance(promote_env):
     e = promote_env
     step = await configure(e, notes_kind="file_template", bootstrap=e.source)
-    source = commit(e.repo.store, {"feature.txt": "feature\n", "migrations/versions/feature.py": "migration\n"}, base=e.source)
+    source = commit(e.repo.store, {
+        "feature.txt": "feature\n",
+        "migrations/versions/feature.py": (
+            "revision = 'feature'\ndown_revision = None\n"
+            "def upgrade():\n    pass\n"
+        ),
+    }, base=e.source)
     head = merge_source(e, e.source, source, "feature")
     await task_row(e, "feature", summary="Adds useful release behavior")
     value = await notes(e, step, head)

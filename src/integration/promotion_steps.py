@@ -1551,7 +1551,10 @@ class PromotionVisit(BatchService):
     def _tag_message(tag, meta, member):
         return (f"Promote {meta['step']['id']} {tag}\n\n"
                 f"AQ-Promotion: {member.task_id}@{member.source_sha}\n"
-                f"AQ-Promotion-Request: {meta['request_id']}\n")
+                f"AQ-Promotion-Request: {meta['request_id']}\n"
+                + ("AQ-Migration-Admission: " + json.dumps(meta["migration_admission"],
+                                                         sort_keys=True) + "\n"
+                   if "migration_admission" in meta else ""))
 
     async def _create_tag(self, batch, repo, tag, meta, member, authorize):
         # Plumbing avoids a mutable local tag and gives deterministic objects on retry.

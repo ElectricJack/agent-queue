@@ -117,6 +117,10 @@ def update(
 
     if plan.up_to_date:
         console.print(f"AQ is up to date ({plan.upstream} at {plan.current[:9]}).")
+        from src.install.update import migration_boundary_descriptions
+
+        for line in migration_boundary_descriptions(plan):
+            console.print(f"  • {line}")
         return
 
     from src.install.onboarding import _read_config, api_base_url
