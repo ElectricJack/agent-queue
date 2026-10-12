@@ -18,6 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import insert, select, text
 
+from src.task_templates import render_task_template
 from src.database.tables import (
     events,
     task_metadata,
@@ -1047,15 +1048,9 @@ class DevelopmentPrimitives:
         )
         conflict = parked is not None and parked.get("evidence", {}).get("kind") == "merge_conflict"
         recovery = (
-            f"Fetch origin and, in your own task branch (it starts from origin/{target_branch}), "
-            "merge each listed source revision by its exact SHA (`git merge <sha>`). Resolve "
-            "the named conflicting files and preserve the intended source changes; where a "
-            "conflicting file is generated, regenerate it from the merged sources instead of "
-            "hand-merging it. Do not rebase, squash or cherry-pick: every listed source "
-            "revision must stay an ancestor of your branch, so delivering the repair delivers "
-            f"the source too. If origin/{target_branch} moves before you push, merge it again. "
+            render_task_template("development-conflict-recovery", target_branch=target_branch)
             if conflict else
-            f"Preserve their intended changes and resolve against current origin/{target_branch}. "
+            render_task_template("development-source-recovery", target_branch=target_branch)
         ) + self._regeneration_text(parked)
         repair = Task(
                 id=identity,
@@ -1063,17 +1058,19 @@ class DevelopmentPrimitives:
                 repo_id=repository_id,
                 title="Repair development integration: " + reason,
                 description=(
-                    f"Development repair generation: {generation}\nThe development batch parked these source revisions:\n{sources}\n"
-                    f"Candidate/base: {candidate_sha}.\nSource branches:\n{branches}\n"
-                    f"Publication target: refs/heads/{target_branch}.\n"
-                    + recovery
-                    + "Publish the repair on your own task branch. Ordinary merge commits are allowed. "
-                    "Run focused local checks and close with actual evidence; no parent verifier or PR is required. "
-                    "A passing close attests that every listed source revision is resolved; once your repair "
-                    f"is delivered to {target_branch}, that delivery also satisfies those sources for their successors. "
-                    f"Do not push {target_branch}. The development publisher will collect your branch. "
-                    "This is one resumable repair task; queue and provider waits do not expire it."
-                    + self._repair_failure_text(project_id, parked)
+                    # The retry budget reads this factual marker, so wording edits
+                    # must not remove or change it.
+                    f"Development repair generation: {generation}\n"
+                    + render_task_template(
+                        "development-repair",
+                        generation=generation,
+                        sources=sources,
+                        candidate_sha=candidate_sha,
+                        branches=branches,
+                        target_branch=target_branch,
+                        recovery=recovery,
+                        failure_details=self._repair_failure_text(project_id, parked),
+                    )
                 ),
                 branch_name="aq/" + identity,
                 status=TaskStatus.READY,
@@ -1218,9 +1215,9 @@ class DevelopmentPrimitives:
         if not command:
             return ""
         return (
-            f"Files marked merge={GENERATED_MERGE_DRIVER} in .gitattributes are generated: never "
-            "hand-merge them. Take either side (`git checkout --ours -- <path>`), resolve the "
-            f"source files, then run `{command}` and commit what it writes. "
+            render_task_template(
+                "development-regeneration", generated_merge_driver=GENERATED_MERGE_DRIVER, command=command
+            )
         )
 
 

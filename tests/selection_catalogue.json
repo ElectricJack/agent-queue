@@ -1052,6 +1052,7 @@
         "tests/test_override_injection.py",
         "tests/test_prompt_builder.py",
         "tests/test_prompt_manager.py",
+        "tests/test_prompt_task_templates.py",
         "tests/test_tier_budget_warnings.py"
       ]
     },
@@ -6671,13 +6672,14 @@
         "file-access"
       ],
       "default_arm": true,
-      "digest": "sha256:d3cb714818519f9c1c009bd1356713afe09a67616852430c9bebcdf6df002812",
+      "digest": "sha256:39a221b29fa50803dc039b84cd763f42fbe2fb4e2583bc32ab440bb00d1a5038",
       "imports": [
         "src.config",
         "src.database",
         "src.git.manager",
         "src.models",
         "src.plugins.internal.files",
+        "src.task_templates",
         "src.tools"
       ],
       "markers": [
@@ -14044,6 +14046,28 @@
       ],
       "markers": [],
       "summary": "Tests for the prompt template manager."
+    },
+    "tests/test_prompt_task_templates.py": {
+      "areas": [
+        "prompts"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2b38eb44089bd970b1c28cf6afc783e022dacc194a1bfada62f787dba78f6f74",
+      "imports": [
+        "src.commands.ci_commands",
+        "src.commands.principal",
+        "src.integration.checks",
+        "src.integration.root_pr_recovery",
+        "src.integration.source_ci",
+        "src.plugins.services",
+        "src.profiles.capabilities",
+        "src.task_templates",
+        "src.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Generated instructions honor live vault edits without changing observed facts."
     },
     "tests/test_proposal_api.py": {
       "areas": [

@@ -658,6 +658,11 @@ class CommandHandler(
         and any registered workspace path.
         """
         real = os.path.realpath(path)
+        from src.task_templates import editable_task_template_path
+
+        template_path = editable_task_template_path(path, self.config.data_dir)
+        if template_path is not None:
+            return template_path
         workspace_real = os.path.realpath(self.config.workspace_dir)
         if real.startswith(workspace_real + os.sep) or real == workspace_real:
             return real
@@ -924,7 +929,11 @@ class CommandHandler(
         This is the single code path for all operational commands in the system.
         Both Discord slash commands and chat agent LLM tools call this method.
         """
-        with CorrelationContext(command=name, component="command_handler"):
+        from src.task_templates import task_template_scope
+
+        with task_template_scope(self.config.data_dir), CorrelationContext(
+            command=name, component="command_handler"
+        ):
             # aq-surface Phase S2: pop the server-injected ``_scope`` off
             # BEFORE dispatch so no ``_cmd_*`` handler sees it in its
             # ``args`` unless it explicitly reads ``self._current_scope``.

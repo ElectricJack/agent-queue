@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import re
 
+from src.task_templates import render_task_template
 from src.git.github_contracts import GitHubAccessError
 from src.projects.github import GitHubError, parse_github_repository
 
@@ -28,30 +29,15 @@ _KEEP_OPEN = re.compile(
 def investigation_description(number: int, title: str) -> str:
     url = f"https://github.com/{REPOSITORY}/issues/{number}"
     return (
-        f"Investigate GitHub issue #{number}: {title}\n\n"
-        f"Issue: {url}\n\n"
-        "Research only; do not change code or open a PR for this task. Read the issue and "
-        "relevant code; reproduce it when cheap. Write a markdown report with: summary, "
-        "likely cause with file:line evidence, proposed fix (approach, files, scope, risks "
-        "and test plan), alternatives, and recommendation (fix, needs more info, or close). "
-        f"Submit the report to the Reviews tab with `aq review submit --task-id <this-task-id> "
-        f"--kind other --title 'GitHub issue #{number} investigation' --file <report.md>`. "
-        "The report must link this issue. Close this research task with the no-op work "
-        "outcome so it does not produce a code PR.\n\n"
-        "If Jack requests changes, address every comment and resubmit. A rejection is "
-        "feedback unless Jack explicitly asks to close the issue: follow his alternative "
-        "fix approach or ask one clarifying question in a revised report. Only use "
-        "`aq github-issue close-rejected` if Jack explicitly requested closure."
+        render_task_template("github-issue-investigation", number=number, title=title, url=url)
     )
 
 
 def fix_description(number: int, report: str, review_id: str) -> str:
     return (
-        f"Implement the approved fix for https://github.com/{REPOSITORY}/issues/{number}.\n"
-        f"Approved document review: {review_id}. Follow its proposed approach and test plan.\n"
-        f"The PR body must include the exact line `Fixes #{number}` so GitHub closes "
-        "the issue when the integration train lands the PR.\n\n"
-        "## Approved investigation\n\n" + report
+        render_task_template(
+            "github-issue-fix", repository=REPOSITORY, number=number, review_id=review_id, report=report
+        )
     )
 
 

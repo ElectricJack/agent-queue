@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.task_templates import render_task_template
 from src.git.manager import GitError, RemoteRefState
 from src.notifications.builder import build_task_detail
 from src.notifications.events import (
@@ -2084,19 +2085,20 @@ class GitOpsMixin:
         # Build feedback message
         bullet_list = "\n".join(f"- {msg}" for msg, _ in failures)
         closing = (
-            "Please fix these issues when the task restarts."
+            render_task_template("git-verification-restart")
             if restart_wording
             else (
-                "Fix these issues in this workspace, then run `aq task close` again. "
-                "The task is still yours — it stays IN_PROGRESS under your claim."
+                render_task_template("git-verification-held")
             )
         )
         feedback = (
-            f"**Git Verification Feedback (auto-retry "
-            f"{retry_count + 1}/{max_retries}):**\n"
-            f"The system verified the git state after your work and found "
-            f"issues:\n{bullet_list}\n"
-            f"{closing}"
+            render_task_template(
+                "git-verification-feedback",
+                attempt=retry_count + 1,
+                max_retries=max_retries,
+                bullet_list=bullet_list,
+                closing=closing,
+            )
         )
 
         separator = "\n\n---\n"

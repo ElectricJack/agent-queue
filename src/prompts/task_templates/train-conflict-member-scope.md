@@ -1,0 +1,1 @@
+Resolve the conflicting member's changes while preserving the other members.

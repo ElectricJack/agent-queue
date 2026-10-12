@@ -7,6 +7,9 @@
 # Default: auto-detect text files and normalize to LF on checkout
 * text=auto eol=lf
 
+# Task-template fragments retain separators from composed prompts verbatim.
+src/prompts/task_templates/*.md whitespace=-blank-at-eol,-blank-at-eof
+
 # Generated artifacts: pure functions of the source, rebuilt by
 # scripts/regenerate-generated.sh (keep its GENERATED list in step; see
 # tests/test_generated_artifacts.py).  Never hand-merge them: take either side,

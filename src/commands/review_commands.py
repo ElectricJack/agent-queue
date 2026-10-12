@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from src.task_templates import render_task_template
 from src.api.task_attachments import MAX_ATTACHMENT_BYTES, _ALLOWED_TYPES, _verify_image
 from src.api.auth import RequestScope
 from src.api.scope import held_task_for_session
@@ -1223,19 +1224,17 @@ class ReviewCommandsMixin:
                 if with_comments:
                     show_command += " --comments"
                 description = (
-                    f"ADVERSARIAL review of {current['kind']}: {current['title']}\n\n"
-                    f"Read the pinned revision with `{show_command}`.\n"
-                    "Find defects, unstated assumptions, missing acceptance criteria, and "
-                    "claims unsupported by the code. Verify claims against the repository "
-                    "rather than trusting the document. Agreement is allowed, but be specific.\n"
-                    "Post each finding with `aq review comment --review-id "
-                    f"{review['id']} --revision {revision} --quote ... --body ...` "
-                    "or use `--heading-path` to anchor a section.\n"
-                    "Close this task with a verdict summary: material defects found, or none. "
-                    "Do not decide the review gate.\n"
+                    render_task_template(
+                        "adversarial-review",
+                        current_kind=current["kind"],
+                        current_title=current["title"],
+                        show_command=show_command,
+                        review_id=review["id"],
+                        revision=revision,
+                    )
                 )
                 if not with_comments:
-                    description += "This is a clean-room read; do not request the existing comment thread.\n"
+                    description += render_task_template("adversarial-review-clean-room")
                 if focus:
                     description += f"\nFocus: {focus}\n"
                 dispatch = {
@@ -1387,23 +1386,14 @@ class ReviewCommandsMixin:
         else:
             lines.append("(none)")
         lines.extend([
-            "", f"Revise the document and resubmit with `aq review submit --review-id {review['id']} --file <draft.md>`.",
-            "Pass `--resolves cmt-...` for each comment you addressed.",
+            "", render_task_template("review-revision", review_id=review["id"]),
         ])
         if review["state"] == "rejected":
             from src.commands.github_issue_commands import INVESTIGATION_KEY
 
             author_key = author.dedup_key if author else archived.get("dedup_key") if archived else ""
             if (author_key or "").startswith(INVESTIGATION_KEY):
-                lines.extend([
-                    "", "This issue report was rejected. Read Jack's decision note and every comment.",
-                    "Close the GitHub issue only if Jack explicitly asked to close it; then use",
-                    f"`aq github-issue close-rejected --review-id {review['id']}` to post his reason.",
-                    "Otherwise revise to his proposed approach and resubmit. If his intent is",
-                    "ambiguous, resubmit with one clarifying question. Do not close by default.",
-                    "If the playbook already closed the issue on Jack's explicit request,",
-                    "close this response task with a no-op work outcome.",
-                ])
+                lines.append(render_task_template("review-rejected-issue", review_id=review["id"]))
 
         async def record(conn, task_id, _parent_id):
             await self.db._upsert_meta(task_id, "review_response", {
