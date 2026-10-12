@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -23,8 +23,6 @@ from src.commands.contracts.object_loop import ObjectLoopStartArgs, Reservation,
 from src.database.tables import doc_review_revisions, doc_reviews, object_loops, tasks
 from src.integration.development import _publishable_object_task
 from src.integration.child_delivery import _child_refusal
-from src.integration.promotion import PromotionService
-from src.integration.promotion_contracts import PromotionSourceMoved
 from src.models import Project, Task, TaskCompletion, TaskStatus
 from src.jobs.artifacts import atomic_json
 from src.jobs.matter import candidate_document
@@ -662,18 +660,6 @@ async def test_artifact_only_child_refuses_hierarchy_promotion(tmp_path):
     assert _child_refusal({"object_experiment": True}) == (
         "not_eligible", "object evaluation is an artifact-only experiment"
     )
-    db = MagicMock()
-    db.get_task = AsyncMock(return_value=SimpleNamespace(
-        id="candidate", parent_task_id="epic", repo_id="repo", branch_name="branch",
-    ))
-    db.get_task_meta = AsyncMock(return_value={"object_id": "rock"})
-    service = PromotionService(db, data_dir=tmp_path, git_manager=MagicMock())
-    request = SimpleNamespace(
-        source_task_id="candidate", source_head="a" * 40, source_base="a" * 40,
-        expected_target="a" * 40,
-    )
-    with pytest.raises(PromotionSourceMoved, match="artifact-only"):
-        await service._validated_route(request)
 
 
 @pytest.mark.parametrize("verdict", ["rejected", "withdrawn", "changes_requested"])

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Literal
 
 import pytest
@@ -17,7 +16,6 @@ from src.commands.contracts.integration import (
 )
 from src.commands.contracts.models import EffectSubject, OutcomeClass
 from src.commands.contracts.registry import ContractRegistry
-from src.commands.handler import CommandHandler
 from src.event_schemas import EVENT_SCHEMAS, validate_event
 from src.playbooks.explanation import can_render
 
@@ -291,22 +289,6 @@ def test_builtin_registration_invokes_integration_registration(monkeypatch):
 
 
 
-def test_schedule_contract_is_typed_and_retry_safe():
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    schedule = registry.require("integration_schedule_due").contract.execution
-
-    assert {outcome.name for outcome in schedule.outcomes} == {
-        "due",
-        "not_due",
-        "coalesced",
-        "disabled",
-    }
-    assert schedule.idempotency.mode == "natural"
-    assert schedule.retry_safe is True
-    assert schedule.args_model(project_id="p", now=1.0, trigger="manual").trigger == "manual"
-    with pytest.raises(Exception):
-        schedule.args_model(project_id="p", now=1.0, trigger="caller-defined")
 
 
 
@@ -319,7 +301,6 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
     dispatch = registry.require("integration_repair_dispatch").contract.execution
     record = registry.require("integration_record_repair").contract.execution
     timeout = registry.require("integration_repair_timeout").contract.execution
-    candidate_member = registry.require("integration_recover_candidate_member").contract.execution
 
     assert {row.name for row in start.outcomes} == {
         "started",
@@ -351,12 +332,6 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
         "already_terminal",
         "stale",
     }
-    assert {row.name for row in candidate_member.outcomes} == {
-        "accepted", "already_accepted", "rejected", "stale", "wait"
-    }
-    assert candidate_member.args_model(reservation_id="frozen-resolution").reservation_id == (
-        "frozen-resolution"
-    )
     assert start.side_effect.value == "composite"
     assert dispatch.side_effect.value == "composite"
     assert start.idempotency.mode == dispatch.idempotency.mode == "natural"
@@ -438,128 +413,8 @@ def test_parent_completion_contracts_expose_prescribed_outcomes():
     } == {"completed", "already_completed"}
 
 
-def test_promotion_contracts_declare_retry_and_domain_identity():
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-
-    promote = registry.require("delivery_promote").contract.execution
-    assert promote.idempotency.mode == "keyed"
-    assert promote.idempotency.key_field == "operation_key"
-    assert promote.retry_safe is True
-    assert {outcome.name for outcome in promote.outcomes} == {
-        "promoted",
-        "already_promoted",
-        "conflict",
-        "source_moved",
-        "target_moved",
-    }
-    reconcile = registry.require("integration_reconcile_promotion").contract.execution
-    assert reconcile.idempotency.mode == "keyed"
-    assert reconcile.idempotency.key_field == "intent_id"
-    assert reconcile.retry_safe is True
-    resolve = registry.require("integration_resolve_conflict").contract.execution
-    assert resolve.idempotency.key_field == "intent_id"
-    assert resolve.retry_safe is True
-    assert {outcome.name for outcome in resolve.outcomes} == {
-        "reserved",
-        "already_reserved",
-        "stale",
-        "invariant_error",
-    }
-    push = registry.require("integration_push_conflict_resolution").contract.execution
-    assert push.idempotency.key_field == "intent_id"
-    assert push.retry_safe is True
-    assert {outcome.name for outcome in push.outcomes} == {
-        "pushed",
-        "already_applied",
-        "target_moved",
-        "stale",
-    }
-    assert set(push.args_model.model_fields) == {"intent_id", "fence"}
-    candidate_member = registry.require(
-        "integration_resolve_candidate_member"
-    ).contract.execution
-    assert candidate_member.idempotency.mode == "natural"
-    assert candidate_member.retry_safe is True
-    assert set(candidate_member.args_model.model_fields) == {
-        "resolved_head_sha",
-        "resolved_tree_sha",
-        "repair_commit_shas",
-        "claim_epoch",
-        "task_id",
-        "session_id",
-        "project_id",
-    }
-    assert {outcome.name for outcome in candidate_member.outcomes} == {
-        "accepted",
-        "already_accepted",
-        "wait",
-        "stale",
-        "invariant_error",
-    }
-    root = registry.require("integration_promote_main").contract.execution
-    assert root.idempotency.mode == "natural"
-    assert set(root.args_model.model_fields) == {"batch_id", "revision"}
-    assert {outcome.name for outcome in root.outcomes} == {
-        "promoted", "already_promoted", "base_moved", "ci_missing",
-        "non_fast_forward", "wait", "reconciliation_blocked", "stale",
-        "configuration_blocked",
-    }
 
 
-@pytest.mark.parametrize("outcome", ["accepted", "already_accepted", "stale"])
-@pytest.mark.asyncio
-async def test_candidate_member_contract_adapter_preserves_typed_result_fields(outcome):
-    invariant = "resolved_paths_do_not_match_reviewed_source" if outcome == "stale" else None
-    continuation = {
-        "outcome": "built",
-        "batch_id": "batch-1",
-        "revision": 4,
-        "head_sha": "f" * 40,
-    }
-    raw = {
-        "success": outcome != "stale",
-        "outcome": outcome,
-        "invariant": invariant,
-        "reservation_id": "reservation-1",
-        "batch_id": "batch-1",
-        "revision": 3,
-        "member_ordinal": 2,
-        "partial_head_sha": "e" * 40,
-        "continuation": continuation,
-    }
-
-    class StubHandler:
-        async def execute(self, command, payload):
-            assert command == "integration_resolve_candidate_member"
-            assert payload["claim_epoch"] == 7
-            return raw
-
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    registration = registry.require("integration_resolve_candidate_member")
-    args = registration.contract.execution.args_model(
-        resolved_head_sha="b" * 40,
-        resolved_tree_sha="c" * 40,
-        repair_commit_shas=("d" * 40,),
-        claim_epoch=7,
-    )
-    set_handler_provider(StubHandler)
-    try:
-        result = await registration.invoke(args, None)
-    finally:
-        set_handler_provider(None)
-
-    assert result.outcome == outcome
-    assert result.value.model_dump() == {
-        "invariant": invariant,
-        "reservation_id": "reservation-1",
-        "batch_id": "batch-1",
-        "revision": 3,
-        "member_ordinal": 2,
-        "partial_head_sha": "e" * 40,
-        "continuation": continuation,
-    }
 
 
 @pytest.mark.parametrize(
@@ -655,78 +510,8 @@ async def test_complete_parent_adapter_routes_a_missing_trusted_binding_as_waiti
     assert "awaiting_trusted_verification" not in {row.name for row in execution.outcomes}
 
 
-@pytest.mark.parametrize(
-    "outcome, invariant",
-    [
-        ("accepted", None),
-        ("already_accepted", None),
-        ("rejected", "candidate_member_tree_mismatch"),
-        ("stale", None),
-        ("wait", None),
-    ],
-)
-@pytest.mark.asyncio
-async def test_recover_candidate_member_adapter_dispatches_its_own_command(outcome, invariant):
-    """The operator recovery adapter must reach its handler, not raise TypeError.
-
-    `aq integration recover-candidate-member RESERVATION_ID` is the documented
-    recovery for a frozen pushed candidate-member repair, so the registered
-    contract has to be invocable, carry `reservation_id` through, and project the
-    handler result onto its typed value.
-    """
-    seen: dict[str, object] = {}
-
-    class StubHandler:
-        async def execute(self, command, payload):
-            seen["command"] = command
-            seen["payload"] = payload
-            return {
-                "success": outcome in {"accepted", "already_accepted", "rejected"},
-                "outcome": outcome,
-                "batch_id": "batch-1",
-                "revision": 3,
-                "member_ordinal": 2,
-                "invariant": invariant,
-            }
-
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    registration = registry.require("integration_recover_candidate_member")
-    args = registration.contract.execution.args_model(reservation_id="frozen-resolution")
-    set_handler_provider(StubHandler)
-    try:
-        result = await registration.invoke(args, None)
-    finally:
-        set_handler_provider(None)
-
-    assert seen["command"] == "integration_recover_candidate_member"
-    assert seen["payload"]["reservation_id"] == "frozen-resolution"
-    assert result.outcome == outcome
-    assert result.value.model_dump() == {
-        "batch_id": "batch-1",
-        "revision": 3,
-        "member_ordinal": 2,
-        "invariant": invariant,
-    }
 
 
-@pytest.mark.asyncio
-async def test_recover_candidate_member_adapter_rejects_an_outcome_outside_its_contract():
-    class StubHandler:
-        async def execute(self, command, payload):
-            return {"success": True, "outcome": "invariant_error"}
-
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    registration = registry.require("integration_recover_candidate_member")
-    args = registration.contract.execution.args_model(reservation_id="frozen-resolution")
-    set_handler_provider(StubHandler)
-    try:
-        result = await registration.invoke(args, None)
-    finally:
-        set_handler_provider(None)
-
-    assert result.outcome == "contract_violation"
 
 
 def test_every_hierarchy_adapter_call_site_passes_exactly_five_positional_arguments():
@@ -769,18 +554,6 @@ def test_every_hierarchy_adapter_call_site_passes_exactly_five_positional_argume
     assert bad == []
 
 
-@pytest.mark.asyncio
-async def test_root_promotion_command_is_registered_and_strictly_typed(tmp_path):
-    handler = object.__new__(CommandHandler)
-    handler.orchestrator = SimpleNamespace(plugin_registry=None)
-    handler.config = SimpleNamespace(
-        data_dir=str(tmp_path),
-        playbooks=SimpleNamespace(enabled=True),
-        memory=SimpleNamespace(enabled=True),
-        security=SimpleNamespace(capability_enforcement="off"),
-    )
-    result = await handler.execute("integration_promote_main", {})
-    assert result["outcome"] == "runtime_error"
 
 
 @pytest.mark.parametrize("name,payload,answer", [
@@ -848,3 +621,19 @@ async def test_train_eject_contract_preserves_named_refusals(outcome):
         set_handler_provider(None)
     assert result.outcome == outcome
     assert result.classification(registration.contract).value != "success"
+
+
+def test_retired_publishers_are_absent_from_command_registry():
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    for name in ("integration_schedule_due", "integration_seal", "delivery_promote",
+                 "integration_reconcile_promotion", "integration_resolve_conflict",
+                 "integration_promote_main", "integration_build_candidate",
+                 "integration_push_conflict_resolution", "integration_resolve_candidate_member",
+                 "integration_recover_candidate_member", "integration_rebind_repair",
+                 "integration_recover_parent_head", "integration_recover_preserved_repair",
+                 "integration_rebind_detached_repair", "integration_recover_unwritten_resolution"):
+        assert registry.get(name) is None
+    for name in ("integration_seal_now", "integration_abort_batch", "integration_eject",
+                 "integration_status", "integration_promotion_publish"):
+        assert registry.get(name) is not None

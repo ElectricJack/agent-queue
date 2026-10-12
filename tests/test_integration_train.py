@@ -1772,10 +1772,16 @@ def test_active_train_and_promotion_modules_import_retained_contracts():
     import ast
     from pathlib import Path
 
+    for module in ("parent_runtime", "parent_engine", "promotion", "scheduler", "settling",
+                   "stale_schedule", "candidates", "main_promotion", "root_runtime",
+                   "root_adapters", "subjects", "reconciler"):
+        assert not Path(f"src/integration/{module}.py").exists(), module
+
     modules = (
         "train", "train_sources", "checks", "candidate_baseline", "promotion_steps",
         "epics", "github_review_poll", "attestation", "ci_producers", "ci_adapters",
         "runtime_contracts", "promotion_contracts", "owner_guards", "source_repairs",
+        "reviews", "repository_git", "release",
     )
     paths = [Path(f"src/integration/{module}.py") for module in modules]
     paths.append(Path("src/git/github.py"))

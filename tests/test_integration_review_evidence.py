@@ -26,10 +26,10 @@ from src.database.tables import (
 )
 from src.git.manager import GitManager
 from src.integration.git_truth import GitTruth
-from src.integration.models import BranchKey, PromotionInput
+from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
-from src.integration.promotion import PromotionService
-from src.integration.review_evidence import ReviewEvidenceProducer
+from src.integration.repository_git import RepositoryGit
+from src.integration.reviews import ReviewEvidenceProducer
 from src.integration.reviews import ReviewRequirements, ReviewSubject, TreeReviews
 from src.models import (
     Agent,
@@ -191,7 +191,7 @@ async def review_case(tmp_path, reuse_database):
         agent_id="agent",
         state="running",
     )
-    promotion = PromotionService(db, data_dir=tmp_path / "data", git_manager=GitManager())
+    promotion = RepositoryGit(db, data_dir=tmp_path / "data", git_manager=GitManager())
     yield {
         "db": db,
         "promotion": promotion,
@@ -202,7 +202,7 @@ async def review_case(tmp_path, reuse_database):
     }
 
 
-async def test_leaf_close_review_hook_and_delivery_promote_command_end_to_end(
+async def test_leaf_close_records_checkpoint_and_suppresses_legacy_final_review(
     review_case, command_handler_factory, monkeypatch
 ):
     from unittest.mock import AsyncMock
@@ -364,106 +364,6 @@ async def test_leaf_close_review_hook_and_delivery_promote_command_end_to_end(
     assert dispatched.rules_selected == ()
     return
 
-    review_close = await handler.execute(
-        "task_close",
-        {
-            "task_id": "review",
-            "session_id": "session",
-            "outcome": "pass",
-            "work_outcome": "no-op",
-            "summary": "looks good",
-        },
-    )
-    assert review_close["success"] is True, review_close
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(task_branch_origins).values(
-                id="origin-parent",
-                task_id="parent",
-                repository_id="repo",
-                parent_task_id=None,
-                parent_repository_id="repo",
-                parent_ref="main",
-                base_sha=case["base"],
-                creation_generation=0,
-                reserved=True,
-                materialized=True,
-                created_at=1.0,
-                materialized_at=1.0,
-            )
-        )
-        await conn.execute(
-            insert(integration_parent_episodes).values(
-                id="parent-episode",
-                parent_task_id="parent",
-                repository_id="repo",
-                generation=0,
-                pre_collection_checkpoint_sha=case["base"],
-                created_at=3.0,
-            )
-        )
-        await conn.execute(
-            insert(integration_repair_operations).values(
-                id="parent-operation",
-                target_kind="parent",
-                parent_task_id="parent",
-                episode_id="parent-episode",
-                active_stage=0,
-                state="active",
-                policy_snapshot={},
-                artifact_snapshot={},
-                required_check_version="test",
-                created_at=3.0,
-                updated_at=3.0,
-            )
-        )
-        await conn.execute(
-            insert(task_integration_checkpoints).values(
-                task_id="parent",
-                repository_id="repo",
-                branch="aq/parent",
-                checkpoint_sha=case["base"],
-                generation=0,
-                episode_id="parent-episode",
-                state="awaiting_children",
-                version=0,
-                updated_at=3.0,
-            )
-        )
-
-    assert (await db.get_task("review")).status is TaskStatus.COMPLETED
-    approved = await db.get_applicable_integration_review_evidence(
-        source_task_id="leaf",
-        repository_id="repo",
-        source_base=case["base"],
-        reviewed_head_sha=case["head"],
-        current_generation=checkpoint["generation"],
-    )
-    assert approved and approved["reviewer_session_attempt_id"]
-
-    fence = await BranchOwnership(db).acquire(
-        BranchKey(repository_id="repo", branch="aq/parent"),
-        "parent-operation",
-        "collector",
-    )
-    promoted = await handler.execute(
-        "delivery_promote",
-        PromotionInput(
-            operation_key="parent-episode",
-            source_task_id="leaf",
-            source_head=case["head"],
-            source_base=case["base"],
-            expected_target=case["base"],
-            fence=fence,
-        ).model_dump(mode="json"),
-    )
-    assert promoted["success"] is True
-    assert promoted["outcome"] == "promoted"
-    receipts = await db.list_integration_delivery_receipts(
-        source_task_id="leaf", repository_id="repo", target_branch="aq/parent"
-    )
-    assert receipts[0]["parent_operation_id"] == "parent-operation"
-    assert receipts[0]["parent_episode_id"] == "parent-episode"
 
 
 async def test_reject_then_successful_review_close_never_mints_approval(review_case):

@@ -339,17 +339,13 @@
       "description": "Epic trains: legible epic branch names, epic dependencies ordering batches, epic pull requests and review evidence, rebase warnings, batch CI repair adoption and rebuild, the reviewed train policies, and onboarding a project onto the train.",
       "modules": [
         "tests/test_agent_queue_train_policy.py",
-        "tests/test_batch_ci_repair_adoption.py",
-        "tests/test_batch_ci_repair_rebuild.py",
         "tests/test_epic_branch.py",
         "tests/test_epic_delivery.py",
         "tests/test_epic_dependencies.py",
         "tests/test_epic_pr.py",
         "tests/test_epic_pr_review_evidence.py",
         "tests/test_epic_rebase_and_escalation.py",
-        "tests/test_epic_train_end_to_end.py",
-        "tests/test_hierarchical_delivery_playbook.py",
-        "tests/test_root_integration_playbook.py"
+        "tests/test_hierarchical_delivery_playbook.py"
       ]
     },
     "escalations": {
@@ -541,7 +537,6 @@
         "tests/test_integration_owner_recovery_sweep.py",
         "tests/test_integration_owner_retry_recovery.py",
         "tests/test_integration_ownership.py",
-        "tests/test_integration_published_repair_handoff.py",
         "tests/test_integration_stale_owners.py",
         "tests/test_integration_transfer_commands.py",
         "tests/test_integration_workspace_handoff.py",
@@ -557,11 +552,9 @@
         "tests/test_integration_epics.py",
         "tests/test_integration_legacy_backfill.py",
         "tests/test_integration_legacy_park_retirement.py",
-        "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_parent_source.py",
         "tests/test_integration_pr_delivery.py",
-        "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
         "tests/test_integration_repair_lineage.py",
         "tests/test_integration_repair_rollover.py",
@@ -588,11 +581,9 @@
         "tests/test_attestation_check_run_id.py",
         "tests/test_branch_sweep.py",
         "tests/test_hosted_attestation.py",
-        "tests/test_integration_accepted_repair.py",
         "tests/test_integration_attestation.py",
         "tests/test_integration_batches.py",
         "tests/test_integration_candidate_baseline.py",
-        "tests/test_integration_candidates.py",
         "tests/test_integration_checks.py",
         "tests/test_integration_ci.py",
         "tests/test_integration_ci_producers.py",
@@ -608,19 +599,13 @@
         "tests/test_integration_observe.py",
         "tests/test_integration_operator_decisions.py",
         "tests/test_integration_outbox.py",
-        "tests/test_integration_parent_reconciler.py",
         "tests/test_integration_parent_subjects.py",
-        "tests/test_integration_reconciler.py",
         "tests/test_integration_record_delivered.py",
         "tests/test_integration_records_and_gates.py",
         "tests/test_integration_replay.py",
-        "tests/test_integration_root_adapters.py",
         "tests/test_integration_root_noop.py",
-        "tests/test_integration_root_scenarios.py",
-        "tests/test_integration_schedule.py",
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
-        "tests/test_integration_settling.py",
         "tests/test_integration_size.py",
         "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stacked_branches.py",
@@ -629,7 +614,6 @@
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py",
         "tests/test_integration_train.py",
-        "tests/test_integration_train_regressions.py",
         "tests/test_integration_train_sources.py"
       ]
     },
@@ -1157,7 +1141,6 @@
         "tests/test_hierarchical_delivery_playbook.py",
         "tests/test_playbook_v2_fixtures.py",
         "tests/test_plugin_cron_to_playbook_migration.py",
-        "tests/test_root_integration_playbook.py",
         "tests/test_shipped_playbook_sources.py",
         "tests/test_supervisor_failure_triage.py",
         "tests/test_v1_removal.py"
@@ -2933,46 +2916,6 @@
       "markers": [],
       "summary": "The base checkout is never handed to a session."
     },
-    "tests/test_batch_ci_repair_adoption.py": {
-      "areas": [
-        "epic-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:3ecac82523f3a04846445f3b7da28213b005ff33b9fa5c325fb04f91f5cdaae2",
-      "imports": [
-        "src.database.tables",
-        "src.integration.models",
-        "src.integration.repair"
-      ],
-      "markers": [
-        "asyncio",
-        "parametrize"
-      ],
-      "summary": "A pushed batch CI fix becomes a new exact candidate, never rewrites evidence."
-    },
-    "tests/test_batch_ci_repair_rebuild.py": {
-      "areas": [
-        "epic-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:34c4fe0a12fed7df8f2f8cee082b80f72c758a0c3439089121f1ce46909f32d5",
-      "imports": [
-        "src.database.tables",
-        "src.git.github_app",
-        "src.git.manager",
-        "src.integration.candidates",
-        "src.integration.hierarchy",
-        "src.integration.main_promotion",
-        "src.integration.models",
-        "src.integration.ownership",
-        "src.integration.repair",
-        "src.models"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Main advancing must not erase an accepted batch CI repair."
-    },
     "tests/test_blocked_state.py": {
       "areas": [
         "work-graph"
@@ -4317,13 +4260,13 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:0525723f4b26786be6eb5bd83e4f03beb7bb21f99c1b36eab3469cd6cc6f4d67",
+      "digest": "sha256:598ad857b51b11624553835432579a102cee3d9e92105e1b409e3646b986d78d",
       "imports": [
         "src.commands.contracts.models",
         "src.commands.contracts.registry",
         "src.commands.principal",
         "src.git.manager",
-        "src.integration.promotion",
+        "src.integration.repository_git",
         "src.playbooks.definition",
         "src.playbooks.executors",
         "src.playbooks.executors.base",
@@ -5388,7 +5331,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:11a830742732897b0aa3b36d619dce287c1afdc07567dd5643088e1c0aa05a99",
+      "digest": "sha256:0650b8d86d9e4fea73f0fc6bed32c1c2cdd99d494f955e464ceee0db1170c603",
       "imports": [
         "src.commands.contracts.integration",
         "src.commands.contracts.registry",
@@ -5403,9 +5346,7 @@
         "src.integration.development_policy",
         "src.integration.development_runtime",
         "src.integration.models",
-        "src.integration.ownership",
         "src.integration.runtime_contracts",
-        "src.models",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.integration_policy"
@@ -6041,12 +5982,13 @@
         "e2e-kit"
       ],
       "default_arm": true,
-      "digest": "sha256:cd7baca418f4e1ada5512978398bfa98b55158e1ec982dab63f37aa3ac8b7fae",
+      "digest": "sha256:fe6f180a7a58b4bdde6a915a3f13e89007d5acff44a94e4305eb1ef23933c546",
       "imports": [
         "src.config",
         "src.git.manager",
         "src.jobs.adapters",
         "src.jobs.policy",
+        "src.playbooks.definition",
         "src.profiles.parser",
         "src.routing.planner"
       ],
@@ -6247,7 +6189,7 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:498085415f8713fd719aedf13ddf0796ba05625f4215ddf97b71a54ff77e21d7",
+      "digest": "sha256:27ef2272757c7b2b846ebca6beeef47c03d1e6fd70f33d712bbf658aa65bd8a4",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -6259,13 +6201,9 @@
         "src.integration.delivery_observer",
         "src.integration.github_review_poll",
         "src.integration.models",
-        "src.integration.promotion",
         "src.integration.provenance",
         "src.integration.repository_git",
-        "src.integration.review_evidence",
         "src.integration.reviews",
-        "src.integration.scheduler",
-        "src.integration.settling",
         "src.integration.source_ci",
         "src.integration.source_repairs",
         "src.integration.train_sources",
@@ -6291,40 +6229,6 @@
       ],
       "markers": [],
       "summary": "Rebase warnings and durable stuck-batch notices for the integration train."
-    },
-    "tests/test_epic_train_end_to_end.py": {
-      "areas": [
-        "epic-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:feb7519748e1492ce56e73c9d8d77909eb88526bdf5c231df2dfb33297d45e9e",
-      "imports": [
-        "src.commands.principal",
-        "src.database",
-        "src.database.tables",
-        "src.git.github_app",
-        "src.git.manager",
-        "src.integration.candidates",
-        "src.integration.ci",
-        "src.integration.cleanup",
-        "src.integration.main_promotion",
-        "src.integration.models",
-        "src.integration.ownership",
-        "src.integration.promotion",
-        "src.integration.promotion_contracts",
-        "src.integration.release",
-        "src.integration.repair",
-        "src.integration.review_evidence",
-        "src.integration.root_pull_requests",
-        "src.integration.scheduler",
-        "src.models",
-        "src.profiles.capabilities"
-      ],
-      "markers": [
-        "asyncio",
-        "parametrize"
-      ],
-      "summary": "The epic PR and integration train advance as one connected delivery."
     },
     "tests/test_escalation_commands.py": {
       "areas": [
@@ -7892,26 +7796,6 @@
       "markers": [],
       "summary": "``aq install`` — the WSL2 platform adapter (``src/install/wsl.py``)."
     },
-    "tests/test_integration_accepted_repair.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:7b51c78e6647328d987d1e2ad0b06e3a48ddf1c8cf665ca9715c8aec5e92c0ef",
-      "imports": [
-        "src.commands.principal",
-        "src.database.tables",
-        "src.integration.ci",
-        "src.integration.main_promotion",
-        "src.integration.promotion_contracts",
-        "src.models",
-        "src.profiles.capabilities"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Accepted root repairs finish their original claims independently of candidate CI."
-    },
     "tests/test_integration_app_mode.py": {
       "areas": [
         "integration-controls"
@@ -7994,22 +7878,18 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:ae58ca0bd852fc3eb4df325940af5629ac72f68f43130ad3734a6c4f22b460c5",
+      "digest": "sha256:8a778cd1e1946196b78c33debcb0042f57c27ebe595d6162863f20efb1be7e3a",
       "imports": [
-        "src.commands.integration_commands",
         "src.database.tables",
         "src.git.manager",
         "src.integration.cancelled_collection_recovery",
         "src.integration.child_delivery",
         "src.integration.collection",
         "src.integration.delegate_release",
-        "src.integration.failed_verification_recovery",
         "src.integration.hierarchy",
         "src.integration.models",
-        "src.integration.ownership",
-        "src.integration.promotion",
-        "src.integration.promotion_contracts",
         "src.integration.repair",
+        "src.integration.repository_git",
         "src.integration.verifier_subject",
         "src.models"
       ],
@@ -8041,47 +7921,18 @@
       ],
       "summary": "A red candidate is judged against the target's own checks, with real evidence rows."
     },
-    "tests/test_integration_candidates.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:608c0c7b3456dbd3815653fab60f93f2505e9ecb369acbb28a8b349038f69959",
-      "imports": [
-        "src.commands.principal",
-        "src.database.tables",
-        "src.git.github_app",
-        "src.git.manager",
-        "src.integration.candidate_ci",
-        "src.integration.candidates",
-        "src.integration.models",
-        "src.integration.ownership",
-        "src.integration.promotion_contracts",
-        "src.integration.repair",
-        "src.integration.source_trailer",
-        "src.models",
-        "src.profiles.capabilities",
-        "src.test_selection.catalogue"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Ordered, restartable root integration candidate construction."
-    },
     "tests/test_integration_checks.py": {
       "areas": [
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:ba879b58645930dad31b11d39514296bc12bb040aaa2872769ad0e8c6b0933c6",
+      "digest": "sha256:0b5328f33fa5f4086c5d03e8553c8f04b448a4ed818506832aa991fc9a59c3b2",
       "imports": [
         "src.database.tables",
-        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.checks",
         "src.integration.ci",
         "src.integration.ci_producers",
-        "src.integration.root_runtime",
         "src.integration.runtime_contracts",
         "src.integration.train_sources"
       ],
@@ -8095,7 +7946,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:f3a1dbf61bd6c80654534a2da39205ae5156213690d99f756370172ded5316e4",
+      "digest": "sha256:80f718dcd8cdf0414682d113c4f21b040b30bb261f197be0ed31eab9bb3abd29",
       "imports": [
         "src.commands.integration_commands",
         "src.config",
@@ -8108,8 +7959,7 @@
         "src.integration.collection",
         "src.integration.hierarchy",
         "src.integration.models",
-        "src.integration.promotion",
-        "src.integration.root_pull_requests",
+        "src.integration.repository_git",
         "src.integration.suspended_parent_recovery",
         "src.models",
         "src.orchestrator.workspace_attachments",
@@ -8173,7 +8023,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:6ef32b5b872257c8e95f4a54bc598a8db213ab5a00286376f46b146231fed3c2",
+      "digest": "sha256:6ef100a2836285ff258a8b3aec18a9bf5c8d7f58a5cd9a4bcf575ae84dc5f752",
       "imports": [
         "src.commands.principal",
         "src.database.adapters.postgresql",
@@ -8183,8 +8033,6 @@
         "src.integration.cleanup",
         "src.integration.release",
         "src.integration.runtime_contracts",
-        "src.integration.scheduler",
-        "src.integration.settling",
         "src.models",
         "src.profiles.capabilities"
       ],
@@ -8230,14 +8078,13 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:2394598b96d0b0d5263a8a8338769a62381c8f5a8aac55c9903d05d7ff04d366",
+      "digest": "sha256:7219eeb5f53af0c5281990b347f2095c575611bcff401443f214682d15dc6afc",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.contracts.integration",
         "src.commands.contracts.models",
         "src.commands.contracts.registry",
-        "src.commands.handler",
         "src.event_schemas",
         "src.playbooks.explanation"
       ],
@@ -8302,7 +8149,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:af24f7ffad7dcd434e0532e1975b603eb679c403ef0175548b8a821ed3d58317",
+      "digest": "sha256:0f28572f5315494775fa203368ecf762c4f117388a5fd4d0cca3e8b3698a1d0f",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -8310,7 +8157,6 @@
         "src.cli.integration",
         "src.database.tables",
         "src.integration.repair",
-        "src.integration.scheduler",
         "src.models"
       ],
       "markers": [
@@ -8507,41 +8353,6 @@
       ],
       "summary": "Adversarial lease expiry and publication races on real PostgreSQL and Git."
     },
-    "tests/test_integration_main_promotion.py": {
-      "areas": [
-        "integration-promotion"
-      ],
-      "default_arm": true,
-      "digest": "sha256:8210201e11aa34c36af8702574af702b970d706286715bd2943142469865ddab",
-      "imports": [
-        "src.commands.integration_commands",
-        "src.commands.principal",
-        "src.database",
-        "src.database.adapters.postgresql",
-        "src.database.tables",
-        "src.git.github_app",
-        "src.git.github_contracts",
-        "src.git.manager",
-        "src.integration.attestation",
-        "src.integration.candidates",
-        "src.integration.ci",
-        "src.integration.green_continuation",
-        "src.integration.main_promotion",
-        "src.integration.models",
-        "src.integration.ownership",
-        "src.integration.promotion",
-        "src.integration.promotion_contracts",
-        "src.integration.repair",
-        "src.integration.scheduler",
-        "src.models",
-        "src.profiles.capabilities"
-      ],
-      "markers": [
-        "asyncio",
-        "parametrize"
-      ],
-      "summary": "Crash-safe exact-SHA root-to-main promotion."
-    },
     "tests/test_integration_mode.py": {
       "areas": [
         "integration-trains"
@@ -8571,17 +8382,15 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:9b5db55b6f9234bc204defc99483aec73b684354fb2dfa72f01a65c437e0c120",
+      "digest": "sha256:58a1f647b8fc047043b202c93b108c60e324b44fcd23f31f6b797396cb82318f",
       "imports": [
         "src.database",
         "src.database.tables",
-        "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
         "src.integration.models",
         "src.integration.observe",
         "src.integration.parent_adapters",
-        "src.integration.root_runtime",
         "src.integration.runtime_contracts",
         "src.playbooks.integration_policy"
       ],
@@ -8716,9 +8525,8 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:cb451b3f7233acbefb0cbc9d71a81c95f1a97ff4030deb962acba35539df6d8f",
+      "digest": "sha256:df300dd50127b88a8758c8dbbb37c07287ef66afea3b371e40566b688e6b3631",
       "imports": [
-        "src.commands.contracts.integration",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.queries.claim_queries",
@@ -8735,11 +8543,10 @@
         "src.integration.outbox",
         "src.integration.ownership",
         "src.integration.parent_repair_heads",
-        "src.integration.promotion",
         "src.integration.provenance",
         "src.integration.records",
         "src.integration.repair",
-        "src.integration.scheduler",
+        "src.integration.repository_git",
         "src.integration.status",
         "src.models",
         "src.prime.sections",
@@ -8750,73 +8557,23 @@
       ],
       "summary": "Receipt-driven parent collection and guarded completion."
     },
-    "tests/test_integration_parent_reconciler.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:8fea2ff358c895c79619d9751463eae9ad3366637de9e7872d7aac7484ec64c2",
-      "imports": [
-        "src.commands.gate_commands",
-        "src.commands.integration_commands",
-        "src.commands.principal",
-        "src.database",
-        "src.database.tables",
-        "src.git.manager",
-        "src.integration.child_delivery",
-        "src.integration.collection",
-        "src.integration.engine",
-        "src.integration.gates",
-        "src.integration.hierarchy",
-        "src.integration.models",
-        "src.integration.owner_guards",
-        "src.integration.parent_adapters",
-        "src.integration.parent_ci",
-        "src.integration.parent_runtime",
-        "src.integration.parent_subjects",
-        "src.integration.promotion",
-        "src.integration.repair",
-        "src.integration.runtime_contracts",
-        "src.integration.writers",
-        "src.models",
-        "src.orchestrator.monitoring",
-        "src.playbooks.definition",
-        "src.playbooks.integration_policy",
-        "src.profiles.capabilities"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Parent visits: lost events, exact receipt refresh, recovery and exclusive engines."
-    },
     "tests/test_integration_parent_source.py": {
       "areas": [
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:7d5d5946f79a13c98a51a884ee9daf4da855020dc3089fcb38d04dd0c7369dd9",
+      "digest": "sha256:b3489d29169c61852138db9994e946a66d76a300cd811a06e11036f0a2e9cd61",
       "imports": [
         "src.commands.integration_commands",
-        "src.commands.principal",
         "src.database",
-        "src.database.queries.hierarchy_queries",
         "src.database.tables",
-        "src.doctor.stall_checks",
-        "src.git.manager",
-        "src.integration.cancelled_collection_recovery",
-        "src.integration.github_review_poll",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.parent_source",
-        "src.integration.promotion",
         "src.integration.records",
-        "src.integration.review_evidence",
-        "src.integration.scheduler",
         "src.models"
       ],
-      "markers": [
-        "parametrize"
-      ],
+      "markers": [],
       "summary": "Two-child aggregate admission survives an advanced canonical PR head."
     },
     "tests/test_integration_parent_subjects.py": {
@@ -8824,12 +8581,10 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:5988c4ffbbcf656e0fe0dfa4e4e16d7052fa9ed1428aad63ccb3b5dff2885435",
+      "digest": "sha256:f38b0bb98ba102e05777abd44e3645f48343d3304e62723e3d8abad656661cc4",
       "imports": [
         "src.database",
         "src.database.tables",
-        "src.integration.failed_verification_recovery",
-        "src.integration.owner_guards",
         "src.integration.parent_subjects",
         "src.integration.runtime_contracts",
         "src.models"
@@ -8844,7 +8599,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:b6fd7c86e6bbd47ae792f9039c165e4e433115c5e39ec36fcae8d739ef73f78c",
+      "digest": "sha256:c3c0eb990fac0597e861b4ded8021a3ecc3cf0057ca09e5beef6be5b4d8961f8",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -8854,47 +8609,13 @@
         "src.integration",
         "src.integration.pr_cleanup",
         "src.integration.pr_delivery",
-        "src.integration.promotion",
+        "src.integration.repository_git",
         "src.models"
       ],
       "markers": [
         "parametrize"
       ],
       "summary": "An open PR closes only once Git proves its work is on the default branch."
-    },
-    "tests/test_integration_promotion.py": {
-      "areas": [
-        "integration-promotion"
-      ],
-      "default_arm": true,
-      "digest": "sha256:5ad2feed4305818ca7d5d1cc2f796d1e6067d5594792691422691114b669c38f",
-      "imports": [
-        "src.commands.contracts.integration",
-        "src.commands.integration_commands",
-        "src.commands.principal",
-        "src.config",
-        "src.database.tables",
-        "src.git.identity",
-        "src.git.manager",
-        "src.integration.collection",
-        "src.integration.hierarchy",
-        "src.integration.models",
-        "src.integration.owner_recovery",
-        "src.integration.ownership",
-        "src.integration.preserved_repair",
-        "src.integration.promotion",
-        "src.integration.promotion_contracts",
-        "src.integration.records",
-        "src.integration.repair",
-        "src.integration.source_trailer",
-        "src.models",
-        "src.profiles.capabilities",
-        "src.test_selection.catalogue"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Prepared child-to-parent promotion and crash recovery."
     },
     "tests/test_integration_protection.py": {
       "areas": [
@@ -8915,54 +8636,12 @@
       ],
       "summary": "The default branch's protection, classified for the App (App-mode spec §8.2-8.3)."
     },
-    "tests/test_integration_published_repair_handoff.py": {
-      "areas": [
-        "integration-ownership"
-      ],
-      "default_arm": true,
-      "digest": "sha256:626fb6f0f4db889717aaebc9b57b1c13c1d13567b6ce7fccbdb03be1f007892d",
-      "imports": [
-        "src.commands.principal",
-        "src.database.tables",
-        "src.git.github_app",
-        "src.integration",
-        "src.integration.models",
-        "src.integration.ownership",
-        "src.integration.published_repair_handoff",
-        "src.models",
-        "src.profiles.capabilities"
-      ],
-      "markers": [
-        "asyncio",
-        "parametrize"
-      ],
-      "summary": "Public pool candidate submission uses exact qualified publication as detach proof."
-    },
-    "tests/test_integration_reconciler.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:76dfa543a4d51fd6a078f36e4fa4d23e015c72d85fedfbbdd42f952a3cc0bf79",
-      "imports": [
-        "src.database",
-        "src.database.tables",
-        "src.event_bus",
-        "src.integration.reconciler",
-        "src.integration.runtime_contracts",
-        "src.integration.shadow"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Fake-clock visits against PostgreSQL: lost events, replay, fencing and shadow."
-    },
     "tests/test_integration_record_delivered.py": {
       "areas": [
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:11d9ccb71aa151799dbafff08c6c0c838e9cbbab953a7b27d02c2d8f70468585",
+      "digest": "sha256:f075c47329aa841b12392293b25cede49c1226bff8df45d90fb422adac727dba",
       "imports": [
         "src.commands.contracts.integration",
         "src.commands.integration_commands",
@@ -8980,7 +8659,7 @@
         "src.integration.provenance",
         "src.integration.quiesce",
         "src.integration.records",
-        "src.integration.subjects",
+        "src.integration.runtime_contracts",
         "src.models",
         "src.profiles.capabilities"
       ],
@@ -9112,7 +8791,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:4e01d6a3eb057f40e5cd6841db5aae549ae8aeb42965136e496b3cf3aa8efec8",
+      "digest": "sha256:537f399ffc4bffa1fa2f0c490caee11ddb821cbda2b1577a95e184cb507223a6",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -9122,8 +8801,7 @@
         "src.integration.git_truth",
         "src.integration.models",
         "src.integration.ownership",
-        "src.integration.promotion",
-        "src.integration.review_evidence",
+        "src.integration.repository_git",
         "src.integration.reviews",
         "src.models",
         "src.playbooks.definition",
@@ -9136,55 +8814,15 @@
       ],
       "summary": "Trusted real-review verdict production for integration sources."
     },
-    "tests/test_integration_root_adapters.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:c349cd7fdd9c04419fae1f03482e0e578cc333ee3f01540aa4df4fa2f84a3305",
-      "imports": [
-        "src.commands.contracts.integration",
-        "src.commands.contracts.registry",
-        "src.commands.integration_commands",
-        "src.commands.principal",
-        "src.config",
-        "src.database",
-        "src.database.tables",
-        "src.doctor.integration_checks",
-        "src.doctor.models",
-        "src.git.manager",
-        "src.integration.development",
-        "src.integration.development_runtime",
-        "src.integration.engine",
-        "src.integration.gates",
-        "src.integration.models",
-        "src.integration.observe",
-        "src.integration.reconciler",
-        "src.integration.records",
-        "src.integration.repair",
-        "src.integration.root_adapters",
-        "src.integration.root_runtime",
-        "src.integration.runtime_contracts",
-        "src.integration.service",
-        "src.integration.status",
-        "src.models",
-        "src.playbooks.integration_policy"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Root cutover races, restart/rollback, exact records and trusted publication."
-    },
     "tests/test_integration_root_authorization.py": {
       "areas": [
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:37a2e59c0f13fa00be622f949f450df40bbaa38ba9eed8fc438033398b04752e",
+      "digest": "sha256:4e6ab5e30f2955f0151c9290fd07de52593adafc39ca533db7001bbbd5075037",
       "imports": [
         "src.database.tables",
-        "src.integration.root_authorization",
-        "src.integration.scheduler"
+        "src.integration.root_authorization"
       ],
       "markers": [
         "parametrize"
@@ -9237,108 +8875,24 @@
       ],
       "summary": "A completed train root always gets its pull request, or says why not."
     },
-    "tests/test_integration_root_scenarios.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:aa3a0c47c2bef40f208dbace38e5033a74b77faf877d5a7e94c55cb26f7d9d63",
-      "imports": [
-        "src.commands.handler",
-        "src.commands.principal",
-        "src.config",
-        "src.database",
-        "src.database.tables",
-        "src.git.github_app",
-        "src.git.manager",
-        "src.integration.candidates",
-        "src.integration.ci",
-        "src.integration.cleanup",
-        "src.integration.engine",
-        "src.integration.main_promotion",
-        "src.integration.models",
-        "src.integration.observe",
-        "src.integration.ownership",
-        "src.integration.parent_adapters",
-        "src.integration.parent_subjects",
-        "src.integration.promotion",
-        "src.integration.promotion_contracts",
-        "src.integration.release",
-        "src.integration.repair",
-        "src.integration.review_evidence",
-        "src.integration.root_adapters",
-        "src.integration.root_runtime",
-        "src.integration.runtime_contracts",
-        "src.integration.scheduler",
-        "src.integration.service",
-        "src.integration.shadow",
-        "src.models",
-        "src.orchestrator",
-        "src.playbooks.definition",
-        "src.playbooks.integration_policy",
-        "src.profiles.capabilities"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Rev-2 section-6 root acceptance: the reconciler drives a real Git/PostgreSQL train."
-    },
-    "tests/test_integration_schedule.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:f4fbca18090e1af39013a5b89c0fcaf225496e171cd172962c955eb59fc27807",
-      "imports": [
-        "src.commands.principal",
-        "src.database",
-        "src.database.queries.integration_schedule_queries",
-        "src.database.tables",
-        "src.integration",
-        "src.integration.candidates",
-        "src.integration.main_promotion",
-        "src.integration.scheduler",
-        "src.integration.settling",
-        "src.models",
-        "src.profiles.capabilities"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Durable, coalescing project integration sweep schedules."
-    },
     "tests/test_integration_sealing.py": {
       "areas": [
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7888240b95b96ccfc6bb92fdf0521fb92d60c4c14a21af4bb35dcfd7dccdf872",
+      "digest": "sha256:7621dca9251d58b0557d597a4d39e251073e6e38dfaed75c52ccfcdca549b450",
       "imports": [
-        "src.commands.principal",
-        "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
-        "src.integration.batches",
-        "src.integration.development",
-        "src.integration.engine",
         "src.integration.migration_heads",
         "src.integration.models",
-        "src.integration.observe",
-        "src.integration.provenance",
-        "src.integration.release",
-        "src.integration.root_runtime",
-        "src.integration.runtime_contracts",
-        "src.integration.scheduler",
-        "src.integration.settling",
         "src.integration.source_ci",
-        "src.models",
-        "src.profiles.capabilities",
-        "src.task_graph.integration_dependencies"
+        "src.models"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Atomic full-frontier integration-train sealing."
+      "summary": "Retained migration inspection and exact root source projections."
     },
     "tests/test_integration_service.py": {
       "areas": [
@@ -9360,20 +8914,6 @@
       ],
       "summary": "Bounded durable integration reconciliation service."
     },
-    "tests/test_integration_settling.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:cef267cda75f656fa9f04b97ea35d47bcea5af151c7a441a48db703ac9a0d837",
-      "imports": [
-        "src.database.tables",
-        "src.integration.settling",
-        "src.models"
-      ],
-      "markers": [],
-      "summary": "Approvals share a bounded project integration settling window."
-    },
     "tests/test_integration_size.py": {
       "areas": [
         "integration-trains"
@@ -9391,18 +8931,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:cb11f999e8eb9dcf4a9b885123ec55f41824784e1eda1899d8639f98bc7c4a7c",
+      "digest": "sha256:b52c30805f0d1872e3548c9fca32e5baf48d48a2f69dc555cf844e7f166fdaf2",
       "imports": [
         "src.commands.handler",
         "src.config",
         "src.database.tables",
-        "src.git.github_app",
         "src.git.manager",
-        "src.integration.candidates",
-        "src.integration.github_review_poll",
-        "src.integration.promotion",
-        "src.integration.review_evidence",
-        "src.integration.scheduler",
+        "src.integration.repository_git",
+        "src.integration.reviews",
         "src.integration.source_ancestry",
         "src.models",
         "src.orchestrator",
@@ -9458,13 +8994,10 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:328d7c75eaffac524197f4bc659e679cf07809bd0121b744f3dab1497b97a284",
+      "digest": "sha256:6493ea7d6aa03a2da1b2d680a3f6fb3c06d748b0892831340231d24bcd02cb78",
       "imports": [
         "src.database.tables",
         "src.integration.release",
-        "src.integration.scheduler",
-        "src.integration.settling",
-        "src.integration.stale_schedule",
         "src.models"
       ],
       "markers": [
@@ -9522,13 +9055,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f7bc3e72af96aef137f69467e6d07f184b6c841aa8cdbb4493caa31a8134cac4",
+      "digest": "sha256:2f1083effb2a4ef5d4a7db1e0a58493e731b01ad0c7cd19db23905e9ede2c770",
       "imports": [
         "src.commands.contracts.integration",
         "src.database",
         "src.database.tables",
         "src.integration.models",
-        "src.integration.reconciler",
         "src.integration.runtime_contracts"
       ],
       "markers": [
@@ -9600,43 +9132,12 @@
       ],
       "summary": "Connected promotion policy, exact FF, release tags and continuous lag diagnostics."
     },
-    "tests/test_integration_train_regressions.py": {
-      "areas": [
-        "integration-trains"
-      ],
-      "default_arm": true,
-      "digest": "sha256:8329cf0fb199d62c18716d1bee3a40eb820539302a8a095288b687347ae807b5",
-      "imports": [
-        "src.commands.integration_commands",
-        "src.commands.principal",
-        "src.config",
-        "src.database",
-        "src.database.tables",
-        "src.git.manager",
-        "src.integration.github_review_poll",
-        "src.integration.models",
-        "src.integration.ownership",
-        "src.integration.promotion",
-        "src.integration.repair",
-        "src.models",
-        "src.orchestrator.core",
-        "src.sessions",
-        "src.sessions.fake",
-        "src.sessions.provider",
-        "src.sessions.reconciler",
-        "src.test_selection.catalogue"
-      ],
-      "markers": [
-        "parametrize"
-      ],
-      "summary": "Integration-train regressions: the 2026-10-03/04 overnight failure modes."
-    },
     "tests/test_integration_train_sources.py": {
       "areas": [
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:fcf187bfa69e3d2652c65e4cb1b847a243c77bf84c001371e2cd337f7c8137cc",
+      "digest": "sha256:af4258f5703c2b447dc6ac6bee2625e699f2fdf1f9ed060c754216b9c0518ede",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9672,7 +9173,6 @@
         "src.integration.root_pr_recovery",
         "src.integration.root_pull_requests",
         "src.integration.runtime_contracts",
-        "src.integration.scheduler",
         "src.integration.selection_metrics",
         "src.integration.source_repairs",
         "src.integration.stacked_branches",
@@ -12131,7 +11631,7 @@
         "object-loop"
       ],
       "default_arm": true,
-      "digest": "sha256:7124e7465f9fd579a8bf330d4d3cdcc3a33c149aa1cb91bf0c01f0232e170174",
+      "digest": "sha256:c08c140932fcb93b9531bfe07d17457396030a213debb4c63a2045bac9bb9f21",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -12143,8 +11643,6 @@
         "src.database.tables",
         "src.integration.child_delivery",
         "src.integration.development",
-        "src.integration.promotion",
-        "src.integration.promotion_contracts",
         "src.jobs.artifacts",
         "src.jobs.matter",
         "src.models",
@@ -15315,34 +14813,6 @@
         "parametrize"
       ],
       "summary": "A reviewer token can execute its documented reject path, and nothing more."
-    },
-    "tests/test_root_integration_playbook.py": {
-      "areas": [
-        "epic-trains",
-        "shipped-playbooks"
-      ],
-      "default_arm": true,
-      "digest": "sha256:d64812d714b9ac58d8b9197c9536151c582db655cfaa892483b9fce6082b124c",
-      "imports": [
-        "src.commands.contracts",
-        "src.commands.contracts.builtin",
-        "src.commands.principal",
-        "src.database.tables",
-        "src.git.github_app",
-        "src.integration.candidates",
-        "src.integration.models",
-        "src.integration.promotion_contracts",
-        "src.integration.release",
-        "src.integration.runtime_contracts",
-        "src.models",
-        "src.playbooks.definition",
-        "src.playbooks.engine",
-        "src.playbooks.executors.base",
-        "src.playbooks.integration_policy",
-        "src.profiles.capabilities"
-      ],
-      "markers": [],
-      "summary": "Disabled reviewed root train policy and actual command routing."
     },
     "tests/test_routing_admission_v2.py": {
       "areas": [

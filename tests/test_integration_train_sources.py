@@ -2619,71 +2619,6 @@ async def test_cross_epic_completed_policy_is_explicit_legacy_admission(world):
     assert await db.is_hierarchy_task_runnable("child")
 
 
-@pytest.mark.parametrize("changed", [False, True])
-async def test_empty_completion_root_releases_child_and_has_no_train_blocker(world, changed):
-    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
-    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
-    from src.integration.scheduler import TrainService
-    from src.integration.source_repairs import prove_source_delivered
-    from src.models import TaskCompletion
-
-    db, origin = world.db, world.origin
-    base = git(origin.url, "rev-parse", "main")
-    await completed(world, "epic", done=False)
-    source = base
-    if changed:
-        source = origin.work("no-change")
-        origin.land("no-change")
-    else:
-        git(origin.clone, "push", "origin", f"{base}:refs/heads/aq/no-change")
-    await completed(world, "no-change", done=False, head=source, source_base=base)
-    await db.save_task_completion(TaskCompletion(
-        id="close-no-change", task_id="no-change", outcome="pass", commits=[],
-        completed_at=time.time(),
-    ))
-    await GitProvenance(world.truth.git, str(origin.clone), repository_url=origin.url
-                        ).write_completion(CompletedSource(
-        CompletionIdentity("p", "r", "no-change", "close-no-change"), source,
-    ))
-    await db.transition_task("no-change", TaskStatus.COMPLETED)
-    await completed(world, "child", parent="epic", needs=("no-change",), done=False)
-    await db.transition_task("child", TaskStatus.READY)
-
-    requests = await load_delivery_requests(db, ["no-change"], repository_id="r",
-                                             target_ref=MAIN.target_ref, reduced=True)
-    proof = await (await snapshot(world)).is_delivered(requests["no-change"], source_base=base)
-    assert proof.state is (DeliveryState.CONTAINED if changed else DeliveryState.NO_CHANGE)
-    assert proof.satisfied
-    if changed:
-        # Root delivery alone cannot release a cross-epic child whose parent
-        # still lacks the exact source, regardless of descriptive close commits.
-        assert not await db.is_hierarchy_task_runnable("child")
-        assert "frontier_epic_refresh_pending" in {
-            item["code"] for item in await db.claim_frontier_exclusions("child")}
-        git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
-        git(origin.clone, "merge", "--no-ff", "-m", "contain root prerequisite", "origin/main")
-        git(origin.clone, "push", "origin", "aq/epic")
-    assert await db.is_hierarchy_task_runnable("child")
-    assert not [item for item in await db.claim_frontier_exclusions("child")
-                if "prerequisite" in item["code"]]
-    observer = db._delivery_observer
-    view = await observer.observe(["no-change"])
-    async with db._engine.connect() as conn:
-        from src.database.tables import repos
-        repository = (await conn.execute(select(repos).where(repos.c.id == "r"))).mappings().one()
-        assert await TrainService(db)._git_delivered_roots_on(conn, view, "p", repository) == {"no-change"}
-    repair_proof = await prove_source_delivered(db, observer, task_id="no-change", source={
-        "project_id": "p", "repository_id": "r", "head": source, "base": base,
-        "generation": 0,
-    })
-    assert repair_proof.state == "delivered"
-    blockers = []
-    assert await DatabaseBatches(db).pending(MAIN, await snapshot(world), blockers=blockers) is None
-    assert blockers == []
-    train, _, _ = lane(world, LocalGit(Path(origin.url)))
-    assert (await train.visit(MAIN)).state == "idle"
-    status = await IntegrationStatusService(db, git_first="active", train=train).control_status("p")
-    assert not [item for item in status["blockers"] if item.get("task_id") == "no-change"]
 
 
 @pytest.mark.parametrize("relation", ["sibling", "cross_epic"])
@@ -6112,10 +6047,7 @@ async def test_train_eject_missing_batch_requires_global_authority(world, monkey
             session_id="supervisor", elevated=True, project_id=project_id)):
         result = await handler._cmd_integration_eject({"batch_id": "missing", "task_id": "a"})
     assert result["outcome"] == outcome and not result["success"]
-    if project_id is None:
-        legacy_get.assert_awaited_once_with("missing")
-    else:
-        legacy_get.assert_not_awaited()
+    legacy_get.assert_not_awaited()
 
 
 @pytest.mark.parametrize("kind,elevated", [("session", False), ("session", True),

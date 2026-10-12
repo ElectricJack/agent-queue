@@ -255,7 +255,7 @@ class TestLiveInvocationContext:
     async def test_promotion_provenance_uses_current_invocation_not_ancestry(self):
         from types import SimpleNamespace
 
-        from src.integration.promotion import PromotionService
+        from src.integration.repository_git import RepositoryGit
 
         class ProvenanceDB:
             async def get_task(self, task_id):
@@ -271,7 +271,7 @@ class TestLiveInvocationContext:
                     "artifact_snapshot": ref.as_dict(),
                 }
 
-        service = PromotionService(ProvenanceDB(), data_dir=".", git_manager=GitManager())
+        service = RepositoryGit(ProvenanceDB(), data_dir=".", git_manager=GitManager())
         observed = {}
 
         async def invoke(args, principal):
@@ -323,7 +323,7 @@ class TestLiveInvocationContext:
     async def test_promotion_rejects_invocation_artifact_outside_frozen_operation(self):
         from types import SimpleNamespace
 
-        from src.integration.promotion import PromotionService
+        from src.integration.repository_git import RepositoryGit
 
         class ProvenanceDB:
             async def get_task(self, task_id):
@@ -338,7 +338,7 @@ class TestLiveInvocationContext:
                     "artifact_snapshot": ref,
                 }
 
-        service = PromotionService(ProvenanceDB(), data_dir=".", git_manager=GitManager())
+        service = RepositoryGit(ProvenanceDB(), data_dir=".", git_manager=GitManager())
 
         async def invoke(args, principal):
             await service._provenance(

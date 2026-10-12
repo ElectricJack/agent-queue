@@ -30,7 +30,6 @@ from src.database.tables import (
     integration_review_evidence,
     playbook_artifacts,
     task_branch_origins,
-    task_completion_records,
     task_delivery_receipts,
     task_dependencies,
     task_integration_checkpoints,
@@ -51,11 +50,10 @@ from src.integration.models import (
     HierarchicalIntegrationPolicy,
     IntegrationBoundaryPolicy,
     PlaybookRoute,
-    PromotionInput,
     RepairPolicy,
     RequiredCheckSet,
 )
-from src.integration.promotion import PromotionService
+from src.integration.repository_git import RepositoryGit
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
 
 _AMBIENT_IDENTITY_KEYS = (
@@ -201,7 +199,7 @@ async def case(tmp_path, reuse_database, request):
     if not prior_writer:
         bootstrapped = await hierarchy.bootstrap_container_collection("epic")
         assert bootstrapped["outcome"] == "checkpointed"
-    promotion = PromotionService(db, data_dir=tmp_path / "data", git_manager=GitManager())
+    promotion = RepositoryGit(db, data_dir=tmp_path / "data", git_manager=GitManager())
     yield SimpleNamespace(
         db=db, hierarchy=hierarchy, promotion=promotion, base=base, head=head, tree=tree,
         work=work, parent_id=parent_id, child_id=child_id, parent_branch=parent_branch,
@@ -287,39 +285,8 @@ async def _sibling_admitted(db) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def test_unreviewed_completed_child_is_receipted_after_one_collector_tick(case):
-    """vivid-ridge: the child is assembled and its sibling enters the frontier."""
-    await _receipt_completed_child(case)
 
 
-async def _receipt_completed_child(case):
-    assert await _evidence(case.db) == []
-    assert not await _sibling_admitted(case.db)
-
-    await _collector(case).tick(10.0)
-
-    [ready] = await _delivery_ready(case.db)
-    payload = ready["payload"]
-    request = PromotionInput(
-        operation_key=payload["operation_key"],
-        source_task_id=payload["source_task_id"],
-        source_head=payload["source_head"],
-        source_base=payload["source_base"],
-        expected_target=payload["expected_target"],
-        fence=Fence.model_validate(payload["fence"]),
-    )
-    prepared = await case.promotion.prepare(request)
-    await case.promotion.push(prepared.intent_id, request.fence)
-    await case.promotion.reconcile(prepared.intent_id)
-
-    async with case.db._engine.connect() as conn:
-        [receipt] = (
-            await conn.execute(select(task_delivery_receipts))
-        ).mappings().all()
-    assert (receipt["source_task_id"], receipt["target_task_id"]) == ("epic.1", "epic")
-    assert receipt["target_branch"] == "aq/epic"
-    assert receipt["reviewed_head_sha"] == case.head
-    assert await _sibling_admitted(case.db)
 
 
 async def test_collector_proves_an_unreviewed_child_and_queues_its_delivery(case):
@@ -518,41 +485,6 @@ async def test_redrive_reports_a_delivered_child_and_a_no_code_child(case):
     assert "record-noop" in no_code["reason"]
 
 
-async def test_redrive_reissues_a_receipt_for_a_newer_same_head_completion(case):
-    await _collector(case).tick(10.0)
-    [ready] = await _delivery_ready(case.db)
-    payload = ready["payload"]
-    request = PromotionInput(
-        operation_key=payload["operation_key"],
-        source_task_id=payload["source_task_id"],
-        source_head=payload["source_head"],
-        source_base=payload["source_base"],
-        expected_target=payload["expected_target"],
-        fence=Fence.model_validate(payload["fence"]),
-    )
-    prepared = await case.promotion.prepare(request)
-    await case.promotion.push(prepared.intent_id, request.fence)
-    await case.promotion.reconcile(prepared.intent_id)
-    await case.db.update_task("epic.1", status=TaskStatus.READY)
-    await case.db.update_task("epic.1", status=TaskStatus.COMPLETED)
-    async with case.db.immediate() as conn:
-        [old] = (await conn.execute(select(task_delivery_receipts))).mappings().all()
-        await conn.execute(insert(task_completion_records).values(
-            id="new-completion", task_id="epic.1", outcome="pass",
-            completed_at=old["created_at"] + 1,
-        ))
-    assert not await _sibling_admitted(case.db)
-    delivery = ChildDelivery(case.db, case.promotion)
-    diagnosis = await delivery.run("epic.1")
-    assert diagnosis["outcome"] == "would_advance"
-    assert diagnosis["redrive_kind"] == "receipt_reissue"
-    applied = await delivery.run("epic.1", dry_run=False, expected_head_sha=case.head)
-    assert applied["outcome"] == "advanced"
-    assert applied["receipt_id"] != old["id"]
-    assert await _sibling_admitted(case.db)
-    readiness = await case.hierarchy.readiness("epic")
-    assert not any(row["task_id"] == "epic.1" for row in readiness["blockers"])
-    assert (await delivery.run("epic.1"))["outcome"] == "nothing_to_redrive"
 
 
 async def test_doctor_explains_ready_sibling_excluded_from_claim_frontier(case):
@@ -642,32 +574,6 @@ async def _block_collector(case):
     await case.db.set_task_meta("epic", "needs_attention", "session_not_live")
 
 
-async def test_redrive_root_restores_blocked_collection_and_receipts_the_child(case):
-    from src.integration.root_pull_requests import RootDeliveryRedrive
-
-    await _block_collector(case)
-    redrive = RootDeliveryRedrive(case.db, case.promotion.git)
-    diagnosis = await redrive.run("epic")
-    assert diagnosis["outcome"] == "would_collect"
-    assert diagnosis["head_sha"] == case.base
-    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
-    assert await _delivery_ready(case.db) == []
-
-    restored = await redrive.run(
-        "epic", dry_run=False, expected_head_sha=diagnosis["head_sha"],
-        reason="restore displaced collector", operator_id="supervisor:p",
-    )
-    assert restored["outcome"] == "collecting"
-    assert (await case.db.get_task("epic")).status == TaskStatus.PAUSED
-    assert await case.db.get_task_meta("epic", "needs_attention") is None
-    async with case.db._engine.connect() as conn:
-        audit = (await conn.execute(select(events).where(
-            events.c.event_type == "integration.collection_redriven",
-        ))).mappings().one()
-    assert json.loads(audit["payload"])["reason"] == "restore displaced collector"
-    # Exercise the real Git promotion and prove that the dependent re-enters
-    # the claim frontier, not merely that a status column changed.
-    await _receipt_completed_child(case)
 
 
 async def test_redrive_collection_refuses_a_different_head(case):
@@ -849,48 +755,6 @@ async def _suspend_nested_writer(case):
     return suspended
 
 
-@pytest.mark.parametrize("case", ["nested_writer"], indirect=True)
-async def test_suspended_nested_producer_reconciles_and_receipts_child_idempotently(case):
-    from src.integration.suspended_parent_recovery import RECOVERY_EVENT, SuspendedParentRecovery
-
-    await _suspend_nested_writer(case)
-    before = await case.db.get_integration_checkpoint(case.parent_id)
-    # Bootstrap affirmatively refuses the real previous session/workspace history.
-    assert (await case.hierarchy.bootstrap_container_collection(case.parent_id))["outcome"] == "waiting"
-    recovery = SuspendedParentRecovery(case.db, case.hierarchy)
-    diagnosis = await recovery.run(case.parent_id)
-    assert diagnosis["outcome"] == "would_reopen"
-    assert diagnosis["episode_id"] == case.suspended["episode_id"]
-    assert (await case.hierarchy.ownership.get_owner(case.target))["owner_role"] == "worker"
-
-    await _collector(case).tick(20.0)
-    owner = await case.hierarchy.ownership.get_owner(case.target)
-    assert owner["owner_role"] == "collector"
-    assert owner["owner_id"] == case.suspended["operation_id"]
-    assert owner["fence_token"] == case.detached_fence.token + 1
-    assert await case.db.get_integration_checkpoint(case.parent_id) == before
-    await _collector(case).tick(21.0)
-    assert await case.hierarchy.ownership.get_owner(case.target) == owner
-    assert (await recovery.run(case.parent_id, dry_run=False,
-                               expected_head_sha=case.base, reason="replay"))["outcome"] == "nothing_to_reopen"
-    [ready] = await _delivery_ready(case.db)
-    payload = ready["payload"]
-    request = PromotionInput(**{key: payload[key] for key in (
-        "operation_key", "source_task_id", "source_head", "source_base", "expected_target", "fence"
-    )})
-    prepared = await case.promotion.prepare(request)
-    await case.promotion.push(prepared.intent_id, request.fence)
-    await case.promotion.reconcile(prepared.intent_id)
-    async with case.db._engine.connect() as conn:
-        [receipt] = (await conn.execute(select(task_delivery_receipts))).mappings().all()
-        assert len((await conn.execute(select(events).where(
-            events.c.event_type == RECOVERY_EVENT
-        ))).all()) == 1
-    assert receipt["source_task_id"] == case.child_id
-    assert receipt["target_task_id"] == case.parent_id
-    assert receipt["parent_operation_id"] == case.suspended["operation_id"]
-    assert receipt["parent_episode_id"] == case.suspended["episode_id"]
-    assert receipt["reviewed_head_sha"] == case.head
 
 
 @pytest.mark.parametrize("case", ["nested_writer"], indirect=True)
@@ -1000,7 +864,7 @@ async def test_reopen_collection_dispatches_suspended_worker_with_operator_autho
     await _suspend_nested_writer(case)
     handler = IntegrationCommandsMixin()
     handler.db = case.db
-    handler.orchestrator = SimpleNamespace(promotion_service=case.promotion)
+    handler.orchestrator = SimpleNamespace(repository_git=case.promotion)
     monkeypatch.setattr(handler, "_hierarchy_integration_service", lambda: case.hierarchy)
     dry_run = await handler._cmd_integration_reopen_collection({"task_id": case.parent_id})
     assert dry_run["success"] is True
@@ -1017,50 +881,8 @@ async def test_reopen_collection_dispatches_suspended_worker_with_operator_autho
     assert replay["outcome"] == "nothing_to_reopen"
 
 
-@pytest.mark.parametrize("case", ["nested_writer"], indirect=True)
-async def test_suspended_parent_recovery_refuses_unresolved_promotion(case):
-    from src.integration.suspended_parent_recovery import SuspendedParentRecovery
-
-    await _suspend_nested_writer(case)
-    await _collector(case).tick(20.0)
-    [ready] = await _delivery_ready(case.db)
-    payload = ready["payload"]
-    request = PromotionInput(**{key: payload[key] for key in (
-        "operation_key", "source_task_id", "source_head", "source_base", "expected_target", "fence"
-    )})
-    await case.promotion.prepare(request)
-    await case.hierarchy.ownership.transfer(request.fence, case.parent_id, "worker")
-    diagnosis = await SuspendedParentRecovery(case.db, case.hierarchy).run(case.parent_id)
-    assert diagnosis["outcome"] == "ambiguous"
-    await _collector(case).tick(21.0)
-    assert (await case.hierarchy.ownership.get_owner(case.target))["owner_role"] == "worker"
 
 
-@pytest.mark.parametrize("case", ["nested_writer"], indirect=True)
-async def test_suspended_parent_recovery_preserves_existing_collection_receipt(case):
-    from src.integration.suspended_parent_recovery import SuspendedParentRecovery
-
-    await _suspend_nested_writer(case)
-    await _collector(case).tick(20.0)
-    [ready] = await _delivery_ready(case.db)
-    payload = ready["payload"]
-    request = PromotionInput(**{key: payload[key] for key in (
-        "operation_key", "source_task_id", "source_head", "source_base", "expected_target", "fence"
-    )})
-    prepared = await case.promotion.prepare(request)
-    await case.promotion.push(prepared.intent_id, request.fence)
-    await case.promotion.reconcile(prepared.intent_id)
-    await case.hierarchy.ownership.transfer(request.fence, case.parent_id, "worker")
-    async with case.db._engine.connect() as conn:
-        [receipt] = (await conn.execute(select(task_delivery_receipts))).mappings().all()
-    case.hierarchy.default_head_resolver = lambda _repo, _branch: receipt["after_sha"]
-    result = await SuspendedParentRecovery(case.db, case.hierarchy).run(
-        case.parent_id, dry_run=False, expected_head_sha=receipt["after_sha"], reason="preserve receipt",
-    )
-    assert result["outcome"] == "reopened"
-    async with case.db._engine.connect() as conn:
-        [preserved] = (await conn.execute(select(task_delivery_receipts))).mappings().all()
-    assert preserved == receipt
 
 
 @pytest.mark.parametrize("case", ["nested_writer"], indirect=True)

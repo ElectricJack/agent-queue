@@ -11,19 +11,17 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 from sqlalchemy import select
 
 from src.database.tables import integration_branch_owners
-from src.integration.ci_adapters import CIAdapters
 from src.integration.ci_producers import LocalCIProducer, LocalValidationPlan, digest
 from src.integration.development_policy import PinnedDevelopmentPolicy
 from src.integration.gitops import RetainedRepository
 from src.integration.models import BranchKey, Fence
 from src.integration.runtime_contracts import (
     CIState,
-    JournalMode,
     MemberFacts,
     MergeMembersArgs,
     Primitive,
@@ -40,8 +38,6 @@ from src.integration.runtime_contracts import (
 from src.playbooks.integration_policy import IntegrationPolicyFacts
 
 
-if TYPE_CHECKING:
-    from src.integration.reconciler import IntegrationReconciler
 
 @dataclass(frozen=True)
 class DevelopmentMember:
@@ -120,18 +116,6 @@ FrontierReader = Callable[[Subject], Awaitable[DevelopmentFrontier]]
 RepositoryResolver = Callable[[Subject], Awaitable[RetainedRepository]]
 
 
-class _PinnedPolicyRouter:
-    def __init__(self, load: PolicyLoader):
-        self.load = load
-
-    async def decide(self, subject, facts):
-        return (await self.load(subject.policy.artifact_sha256)).compiled.evaluate(subject, facts)
-
-    async def settle(self, subject, decision, outcome, *, now):
-        from src.integration.reconciler import CompiledPolicyAdapter
-
-        policy = (await self.load(subject.policy.artifact_sha256)).compiled
-        return await CompiledPolicyAdapter(policy).settle(subject, decision, outcome, now=now)
 
 
 class DevelopmentIntegrationAdapter:
@@ -158,24 +142,6 @@ class DevelopmentIntegrationAdapter:
             raise ValueError("development policy does not match subject/project pin")
         return pinned
 
-    def reconciler(self, *, mode: JournalMode = JournalMode.SHADOW,
-                   subject_db=None, **options) -> IntegrationReconciler:
-        """Install at the existing remote-pass boundary only after rollout evidence."""
-        from src.integration.reconciler import IntegrationReconciler
-
-        ports = PrimitivePorts()
-        for primitive in self.shared.bound - {Primitive.SEAL, Primitive.GIT_MERGE_MEMBERS,
-                                               Primitive.CI_REQUEST, Primitive.CI_OBSERVE,
-                                               Primitive.CI_ATTEST}:
-            ports.bind(primitive, self.shared.invoke)
-        ports.bind(Primitive.SEAL, self.seal)
-        ports.bind(Primitive.GIT_MERGE_MEMBERS, self.merge)
-        CIAdapters(self.db, self.producer_for, clock=self.clock).bind(ports)
-        return IntegrationReconciler(
-            subject_db or self.db, self.observe, _PinnedPolicyRouter(self.policy_for), ports,
-            mode=mode, kinds=(SubjectKind.ROOT_BATCH, SubjectKind.SOURCE),
-            clock=self.clock, **options,
-        )
 
     async def _journal(self, subject: Subject) -> list[dict]:
         rows, after = [], None

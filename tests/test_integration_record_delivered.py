@@ -193,7 +193,7 @@ async def test_record_delivered_refuses_another_tasks_reservation(world):
 async def idle_train(world):
     from sqlalchemy import insert
     from src.database import tables as t
-    from src.integration.subjects import PolicyArtifactPin, Subject, SubjectSchedule
+    from src.integration.runtime_contracts import PolicyArtifactPin, Subject, SubjectSchedule
     from src.commands.contracts.integration import IntegrationQuiesceArgs
 
     sha = "sha256:" + "1" * 64
