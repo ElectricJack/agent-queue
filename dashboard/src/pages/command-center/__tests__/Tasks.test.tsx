@@ -60,7 +60,7 @@ vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks
 vi.mock("../../../api/hooks", () => ({
   useEditTask: () => ({ mutate: mocks.edit, isPending: false, error: null }),
   useDeleteTask: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useRemoveTask: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteTaskPreview: () => ({ data: { task_ids: [], tasks: [] }, isFetching: false }),
   usePauseTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useResumeTask: () => ({ mutate: vi.fn(), isPending: false, error: null }),
   useStopTask: () => ({ mutate: mocks.stop, isPending: false, error: null }),
@@ -251,8 +251,8 @@ describe("unified task table", () => {
 
   it("closes a removal dialog backdrop without selecting its task row", async () => {
     render(<Tasks />);
-    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
-    const dialog = screen.getByRole("dialog", { name: "Remove task" });
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete task" });
     fireEvent.click(dialog.parentElement!);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(mocks.open).not.toHaveBeenCalled();

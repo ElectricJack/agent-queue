@@ -698,7 +698,7 @@ def fresh_workers(
         project_id=project_id,
     )
     for task_id in fillers:
-        api_checked("delete_task", {"task_id": task_id, "cascade": True, "branches": "delete"})
+        api_checked("delete_task", {"task_id": task_id, "recursive": True, "branches": "delete", "confirmed": True})
     return [Worker.adopt(s["id"]) for s in live[:count]]
 
 
@@ -723,7 +723,7 @@ def _delete_open_pool_tasks(project_id: str = PROJECT) -> None:
     This is fixture cleanup; S9 asserts task deletion through the real CLI.
     """
     for task in _open_pool_tasks(project_id):
-        api("delete_task", {"task_id": task["id"], "cascade": True, "branches": "delete"})
+        api("delete_task", {"task_id": task["id"], "recursive": True, "branches": "delete", "confirmed": True})
 
 
 def idle_worker() -> Worker:
@@ -1152,7 +1152,7 @@ def s5_fence_and_scope(state: dict) -> str:
     # Pool bounds are global. Remove this scope-only fixture before closing
     # the holder frees capacity, or OTHER_PROJECT starts a worker that consumes
     # one of S7's two required slots for the entire scale-down grace period.
-    aq("task", "delete", "--task-id", foreign)
+    aq("task", "delete", foreign, "--recursive", "--branches", "delete", "--yes")
     state.pop("s5_foreign", None)
     holder.close(summary="S5 held task")
     return f"cross-session heartbeat and cross-project prime both refused ({foreign})"
@@ -1475,7 +1475,7 @@ def s9_task_lifecycle(state: dict) -> str:
         )
     finally:
         for task_id in created:
-            aq("task", "delete", "--task-id", task_id, check_ok=False)
+            aq("task", "delete", task_id, "--recursive", "--branches", "delete", "--yes", check_ok=False)
 
     for task_id in created:
         gone = run_aq("task", "show", task_id)
@@ -2313,7 +2313,7 @@ def _s16_recovery(outage: dict) -> str:
     [check_row] = [c for c in doctor.get("checks", []) if c["id"] == "providers.availability"]
     check(check_row["severity"] == "error", f"doctor with every provider down: {check_row}")
     note(f"doctor providers.availability: {check_row['severity']} — {check_row['detail'][:120]}")
-    aq("task", "delete", "--task-id", filler, check_ok=False)
+    aq("task", "delete", filler, "--recursive", "--branches", "delete", "--yes", check_ok=False)
     TIMINGS["provider_recovery_seconds"] = time.monotonic() - started
     return (
         "recheck→probation→available; "
@@ -2829,7 +2829,7 @@ def s17_phased_graph(state: dict) -> str:
         return row if row["status"] in ("COMPLETED", "DONE") else None
 
     wait_for(epic_settled, what=f"phased epic {epic} to settle")
-    aq("task", "delete", "--task-id", epic, "--cascade")
+    aq("task", "delete", epic, "--recursive", "--yes")
     gone = run_aq("task", "show", epic)
     check(gone.returncode != 0, f"S17 cleanup left epic {epic}: {gone}")
     return (
@@ -2890,7 +2890,7 @@ def s18_supervisor_failure_triage(state: dict) -> str:
         return next((row for row in rows if task_id in (row.get("body") or "")), None)
 
     notice = wait_for(supervisor_notice, what="the S18 durable supervisor notice")
-    aq("task", "delete", "--task-id", task_id)
+    aq("task", "delete", task_id, "--recursive", "--branches", "delete", "--yes")
     return (
         f"task.failed completed triage run {run['run_id']} and queued one durable supervisor "
         f"notice {notice['id']}"
@@ -3067,8 +3067,8 @@ def s19_scoped_planner_graph(state: dict) -> str:
     )
 
     for node in successful[0]["nodes"]:
-        api_checked("delete_task", {"task_id": node["task_id"]})
-    api_checked("delete_task", {"task_id": foreign_parent})
+        api_checked("delete_task", {"task_id": node["task_id"], "confirmed": True})
+    api_checked("delete_task", {"task_id": foreign_parent, "confirmed": True})
     closed_planner = planner.close(summary="S19 scoped planner graph acceptance")
     check(closed_planner.get("success") is not False, f"S19 planner close: {closed_planner}")
     planner.drain_ack()

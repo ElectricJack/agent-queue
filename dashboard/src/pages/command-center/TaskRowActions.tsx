@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PauseIcon, PlayIcon, StopIcon, ArrowPathIcon, ChatBubbleLeftIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { usePauseTask, useResumeTask, useStopTask, useRestartTask, useEditTask, type Task } from "../../api/hooks";
-import RemoveTaskModal from "../../components/RemoveTaskModal";
+import DeleteTaskModal from "../../components/DeleteTaskModal";
 import TaskDisplayStatus from "../../components/TaskDisplayStatus";
 import { useShellPaneStore } from "../../panes/store";
 import { TASK_STATUSES, taskStatusLabel } from "./taskFilters";
@@ -81,7 +81,7 @@ export function RowActions({ task }: { task: Task }) {
         )}
         <QuickAction
           icon={<TrashIcon className="h-3.5 w-3.5" />}
-          title="Remove"
+          title="Delete"
           onClick={() => setDeleteOpen(true)}
           variant="danger"
         />
@@ -89,7 +89,7 @@ export function RowActions({ task }: { task: Task }) {
       {(pauseTask.error || resumeTask.error) && <p role="alert" className="max-w-64 text-xs text-red-300">
         {(pauseTask.error || resumeTask.error)?.message}
       </p>}
-      {deleteOpen && <RemoveTaskModal onClose={() => setDeleteOpen(false)} task={task} />}
+      {deleteOpen && <DeleteTaskModal onClose={() => setDeleteOpen(false)} task={task} />}
     </>
   );
 }

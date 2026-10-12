@@ -1222,13 +1222,6 @@ class PromotionService(RepositoryGit):
             )
 
     @staticmethod
-    def _clean_tree_oid(stdout: str) -> str:
-        lines = [line.strip() for line in stdout.splitlines() if line.strip()]
-        if len(lines) != 1 or not _OID_RE.fullmatch(lines[0].lower()):
-            raise PromotionInvariantError("clean merge-tree output was not one tree OID")
-        return lines[0].lower()
-
-    @staticmethod
     def _conflict_diagnostics(intent: dict, stdout: str, stderr: str) -> dict[str, Any]:
         all_paths = sorted(
             {

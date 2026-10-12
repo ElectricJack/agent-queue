@@ -727,7 +727,7 @@ async def test_pause_waits_for_push_workspace_preparation(env, tmp_path, monkeyp
     assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
 
 
-@pytest.mark.parametrize("operation", ["command", "database", "cascade", "project"])
+@pytest.mark.parametrize("operation", ["database", "cascade", "project"])
 async def test_pending_pause_cannot_be_deleted_and_release_a_live_process(env, tmp_path, operation):
     provider, _ = await running_session(env, tmp_path)
     provider.fail_stop = True
@@ -735,9 +735,7 @@ async def test_pending_pause_cannot_be_deleted_and_release_a_live_process(env, t
     # No agent FK should accidentally provide the stop safety guarantee.
     await env.db.update_agent("agent", current_task_id=None)
     try:
-        if operation == "command":
-            assert "error" in await command(env, "delete_task")
-        elif operation == "project":
+        if operation == "project":
             await env.db.delete_project("p")
         else:
             await env.db.delete_task("t", cascade=operation == "cascade")

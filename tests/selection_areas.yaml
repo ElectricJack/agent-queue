@@ -29,6 +29,8 @@ areas:
       - tests/test_ensure_task.py
       - tests/test_task_context.py
       - tests/test_task_controls.py
+      - tests/test_task_deletion.py
+      - tests/test_discord_task_delete.py
       - tests/test_task_controls_api.py
       - tests/test_task_command_authorization.py
       - tests/test_task_close_summary_enforcement.py

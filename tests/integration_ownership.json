@@ -8281,7 +8281,7 @@
       "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_task": {
-      "reason": "Confirmed operator removal coordinates subtree holds, session cleanup and integration-locked removal while preserving branches and audit history."
+      "reason": "Deprecated alias delegates to the unified deletion preview and execution contract."
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
       "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
@@ -8582,6 +8582,15 @@
     },
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_repository_probes": {
       "reason": "Operator preflight's read-only GitHub prerequisites for integration setup: the project integration repository, promotion-flow branches, online runner labels and trust-manifest App identities. Reports blockers only; no integration storage, lifecycle or ref writes."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_delete_task": {
+      "reason": "Unified operator deletion coordinates read-only previews, confirmed claim/session fencing, cancellation of live integration authority and preservation of immutable history."
+    },
+    "src/discord/task_delete.py::DeleteTaskView.confirm": {
+      "reason": "Discord confirmation supplies the server-owned human actor to unified task deletion and displays the audit identity and cleanup warnings."
+    },
+    "src/discord/task_delete.py::import from src.integration.task_deletion import deletion_actor": {
+      "reason": "Imports the server-only audit actor context for Discord task deletion; no caller-provided actor enters the command contract."
     }
   },
   "exclusions": {
@@ -12579,7 +12588,22 @@
     "4ce87725855d74849b80dacb7673dc0bf40f20fd96692b93fd2448247fc883a8",
     "5e4e4453f229f51afe40de46fe2ebd5c828531741dbdea6a9d20a1486e4db12d",
     "6d92e2c93414ba9b2026990b22e7548192cf331be8dc9ac3e732aa5941da7531",
-    "a508f9baa931f86eec405d9bbab4e2af47f68c21af89fad1d8e895e8aec8e809"
+    "a508f9baa931f86eec405d9bbab4e2af47f68c21af89fad1d8e895e8aec8e809",
+    "5b23b1822b83940d96b73190bb2de7f80dc7e9d3d5b22be67ec68fa87d841bf4",
+    "8168b00f78933192e0063c18be01e835a8dd101dbfbcddf5b98297ac5fbfcf53",
+    "c7d7d6d7170f23c1e75d7418d0334becf73db17001aed016d3fa295b95b3d605",
+    "d47966c404bd62be58a31cd229f11097431499ca7ed910b3aa4b9a0e29f4c0a5",
+    "1ba436a4eeb4dd3209a40b9b99613106c90732094ffbd787c09e9ef7e53e86c0",
+    "cde48c4e3a88ba4a3fff8a58bd0593682e7d981c560060e1f87c2b1be6474107",
+    "b9b40f493546621d2a7f745e071970f04603282f3666a2349c7562ffc127ad73",
+    "1b15bad435588da95876f0ac669952b3ca11cc53fd36e46fd5d1206ff4993a97",
+    "15829798e4f7042a9e0b260ada4e30b6679bf25fa7574baa7df024851dbd3120",
+    "e4ccb193370affeea7a8312a49ee692195eb31cf5449318ec1c96296e2bf4a85",
+    "5c19e4627b96e9c9e69f64151f93c54f5dc9703bc9d5026a048bb8aaba98833e",
+    "d61c532e290a4f47aaa3ba9430654ed7bd95686bb4d245e574bbae9808b82163",
+    "e313b1c6bdac0c5e80fe435e948167945a7fba877ad6a8b431b29cfea7bd158f",
+    "f25ce1911cebb826367a19884c725dde2137fa5edeef5b61a73b19bdcdcc9737",
+    "f8d8b501c89e2845bb4b10073342f248ca87f0c059b7bf665b05cc61839ef423"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -12753,7 +12777,8 @@
     "c0376fde08e4201e27631d01eac26a1400c65fe58322b6808e8d30e4af09df1c",
     "853935ae447d64e667902ef1d3031a306c0a6a2196bfee3e83393ca6be3e9763",
     "c79ccc1f34a34a514acba33dc5a766f05c8fab81cf13fc0149ab78b01149c595",
-    "0fd0a0a34069c2e79b5510f495eaf1c6835f7fcb0203ac05799e7f631ff82327"
+    "0fd0a0a34069c2e79b5510f495eaf1c6835f7fcb0203ac05799e7f631ff82327",
+    "9d007d50eaf633c35f302a23fddb9ba3e2bbba82c1bff25562287bfd2ad70c65"
   ],
   "storage_sinks": {
     "src/database/queries/review_queries.py::ReviewQueriesMixin.set_review_gate_state::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
@@ -13396,13 +13421,13 @@
       "reason": "Ordinary task lifecycle metadata cleanup, including clearing the worker failure streak in an intentional READY restart transaction. Integration status, branch reservations and replay authority remain in their existing dedicated records."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1956,
+      "line": 2165,
       "owner": "TaskQueryMixin._delete_one",
       "call": "delete",
-      "owner_fingerprint": "2b19fb5a9d0db5075ecfac9a067071e9a7eb31c3c62fdd3846dd9a57d9546e85",
+      "owner_fingerprint": "d4319c8a462675b9056cfd21b165edd019baf125b78c43d5c0d8a8df4b9f081c",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task metadata cleanup after audited operator deletion; completion records, comments, subtask evidence and integration audit identities remain intact. No ref replay or duplicate integration lifecycle storage."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._note_frontier_entry::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "line": 1087,
@@ -15086,6 +15111,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Operator-worker action, result, refusal and preflight audit records on the events table keyed by project, task, session and claim epoch; ordinary audit with no integration state or ref replay authority."
+    },
+    "src/integration/task_deletion.py::_audit::fec07cd307548a7652586080b3ff3b391900a557766cc26828e2d8772418767f": {
+      "line": 49,
+      "owner": "_audit",
+      "call": "log_event",
+      "owner_fingerprint": "e4ccb193370affeea7a8312a49ee692195eb31cf5449318ec1c96296e2bf4a85",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Confirmed deletion writes immutable operator decision, selected-task snapshots, observed branch tips and cleanup outcomes to audit history. These events never authorize ref replay, publication or integration lifecycle transitions."
     }
   },
   "generic_dependencies": {

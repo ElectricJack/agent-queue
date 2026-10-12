@@ -17532,8 +17532,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Delete a task. Cannot delete a task that is currently in progress.",
-        "description": "Delete a task. Cannot delete a task that is currently in progress.",
+        "summary": "Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope and keep/delete branches. Selected running work always stops. State holds become warnings; history survives in the audit. Cleanup failures are reported individually. Reasons are optional.",
+        "description": "Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope and keep/delete branches. Selected running work always stops. State holds become warnings; history survives in the audit. Cleanup failures are reported individually. Reasons are optional.",
         "operationId": "delete_task",
         "requestBody": {
           "content": {
@@ -18749,8 +18749,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless legacy operations and archives when audit history exists. Branches are kept. Requires a reason when confirmed.",
-        "description": "Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless legacy operations and archives when audit history exists. Branches are kept. Requires a reason when confirmed.",
+        "summary": "Deprecated alias for delete_task; use delete instead.",
+        "description": "Deprecated alias for delete_task; use delete instead.",
         "operationId": "remove_task",
         "requestBody": {
           "content": {
@@ -28808,6 +28808,123 @@
         ],
         "title": "DeleteAgentResponse"
       },
+      "DeleteBranchDetail": {
+        "properties": {
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Task Ids",
+            "default": []
+          },
+          "repository_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Id"
+          },
+          "branch": {
+            "type": "string",
+            "title": "Branch"
+          },
+          "local_refs": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteLocalRef"
+            },
+            "type": "array",
+            "title": "Local Refs",
+            "default": []
+          },
+          "remote_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remote Sha"
+          },
+          "remote_state": {
+            "type": "string",
+            "title": "Remote State"
+          },
+          "remote_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remote Path"
+          },
+          "worktrees": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteWorktree"
+            },
+            "type": "array",
+            "title": "Worktrees",
+            "default": []
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "keep",
+              "delete"
+            ],
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "branch",
+          "remote_state",
+          "action"
+        ],
+        "title": "DeleteBranchDetail"
+      },
+      "DeleteCleanupResult": {
+        "properties": {
+          "resource": {
+            "type": "string",
+            "title": "Resource"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "failed"
+            ],
+            "title": "Outcome"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resource",
+          "outcome"
+        ],
+        "title": "DeleteCleanupResult"
+      },
       "DeleteIntelligenceClassConflictResponse": {
         "properties": {
           "error": {
@@ -28883,6 +29000,41 @@
           "retired_file"
         ],
         "title": "DeleteIntelligenceClassResponse"
+      },
+      "DeleteLocalRef": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha"
+          },
+          "tracking_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Sha"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "DeleteLocalRef"
       },
       "DeleteMcpServerRequest": {
         "properties": {
@@ -29063,6 +29215,29 @@
         ],
         "title": "DeleteProjectResponse"
       },
+      "DeleteSession": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "task_id",
+          "state"
+        ],
+        "title": "DeleteSession"
+      },
       "DeleteTaskRequest": {
         "properties": {
           "task_id": {
@@ -29070,13 +29245,43 @@
             "title": "Task Id",
             "description": "Task ID to delete"
           },
-          "cascade": {
+          "recursive": {
             "type": "boolean",
-            "title": "Cascade",
+            "title": "Recursive",
             "description": "",
             "default": false
           },
+          "cascade": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cascade",
+            "description": "Deprecated alias for recursive"
+          },
           "branches": {
+            "type": "string",
+            "title": "Branches",
+            "description": "Keep branches or delete their local/remote refs and worktrees",
+            "default": "keep"
+          },
+          "stop_running": {
+            "type": "boolean",
+            "title": "Stop Running",
+            "description": "Acknowledge stopping running work; selected writers always stop",
+            "default": false
+          },
+          "confirmed": {
+            "type": "boolean",
+            "title": "Confirmed",
+            "description": "False previews; true executes the deletion",
+            "default": false
+          },
+          "reason": {
             "anyOf": [
               {
                 "type": "string"
@@ -29085,8 +29290,8 @@
                 "type": "null"
               }
             ],
-            "title": "Branches",
-            "description": "What to do with any branch the subtree already put on the remote. Omitted, a subtree that has one is refused with hierarchy.branch_discard_required rather than guessed at."
+            "title": "Reason",
+            "description": "Optional audit reason"
           }
         },
         "type": "object",
@@ -29097,53 +29302,262 @@
       },
       "DeleteTaskResponse": {
         "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
           "deleted": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Deleted"
           },
           "title": {
             "type": "string",
             "title": "Title"
           },
-          "discarded_branches": {
+          "task_ids": {
             "items": {
-              "$ref": "#/components/schemas/DeletedBranch"
+              "type": "string"
             },
             "type": "array",
-            "title": "Discarded Branches",
+            "title": "Task Ids",
             "default": []
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "preview",
+              "deleted"
+            ],
+            "title": "Disposition"
+          },
+          "recursive": {
+            "type": "boolean",
+            "title": "Recursive",
+            "default": false
+          },
+          "branches": {
+            "type": "string",
+            "enum": [
+              "keep",
+              "delete"
+            ],
+            "title": "Branches",
+            "default": "keep"
+          },
+          "stop_running": {
+            "type": "boolean",
+            "title": "Stop Running",
+            "default": false
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteTaskSummary"
+            },
+            "type": "array",
+            "title": "Tasks",
+            "default": []
+          },
+          "reparented_tasks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reparented Tasks",
+            "default": []
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteSession"
+            },
+            "type": "array",
+            "title": "Sessions",
+            "default": []
+          },
+          "dependents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dependents",
+            "default": []
+          },
+          "gate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Gate Ids",
+            "default": []
+          },
+          "review_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Review Ids",
+            "default": []
+          },
+          "escalation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Escalation Ids",
+            "default": []
+          },
+          "batch_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Batch Ids",
+            "default": []
+          },
+          "operation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Operation Ids",
+            "default": []
+          },
+          "branch_details": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteBranchDetail"
+            },
+            "type": "array",
+            "title": "Branch Details",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteWarning"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "cleanup_results": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteCleanupResult"
+            },
+            "type": "array",
+            "title": "Cleanup Results",
+            "default": []
+          },
+          "audit_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           }
         },
         "type": "object",
         "required": [
-          "deleted",
-          "title"
+          "title",
+          "disposition"
         ],
         "title": "DeleteTaskResponse"
       },
-      "DeletedBranch": {
+      "DeleteTaskSummary": {
         "properties": {
-          "task_id": {
+          "id": {
             "type": "string",
-            "title": "Task Id"
+            "title": "Id"
           },
-          "branch": {
+          "title": {
             "type": "string",
-            "title": "Branch"
+            "title": "Title"
           },
-          "base_sha": {
+          "status": {
             "type": "string",
-            "title": "Base Sha"
+            "title": "Status"
           }
         },
         "type": "object",
         "required": [
-          "task_id",
-          "branch",
-          "base_sha"
+          "id",
+          "title",
+          "status"
         ],
-        "title": "DeletedBranch",
-        "description": "One branch a ``branch_discard_required`` refusal is asking about."
+        "title": "DeleteTaskSummary"
+      },
+      "DeleteWarning": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "DeleteWarning"
+      },
+      "DeleteWorktree": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "DeleteWorktree"
       },
       "DiffItem": {
         "properties": {
@@ -62039,7 +62453,37 @@
           "task_id": {
             "type": "string",
             "title": "Task Id",
-            "description": "Task or epic to remove"
+            "description": ""
+          },
+          "recursive": {
+            "type": "boolean",
+            "title": "Recursive",
+            "description": "",
+            "default": false
+          },
+          "cascade": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cascade",
+            "description": "Deprecated alias for recursive"
+          },
+          "branches": {
+            "type": "string",
+            "title": "Branches",
+            "description": "",
+            "default": "keep"
+          },
+          "stop_running": {
+            "type": "boolean",
+            "title": "Stop Running",
+            "description": "",
+            "default": false
           },
           "confirmed": {
             "type": "boolean",
@@ -62057,7 +62501,7 @@
               }
             ],
             "title": "Reason",
-            "description": "Reason for removing this work"
+            "description": ""
           }
         },
         "type": "object",
@@ -62073,7 +62517,7 @@
             "title": "Success",
             "default": true
           },
-          "removed": {
+          "deleted": {
             "anyOf": [
               {
                 "type": "string"
@@ -62082,7 +62526,7 @@
                 "type": "null"
               }
             ],
-            "title": "Removed"
+            "title": "Deleted"
           },
           "title": {
             "type": "string",
@@ -62100,32 +62544,162 @@
             "type": "string",
             "enum": [
               "preview",
-              "deleted",
-              "archived"
+              "deleted"
             ],
             "title": "Disposition"
           },
+          "recursive": {
+            "type": "boolean",
+            "title": "Recursive",
+            "default": false
+          },
           "branches": {
             "type": "string",
-            "const": "keep",
+            "enum": [
+              "keep",
+              "delete"
+            ],
             "title": "Branches",
             "default": "keep"
           },
-          "aborted_batches": {
+          "stop_running": {
+            "type": "boolean",
+            "title": "Stop Running",
+            "default": false
+          },
+          "tasks": {
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/DeleteTaskSummary"
             },
             "type": "array",
-            "title": "Aborted Batches",
+            "title": "Tasks",
             "default": []
           },
-          "cancelled_operations": {
+          "reparented_tasks": {
             "items": {
               "type": "string"
             },
             "type": "array",
-            "title": "Cancelled Operations",
+            "title": "Reparented Tasks",
             "default": []
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteSession"
+            },
+            "type": "array",
+            "title": "Sessions",
+            "default": []
+          },
+          "dependents": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Dependents",
+            "default": []
+          },
+          "gate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Gate Ids",
+            "default": []
+          },
+          "review_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Review Ids",
+            "default": []
+          },
+          "escalation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Escalation Ids",
+            "default": []
+          },
+          "batch_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Batch Ids",
+            "default": []
+          },
+          "operation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Operation Ids",
+            "default": []
+          },
+          "branch_details": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteBranchDetail"
+            },
+            "type": "array",
+            "title": "Branch Details",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteWarning"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "cleanup_results": {
+            "items": {
+              "$ref": "#/components/schemas/DeleteCleanupResult"
+            },
+            "type": "array",
+            "title": "Cleanup Results",
+            "default": []
+          },
+          "audit_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "removed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed"
+          },
+          "deprecated_alias": {
+            "type": "string",
+            "title": "Deprecated Alias",
+            "default": "remove_task"
           }
         },
         "type": "object",
@@ -62133,7 +62707,8 @@
           "title",
           "disposition"
         ],
-        "title": "RemoveTaskResponse"
+        "title": "RemoveTaskResponse",
+        "description": "Deprecated delete alias, including the legacy removed result key."
       },
       "RemoveWorkspaceRequest": {
         "properties": {

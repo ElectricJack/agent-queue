@@ -869,6 +869,16 @@ export function useDeleteTask() {
   });
 }
 
+export function useDeleteTaskPreview(input: DeleteTaskRequest) {
+  return useQuery({
+    queryKey: ["task-delete-preview", input.task_id, input.recursive, input.branches],
+    queryFn: async () => (await deleteTask({
+      body: { ...input, confirmed: false }, throwOnError: true,
+    })).data,
+    staleTime: 0,
+  });
+}
+
 export function useArchiveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
@@ -885,7 +895,7 @@ export function useArchiveTask() {
 export function useRemoveTask() {
   const cb = useTaskMutationCallbacks();
   return useMutation({
-    mutationFn: async (input: { task_id: string; confirmed: boolean; reason: string }) =>
+    mutationFn: async (input: DeleteTaskRequest) =>
       (await removeTask({ body: input, throwOnError: true })).data,
     ...cb,
   });

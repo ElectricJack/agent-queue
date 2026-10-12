@@ -35,16 +35,6 @@ from src.integration.models import RepairPolicy, integration_ci_sources
 from src.integration.promotion_steps import flow_status
 from src.integration.records import ParentEpisodeRecords
 
-ACTIVE_BATCH_STATES = (
-    "sealing",
-    "sealed",
-    "building",
-    "testing",
-    "repairing",
-    "human_blocked",
-    "promoting",
-    "cleanup_pending",
-)
 TERMINAL_TASK_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 # What a train visit's state asks of whoever reads the status.
 TRAIN_VISIT_BLOCKERS = {
@@ -1055,73 +1045,6 @@ class IntegrationStatusService:
                 }
             )
         return result
-
-    @staticmethod
-    def _batch_projection(
-        batch: dict[str, Any] | None, revision: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        if batch is None:
-            return None
-        return {
-            "id": batch["id"],
-            "repository_id": batch["repository_id"],
-            "request_id": batch["request_id"],
-            "trigger": batch["trigger"],
-            "state": batch["lifecycle"],
-            "revision": batch["current_revision"],
-            "base_sha": batch["base_sha"],
-            "integration_branch": batch["integration_branch"],
-            "tested_candidate_sha": batch["tested_candidate_sha"],
-            "ci_evidence_id": batch["ci_evidence_id"],
-            "final_main_sha": batch["final_main_sha"],
-            "cleanup_state": batch["cleanup_state"],
-            "revision_state": revision["state"] if revision else None,
-            "candidate_sha": revision["head_sha"] if revision else None,
-        }
-
-    @staticmethod
-    def _project_blockers(
-        project,
-        batch: dict[str, Any] | None,
-        revision: dict[str, Any] | None,
-        repair: list[dict[str, Any]],
-        cleanup: list[dict[str, Any]],
-        *,
-        now: float,
-    ) -> list[dict[str, Any]]:
-        blockers: list[dict[str, Any]] = []
-        if batch is not None and (
-            batch["lifecycle"] == "testing"
-            or revision is None
-            or revision["state"] not in {"green", "promoted"}
-        ):
-            blockers.append(
-                _blocker(
-                    "pending_ci", "active candidate is not proven green", batch["id"]
-                )
-            )
-        for operation in repair:
-            if operation["state"] == "human_required" or (
-                batch is not None and batch["lifecycle"] == "human_blocked"
-            ):
-                blockers.append(
-                    _blocker(
-                        "human_hold",
-                        "integration repair awaits a human",
-                        operation["id"],
-                    )
-                )
-        blockers.extend(IntegrationStatusService._repair_blockers(repair, now=now))
-        conflict = next((item for item in cleanup if item["state"] == "conflict"), None)
-        if conflict is not None:
-            blockers.append(
-                _blocker(
-                    "cleanup_conflict",
-                    "cleanup requires operator reconciliation",
-                    conflict["identity"],
-                )
-            )
-        return blockers
 
     @staticmethod
     def _repair_blockers(

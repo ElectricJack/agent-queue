@@ -2125,6 +2125,7 @@ class TaskQueryMixin:
         preserve_completion: bool = False,
         preserve_subtasks: bool = False,
         gate_resolution: str = "last waiter task deleted",
+        operator_delete: bool = False,
     ) -> None:
         """Delete an active task and its FK references; archives retain comments and completion history.
 
@@ -2135,7 +2136,12 @@ class TaskQueryMixin:
         — which for a human gate means live Approve/Deny buttons in Discord
         for a task that no longer exists.
         """
-        await self._assert_pause_cleanup_complete(task_id, conn=conn)
+        if operator_delete:
+            # FK writers take KEY SHARE on the task. Keep them behind the
+            # deletion until every owned row (including layouts) has gone.
+            await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
+        else:
+            await self._assert_pause_cleanup_complete(task_id, conn=conn)
         comment_project_id = (await conn.execute(
             select(tasks.c.project_id).where(tasks.c.id == task_id)
         )).scalar_one_or_none()

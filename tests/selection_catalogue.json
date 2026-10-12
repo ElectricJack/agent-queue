@@ -261,6 +261,7 @@
         "tests/test_discord_render_budgets.py",
         "tests/test_discord_settings.py",
         "tests/test_discord_simplification_lifecycle.py",
+        "tests/test_discord_task_delete.py",
         "tests/test_rate_guard.py",
         "tests/test_slash_commands.py"
       ]
@@ -1249,6 +1250,7 @@
       "modules": [
         "tests/test_cli_task_create_output.py",
         "tests/test_deliverables.py",
+        "tests/test_discord_task_delete.py",
         "tests/test_dv2_phase1_models.py",
         "tests/test_ensure_task.py",
         "tests/test_lifecycle_cleanup.py",
@@ -1261,6 +1263,7 @@
         "tests/test_task_context.py",
         "tests/test_task_controls.py",
         "tests/test_task_controls_api.py",
+        "tests/test_task_deletion.py",
         "tests/test_task_doctor.py",
         "tests/test_task_failed_event.py",
         "tests/test_task_progress_stats.py",
@@ -3954,12 +3957,14 @@
         "task-archive"
       ],
       "default_arm": true,
-      "digest": "sha256:79dc38177e32e35f9b60529b55e19a8cf72bcdd7859c91332c37f7e5ab2816e8",
+      "digest": "sha256:8c32818249eb926f5bf4c824a0cecf3a3c2ec785eb8e24f93495aedbe10fd01e",
       "imports": [
         "src.cli.app"
       ],
-      "markers": [],
-      "summary": "The operator removes a subtree with one explicit confirmation."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Delete and its deprecated alias share choices, preview and one confirmation."
     },
     "tests/test_cli_task_subtasks.py": {
       "areas": [
@@ -5716,6 +5721,21 @@
       ],
       "markers": [],
       "summary": "End-to-end acceptance for the simplified Discord lifecycle (spec §11)."
+    },
+    "tests/test_discord_task_delete.py": {
+      "areas": [
+        "discord",
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "digest": "sha256:4fb7fbf4d32b7b57f4cf939b5b6c2d3a6df6750904c71c5cf70e43d95f52ffca",
+      "imports": [
+        "src.discord.task_delete"
+      ],
+      "markers": [
+        "asyncio"
+      ],
+      "summary": "Discord's one delete action shares preview, options, confirmation and audit."
     },
     "tests/test_docs_sync.py": {
       "areas": [
@@ -16905,6 +16925,25 @@
         "asyncio"
       ],
       "summary": "Real typed/execute HTTP authorization and operator task control."
+    },
+    "tests/test_task_deletion.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c7ab393cbe653e6dd67f63c6f6f574a2852bbcd0904e25b21e646b9edd3bf76f",
+      "imports": [
+        "src.claim_file",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.models"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize"
+      ],
+      "summary": "Unified deletion previews and resolves state holds instead of refusing them."
     },
     "tests/test_task_deps_command.py": {
       "areas": [

@@ -519,23 +519,83 @@ class HierarchyRefusalResponse(BaseModel):
     error: str
 
 
-class DeleteTaskResponse(BaseModel):
-    deleted: str
+class DeleteWarning(BaseModel):
+    code: str
+    message: str
+
+
+class DeleteTaskSummary(BaseModel):
+    id: str
     title: str
-    #: Branches the delete discarded, when it was asked to.  Removal itself is
-    #: asynchronous; these are the refs queued for it.
-    discarded_branches: list[DeletedBranch] = []
+    status: str
 
 
-class RemoveTaskResponse(BaseModel):
+class DeleteSession(BaseModel):
+    session_id: str
+    task_id: str
+    state: str
+
+
+class DeleteLocalRef(BaseModel):
+    path: str
+    sha: str | None = None
+    tracking_sha: str | None = None
+
+
+class DeleteWorktree(BaseModel):
+    path: str
+    head: str | None = None
+    branch: str | None = None
+
+
+class DeleteBranchDetail(BaseModel):
+    task_ids: list[str] = []
+    repository_id: str | None = None
+    branch: str
+    local_refs: list[DeleteLocalRef] = []
+    remote_sha: str | None = None
+    remote_state: str
+    remote_path: str | None = None
+    worktrees: list[DeleteWorktree] = []
+    action: Literal["keep", "delete"]
+
+
+class DeleteCleanupResult(BaseModel):
+    resource: str
+    outcome: Literal["complete", "failed"]
+    error: str | None = None
+
+
+class DeleteTaskResponse(BaseModel):
     success: bool = True
-    removed: str | None = None
+    deleted: str | None = None
     title: str
     task_ids: list[str] = []
-    disposition: Literal["preview", "deleted", "archived"]
-    branches: Literal["keep"] = "keep"
-    aborted_batches: list[str] = []
-    cancelled_operations: list[str] = []
+    disposition: Literal["preview", "deleted"]
+    recursive: bool = False
+    branches: Literal["keep", "delete"] = "keep"
+    stop_running: bool = False
+    tasks: list[DeleteTaskSummary] = []
+    reparented_tasks: list[str] = []
+    sessions: list[DeleteSession] = []
+    dependents: list[str] = []
+    gate_ids: list[str] = []
+    review_ids: list[str] = []
+    escalation_ids: list[str] = []
+    batch_ids: list[str] = []
+    operation_ids: list[str] = []
+    branch_details: list[DeleteBranchDetail] = []
+    warnings: list[DeleteWarning] = []
+    cleanup_results: list[DeleteCleanupResult] = []
+    audit_id: int | None = None
+    reason: str | None = None
+
+
+class RemoveTaskResponse(DeleteTaskResponse):
+    """Deprecated delete alias, including the legacy removed result key."""
+
+    removed: str | None = None
+    deprecated_alias: str = "remove_task"
 
 
 class TaskControlResponse(BaseModel):
@@ -1243,8 +1303,6 @@ class TaskRecoveryResponse(BaseModel):
     incident_id: str
     decision: str
     status: str
-
-
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
