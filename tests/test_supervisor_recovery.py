@@ -493,6 +493,9 @@ async def test_cleared_hold_retries_once_with_audit_and_preserved_work(env):
     assert task.branch_name == "aq/keep" and task.description == "Keep requirements"
     released = await env.db.get_task_meta("t", "supervisor_recovery_incident")
     assert released["decision"] == "retry"
+    assert released["retry_allowed"] is False
+    assert await env.db.count_ready_by_profile("p") == {task.profile_id: 1}
+    assert await env.db.claim_frontier_exclusions("t") == []
     assert released["decision_history"] == [{
         key: held[key]
         for key in ("decision", "decision_reason", "decided_at", "decided_by")
@@ -633,6 +636,19 @@ async def test_hold_decision_is_durable_and_does_not_restart(env):
     assert "error" in await decide(env, current)
     assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
     assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] == "hold"
+
+
+async def test_recorded_recovery_hold_excludes_task_projected_back_to_ready(env):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert held["retry_allowed"] is False
+    # A structural status update cannot authorize another execution attempt.
+    await env.db.update_task("t", status=TaskStatus.READY)
+    assert await env.db.count_ready_by_profile("p") == {}
+    exclusions = await env.db.claim_frontier_exclusions("t")
+    assert [item["code"] for item in exclusions] == ["frontier_recovery_hold"]
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
 
 
 @pytest.mark.parametrize("decision,expected_status", [("retry", "READY"), ("hold", "BLOCKED")])

@@ -28,6 +28,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.queries.hierarchy_queries import (
@@ -85,6 +86,13 @@ ACCEPTED_CLOSE_KEY = "accepted_close"
 
 def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
     """Named acceptance predicates shared by claiming and diagnostics."""
+    recovery = task_metadata.alias("frontier_recovery")
+    # Metadata is JSON-encoded text. Keep the cast inside a key-guarded
+    # CASE so unrelated legacy text values cannot break frontier reads.
+    incident = cast(case(
+        (recovery.c.key == "supervisor_recovery_incident", recovery.c.value),
+        else_=literal("{}"),
+    ), JSONB)
     return {
         # Legacy control-plane profiles stay visible for rerouting but never
         # win a pool worker's claim.
@@ -92,6 +100,13 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         "dependency_blocked": tasks.c.is_blocked == 0,
         "already_assigned": tasks.c.assigned_agent_id.is_(None),
         "plan_subtask": tasks.c.is_plan_subtask == 0,
+        # Recovery decisions outlive status projection and daemon restarts.
+        # retry_allowed is false for an accepted retry too; only hold blocks.
+        "recovery_hold": ~exists(select(literal(1)).where(
+            recovery.c.task_id == tasks.c.id,
+            recovery.c.key == "supervisor_recovery_incident",
+            incident["decision"].astext == "hold",
+        )),
         "origin_not_materialized": materialized_origin_when_hierarchical(hierarchy_mode),
         "sibling_prerequisite_not_delivered": (
             delivered_same_parent_prerequisites_when_hierarchical(hierarchy_mode)
@@ -489,6 +504,7 @@ FRONTIER_PREDICATE_DETAILS = {
     "dependency_blocked": "is_blocked must be false",
     "already_assigned": "assigned_agent_id must be empty",
     "plan_subtask": "is_plan_subtask must be false",
+    "recovery_hold": "the supervisor recovery hold needs an explicit fenced release",
     "origin_not_materialized": (
         "materialized_origin_when_hierarchical(): requires a materialized origin in the "
         "designated repository or an exact active delegate reservation"
