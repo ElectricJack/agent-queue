@@ -1040,6 +1040,14 @@ class SessionReconciler:
 
     async def _step_exits(self, live: list[SessionRecord], now: float) -> None:
         for row in live:
+            if row.lifecycle == "named":
+                row = await self._still_live(row)
+                if row is None:
+                    continue
+                if row.state in {"starting", "running"} and row.desired_state == "sleeping":
+                    # Explicit sleep owns this transition even if the process
+                    # has already exited. Do not retire its intent as a drain.
+                    continue
             provider = self._provider_for(row)
             if provider is None:
                 continue

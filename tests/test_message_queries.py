@@ -20,7 +20,7 @@ async def test_notification_migration_recovers_only_unread_legacy_nudges(db, mon
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
-    migration = import_module("migrations.versions.a00000000091_message_notification_receipts")
+    migration = import_module("migrations.versions.a00000000092_message_notification_receipts")
     unread = await _send(db)
     read = await _send(db)
     archived = await _send(db)
