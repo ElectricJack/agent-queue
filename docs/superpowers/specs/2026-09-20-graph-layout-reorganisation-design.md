@@ -1,5 +1,26 @@
 # Task-graph layout that reorganises itself
 
+## 2026-10-11 correction: epic containment and execution order
+
+The operator's `swift-willow-12` requirements supersede the adaptive width and
+activity-aware ordering below **inside task containers**. The project root keeps
+the existing aspect-balanced layout and activity policy.
+
+- Every task container flows children in dependency-depth order, including completed
+  children in the `all` variant. Depth is the longest path over sibling gating edges
+  (`blocks`, `waits-for`, `conditional-blocks`), with the existing phase floors.
+- Each depth is ordered by `(created_at, id)` and wraps at the existing 4.5-unit
+  target, which fits at most four task cards. Parallel work stays together; no
+  optimizer slack, activity grouping or serpentine folding changes these rows.
+  All engine modes use this order, so status changes and Tidy cannot shuffle it.
+- Containers measure their children's full boxes, including nested containers,
+  padding and the header. Allocated geometry grows to contain those boxes.
+  An entered frame may crop unused space but must still enclose every loaded
+  descendant, even if its previous persisted box was smaller.
+- Selecting an epic highlights it without raising its opaque frame above children.
+- Bump `ENGINE_RULES_VERSION` so the existing convergence sweep replaces previously
+  persisted geometry in both variants without an operator rebuild.
+
 **Status:** design, no code. Revised 2026-09-20 after adversarial review
 (`.superpowers/sdd/2026-09-19-graph-visibility-markers-subtasks-implementation/t20-review.md`,
 verdict *approve with changes*) and the controller's rulings. Companion to

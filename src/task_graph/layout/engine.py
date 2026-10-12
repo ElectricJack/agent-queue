@@ -1,9 +1,10 @@
 """Container layout engine (§4.4, §4.7).
 
 ``layout_container`` lays out ONE container's children from a
-``ContainerScope``. Ordinals of existing children are immutable in
-``incremental`` and ``resize`` modes; only the forced rank repair may
-change them. ``tidy`` mode treats every child as movable.
+``ContainerScope``. Task containers use stable dependency-depth rows, with
+creation-time/id ties in every mode. At the project root, existing ordinals
+are immutable in ``incremental`` and ``resize`` except for forced rank repair;
+``tidy`` treats every root child as movable.
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ from src.task_graph.layout.constants import (
 from src.task_graph.layout.cost import container_cost
 from src.task_graph.layout.flow import (
     FlowResult,
-    clamp_row_target,
     flow_container,
     row_target,
 )
@@ -376,21 +376,43 @@ def layout_container(
 ) -> ContainerResult:
     is_root = scope.container_id is None
     sizes = _sizes(scope)
+    edges = break_cycles(scope.children, scope.sibling_edges)
+    minimal = minimal_ranks_acyclic(scope.children, edges)
+    if not is_root:
+        # Execution order is a property of the graph, not of task status or
+        # the optimizer's crossing cost. Recompute it on incremental/resize
+        # passes too, removing old slack and repairing removed dependencies.
+        ordinals: dict[str, tuple[int, str]] = {}
+        last_by_rank: dict[int, str] = {}
+        for cid in sorted(scope.children, key=lambda c: (scope.children[c].created_at, c)):
+            rank = minimal[cid]
+            key = between(last_by_rank.get(rank), None)
+            ordinals[cid] = (rank, key)
+            last_by_rank[rank] = key
+        flow = flow_container(
+            _ordered_from(ordinals), sizes, is_root=False, target=TARGET_ROW_WIDTH
+        )
+        changed = {
+            cid for cid, ordinal in ordinals.items()
+            if cid not in scope.existing or scope.existing[cid].ordinal != ordinal
+        }
+        return ContainerResult(
+            rows=_rows(scope, ordinals, flow, sizes),
+            allocated=flow.allocated,
+            changed_ordinals=changed,
+        )
+
     # Computed ONCE per container pass: it depends only on the children's
     # sizes, never on the candidate ordering, and ``_tidy_sweep`` evaluates
     # thousands of candidates. ``chain_target`` deliberately stays at the
     # floor so serpentine folding is unaffected by a widened scope (§3.1).
     target = row_target(sizes, is_root=is_root, row_aspect=row_aspect)
     chain_target = TARGET_ROW_WIDTH_ROOT if is_root else TARGET_ROW_WIDTH
-    edges = break_cycles(scope.children, scope.sibling_edges)
-    # ``edges`` is already acyclic — don't make ``minimal_ranks`` repeat the
-    # cycle search over the same list.
-    minimal = minimal_ranks_acyclic(scope.children, edges)
     rng = random.Random(seed)
     changed: set[str] = set()
 
     # Start from existing ordinals of children that still exist.
-    ordinals: dict[str, tuple[int, str]] = {
+    ordinals = {
         cid: scope.existing[cid].ordinal for cid in scope.children if cid in scope.existing
     }
 
@@ -473,42 +495,16 @@ def layout_container(
     if missing:
         raise ValueError(f"unplaced children: {sorted(missing)}")
 
-    # The published geometry is flowed at the CLAMPED target: the ideal is
-    # computed from sizes alone (so the sweep's cost landscape is
-    # continuous), but what a CONTAINER draws is its content rounded up to a
-    # growth band, and for a heterogeneous scope the ideal can cost a whole
-    # extra band. Clamping here — once, against the ordering that is
-    # actually published — makes "the drawn box never grows" true by
-    # construction (t24 finding F1).
-    #
-    # The root is deliberately exempt. It is never banded (``flow.py``:
-    # ``allocated is content``), so there is no band to snap up and F1's
-    # failure mode does not exist there; it has no parent to push either.
-    # Area is also the wrong measure for it: trading width for height is
-    # the whole point of symptom 1's fix, and the operator's own screenshot
-    # — a 12-unit epic plus eight cards — re-flows from 12.20 x 8.99 in
-    # three ragged lines to 21.40 x 6.55 in one, which is *more* area and
-    # exactly the result asked for.
+    # The project root uses its aspect-balanced target without band clamping:
+    # it has no enclosing frame, so buying width to shorten the view is useful.
     ordered = _ordered_from(ordinals)
     chains = _serial_chains(ordered, edges)
-    published_target = (
-        target
-        if is_root
-        else clamp_row_target(
-            ordered,
-            sizes,
-            is_root=is_root,
-            target=target,
-            serpentine_chains=chains,
-            chain_target=chain_target,
-        )
-    )
     flow = flow_container(
         ordered,
         sizes,
         is_root=is_root,
         serpentine_chains=chains,
-        target=published_target,
+        target=target,
         chain_target=chain_target,
     )
     rows = _rows(scope, ordinals, flow, sizes)

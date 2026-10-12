@@ -394,12 +394,39 @@ describe("toFlowElements", () => {
       const root = toFlowElements(entered(), { ...ctx, upTarget: null }).nodes.find((x) => x.id === "box")!.data as { upTarget?: unknown };
       expect(root.upTarget).toBeUndefined();
     });
-    it("never grows the frame past its persisted box", () => {
+    it("grows an undersized frame to enclose its children's full boxes", () => {
       const store = mergeTiles(emptyStore(), ["0:0"], {
-        nodes: [n("box", "container", 0, 0, { w: 1.2, h: 1.3 }), n("c", "card", 0.1, 0.25, { container_id: "box" })],
+        nodes: [n("box", "container", 0, 0, { w: 1.2, h: 1.3 }),
+          n("c", "card", 3.55, 2.89, { container_id: "box", depth: 1 }),
+          n("other", "card", 100, 100)],
         edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
       } as never);
-      expect(enteredFrame(store, "box")).toEqual({ x: 0, y: 0, w: 1.2, h: 1.3 });
+      const frame = enteredFrame(store, "box")!;
+      expect(frame.w).toBeCloseTo(4.7);
+      expect(frame.h).toBeCloseTo(4.04);
+      for (const density of ["compact", "comfortable", "spacious"] as const) {
+        const { nodes } = toFlowElements(store, { ...inside, density });
+        const box = nodes.find((node) => node.id === "box")!;
+        const child = nodes.find((node) => node.id === "c")!;
+        expect(child.position.x).toBeGreaterThanOrEqual(box.position.x);
+        expect(child.position.y).toBeGreaterThanOrEqual(box.position.y);
+        expect(child.position.x + child.width!).toBeLessThan(box.position.x + box.width!);
+        expect(child.position.y + child.height!).toBeLessThan(box.position.y + box.height!);
+      }
+    });
+    it("measures nested descendants and excludes carried nodes from other generations", () => {
+      const store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("box", "container", 2, 3, { w: 1, h: 1 }),
+          n("nested", "container", 2.1, 3.45, { container_id: "box", w: 3, h: 2 }),
+          n("leaf", "card", 4, 6, { container_id: "nested" }),
+          n("old", "card", 100, 100, { container_id: "box" })],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      } as never);
+      store.carried.add("old");
+      const frame = enteredFrame(store, "box")!;
+      expect(frame).toMatchObject({ x: 2, y: 3 });
+      expect(frame.w).toBeCloseTo(3.25);
+      expect(frame.h).toBeCloseTo(4.15);
     });
     it("docks same-project stubs beside the frame in reading order, and edges follow", () => {
       const { nodes, edges } = toFlowElements(entered(), inside);

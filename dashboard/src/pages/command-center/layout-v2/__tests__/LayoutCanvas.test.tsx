@@ -28,6 +28,7 @@ interface FlowProps {
   onNodesChange?: (changes: NodeChange[]) => void;
   onNodeDragStop?: (event: unknown, node: FlowNode) => void;
   nodesDraggable?: boolean;
+  elevateNodesOnSelect?: boolean;
 }
 
 const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
@@ -246,6 +247,21 @@ afterEach(() => {
 });
 
 describe("LayoutCanvas", () => {
+  it("selects an entered epic without elevating its frame above the children", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { w: 6, h: 3 }),
+        n("child", "card", 0.1, 0.45, { container_id: "e", depth: 1 })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    const child = flow.current!.nodes.find((node) => node.id === "child");
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" selectedTaskId="e" /></MemoryRouter>);
+    expect(flow.current!.nodes.find((node) => node.id === "e")!.selected).toBe(true);
+    expect(flow.current!.nodes.find((node) => node.id === "child")).toBe(child);
+    expect(flow.current!.elevateNodesOnSelect).toBe(false);
+    expect(base.setFocus).not.toHaveBeenCalled();
+  });
+
   it("uses the dark default when the shell has not published a theme", () => {
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     expect(flow.current?.colorMode).toBe("dark");
