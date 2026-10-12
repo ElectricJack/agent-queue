@@ -324,16 +324,19 @@ class BlockedStateMixin:
         if not affected:
             return set()
 
-        # Canonical (sorted) id order so concurrent PostgreSQL transactions
-        # acquire row locks in the same sequence — same deadlock-freedom
-        # discipline as workspace acquisition.
+        # An IN-list's order does not determine PostgreSQL's UPDATE scan or
+        # lock order. Lock explicitly in id order, as recursive deletion does.
+        # NO KEY UPDATE protects the projection without blocking FK readers.
         ordered = sorted(affected)
 
         before = {
             r[0]: r[1]
             for r in (
                 await conn.execute(
-                    select(tasks.c.id, tasks.c.is_blocked).where(tasks.c.id.in_(ordered))
+                    select(tasks.c.id, tasks.c.is_blocked)
+                    .where(tasks.c.id.in_(ordered))
+                    .order_by(tasks.c.id)
+                    .with_for_update(key_share=True)
                 )
             ).fetchall()
         }
@@ -527,10 +530,18 @@ class BlockedStateMixin:
         async with self._engine.begin() as conn:
             before = {
                 r[0]: r[1]
-                for r in (await conn.execute(select(tasks.c.id, tasks.c.is_blocked))).fetchall()
+                for r in (
+                    await conn.execute(
+                        select(tasks.c.id, tasks.c.is_blocked)
+                        .order_by(tasks.c.id)
+                        .with_for_update(key_share=True)
+                    )
+                ).fetchall()
             }
             await conn.execute(
-                update(tasks).values(is_blocked=case((blocked_predicate(), 1), else_=0))
+                update(tasks)
+                .where(tasks.c.id.in_(sorted(before)))
+                .values(is_blocked=case((blocked_predicate(), 1), else_=0))
             )
             after = {
                 r[0]: r[1]

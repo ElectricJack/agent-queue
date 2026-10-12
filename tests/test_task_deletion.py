@@ -4,7 +4,7 @@ import asyncio
 import json
 
 import pytest
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import event, func, insert, select, update
 from sqlalchemy.exc import DBAPIError
 
 from src.database import tables as t
@@ -186,6 +186,67 @@ async def test_delete_serializes_with_pool_session_termination(env, tmp_path, mo
     assert session.task_id is None
     assert (await env.db.get_agent("agent")).current_task_id is None
     assert (await env.db.get_workspace("workspace")).locked_by_task_id is None
+    assert await env.db.get_task("peer") is not None
+
+
+@pytest.mark.parametrize("refresh_all", [False, True])
+async def test_recursive_delete_serializes_with_projection_refresh(env, monkeypatch, refresh_all):
+    """Projection refresh must not lock the parent before a locked earlier child."""
+    await child(env)
+    # Put the child after the parent in heap order, opposite their id order.
+    async with env.db.immediate() as conn:
+        await conn.execute(update(t.tasks).where(t.tasks.c.id == "child").values(updated_at=2))
+    refresh_started = asyncio.Event()
+    refresh_pid = None
+    original_lock = env.db.lock_hierarchy_project
+    phases = 0
+
+    async def refresh():
+        refresh_task = asyncio.current_task()
+
+        def begin_refresh(conn):
+            nonlocal refresh_pid
+            if asyncio.current_task() is not refresh_task:
+                return
+            # Force the unordered UPDATE's heap scan to reproduce CI's lock order.
+            conn.scalar(select(func.set_config("enable_indexscan", "off", True)))
+            conn.scalar(select(func.set_config("enable_bitmapscan", "off", True)))
+            refresh_pid = conn.scalar(select(func.pg_backend_pid()))
+            refresh_started.set()
+
+        engine = env.db._engine.sync_engine
+        event.listen(engine, "begin", begin_refresh)
+        try:
+            if refresh_all:
+                await env.db.recompute_all_blocked()
+            else:
+                async with env.db.immediate() as conn:
+                    await env.db.recompute_blocked({"t", "child"}, conn=conn)
+        finally:
+            event.remove(engine, "begin", begin_refresh)
+
+    async def observe_phase(conn, project_id):
+        nonlocal phases
+        await original_lock(conn, project_id)
+        phases += 1
+        if phases != 1:
+            return
+        deletion_pid = await conn.scalar(select(func.pg_backend_pid()))
+        await conn.execute(select(t.tasks.c.id).where(t.tasks.c.id == "child").with_for_update())
+        group.create_task(refresh())
+        await refresh_started.wait()
+        # Only proceed once the refresh is waiting on deletion's child lock.
+        # Acquiring the later parent next forms a deadlock with an unordered refresh.
+        async with asyncio.timeout(10):
+            while deletion_pid not in await conn.scalar(select(func.pg_blocking_pids(refresh_pid))):
+                await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(env.db, "lock_hierarchy_project", observe_phase)
+    async with asyncio.timeout(20), asyncio.TaskGroup() as group:
+        result = await delete_task(env, recursive=True)
+    assert result["success"], result
+    assert await env.db.get_task("t") is None
+    assert await env.db.get_task("child") is None
     assert await env.db.get_task("peer") is not None
 
 
