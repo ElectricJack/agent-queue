@@ -6343,6 +6343,9 @@
         673
       ]
     },
+    "src/orchestrator/core.py::Orchestrator._stop_task_locked": {
+      "reason": "Task-stop implementation proves managed writer handoff, retains unproven attachments and protects successor preparation claims under the task control lock."
+    },
     "src/orchestrator/core.py::Orchestrator._branch_materialization_hierarchy": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
@@ -14256,6 +14259,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/orchestrator/core.py::Orchestrator._stop_task_locked::d86ccbef339ede4d738a06fe782e380b5a8f344ba31c80022f4f060258184622": {
+      "line": 1450,
+      "owner": "Orchestrator._stop_task_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "5921f530f638485ef2e85ce6fed67f95c31abd8b68e1a1ecf127b59e3204d13a",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Diagnostic needs_attention=integration_handoff_unproven marker after a refused stop handoff; resources stay bound. Stores no ref/SHA, replay intent or duplicate lifecycle authority."
     },
     "src/orchestrator/core.py::Orchestrator._sweep_gates::09a8c81adcd7b86401088dbc04f5d3e98384c7378264232630db2ae930f309f5": {
       "line": 3249,
