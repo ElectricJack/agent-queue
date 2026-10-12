@@ -1008,6 +1008,14 @@ class SessionReconciler:
 
     async def _step_exits(self, live: list[SessionRecord], now: float) -> None:
         for row in live:
+            if row.lifecycle == "named":
+                row = await self._still_live(row)
+                if row is None:
+                    continue
+                if row.state in {"starting", "running"} and row.desired_state == "sleeping":
+                    # Explicit sleep owns this transition even if the process
+                    # has already exited. Do not retire its intent as a drain.
+                    continue
             provider = self._provider_for(row)
             if provider is None:
                 continue
@@ -2766,8 +2774,9 @@ class SessionReconciler:
         which one is wanted (see
         ``docs/superpowers/specs/2026-08-27-session-desired-state-design.md``):
 
-        * **down** — a running session past its profile's ``idle_timeout``
-          is drained to ``sleeping``, and its *intent* becomes ``sleeping``
+        * **down** — explicit sleeping intent stops a starting/running session
+          even while busy. A running session past its profile's ``idle_timeout``
+          also drains to ``sleeping``, and its *intent* becomes ``sleeping``
           at the same moment.  That second half is what stops the flap: a
           drained session stops being wanted, so the up-branch does not
           immediately undo the down-branch.
@@ -2780,14 +2789,39 @@ class SessionReconciler:
         and work_dir resolution, and two copies of that would drift.
         """
         await self._converge_named_up(now)
-        idle_rows = [r for r in live if r.lifecycle == "named" and r.state == "running"]
-        if not idle_rows:
-            return
-        for row in idle_rows:
+        for snapshot in live:
+            if snapshot.lifecycle != "named":
+                continue
+            row = await self._still_live(snapshot)
+            if (row is None or row.instance_token != snapshot.instance_token
+                    or row.state not in {"starting", "running"}):
+                continue
+            provider = self._provider_for(row)
+            if row.desired_state == "sleeping":
+                if provider is None:
+                    continue
+                try:
+                    await provider.stop(self._handle(row), grace=2.0)
+                except Exception:
+                    # Keep the row live and retry; a failed stop is not an
+                    # observation that the process is now sleeping.
+                    logger.warning("Stopping sleeping session %s failed", row.id, exc_info=True)
+                    continue
+                changed = await self.db.update_session_instance(
+                    row.id, row.instance_token, require_desired_state="sleeping",
+                    state="sleeping", sleep_reason="sleep_requested", end_reason="sleep_requested",
+                )
+                if changed:
+                    await self._emit(
+                        "session.sleeping", session_id=row.id, name=row.name,
+                        project_id=row.project_id, reason="sleep_requested",
+                    )
+                continue
+            if row.state != "running" or row.desired_state != "running":
+                continue
             # Named supervisors have no task stall ladder. Recover an owned
             # notification even if its message was consumed through the inbox
             # and therefore no longer produces another delivery attempt.
-            provider = self._provider_for(row)
             resubmit = getattr(provider, "resubmit_pending", None)
             if callable(resubmit):
                 try:

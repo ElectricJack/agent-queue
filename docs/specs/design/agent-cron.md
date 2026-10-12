@@ -31,6 +31,9 @@ The daemon scans a bounded batch on its existing cycle. Persisted next-fire
 times survive daemon restarts that adopt the same owner instance; replacement
 or termination expires the record and archives its pending wake. New owner
 instances must register again. No schedule cold-starts a replacement owner.
+Sleeping intent cancels all active schedules owned by that session instance and
+archives their pending wakes atomically with the intent change. Waking requires new
+registrations; cancelled idempotency keys remain cancelled.
 
 Missed ticks coalesce into one prompt. A schedule retains at most one pending
 message, with a stable message ID per emitted tick. Cron coalescing counts are a

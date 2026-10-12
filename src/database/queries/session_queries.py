@@ -466,6 +466,13 @@ class SessionQueryMixin:
         result = await conn.execute(update(sessions).where(
             sessions.c.id == session_id,
         ).values(**fields))
+        if fields.get("desired_state") == "sleeping":
+            # The session lock also fences cron registration and delivery.
+            # Retire patrols in this transaction so a quick sleep/wake cannot
+            # revive them before the cron service's next scan.
+            await self._cancel_session_agent_cron(
+                conn, session_id, row["instance_token"], time.time()
+            )
         if reassigned and new_task_id:
             await self._start_task_session_attempt(conn, session_id, started_at=time.time())
         # Only the currently open association may learn mutable runtime

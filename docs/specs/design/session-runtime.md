@@ -237,6 +237,13 @@ drain or a terminal verdict, an operator via `aq session sleep | wake | kill`. D
 writes both fields at once, so a drained session stops being wanted at the moment it stops
 running. **Waking is always explicit**; nothing infers it from activity.
 
+An explicit sleep request stops a starting or running named session on the next
+reconciler tick, regardless of activity, idle timeout, or outstanding supervision work.
+Only a successful fenced provider stop moves it to `sleeping`
+(`sleep_reason=sleep_requested`); a failed stop keeps the live row and retries.
+Setting sleeping intent also cancels that instance's active cron schedules and archives
+their pending wakes in the same transaction. Waking does not restore cancelled schedules.
+
 Starting is delegated to the session lens rather than reimplemented in the reconciler
 (the lens owns token minting, the global-supervisor cases and work_dir resolution).
 Failed starts spend the stall ladder's `max_restarts` budget and end in `quarantined`, so
