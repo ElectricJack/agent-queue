@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 
 from sqlalchemy import (
     Float,
@@ -67,7 +67,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
+from src.models import AgentProfile, AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
 from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, claimable_sources
 
 
@@ -144,6 +144,11 @@ def route_claimable(router_ready: bool):
         tasks.c.profile_id.is_not(None),
         tasks.c.route_source.in_(claimable_sources(router_ready)),
     )
+
+
+def _pool_role_predicate(operator: bool):
+    operator_task = func.coalesce(tasks.c.task_type, "") == "operator"
+    return operator_task if operator else ~operator_task
 
 
 def route_claimable_in(ready_project_ids: Collection[str]):
@@ -752,6 +757,7 @@ class ClaimQueryMixin:
         intelligence_class=None,
         llm_provider=None,
         options_hash=None,
+        operator: bool | None = None,
         hierarchy_mode: ProjectIntegrationMode | None = None,
         allowed_task_ids: set[str] | None = None,
         excluded_task_ids: set[str] | None = None,
@@ -853,6 +859,8 @@ class ClaimQueryMixin:
                 stmt = stmt.where(
                     explicit_class == intelligence_class if intelligence_class else false(),
                 )
+            if operator is not None:
+                stmt = stmt.where(_pool_role_predicate(operator))
             if task_id is not None:
                 stmt = stmt.where(tasks.c.id == task_id)
             return stmt.with_for_update(of=tasks, skip_locked=True)
@@ -2230,12 +2238,17 @@ class ClaimQueryMixin:
     async def count_ready_by_profile(
         self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
         hierarchy_mode: ProjectIntegrationMode | None = None,
+        pool_profiles: Mapping[str, AgentProfile] | None = None,
     ) -> dict[str | None, int]:
         """Count structural work, restricted to verified development admission when supplied.
 
         *router_ready* counts only claimable work (:func:`route_claimable`),
         which is what pool demand is (mandatory routing §9.1); ``None``
         counts every READY frontier row, unrouted ones under ``None``.
+
+        *pool_profiles* restricts sizing demand to the fixed class and operator
+        role each pool can execute. A stale route must not start a session that
+        cannot claim its task. Structural callers may omit this snapshot.
         """
         if hierarchy_mode is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
@@ -2250,6 +2263,19 @@ class ClaimQueryMixin:
         )
         if allowed_task_ids is not None:
             stmt = stmt.where(tasks.c.id.in_(allowed_task_ids))
+        if pool_profiles is not None:
+            from src.commands.operator_authority import is_operator_profile
+
+            explicit_class = func.nullif(func.trim(tasks.c.intelligence_class), "")
+            compatible = []
+            for profile_id, profile in pool_profiles.items():
+                fixed_class = (profile.default_class or "").strip()
+                compatible.append(and_(
+                    tasks.c.profile_id == profile_id,
+                    _pool_role_predicate(is_operator_profile(profile)),
+                    explicit_class == fixed_class if fixed_class else literal(True),
+                ))
+            stmt = stmt.where(or_(false(), *compatible))
         stmt = apply_label_filters(stmt, exclude_hold=True)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).fetchall()

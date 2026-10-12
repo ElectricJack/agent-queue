@@ -5143,8 +5143,9 @@
         "task-routing"
       ],
       "default_arm": true,
-      "digest": "sha256:f90bc41b3d932b1145dcfc5f08431200dabf7b46a1775ccadb8175ac6f693fc5",
+      "digest": "sha256:6b3c0f3cf88e5b018b77f0e9263abb08fd5e251b49353b2cd92aa93e718bfeda",
       "imports": [
+        "src.claim_file",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.handler",
