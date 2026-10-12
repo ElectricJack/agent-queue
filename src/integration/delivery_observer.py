@@ -1,25 +1,11 @@
-"""Git delivery truth for the readers and guards outside the publisher.
+"""Request-scoped Git delivery evidence for readers and mutation guards.
 
-Stale-container settlement, integration status, archive/removal guards,
-branch cleanup and the legacy diagnostic readers all ask one question: is a
-completed task's *current* work on its project's configured target?  They ask
-it here, of :mod:`src.integration.delivery_truth`, never of a delivery row.
-
-The division of labour follows that module's contract:
-
-* SQL decides only *which* tasks need proof (:func:`development_delivery_scope`),
-  a graph/identity fact.  Whether their work is on the target is git's answer.
-* :class:`DeliveryObserver` fetches an isolated store per repository, never the
-  publisher's working checkout, so a reader neither waits for nor disturbs the
-  long publisher lock.  It runs outside every database transaction.
-* A guarded writer then rechecks, on its own transaction and under its own
-  locks, that each evaluated identity is unchanged
-  (:meth:`DeliveryView.verified_on`) and that the target has not moved since
-  the fetch (:meth:`DeliveryView.fresh`).  Anything unverified is unknown, and
-  unknown fails closed: it never settles, archives or deletes.
-
-Nothing here is persisted. A view lives for one request; the truth cache may
-reuse immutable Git proofs for identical completion inputs and pinned OIDs.
+SQL selects task identities; delivery_truth proves their current work on the
+configured target. DeliveryObserver fetches isolated stores outside transactions.
+Writers recheck identities with DeliveryView.verified_on under their locks and
+remote freshness with DeliveryView.fresh. Missing or stale proof fails closed:
+it cannot settle, archive or delete work. No view or delivery projection persists;
+only immutable proofs for identical inputs and pinned OIDs may be cached.
 """
 
 from __future__ import annotations
@@ -58,26 +44,15 @@ from src.integration.delivery_truth import (
 logger = logging.getLogger(__name__)
 
 def development_delivery_scope(task, *, modes=("development",)):
-    """``EXISTS``: *task*'s completed work must reach its project's target.
+    """Select artifacts whose delivery requires Git proof, never a delivery row.
 
-    The graph half of the old ``_development_delivery_pending``: a development
-    project with a designated repository, the task on that repository, unpinned,
-    or on one that is not its project's own (``fleet-meadow``: nobody collects
-    it, so git can never prove it and it stays unknown until rebound), and not
-    closed obsolete.  Another repository of the same project is a deliberate
-    binding outside the publisher and needs no proof.
-
-    A branchless task needs proof only when it recorded an artifact: a
-    completion that listed commits, or a current generation the
-    ``development_deliveries`` retirement marked as naming a historical source
-    it never recorded (:func:`~src.integration.publishable_artifact.legacy_artifact`,
-    unknown until migrated).  Anything else is an organizational container with
-    no artifact of its own, exactly as
-    :class:`~src.integration.delivery_truth.DeliverySnapshot` rules.
-
-    The optional modes arm lets active Git-first removal/mutation consumers
-    select hierarchy artifacts with the same scope rules. Admission readers
-    retain the development-only default.
+    The project needs a designated repository and the task must be unbound, bound
+    there, or bound outside its project's repositories (unknown until rebound).
+    Deliberate bindings to another repository in the project need no proof.
+    A branchless task needs proof only for recorded commits or a legacy historical
+    artifact; other branchless tasks are organizational containers. Obsolete closes
+    are excluded. Admission defaults to development; active mutation/removal readers
+    also request hierarchy and train modes.
     """
     from src.database.queries.blocked_state import obsolete_marker
     from src.integration.publishable_artifact import legacy_artifact
@@ -409,12 +384,10 @@ _FETCH_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def prerequisite_observer(db):
-    """The truth-bearing observer for sibling prerequisites, or None in shadow mode.
+    """Truth-bearing prerequisite observer, or None in shadow mode.
 
-    The daemon's general delivery observer carries no ``GitTruth``; under
-    ``integration.git_first: active`` it registers a separate one
-    (:meth:`set_prerequisite_observer`).  A delivery observer that already
-    carries truth (tests, embedders) is used directly.
+    Active mode registers a separate GitTruth observer; tests and embedders may
+    instead supply a general delivery observer that already carries truth.
     """
     observer = getattr(db, "_prerequisite_observer", None)
     if observer is not None and getattr(observer, "truth", None) is not None:
@@ -428,20 +401,12 @@ def prerequisite_observer(db):
 async def hierarchy_frontier_modes(
     db, *, project_ids=None, task_id=None, cached_only=False, display_unavailable=None,
 ):
-    """Request-scoped Git prerequisite evidence for scheduling and diagnostics.
+    """Share revalidated Git prerequisites across scheduler, pool and claim reads.
 
-    A cycle shares these modes between the scheduler and pool measurement.
-    Direct readers take their own view. Git runs outside transactions; identity
-    revalidation uses a short connection without locks. Advisory readers reuse
-    successful snapshots within READ_MAX_AGE, still checking target freshness.
-    Claim activation fetches and revalidates its own view under the task locks.
-    ``cached_only`` pins existing evidence for interactive diagnostics without
-    fetching or checking remote freshness; database identities are still checked.
-    ``display_unavailable`` optionally receives cache misses by project and target
-    kind. It is diagnostic metadata, never part of the admission modes.
-
-    Shadow observers preserve receipt admission. An unstable active view supplies
-    an empty delivered set, so it cannot fall back to a stale receipt.
+    Advisory reads reuse successful snapshots within READ_MAX_AGE and recheck target
+    freshness. Claims take fresh views under task locks. cached_only diagnostics
+    never fetch or check remote refs; display_unavailable records cache misses.
+    Shadow observers retain receipt admission; unstable active views withhold work.
     """
     from dataclasses import replace
 
@@ -807,12 +772,9 @@ class DeliveryObserver:
                       target_loader=None, cached_only: bool = False) -> DeliveryView:
         """Evaluate each task's current completion against its project's target.
 
-        A view is retaken when a target moved during evaluation; if it keeps
-        moving the last view is returned and :meth:`DeliveryView.fresh` stays
-        false for the caller to fail closed on.  Only a read-only surface
-        passes *max_age* (see :data:`READ_MAX_AGE`); every guarded writer
-        fetches. ``cached_only`` is for interactive diagnostics: absent or
-        expired snapshots return unknown without fetching or waiting on Git.
+        Retake moved targets; persistent movement leaves fresh() false and callers
+        fail closed. Only readers use max_age; guarded writers fetch. cached_only
+        diagnostics return unknown for absent or expired snapshots without Git I/O.
         """
         ids = set(task_ids)
         target_loader = target_loader or self.target_loader

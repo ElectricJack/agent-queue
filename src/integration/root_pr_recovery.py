@@ -69,6 +69,7 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
         return {"success": False, "outcome": "invalid"}
     db, request = handler.db, observation.request
     feedback = observation.feedback()
+    delivery = await db.observe_removal_delivery([request.task_id], for_mutation=True)
     async with db.immediate() as conn:
         await db.lock_hierarchy_project(conn, request.project_id)
         task = (await conn.execute(select(tasks).where(
@@ -144,6 +145,7 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
             return {"success": True, "outcome": "supervisor_notified", "blocker": reason}
 
         transition = await db._apply_transition(conn, request.task_id, TaskStatus.READY,
+            integration_delivery=delivery,
             context="reopen_with_feedback", assigned_agent_id=None, pr_url=None, retry_count=0,
             description=task["description"] + "\n\n---\n**Reopen Feedback:**\n" + feedback)
         await db._upsert_meta(request.task_id, RECOVERY_KEY,

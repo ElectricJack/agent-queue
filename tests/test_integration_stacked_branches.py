@@ -660,9 +660,17 @@ async def test_delivered_stale_stack_does_not_block_epic_pending(
         await checkpoint(stack.db, "after", after)
         await stack.service.prepare("after")
     if prerequisite_change == "reopen":
-        await stack.db.transition_task("first", TaskStatus.IN_PROGRESS, force=True)
+        # Inject the stale generation from an earlier writer; the current
+        # public mutation fence refuses reopening a contained prerequisite.
+        async with stack.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "first")
+                               .values(status="IN_PROGRESS", updated_at=tasks.c.updated_at + 1))
     elif prerequisite_change == "reclose":
-        await stack.db.transition_task("first", TaskStatus.IN_PROGRESS, force=True)
+        # Inject the stale generation from an earlier writer; the current
+        # public mutation fence refuses reopening a contained prerequisite.
+        async with stack.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "first")
+                               .values(status="IN_PROGRESS", updated_at=tasks.c.updated_at + 1))
         await close(stack.db, "first", [stack.first], close_id="first-reclosed", origin=stack.origin)
         await checkpoint(stack.db, "first", stack.first)
     else:

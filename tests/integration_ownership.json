@@ -8650,6 +8650,9 @@
     },
     "src/portable_config.py::_stage_project_preferences": {
       "reason": "Writes a pending portable integration preference draft, retaining destination-local trust and rollout requirements without activation."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.transition_task": {
+      "reason": "Public lifecycle transition observes current Git delivery outside the transaction and passes request-scoped evidence to the locked mutation guard; no persisted delivery projection or ref replay authority."
     }
   },
   "exclusions": {
@@ -13478,13 +13481,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1715,
+      "line": 1720,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "ed58169bce98bcfad556dc6d3ee783c7059596022f5a74010da56a65584887de",
+      "owner_fingerprint": "b5a445715cef5a08cb3bf6b172163802609677651c3bff228828c37c6626e136",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle metadata cleanup, including failure generation bookkeeping, clearing the worker failure streak on an intentional READY restart, and guarded retry routing. The routing failed-attempt journal records work verdicts for class escalation; integration status, branch reservations and ref replay authority stay in their dedicated records."
+      "reason": "Ordinary task lifecycle metadata cleanup, including failure generation bookkeeping, clearing the worker failure streak on an intentional READY restart, and guarded retry routing. The routing failed-attempt journal records work verdicts for class escalation; integration status, branch reservations and ref replay authority stay in their dedicated records. Current Git delivery evidence is observed outside the transaction and revalidated by the guarded lifecycle writer; the storage disposition remains ordinary."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2165,
@@ -15116,13 +15119,13 @@
       "reason": "Explicit LOCAL abandonment appends a cancelled revision to the existing legacy development.operation lifecycle journal after exact event/hash/full-manifest and inactive-authority checks. It preserves prior revisions and makes no delivery claim. This compatibility writer retires with the legacy journal and receives no final-phase allowance."
     },
     "src/integration/root_pr_recovery.py::recover_root_pr_checks::9838abf578dc8c2a386d1d4a9012e2aabe1e175732dd1d51dbe41a2ef7cfc4e9": {
-      "line": 154,
+      "line": 162,
       "owner": "recover_root_pr_checks",
       "call": "log_event",
-      "owner_fingerprint": "c3379e0cf6851fdb157980e7cc490eb7030d2248444849254c144459f96608e3",
+      "owner_fingerprint": "4e4f44de3b9395140b13705c7056ce991551ab7c550940c6c4fb84b599584310",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Transactional audit of a completed root reopened after authenticated exact-head required-check failure and locked completion, origin and policy revalidation. Records the failed source SHA, completion identity and reopen attempt alongside ordinary feedback and bounded recovery accounting; no ref replay instructions, publication authority or duplicate delivery lifecycle. Fresh PR and candidate checks remain required."
+      "reason": "Transactional audit of a completed root reopened after authenticated exact-head required-check failure and locked completion, origin and policy revalidation. Records the failed source SHA, completion identity and reopen attempt alongside ordinary feedback and bounded recovery accounting; no ref replay instructions, publication authority or duplicate delivery lifecycle. Fresh PR and candidate checks remain required. Current Git delivery evidence is observed outside the transaction and revalidated by the guarded lifecycle writer; the storage disposition remains ordinary."
     },
     "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository::21ae1cd4ddf58cf690836c6bf31c504fe7942594a23d94bcc21935941e496c96": {
       "line": 124,

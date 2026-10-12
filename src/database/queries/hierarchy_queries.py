@@ -1316,51 +1316,27 @@ class HierarchyQueryMixin:
         delivery=None,
         obsolete_integration_delegate: bool = False,
     ) -> bool:
-        """Fence canonical hierarchy/lifecycle writers for enabled projects.
+        """Fence hierarchy/lifecycle writers; return whether hierarchy delivery applies.
 
-        Returns whether hierarchical delivery applies.  When
-        ``retire_pending`` is true, a removal retires every live origin in the
-        subtree and advances each surviving affected parent's generation in
-        this transaction.  Delivered and batch-sealed identity is never
-        discarded.
-
-        ``branch_policy`` says what to do about origins whose branch reached
-        the remote, and is only consulted when ``retire_pending`` is set:
-
-        ``"keep"``
-            Retire the origins; leave the refs alone.  ``archive`` always
-            passes this — archiving moves a task out of the active view, it
-            does not destroy work.
-        ``"discard"``
-            Retire the origins and mark each materialized one ``pending`` for
-            :class:`~src.integration.branch_discard.BranchDiscardService`,
-            which removes the ref asynchronously.
-        ``None``
-            Refuse with ``branch_discard_required`` when the subtree holds a
-            materialized origin, naming the branches in the error context so a
-            surface can ask.  A caller that says nothing can never destroy a
-            branch by omission.
-
-        ``delivery`` is the git view a removal took before this transaction
-        (see :mod:`src.integration.removal_guard`); development work it does
-        not verify as delivered refuses an archive.
+        Delivered and sealed identities cannot be discarded. retire_pending retires live
+        subtree origins and advances surviving parents' generations in this transaction.
+        Its branch_policy selects keep (archive: retain refs) or discard (queue async
+        BranchDiscardService). Omitted policy refuses materialized origins explicitly.
+        The caller observes delivery before this transaction; unknown Git evidence
+        refuses mutation, and archive requires proof on the configured default target.
         """
         if branch_policy not in (None, "keep", "discard"):
             raise ValueError(f"unknown branch_policy: {branch_policy!r}")
-        task_row = (
-            await conn.execute(
-                select(tasks.c.project_id, tasks.c.parent_task_id).where(tasks.c.id == task_id)
-            )
-        ).one_or_none()
+        _delivery_query = select(tasks.c.project_id, tasks.c.parent_task_id).where(
+            tasks.c.id == task_id
+        )
+        task_row = (await conn.execute(_delivery_query)).one_or_none()
         if task_row is None:
             return False
-        mode = (
-            await conn.execute(
-                select(projects.c.hierarchical_integration_mode).where(
-                    projects.c.id == task_row.project_id
-                )
-            )
-        ).scalar_one_or_none()
+        _delivery_query = select(projects.c.hierarchical_integration_mode).where(
+            projects.c.id == task_row.project_id
+        )
+        mode = (await conn.execute(_delivery_query)).scalar_one_or_none()
         removal_ids = None
         if mutation in {"delete", "archive"}:
             # The removal half is mode-independent: audit rows and live repair
@@ -1393,13 +1369,7 @@ class HierarchyQueryMixin:
         if not ids:
             return True
         active_batch_states = (
-            "sealing",
-            "sealed",
-            "building",
-            "testing",
-            "repairing",
-            "human_blocked",
-            "promoting",
+            "sealing", "sealed", "building", "testing", "repairing", "human_blocked", "promoting",
             "cleanup_pending",
         )
         # A mutation below a sealed root changes that member's frozen
@@ -1417,41 +1387,34 @@ class HierarchyQueryMixin:
         )
         ancestor_ids = [row[0] for row in (await conn.execute(select(ancestors.c.id))).all()]
         sealed_scope = sorted(set(ids) | set(ancestor_ids))
-        sealed = (
-            await conn.execute(
-                select(integration_batch_members.c.task_id)
-                .select_from(
-                    integration_batch_members.join(
-                        integration_batches,
-                        integration_batches.c.id == integration_batch_members.c.batch_id,
-                    )
+        _delivery_query = (
+            select(integration_batch_members.c.task_id)
+            .select_from(
+                integration_batch_members.join(
+                    integration_batches,
+                    integration_batches.c.id == integration_batch_members.c.batch_id,
                 )
-                .where(integration_batch_members.c.task_id.in_(sealed_scope))
-                .where(integration_batches.c.lifecycle.in_(active_batch_states))
-                .limit(1)
             )
-        ).first()
+            .where(integration_batch_members.c.task_id.in_(sealed_scope))
+            .where(integration_batches.c.lifecycle.in_(active_batch_states))
+            .limit(1)
+        )
+        sealed = (await conn.execute(_delivery_query)).first()
         if sealed:
             raise HierarchyError("sealed", f"{mutation} would change a sealed subtree")
         rollover_operation = None
         if mutation == "reopen":
-            checkpoint_episode = (
-                await conn.execute(
-                    select(task_integration_checkpoints.c.episode_id).where(
-                        task_integration_checkpoints.c.task_id == task_id
-                    )
-                )
-            ).scalar_one_or_none()
+            _delivery_query = select(task_integration_checkpoints.c.episode_id).where(
+                task_integration_checkpoints.c.task_id == task_id
+            )
+            checkpoint_episode = (await conn.execute(_delivery_query)).scalar_one_or_none()
             if checkpoint_episode is not None:
-                rollover_operation = (
-                    await conn.execute(
-                        select(integration_repair_operations.c.id).where(
-                            integration_repair_operations.c.parent_task_id == task_id,
-                            integration_repair_operations.c.episode_id == checkpoint_episode,
-                            integration_repair_operations.c.state == "completed",
-                        )
-                    )
-                ).scalar_one_or_none()
+                _delivery_query = select(integration_repair_operations.c.id).where(
+                    integration_repair_operations.c.parent_task_id == task_id,
+                    integration_repair_operations.c.episode_id == checkpoint_episode,
+                    integration_repair_operations.c.state == "completed",
+                )
+                rollover_operation = (await conn.execute(_delivery_query)).scalar_one_or_none()
         delivered_stmt = select(task_delivery_receipts.c.source_task_id).where(
             task_delivery_receipts.c.source_task_id.in_(ids)
         )
@@ -1485,7 +1448,7 @@ class HierarchyQueryMixin:
                 internal_refs = {"refs/heads/" + branch.removeprefix("refs/heads/")
                                  for branch in branches}
             delivered = any(
-                proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}
+                proof.state is DeliveryState.CONTAINED
                 and proof.request.target_ref not in internal_refs
                 for proof in verified.values()
             )
@@ -1497,18 +1460,13 @@ class HierarchyQueryMixin:
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would change delivered branch identity"
             )
-        origins = (
-            (
-                await conn.execute(
-                    select(task_branch_origins)
-                    .where(task_branch_origins.c.task_id.in_(ids))
-                    .where(task_branch_origins.c.retired_at.is_(None))
-                    .with_for_update()
-                )
-            )
-            .mappings()
-            .all()
+        _delivery_query = (
+            select(task_branch_origins)
+            .where(task_branch_origins.c.task_id.in_(ids))
+            .where(task_branch_origins.c.retired_at.is_(None))
+            .with_for_update()
         )
+        origins = (await conn.execute(_delivery_query)).mappings().all()
         materialized = [row for row in origins if row["materialized"]]
         if retire_pending and materialized and branch_policy is None:
             # Not a refusal on the merits — the caller simply has not said what

@@ -59,13 +59,7 @@ _CHILD_FIELDS = frozenset({
     "dedup_key",
 })
 _ACTIVE_BATCH_STATES = (
-    "sealing",
-    "sealed",
-    "building",
-    "testing",
-    "repairing",
-    "human_blocked",
-    "promoting",
+    "sealing", "sealed", "building", "testing", "repairing", "human_blocked", "promoting",
     "cleanup_pending",
 )
 DefaultHeadResolver = Callable[[RepoConfig, str], Awaitable[str] | str]
@@ -1444,19 +1438,17 @@ class HierarchyIntegration:
         task = await self._task_row(conn, task_id)
         if task["status"] not in {TaskStatus.DEFINED.value, TaskStatus.READY.value}:
             raise HierarchyError("delivery_target_fixed", "task already started")
-        busy = (
-            await conn.execute(
-                select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
-            )
-        ).first()
-        live = (
-            await conn.execute(
-                select(sessions.c.id)
-                .where(sessions.c.task_id == task_id)
-                .where(sessions.c.state.in_(("starting", "running", "draining")))
-                .limit(1)
-            )
-        ).first()
+        _delivery_query = (
+            select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
+        )
+        busy = (await conn.execute(_delivery_query)).first()
+        _delivery_query = (
+            select(sessions.c.id)
+            .where(sessions.c.task_id == task_id)
+            .where(sessions.c.state.in_(("starting", "running", "draining")))
+            .limit(1)
+        )
+        live = (await conn.execute(_delivery_query)).first()
         from src.integration.delivery_observer import prerequisite_observer
 
         if prerequisite_observer(self.db) is not None:
@@ -1465,27 +1457,25 @@ class HierarchyIntegration:
             )
             delivered = False
         else:
-            delivered = (
-                await conn.execute(
-                    select(task_delivery_receipts.c.id)
-                    .where(task_delivery_receipts.c.source_task_id == task_id)
-                    .limit(1)
-                )
-            ).first()
-        sealed = (
-            await conn.execute(
-                select(integration_batch_members.c.task_id)
-                .select_from(
-                    integration_batch_members.join(
-                        integration_batches,
-                        integration_batches.c.id == integration_batch_members.c.batch_id,
-                    )
-                )
-                .where(integration_batch_members.c.task_id == task_id)
-                .where(integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES))
+            _delivery_query = (
+                select(task_delivery_receipts.c.id)
+                .where(task_delivery_receipts.c.source_task_id == task_id)
                 .limit(1)
             )
-        ).first()
+            delivered = (await conn.execute(_delivery_query)).first()
+        _delivery_query = (
+            select(integration_batch_members.c.task_id)
+            .select_from(
+                integration_batch_members.join(
+                    integration_batches,
+                    integration_batches.c.id == integration_batch_members.c.batch_id,
+                )
+            )
+            .where(integration_batch_members.c.task_id == task_id)
+            .where(integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES))
+            .limit(1)
+        )
+        sealed = (await conn.execute(_delivery_query)).first()
         if busy or live or delivered:
             raise HierarchyError("delivery_target_fixed", "task has started or delivered work")
         if sealed:
