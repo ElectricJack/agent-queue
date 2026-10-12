@@ -797,7 +797,7 @@ class IntegrationStatusService:
     ) -> list[dict[str, Any]]:
         """Live batches on *task*'s routed target, when the task's branch is live."""
         from src.integration.delivery_observer import delivery_targets
-        from src.integration.stale_schedule import LIVE_LIFECYCLES
+        from src.integration.release import LIVE_LIFECYCLES
 
         live = (await conn.execute(select(exists(select(task_branch_origins.c.task_id).where(
             task_branch_origins.c.task_id == task_id,

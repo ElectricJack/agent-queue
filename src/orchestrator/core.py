@@ -625,8 +625,7 @@ class Orchestrator(
         self.integration_service = None
         # IntegrationTrain | None — the delivery engine when git_first is active.
         self.integration_train = None
-        #: When this process began; refreshed by ``initialize()``.  Integration
-        #: seal grace reads it (``stale_schedule.OrphanGrace``).
+        #: When this process began; refreshed by ``initialize()`` for playbook recovery.
         self._process_started_at = time.time()
         self._owner_recovery_next_due: float = 0.0
         self._development_completion_unsub = None
@@ -1911,7 +1910,6 @@ class Orchestrator(
         from src.integration.protection import (
             enablement_reader as protection_enablement_reader,
         )
-        from src.integration.release import IntegrationReleaseService
         from src.integration.repair import RepairService
         from src.integration.service import IntegrationService
 
@@ -1934,15 +1932,9 @@ class Orchestrator(
                 None if project is None else project.hierarchical_integration_policy
             )
 
-        train_enabled = self.config.integration.git_first == "active"
         self.integration_scheduler = None
-        if not train_enabled:
-            from src.integration.scheduler import IntegrationScheduler
-            self.integration_scheduler = IntegrationScheduler(self.db)
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
-            before_dispatch=(self.integration_scheduler.maintain_lease
-                             if self.integration_scheduler is not None else None),
             project_max_wait=project_max_wait,
         )
         github_clients = {}
@@ -1988,7 +1980,6 @@ class Orchestrator(
             ),
         )
         self.integration_attestation_resolver = self.integration_attestation_service.resolve
-        self.integration_release_service = IntegrationReleaseService(self.db)
         self.integration_cleanup_service = IntegrationCleanupService(
             self.db,
             data_dir=self.config.data_dir,
@@ -2004,22 +1995,6 @@ class Orchestrator(
         )
         self.root_promotion_service = None
         self.promotion_service = None
-        if not train_enabled:
-            from src.integration.main_promotion import RootPromotionService
-            from src.integration.promotion import PromotionService
-
-            self.root_promotion_service = RootPromotionService(
-                self.db,
-                data_dir=self.config.data_dir,
-                git_manager=self.git,
-                github_client_factory=self.github_client_factory,
-                attestation_resolver=self.integration_attestation_resolver,
-            )
-            self.promotion_service = PromotionService(
-                self.db,
-                data_dir=self.config.data_dir,
-                git_manager=self.git,
-            )
         # Removes the branches an operator explicitly asked to discard when
         # deleting a task.  Its work is recorded on the retired origin row, so
         # it survives a restart and needs no other authority.
@@ -2029,7 +2004,7 @@ class Orchestrator(
             # git_first: active hands every target to the train, which collects
             # a container's children into its own branch; the legacy collector
             # that owns a collection episode is not built at all.
-            legacy_container_collection=self.config.integration.git_first != "active",
+            legacy_container_collection=False,
         )
         from src.integration.branch_retirement import BranchRetirementService
 
@@ -2048,15 +2023,10 @@ class Orchestrator(
             retirement_service=self.branch_retirement_service,
         )
         self.integration_cleanup_service.retirement_service = self.branch_retirement_service
-        from src.integration.parent_ci import ParentCIService
-
-        parent_ci = ParentCIService(
-            self.integration_attestation_service, self.github_repository_binding_resolver
-        )
         from src.integration.development import DevelopmentPrimitives
         from src.integration.github_review_poll import GitHubReviewPoller
         from src.integration.owner_recovery import owner_recovery_for
-        from src.integration.review_evidence import ReviewEvidenceProducer
+        from src.integration.reviews import ReviewEvidenceProducer
         from src.integration.root_pull_requests import RootPullRequestReconciler
         from src.integration.pr_cleanup import PullRequestReconciler
         async def development_confirm_stopped(session):
@@ -2074,10 +2044,6 @@ class Orchestrator(
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
-        if not train_enabled:
-            from src.integration.root_runtime import root_runtime_for
-            from src.integration.parent_runtime import parent_runtime_for
-            from src.integration.development_runtime import development_runtime_for
         from src.integration.train_sources import TrainCommandDriver, train_for
 
         self.parent_owner_recovery = owner_recovery
@@ -2089,20 +2055,12 @@ class Orchestrator(
 
         async def settle_orphaned_parents(now):
             return await settle_orphaned_parent_operations(
-                self.db, now, legacy_engine_gone=train_active,
+                self.db, now, legacy_engine_gone=True,
             )
-        self.parent_subject_runtime = (
-            None if train_active else parent_runtime_for(self, parent_ci)
-        )
-        # A disabled reconciler pauses delivery; it never selects another engine.
-        self.development_subject_runtime = (
-            None if train_active else development_runtime_for(self)
-        )
+        self.parent_subject_runtime = None
+        self.development_subject_runtime = None
         self.integration_service = IntegrationService(
             self.db, self.integration_outbox,
-            subject_runtime=None if train_active else root_runtime_for(self),
-            parent_subject_runtime=self.parent_subject_runtime,
-            development_subject_runtime=self.development_subject_runtime,
             # The service drives the train through integration_train_tick.
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
@@ -2114,7 +2072,7 @@ class Orchestrator(
                 "owner recovery": self._sweep_stranded_owners,
                 "delegate cleanup": RepairService(self.db).retire_terminal_delegates,
                 "GitHub PR reviews": GitHubReviewPoller(
-                    self.db, ReviewEvidenceProducer(self.db, self.repository_git if train_active else self.promotion_service), self.git,
+                    self.db, ReviewEvidenceProducer(self.db, self.repository_git), self.git,
                     source_ci_handler=self._observe_integration_source_ci,
                     ancestry_handler=self._repair_integration_source_ancestry,
                     parent_head_handler=self._reverify_integration_parent_source,

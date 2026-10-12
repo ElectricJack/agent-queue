@@ -771,7 +771,7 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
         _ACTIVE_BATCH_LIFECYCLES,
         _root_delivery_receipt_conditions,
     )
-    from src.integration.review_evidence import ReviewEvidenceProducer
+    from src.integration.reviews import ReviewEvidenceProducer
     from src.integration.delivery_observer import prerequisite_observer
     from src.integration.delivery_truth import DeliveryState
 
@@ -1023,7 +1023,7 @@ async def _find_orphaned_prs(ctx, project_ids=None, *, now=None):
 
     if ctx.db is None or not hasattr(ctx.db, "_engine"):
         return [], []
-    factory = getattr(ctx.handler, "_integration_promotion_service", None)
+    factory = getattr(ctx.handler, "_integration_repository_git", None)
     if factory is not None:
         git = factory().git
     else:

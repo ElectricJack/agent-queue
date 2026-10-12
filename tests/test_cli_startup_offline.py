@@ -272,7 +272,8 @@ from src.mcp_registration import _discover_all_commands
 
 commands = _discover_all_commands()
 assert "task_claim" in commands
-assert commands["integration_build_candidate"]["input_schema"]["properties"]
+assert commands["integration_seal_now"]["input_schema"]["properties"]
+assert "integration_build_candidate" not in commands
 assert "task" in cli.commands
 assert not any(name == "mcp" or name.startswith("mcp.") for name in sys.modules)
 assert not any(name == "src.orchestrator" or name.startswith("src.orchestrator.")

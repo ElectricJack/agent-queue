@@ -1897,7 +1897,7 @@ class ExecutionMixin:
                         "feedback": feedback,
                     }
             elif review_evidence_snapshot is not None and new_status == TaskStatus.COMPLETED:
-                from src.integration.review_evidence import ReviewEvidenceProducer
+                from src.integration.reviews import ReviewEvidenceProducer
 
                 async with self.db.immediate() as conn:
                     transition = await ReviewEvidenceProducer(

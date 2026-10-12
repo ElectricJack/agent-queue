@@ -147,10 +147,6 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "promote_rulesets",
         "promote_status",
         "promote_list",
-        # The command derives the candidate/member/fence from this session's
-        # live repair assignment and separately fences pool calls by claim
-        # epoch.  No caller-selected integration identity reaches the service.
-        "integration_resolve_candidate_member",
         # A worker's comment write is checked again against the dispatch
         # ledger and its live held task by ReviewCommandsMixin.
         "review_submit",
@@ -209,8 +205,6 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_refresh_epic",
         "integration_retire_origin",
         "integration_reevaluate_repair",
-        "integration_recover_candidate_member",
-        "integration_recover_unwritten_resolution",
         "integration_release_owner",
         "integration_release_stale_owners",
         "integration_redrive_root",
@@ -879,21 +873,6 @@ async def check_request_scope(
             return None
         # ``list_tasks`` is also a triage capability. A session without an
         # ingestion assignment must still reach that independently checked grant.
-    if (scope.kind == "session" and not scope.elevated and command in {
-        "integration_resolve_conflict", "integration_push_conflict_resolution",
-    }):
-        if await worker_branches_for_session(db, scope) is None:
-            return "out of scope: conflict resolution requires a live repair assignment"
-        session = await db.get_session(scope.session_id)
-        repair = await db.get_repair_filing_scope(session.task_id, session_id=scope.session_id)
-        if (repair is None or not repair["active"]
-                or repair["writer_kind"] != "repair_delegate"
-                or repair["target_kind"] != "parent"):
-            return "out of scope: conflict resolution requires a live parent repair delegate"
-        # The promotion service validates the exact intent, operation, workspace,
-        # instance and fence against this authenticated session before any write.
-        # Do not inject task/project fields into these strict command models.
-        return None
     if (
         scope.kind == "session"
         and not scope.elevated

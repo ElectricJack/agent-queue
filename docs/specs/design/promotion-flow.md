@@ -47,14 +47,15 @@ locates the added modules and marks later deletion as planned.
 ## Implementation boundaries
 
 The new train and release flow use retained Git readers, ownership guards and
-shared contracts. Legacy publishers and subject runtimes remain available only
-for legacy operation and recovery; active train startup does not construct them.
-Shared definitions have one retained owner, with compatibility imports for old
-callers until retirement.
+shared contracts. Legacy publishers and subject runtimes are retired. Historical recovery,
+archival and cleanup consumers retain their fenced records; active startup
+constructs the train and retained maintenance.
+Shared definitions have retained owners in `development_policy.py`,
+`repository_git.py` and the train contracts.
 
 Delivery availability is checked against the selected runtime, rather than the
 presence of legacy publisher objects. An active train serves `train`, `hierarchy`
-and `development`; legacy subject delivery requires active reconciler visits.
+and `development`.
 `disabled` and `observe` deliberately have no writer. A delivering project whose
 selected engine is unavailable, or whose designated repository is missing or
 belongs to another project, is reported by `integration.delivery_engine` and the
@@ -73,8 +74,10 @@ selection are described in the [release guide](../../guides/releases.md).
 
 Live activation configures the default branch and reviewed project policies;
 release requests still require their configured exact-head approval. The first
-live release and cross-project rollout are tracked separately. Legacy retirement
-remains pending operator testing and the observation gate.
+live release and cross-project rollout are tracked separately. Operator authorization
+for the C1/C2 cleanup supersedes the former observation hold; table retirement
+still requires proof that no active or retained safety consumer needs the table.
+See the [remaining-consumer audit](../../reports/2026-10-12-legacy-consumer-retirement.md).
 
 Continuous steps also observe their source on each train visit. An enabled,
 reviewed project activation receives a durable `promotion.source_settled` event

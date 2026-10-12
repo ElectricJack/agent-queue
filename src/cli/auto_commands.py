@@ -154,13 +154,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_authorize_root",
     "integration_redrive_child",
     "integration_reopen_collection",
-    "integration_rebind_repair",
-    "integration_rebind_detached_repair",
-    "integration_recover_preserved_repair",
-    "integration_recover_parent_head",
     "integration_close_delivered_pr",
-    "integration_resolve_candidate_member",
-    "integration_recover_candidate_member",
     "integration_record_root_noop",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list",

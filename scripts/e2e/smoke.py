@@ -2454,6 +2454,13 @@ def _pin_train_validation(project_id: str, home: Path) -> dict:
         "id": f"{project_id}-development", "scope": ProjectScope(project_id=project_id),
         "source_hash": source_digest(source), "integration_policy": policy_from_markdown(source),
     })
+    # Only the retained cleanup command remains activatable. The active train
+    # reads this pin for its frozen validation settings, never for publication.
+    definition = definition.model_copy(update={
+        "rules": [rule for rule in definition.rules if rule.id == "cleanup-promoted"],
+        "steps": {name: step for name, step in definition.steps.items()
+                  if name.startswith("cleanup-promoted--")},
+    })
     digest = artifact_sha256(definition)
     bundle = home / "vault" / "e2e-bundles" / definition.id
     bundle.mkdir(parents=True, exist_ok=True)

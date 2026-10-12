@@ -806,14 +806,13 @@ it exists to prevent.
 
 ## Running the kit with the git-first protocol active
 
-The cutover smoke runs the same kit with `integration.git_first: active`, so the
-reduced train — not the subject runtime — is the delivery path the daemon
-builds. `AQ_E2E_EXTRA_CONFIG` appends a caller-owned YAML fragment verbatim, so
-no script needs to know about the selector:
+The kit defaults to `integration.git_first: active`, so the reduced train is
+its delivery path. `AQ_E2E_EXTRA_CONFIG` appends a caller-owned YAML fragment
+verbatim and replaces that default; callers must select `active` in their
+fragment when exercising delivery.
 
 ```bash
-printf 'integration:\n  git_first: active\n' > /tmp/aq-e2e-git-first.yaml
-AQ_E2E_EXTRA_CONFIG=/tmp/aq-e2e-git-first.yaml scripts/e2e-env.sh --reset
+scripts/e2e-env.sh --reset
 scripts/e2e-smoke.sh
 ```
 
@@ -839,7 +838,7 @@ and rejecting unknown-delivery blockers before publication. The fake daemon
 substitutes GitHub credentials for remotes inside its
 marked disposable home; candidate construction, fenced pushes and Git delivery
 remain real. With `shadow`, it checks completion provenance and explicitly reports
-delivery as untested. The CI `cli` shard selects `active` to run the full proof.
+delivery as untested. The default and CI `cli` shard select `active` to run the full proof.
 
 ## The App-mode train proof
 

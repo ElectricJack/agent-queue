@@ -107,21 +107,15 @@ def authorize_root_primitives(monkeypatch):
     from src.integration import (
         attestation,
         candidate_ci,
-        candidates,
         cleanup,
-        main_promotion,
         repair,
-        scheduler,
     )
 
     modules = (
         attestation,
         candidate_ci,
-        candidates,
         cleanup,
-        main_promotion,
         repair,
-        scheduler,
     )
     for module in modules:
         for cls in vars(module).values():

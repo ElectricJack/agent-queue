@@ -31,7 +31,6 @@ from src.git.manager import is_valid_git_oid
 
 DESIGN_INTEGRATION_COMMANDS = frozenset(
     {
-        "integration_schedule_due",
         "integration_file_children",
         "integration_checkpoint_parent",
         "integration_delivery_readiness",
@@ -44,10 +43,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_reconcile_expired_mutation",
         "integration_parent_verify",
         "integration_complete_parent",
-        "delivery_promote",
         "delivery_receipts",
-        "integration_seal",
-        "integration_build_candidate",
         "integration_repair_close_current",
         "integration_ci_evidence",
         "integration_repair_start",
@@ -56,12 +52,6 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_repair_timeout",
         "integration_transfer_owner",
         "integration_mutate_hierarchy",
-        "integration_reconcile_promotion",
-        "integration_resolve_conflict",
-        "integration_push_conflict_resolution",
-        "integration_recover_candidate_member",
-        "integration_recover_unwritten_resolution",
-        "integration_promote_main",
         "integration_promotion_publish",
         "integration_release",
         "integration_cleanup",
@@ -85,20 +75,9 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_authorize_root",
         "integration_redrive_child",
         "integration_reopen_collection",
-        "integration_rebind_repair",
-        "integration_rebind_detached_repair",
-        "integration_recover_preserved_repair",
-        "integration_recover_parent_head",
         "integration_close_delivered_pr",
-        "integration_resolve_candidate_member",
     }
 )
-
-
-class IntegrationScheduleDueArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    now: float
-    trigger: Literal["periodic", "manual"]
 
 
 class IntegrationStatusArgs(CommandArgs):
@@ -393,18 +372,6 @@ class IntegrationRebindRepairArgs(CommandArgs):
         return self
 
 
-class IntegrationRebindRepairValue(CommandValue):
-    task_id: str | None = None
-    intent_id: str | None = None
-    head_sha: str | None = None
-    tree_sha: str | None = None
-    repair_commit_shas: tuple[str, ...] = ()
-    fence_token: int | None = None
-    session_id: str | None = None
-    reason: str | None = None
-    next_step: str | None = None
-
-
 class IntegrationRecoverParentHeadArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
     head_sha: str
@@ -428,26 +395,6 @@ class IntegrationRecoverParentHeadArgs(CommandArgs):
         return self
 
 
-class IntegrationRecoverParentHeadValue(CommandValue):
-    operation_id: str | None = None
-    head_sha: str | None = None
-    episode_id: str | None = None
-    generation: int | None = None
-    stage: int | None = None
-    fence_token: int | None = None
-    receipt_head_sha: str | None = None
-    repair_task_id: str | None = None
-    completion_id: str | None = None
-    repair_head_sha: str | None = None
-    collection_receipt_ids: tuple[str, ...] = ()
-    attempts: int | None = None
-    deadline_at: float | None = None
-    stage_state: str | None = None
-    operation_state: str | None = None
-    apply_command: str | None = None
-    reason: str | None = None
-
-
 class IntegrationRecoverPreservedRepairArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
     intent_id: str = Field(min_length=1)
@@ -467,28 +414,6 @@ class IntegrationRecoverPreservedRepairArgs(CommandArgs):
         ):
             raise ValueError("apply requires the previewed stage, released fence and a reason")
         return self
-
-
-class IntegrationRecoverPreservedRepairValue(CommandValue):
-    apply_command: str | None = None
-    release_id: str | None = None
-    operation_id: str | None = None
-    stage: int | None = None
-    intent_id: str | None = None
-    candidate_sha: str | None = None
-    expected_target: str | None = None
-    source_head: str | None = None
-    tree_sha: str | None = None
-    parents: tuple[str, ...] = ()
-    repair_commit_shas: tuple[str, ...] = ()
-    remote_head_sha: str | None = None
-    preserved_ref: str | None = None
-    released_fence: int | None = None
-    deadline_at: float | None = None
-    attempts: int | None = None
-    remaining_attempts: int | None = None
-    reason: str | None = None
-    next_step: str | None = None
 
 
 class IntegrationRebindDetachedRepairArgs(CommandArgs):
@@ -513,23 +438,6 @@ class IntegrationRebindDetachedRepairArgs(CommandArgs):
         return self
 
 
-class IntegrationRebindDetachedRepairValue(CommandValue):
-    operation_id: str | None = None
-    stage: int | None = None
-    repair_task_id: str | None = None
-    intent_id: str | None = None
-    frozen_head_sha: str | None = None
-    remote_head_sha: str | None = None
-    frozen_head_refs: tuple[str, ...] = ()
-    receipt_ids: tuple[str, ...] = ()
-    fence_token: int | None = None
-    deadline_at: float | None = None
-    delegate_status: str | None = None
-    dispatch_outcome: str | None = None
-    reason: str | None = None
-    next_step: str | None = None
-
-
 class IntegrationCloseDeliveredPrArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     pr_number: int = Field(gt=0)
@@ -552,17 +460,6 @@ class IntegrationCloseDeliveredPrArgs(CommandArgs):
         ):
             raise ValueError("applying requires expected_head_sha and reason")
         return self
-
-
-class IntegrationRecoverCandidateMemberArgs(CommandArgs):
-    reservation_id: str = Field(min_length=1)
-
-
-class IntegrationRecoverCandidateMemberValue(CommandValue):
-    batch_id: str | None = None
-    revision: int | None = None
-    member_ordinal: int | None = None
-    invariant: str | None = None
 
 
 class IntegrationOperationalValue(CommandValue):
@@ -737,28 +634,6 @@ class IntegrationRedriveChildValue(CommandValue):
     reason: str | None = None
 
 
-class IntegrationScheduleDueValue(CommandValue):
-    project_id: str | None = None
-    request_id: str | None = None
-    trigger: Literal["periodic", "manual"] | None = None
-    requested_at: float | None = None
-    request_sequence: int | None = None
-    next_due_at: float | None = None
-
-
-class IntegrationSealArgs(CommandArgs):
-    project_id: str = Field(min_length=1)
-    request_id: str = Field(min_length=1)
-    now: float | None = None
-
-
-class IntegrationSealValue(CommandValue):
-    project_id: str | None = None
-    request_id: str | None = None
-    batch_id: str | None = None
-    operation_id: str | None = None
-
-
 class IntegrationTransferOwnerArgs(CommandArgs):
     target: BranchKey
     expected_token: int
@@ -770,21 +645,6 @@ class IntegrationTransferOwnerValue(CommandValue):
     fence: Fence | None = None
 
 
-class DeliveryPromoteArgs(CommandArgs):
-    operation_key: str
-    source_task_id: str
-    source_head: str
-    source_base: str
-    expected_target: str
-    fence: Fence
-
-
-class PromotionCommandValue(CommandValue):
-    intent_id: str | None = None
-    receipt_id: str | None = None
-    prepared_sha: str | None = None
-
-
 class DeliveryReceiptsArgs(CommandArgs):
     source_task_id: str
     repository_id: str
@@ -793,98 +653,6 @@ class DeliveryReceiptsArgs(CommandArgs):
 
 class DeliveryReceiptsValue(CommandValue):
     receipts: tuple[dict[str, Any], ...] = ()
-
-
-class IntegrationReconcilePromotionArgs(CommandArgs):
-    intent_id: str
-    fence: Fence | None = Field(
-        default=None,
-        description="Current reserved collector fence; enables recovery of unapplied child intents.",
-    )
-
-
-class IntegrationResolveConflictArgs(CommandArgs):
-    intent_id: str
-    operation_id: str
-    resolved_head_sha: str
-    resolved_tree_sha: str
-    repair_commit_shas: tuple[str, ...] = Field(min_length=1)
-    fence: Fence
-
-
-class IntegrationPushConflictResolutionArgs(CommandArgs):
-    intent_id: str
-    fence: Fence
-
-
-class IntegrationResolveCandidateMemberArgs(CommandArgs):
-    """Publish the exact repair produced by this session's candidate-member assignment."""
-
-    resolved_head_sha: str
-    resolved_tree_sha: str
-    repair_commit_shas: tuple[str, ...] = Field(min_length=1)
-    claim_epoch: int | None = Field(default=None, ge=0)
-    # These identities are injected by the authenticated API surface.  They
-    # are accepted by the model so they cannot be smuggled into the domain
-    # request; the handler compares them with the current principal instead.
-    task_id: str | None = Field(default=None, min_length=1)
-    session_id: str | None = Field(default=None, min_length=1)
-    project_id: str | None = Field(default=None, min_length=1)
-
-    @field_validator("resolved_head_sha", "resolved_tree_sha")
-    @classmethod
-    def exact_git_oid(cls, value: str) -> str:
-        if not is_valid_git_oid(value):
-            raise ValueError("candidate repair heads and trees must be exact lowercase Git OIDs")
-        return value
-
-    @field_validator("repair_commit_shas")
-    @classmethod
-    def exact_repair_commits(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        if len(values) != len(set(values)) or any(not is_valid_git_oid(value) for value in values):
-            raise ValueError("repair_commit_shas must be unique exact lowercase Git OIDs")
-        return values
-
-
-class IntegrationResolveCandidateMemberValue(CommandValue):
-    invariant: str | None = None
-    reservation_id: str | None = None
-    batch_id: str | None = None
-    revision: int | None = None
-    member_ordinal: int | None = None
-    partial_head_sha: str | None = None
-    continuation: dict[str, Any] | None = None
-
-
-class IntegrationPromoteMainArgs(CommandArgs):
-    batch_id: str = Field(min_length=1)
-    revision: int = Field(ge=0)
-
-
-class IntegrationPromoteMainValue(CommandValue):
-    batch_id: str | None = None
-    revision: int | None = None
-    intent_id: str | None = None
-    receipt_ids: tuple[str, ...] = ()
-    head_sha: str | None = None
-
-
-class IntegrationBuildCandidateArgs(CommandArgs):
-    batch_id: str = Field(min_length=1)
-    expected_revision: int | None = Field(default=None, ge=0)
-    # The reconciler's observed default-branch head. A current revision built
-    # on any other base is rebuilt onto it (the revision then advances).
-    expected_base_sha: str | None = Field(default=None, min_length=1)
-
-
-class IntegrationBuildCandidateValue(CommandValue):
-    batch_id: str | None = None
-    revision: int | None = None
-    operation_id: str | None = None
-    head_sha: str | None = None
-    branch: str | None = None
-    pr_url: str | None = None
-    member_ordinal: int | None = None
 
 
 class IntegrationRepairCloseCurrentArgs(CommandArgs):
@@ -1614,56 +1382,6 @@ INTEGRATION_REOPEN_COLLECTION = _operational_contract(
 )
 
 
-INTEGRATION_REBIND_REPAIR = _operational_contract(
-    "integration_rebind_repair",
-    IntegrationRebindRepairArgs,
-    ("would_rebind", "rebound", "already_reserved", "changed", "blocked", "not_found"),
-    successes=frozenset({"would_rebind", "rebound", "already_reserved"}),
-    side_effect=SideEffectClass.COMPOSITE,
-    result_model=IntegrationRebindRepairValue,
-)
-
-PRESERVED_REPAIR_OUTCOMES = (
-    "would_recover", "recovered", "already_recovered", "changed", "blocked",
-)
-
-INTEGRATION_RECOVER_PRESERVED_REPAIR = _operational_contract(
-    "integration_recover_preserved_repair",
-    IntegrationRecoverPreservedRepairArgs,
-    PRESERVED_REPAIR_OUTCOMES,
-    successes=frozenset({"would_recover", "recovered", "already_recovered"}),
-    side_effect=SideEffectClass.COMPOSITE,
-    result_model=IntegrationRecoverPreservedRepairValue,
-)
-
-INTEGRATION_RECOVER_PARENT_HEAD = _operational_contract(
-    "integration_recover_parent_head",
-    IntegrationRecoverParentHeadArgs,
-    PRESERVED_REPAIR_OUTCOMES,
-    successes=frozenset({"would_recover", "recovered", "already_recovered"}),
-    side_effect=SideEffectClass.UPDATE,
-    result_model=IntegrationRecoverParentHeadValue,
-)
-
-REBIND_DETACHED_REPAIR_OUTCOMES = (
-    "would_rebind",
-    "rebound",
-    "already_rebound",
-    "changed",
-    "blocked",
-    "not_found",
-)
-
-INTEGRATION_REBIND_DETACHED_REPAIR = _operational_contract(
-    "integration_rebind_detached_repair",
-    IntegrationRebindDetachedRepairArgs,
-    REBIND_DETACHED_REPAIR_OUTCOMES,
-    successes=frozenset({"would_rebind", "rebound", "already_rebound"}),
-    side_effect=SideEffectClass.COMPOSITE,
-    result_model=IntegrationRebindDetachedRepairValue,
-)
-
-
 CLOSE_DELIVERED_PR_OUTCOMES = (
     "would_close",
     "closed",
@@ -1683,31 +1401,6 @@ INTEGRATION_CLOSE_DELIVERED_PR = _operational_contract(
     successes=frozenset({"would_close", "closed", "nothing_to_close"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationCloseDeliveredPrValue,
-)
-
-INTEGRATION_RECOVER_CANDIDATE_MEMBER = CommandContract(
-    execution=ExecutionContract(
-        name="integration_recover_candidate_member",
-        args_model=IntegrationRecoverCandidateMemberArgs,
-        result_model=IntegrationRecoverCandidateMemberValue,
-        outcomes=tuple(
-            OutcomeSpec(name=name, classification=(
-                OutcomeClass.SUCCESS if name in {"accepted", "already_accepted", "rejected"}
-                else OutcomeClass.FAILURE
-            ))
-            for name in ("accepted", "already_accepted", "rejected", "stale", "wait")
-        ),
-        capability="integration_recover_candidate_member",
-        side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="keyed", key_field="reservation_id"),
-        retry_safe=True,
-        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
-        receipt_projection=tuple(IntegrationRecoverCandidateMemberValue.model_fields),
-    ),
-    presentation=CommandPresentation(
-        title="Resolve pushed candidate member",
-        summary="Accept one valid frozen repair or retain its failed invariant for a fresh recovery.",
-    ),
 )
 
 
@@ -1865,109 +1558,6 @@ INTEGRATION_REPAIR_TIMEOUT = _repair_contract(
 )
 
 
-INTEGRATION_SCHEDULE_DUE = CommandContract(
-    execution=ExecutionContract(
-        name="integration_schedule_due",
-        args_model=IntegrationScheduleDueArgs,
-        result_model=IntegrationScheduleDueValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(
-                    OutcomeClass.SUCCESS
-                    if name in {"due", "not_due", "coalesced"}
-                    else OutcomeClass.FAILURE
-                ),
-            )
-            for name in ("due", "not_due", "coalesced", "disabled")
-        ),
-        capability="integration_schedule_due",
-        side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
-        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
-        receipt_projection=tuple(IntegrationScheduleDueValue.model_fields),
-    ),
-    presentation=CommandPresentation(
-        title="Schedule integration sweep",
-        summary="Coalesce a periodic or manual trigger into one durable sweep request.",
-    ),
-)
-
-
-INTEGRATION_SEAL = CommandContract(
-    execution=ExecutionContract(
-        name="integration_seal",
-        args_model=IntegrationSealArgs,
-        result_model=IntegrationSealValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(
-                    OutcomeClass.SUCCESS
-                    if name in {"sealed", "empty"}
-                    else OutcomeClass.FAILURE
-                ),
-            )
-            for name in ("sealed", "empty", "busy")
-        ),
-        capability="integration_seal",
-        side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
-        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
-        receipt_projection=tuple(IntegrationSealValue.model_fields),
-    ),
-    presentation=CommandPresentation(
-        title="Seal integration frontier",
-        summary="Atomically snapshot the full eligible integration frontier.",
-    ),
-)
-
-
-DELIVERY_PROMOTE = CommandContract(
-    execution=ExecutionContract(
-        name="delivery_promote",
-        args_model=DeliveryPromoteArgs,
-        result_model=PromotionCommandValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(
-                    OutcomeClass.SUCCESS
-                    if name in {"promoted", "already_promoted"}
-                    else OutcomeClass.FAILURE
-                ),
-            )
-            for name in (
-                "promoted",
-                "already_promoted",
-                "conflict",
-                "source_moved",
-                "target_moved",
-            )
-        ),
-        capability="delivery_promote",
-        side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="keyed", key_field="operation_key"),
-        retry_safe=True,
-        effects=(
-            CreateOrReuseClause(
-                subject=EffectSubject.INTEGRATION_OPERATION, key_arg="operation_key"
-            ),
-            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
-        ),
-        sensitive_args=frozenset({"source_head", "source_base", "expected_target", "fence"}),
-        sensitive_result_fields=frozenset({"prepared_sha"}),
-        receipt_projection=("intent_id", "receipt_id", "prepared_sha"),
-    ),
-    presentation=CommandPresentation(
-        title="Promote reviewed child delivery",
-        summary="Prepare and lease-push one reviewed squash to its immediate parent.",
-    ),
-)
-
-
 DELIVERY_RECEIPTS = CommandContract(
     execution=ExecutionContract(
         name="delivery_receipts",
@@ -1987,184 +1577,6 @@ DELIVERY_RECEIPTS = CommandContract(
     presentation=CommandPresentation(
         title="Read delivery receipts",
         summary="Read repository-qualified delivery evidence for one source task.",
-    ),
-)
-
-
-INTEGRATION_RECONCILE_PROMOTION = CommandContract(
-    execution=ExecutionContract(
-        name="integration_reconcile_promotion",
-        args_model=IntegrationReconcilePromotionArgs,
-        result_model=PromotionCommandValue,
-        outcomes=(
-            OutcomeSpec(name="applied", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="not_applied", classification=OutcomeClass.FAILURE),
-            OutcomeSpec(name="superseded", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="continued", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="waiting", classification=OutcomeClass.FAILURE),
-            OutcomeSpec(name="target_moved", classification=OutcomeClass.FAILURE),
-            OutcomeSpec(name="invariant_error", classification=OutcomeClass.FAILURE),
-        ),
-        capability="integration_reconcile_promotion",
-        side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="keyed", key_field="intent_id"),
-        retry_safe=True,
-        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
-        sensitive_result_fields=frozenset({"prepared_sha"}),
-        receipt_projection=("intent_id", "receipt_id", "prepared_sha"),
-    ),
-    presentation=CommandPresentation(
-        title="Reconcile prepared promotion",
-        summary="Compare a durable prepared intent with the remote and finalize its receipt.",
-    ),
-)
-
-
-INTEGRATION_RESOLVE_CONFLICT = CommandContract(
-    execution=ExecutionContract(
-        name="integration_resolve_conflict",
-        args_model=IntegrationResolveConflictArgs,
-        result_model=PromotionCommandValue,
-        outcomes=(
-            OutcomeSpec(name="reserved", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="already_reserved", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="stale", classification=OutcomeClass.FAILURE),
-            OutcomeSpec(name="invariant_error", classification=OutcomeClass.FAILURE),
-        ),
-        capability="integration_resolve_conflict",
-        side_effect=SideEffectClass.CREATE,
-        idempotency=IdempotencySpec(mode="keyed", key_field="intent_id"),
-        retry_safe=True,
-        effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
-        sensitive_args=frozenset(
-            {"resolved_head_sha", "resolved_tree_sha", "repair_commit_shas"}
-        ),
-        sensitive_result_fields=frozenset({"prepared_sha"}),
-        receipt_projection=("intent_id", "receipt_id"),
-    ),
-    presentation=CommandPresentation(
-        title="Reserve conflict resolution",
-        summary="Freeze an active repair session's exact conflict resolution before push.",
-    ),
-)
-
-
-INTEGRATION_PUSH_CONFLICT_RESOLUTION = CommandContract(
-    execution=ExecutionContract(
-        name="integration_push_conflict_resolution",
-        args_model=IntegrationPushConflictResolutionArgs,
-        result_model=PromotionCommandValue,
-        outcomes=(
-            OutcomeSpec(name="pushed", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="already_applied", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="target_moved", classification=OutcomeClass.FAILURE),
-            OutcomeSpec(name="stale", classification=OutcomeClass.FAILURE),
-        ),
-        capability="integration_push_conflict_resolution",
-        side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="keyed", key_field="intent_id"),
-        retry_safe=True,
-        effects=(
-            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
-            UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
-        ),
-        sensitive_args=frozenset({"fence"}),
-        sensitive_result_fields=frozenset({"prepared_sha"}),
-        receipt_projection=("intent_id", "receipt_id"),
-    ),
-    presentation=CommandPresentation(
-        title="Push conflict resolution",
-        summary="Push a frozen conflict resolution under the current repair writer fence.",
-    ),
-)
-
-
-INTEGRATION_RESOLVE_CANDIDATE_MEMBER = CommandContract(
-    execution=ExecutionContract(
-        name="integration_resolve_candidate_member",
-        args_model=IntegrationResolveCandidateMemberArgs,
-        result_model=IntegrationResolveCandidateMemberValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(
-                    OutcomeClass.SUCCESS
-                    if name in {"accepted", "already_accepted"}
-                    else OutcomeClass.FAILURE
-                ),
-            )
-            for name in (
-                "accepted",
-                "already_accepted",
-                "wait",
-                "stale",
-                "invariant_error",
-            )
-        ),
-        capability="integration_resolve_candidate_member",
-        side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
-        effects=(
-            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
-            UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
-        ),
-        sensitive_args=frozenset(
-            {"resolved_head_sha", "resolved_tree_sha", "repair_commit_shas"}
-        ),
-        sensitive_result_fields=frozenset({"partial_head_sha", "continuation"}),
-        receipt_projection=("reservation_id", "batch_id", "revision", "member_ordinal"),
-    ),
-    presentation=CommandPresentation(
-        title="Resolve candidate member",
-        summary=(
-            "Reserve, publish, accept, and continue the exact conflicted candidate member "
-            "owned by the authenticated repair session."
-        ),
-    ),
-)
-
-
-INTEGRATION_PROMOTE_MAIN = CommandContract(
-    execution=ExecutionContract(
-        name="integration_promote_main",
-        args_model=IntegrationPromoteMainArgs,
-        result_model=IntegrationPromoteMainValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(
-                    OutcomeClass.SUCCESS
-                    if name in {"promoted", "already_promoted"}
-                    else OutcomeClass.FAILURE
-                ),
-            )
-            for name in (
-                "promoted",
-                "already_promoted",
-                "base_moved",
-                "ci_missing",
-                "non_fast_forward",
-                "wait",
-                "reconciliation_blocked",
-                "stale",
-                "configuration_blocked",
-            )
-        ),
-        capability="integration_promote_main",
-        side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
-        effects=(
-            UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
-            UpdateClause(subject=EffectSubject.DELIVERY_EVIDENCE),
-        ),
-        sensitive_result_fields=frozenset({"head_sha"}),
-        receipt_projection=tuple(IntegrationPromoteMainValue.model_fields),
-    ),
-    presentation=CommandPresentation(
-        title="Promote exact root candidate",
-        summary="Reconcile and fast-forward main to the exact trusted green candidate.",
     ),
 )
 
@@ -2244,18 +1656,6 @@ def _root_subject_contract(
         presentation=CommandPresentation(title=title, summary=title),
     )
 
-
-INTEGRATION_BUILD_CANDIDATE = _root_subject_contract(
-    "integration_build_candidate",
-    IntegrationBuildCandidateArgs,
-    IntegrationBuildCandidateValue,
-    (
-        "empty", "built", "already_built", "conflict", "source_moved", "base_moved",
-        "stale_revision", "wait", "human_required", "configuration_blocked",
-    ),
-    frozenset({"empty", "built", "already_built"}),
-    "Build exact root candidate",
-)
 
 INTEGRATION_REPAIR_CLOSE_CURRENT = _root_subject_contract(
     "integration_repair_close_current",
@@ -2558,107 +1958,11 @@ async def _invoke_adapter(
     return CommandResult(outcome=outcome, value=value, summary=str(raw.get("error") or outcome))
 
 
-async def _promote_adapter(args: DeliveryPromoteArgs, ctx: CommandContext | None) -> CommandResult:
-    return await _invoke_adapter(
-        "delivery_promote",
-        args,
-        ctx,
-        PromotionCommandValue,
-        {"promoted", "already_promoted", "conflict", "source_moved", "target_moved"},
-    )
-
-
 async def _receipts_adapter(
     args: DeliveryReceiptsArgs, ctx: CommandContext | None
 ) -> CommandResult:
     return await _invoke_adapter(
         "delivery_receipts", args, ctx, DeliveryReceiptsValue, {"found", "not_found"}
-    )
-
-
-async def _reconcile_adapter(
-    args: IntegrationReconcilePromotionArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _invoke_adapter(
-        "integration_reconcile_promotion",
-        args,
-        ctx,
-        PromotionCommandValue,
-        {"applied", "not_applied", "invariant_error", "superseded", "continued",
-         "waiting", "target_moved"},
-    )
-
-
-async def _resolve_conflict_adapter(
-    args: IntegrationResolveConflictArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _invoke_adapter(
-        "integration_resolve_conflict",
-        args,
-        ctx,
-        PromotionCommandValue,
-        {"reserved", "already_reserved", "unauthorized", "stale", "invariant_error"},
-    )
-
-
-async def _push_conflict_resolution_adapter(
-    args: IntegrationPushConflictResolutionArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _invoke_adapter(
-        "integration_push_conflict_resolution",
-        args,
-        ctx,
-        PromotionCommandValue,
-        {
-            "pushed",
-            "already_applied",
-            "target_moved",
-            "stale",
-            "unauthorized",
-            "runtime_error",
-        },
-    )
-
-
-async def _resolve_candidate_member_adapter(
-    args: IntegrationResolveCandidateMemberArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _invoke_adapter(
-        "integration_resolve_candidate_member",
-        args,
-        ctx,
-        IntegrationResolveCandidateMemberValue,
-        {
-            "accepted",
-            "already_accepted",
-            "wait",
-            "stale",
-            "unauthorized",
-            "invariant_error",
-            "runtime_error",
-        },
-    )
-
-
-async def _promote_main_adapter(
-    args: IntegrationPromoteMainArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _hierarchy_adapter(
-        "integration_promote_main",
-        args,
-        ctx,
-        IntegrationPromoteMainValue,
-        {
-            "promoted",
-            "already_promoted",
-            "base_moved",
-            "ci_missing",
-            "non_fast_forward",
-            "wait",
-            "reconciliation_blocked",
-            "stale",
-            "configuration_blocked",
-        },
     )
 
 
@@ -2681,21 +1985,6 @@ async def _cleanup_adapter(
             "failed",
             "stale",
             "invariant_error",
-        },
-    )
-
-
-async def _build_candidate_adapter(
-    args: IntegrationBuildCandidateArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _hierarchy_adapter(
-        "integration_build_candidate",
-        args,
-        ctx,
-        IntegrationBuildCandidateValue,
-        {
-            "empty", "built", "already_built", "conflict", "source_moved", "base_moved",
-            "stale_revision", "wait", "human_required", "configuration_blocked",
         },
     )
 
@@ -2929,28 +2218,6 @@ async def _repair_timeout_adapter(
     )
 
 
-async def _schedule_due_adapter(
-    args: IntegrationScheduleDueArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_schedule_due",
-        args,
-        ctx,
-        IntegrationScheduleDueValue,
-        {"due", "not_due", "coalesced", "disabled"},
-    )
-
-
-async def _seal_adapter(args: IntegrationSealArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_seal",
-        args,
-        ctx,
-        IntegrationSealValue,
-        {"sealed", "empty", "busy"},
-    )
-
-
 async def _status_adapter(args: IntegrationStatusReadArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_status", args, ctx, IntegrationStatusValue, {"status", "not_found"}
@@ -3091,64 +2358,12 @@ async def _reopen_collection_adapter(
     )
 
 
-async def _rebind_repair_adapter(args: IntegrationRebindRepairArgs, ctx: CommandContext | None):
-    return await _hierarchy_adapter(
-        "integration_rebind_repair",
-        args,
-        ctx,
-        IntegrationRebindRepairValue,
-        {"would_rebind", "rebound", "already_reserved", "changed", "blocked", "not_found"},
-    )
-
-
-async def _recover_preserved_repair_adapter(
-    args: IntegrationRecoverPreservedRepairArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_recover_preserved_repair", args, ctx,
-        IntegrationRecoverPreservedRepairValue, set(PRESERVED_REPAIR_OUTCOMES),
-    )
-
-
-async def _recover_parent_head_adapter(
-    args: IntegrationRecoverParentHeadArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_recover_parent_head", args, ctx,
-        IntegrationRecoverParentHeadValue, set(PRESERVED_REPAIR_OUTCOMES),
-    )
-
-
-async def _rebind_detached_repair_adapter(
-    args: IntegrationRebindDetachedRepairArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_rebind_detached_repair",
-        args,
-        ctx,
-        IntegrationRebindDetachedRepairValue,
-        set(REBIND_DETACHED_REPAIR_OUTCOMES),
-    )
-
-
 async def _close_delivered_pr_adapter(
     args: IntegrationCloseDeliveredPrArgs, ctx: CommandContext | None
 ):
     return await _hierarchy_adapter(
         "integration_close_delivered_pr", args, ctx,
         IntegrationCloseDeliveredPrValue, set(CLOSE_DELIVERED_PR_OUTCOMES),
-    )
-
-
-async def _recover_candidate_member_adapter(
-    args: IntegrationRecoverCandidateMemberArgs, ctx: CommandContext | None
-):
-    return await _hierarchy_adapter(
-        "integration_recover_candidate_member",
-        args,
-        ctx,
-        IntegrationRecoverCandidateMemberValue,
-        {"accepted", "already_accepted", "rejected", "stale", "wait"},
     )
 
 
@@ -3353,32 +2568,6 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                                              {"preview", "transferred", "refused"})
 
         registry.register(CommandRegistration(name, contract, transfer_engine))
-    name = "integration_development_engine_transfer"
-    if registry.get(name) is None:
-        contract = _operational_contract(name, IntegrationDevelopmentEngineTransferArgs,
-            ("preview", "transferred", "refused"),
-            successes=frozenset({"preview", "transferred"}),
-            side_effect=SideEffectClass.COMPOSITE,
-            result_model=IntegrationDevelopmentEngineTransferValue)
-        contract = contract.model_copy(update={
-            "presentation": contract.presentation.model_copy(update={
-                "title": "Development engine transfer",
-                "summary": (
-                    "Preview or transfer every Development subject of one project "
-                    "to the reconciler, at the exact "
-                    "previewed versions; the same command rolls it back."
-                ),
-            }),
-        })
-
-        async def transfer_development(args, ctx):
-            return await _hierarchy_adapter(
-                "integration_development_engine_transfer", args, ctx,
-                IntegrationDevelopmentEngineTransferValue,
-                {"preview", "transferred", "refused"},
-            )
-
-        registry.register(CommandRegistration(name, contract, transfer_development))
     if registry.get(INTEGRATION_TRANSFER_OWNER.name) is None:
         registry.register(
             CommandRegistration(
@@ -3404,14 +2593,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_AUTHORIZE_ROOT, _authorize_root_adapter),
         (INTEGRATION_REDRIVE_CHILD, _redrive_child_adapter),
         (INTEGRATION_REOPEN_COLLECTION, _reopen_collection_adapter),
-        (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),
-        (INTEGRATION_REBIND_DETACHED_REPAIR, _rebind_detached_repair_adapter),
-        (INTEGRATION_RECOVER_PRESERVED_REPAIR, _recover_preserved_repair_adapter),
-        (INTEGRATION_RECOVER_PARENT_HEAD, _recover_parent_head_adapter),
         (INTEGRATION_CLOSE_DELIVERED_PR, _close_delivered_pr_adapter),
-        (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),
-        (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
-        (INTEGRATION_SEAL, _seal_adapter),
         (INTEGRATION_FILE_CHILDREN, _file_children_adapter),
         (INTEGRATION_CHECKPOINT_PARENT, _checkpoint_parent_adapter),
         (INTEGRATION_MUTATE_HIERARCHY, _mutate_hierarchy_adapter),
@@ -3419,16 +2601,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RECORD_NOOP, _record_noop_adapter),
         (INTEGRATION_PARENT_VERIFY, _parent_verify_adapter),
         (INTEGRATION_COMPLETE_PARENT, _complete_parent_adapter),
-        (DELIVERY_PROMOTE, _promote_adapter),
         (DELIVERY_RECEIPTS, _receipts_adapter),
-        (INTEGRATION_RECONCILE_PROMOTION, _reconcile_adapter),
-        (INTEGRATION_RESOLVE_CONFLICT, _resolve_conflict_adapter),
-        (INTEGRATION_PUSH_CONFLICT_RESOLUTION, _push_conflict_resolution_adapter),
-        (INTEGRATION_RECOVER_UNWRITTEN_RESOLUTION, _recover_unwritten_resolution_adapter),
-        (INTEGRATION_RESOLVE_CANDIDATE_MEMBER, _resolve_candidate_member_adapter),
-        (INTEGRATION_PROMOTE_MAIN, _promote_main_adapter),
         (INTEGRATION_CLEANUP, _cleanup_adapter),
-        (INTEGRATION_BUILD_CANDIDATE, _build_candidate_adapter),
         (INTEGRATION_REPAIR_CLOSE_CURRENT, _repair_close_current_adapter),
         (INTEGRATION_CI_EVIDENCE, _ci_evidence_adapter),
         (INTEGRATION_RELEASE, _release_adapter),
@@ -3485,79 +2659,3 @@ class IntegrationEngineTransferValue(CommandValue):
     expected_versions: dict[str, int] = Field(default_factory=dict)
     current_engines: dict[str, str] = Field(default_factory=dict)
     reason: str | None = None
-
-
-class IntegrationDevelopmentEngineTransferArgs(CommandArgs):
-    """The audited per-project forward Development engine transfer.
-
-    ``expected_versions`` is the exact subject-version set the preview named, so
-    an apply is a CAS over the whole Development subject set rather than a
-    partial move. ``reason`` is required for an apply and ``evidence`` for a
-    reconciler activation; disabling visits preserves ownership, because
-    it never adopts a write the old publisher left ambiguous.
-    """
-
-    project_id: str = Field(min_length=1)
-    engine: Literal["reconciler"]
-    expected_versions: dict[str, StrictInt] = Field(default_factory=dict)
-    reason: str = ""
-    evidence: tuple[str, ...] = ()
-    dry_run: bool = True
-
-    @field_validator("expected_versions")
-    @classmethod
-    def nonnegative_versions(cls, value):
-        if any(not key or isinstance(version, bool) or version < 0 for key, version in value.items()):
-            raise ValueError("expected_versions must name exact nonnegative subject versions")
-        return value
-
-
-class IntegrationDevelopmentEngineTransferValue(CommandValue):
-    project_id: str | None = None
-    engine: Literal["reconciler"] | None = None
-    subject_ids: tuple[str, ...] = ()
-    expected_versions: dict[str, int] = Field(default_factory=dict)
-    current_engines: dict[str, str] = Field(default_factory=dict)
-
-
-class IntegrationRecoverUnwrittenResolutionArgs(CommandArgs):
-    """Operator recovery of a malformed reservation which never wrote remotely."""
-
-    intent_id: str = Field(min_length=1)
-
-INTEGRATION_RECOVER_UNWRITTEN_RESOLUTION = CommandContract(
-    execution=ExecutionContract(
-        name="integration_recover_unwritten_resolution",
-        args_model=IntegrationRecoverUnwrittenResolutionArgs,
-        result_model=PromotionCommandValue,
-        outcomes=(
-            OutcomeSpec(name="recovered", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="already_recovered", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="not_recoverable", classification=OutcomeClass.FAILURE),
-        ),
-        capability="integration_recover_unwritten_resolution",
-        side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="keyed", key_field="intent_id"),
-        retry_safe=True,
-        effects=(
-            UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
-            UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
-        ),
-        receipt_projection=("intent_id", "receipt_id"),
-    ),
-    presentation=CommandPresentation(
-        title="Recover unwritten conflict resolution",
-        summary="Supersede a malformed reservation only after an operator proves no remote write occurred.",
-    ),
-)
-
-async def _recover_unwritten_resolution_adapter(
-    args: IntegrationRecoverUnwrittenResolutionArgs, ctx: CommandContext | None
-) -> CommandResult:
-    return await _invoke_adapter(
-        "integration_recover_unwritten_resolution",
-        args,
-        ctx,
-        PromotionCommandValue,
-        {"recovered", "already_recovered", "not_recoverable"},
-    )

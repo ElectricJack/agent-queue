@@ -12,7 +12,6 @@ from typing import Any
 import click
 
 from .app import _get_client, _handle_errors, _run, cli
-from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 from .envelope import emit
 
 
@@ -295,37 +294,6 @@ def integration_engine_transfer(
     })
 
 
-@integration.command("development-engine-transfer")
-@click.argument("project_id")
-@click.option("--engine", type=click.Choice(["reconciler"]), required=True)
-@click.option("--expected-subject", "expected_subjects", multiple=True,
-              help="Exact SUBJECT_ID:VERSION from the preview; repeat for every Development subject.")
-@click.option("--reason", default="", help="Required explanation when applying the transfer.")
-@click.option("--evidence", multiple=True,
-              help="Shadow, scenario and operator approval references.")
-@click.option("--apply", is_flag=True,
-              help="Apply the exact previewed versions; default is preview.")
-@click.pass_context
-@_handle_errors
-def integration_development_engine_transfer(
-    ctx, project_id, engine, expected_subjects, reason, evidence, apply,
-):
-    """Preview or transfer Development ownership for every subject of PROJECT_ID.
-
-    The apply activates reconciler ownership of the whole project: it runs inside
-    the repository engine fence a publisher shares, needs the exact versions
-    the preview printed, and refuses while a publish write is unconfirmed in
-    either direction.
-    """
-    versions = _expected_versions(expected_subjects)
-    if apply:
-        _require_transfer_apply_fences(engine, versions, reason, evidence)
-    _execute(ctx, "integration_development_engine_transfer", {
-        "project_id": project_id, "engine": engine, "expected_versions": versions,
-        "reason": reason, "evidence": list(evidence), "dry_run": not apply,
-    })
-
-
 @integration.command("status")
 @click.argument("project_id")
 @click.option("--control-only", is_flag=True, help="Read durable control state without readiness observations.")
@@ -353,43 +321,6 @@ def integration_record_noop(
         "integration_record_noop",
         {"child_task_id": child_task_id, "expected_head_sha": expected_head_sha},
     )
-
-
-@integration.command("resolve-candidate-member")
-@click.option("--resolved-head-sha", required=True)
-@click.option("--resolved-tree-sha", required=True)
-@click.option(
-    "--repair-commit-sha",
-    "repair_commit_shas",
-    multiple=True,
-    required=True,
-    help="Exact repair commit in oldest-to-newest order; repeat for every commit.",
-)
-@claim_epoch_option
-@click.pass_context
-@_handle_errors
-def integration_resolve_candidate_member(
-    ctx: click.Context,
-    resolved_head_sha: str,
-    resolved_tree_sha: str,
-    repair_commit_shas: tuple[str, ...],
-    claim_epoch: int | None,
-) -> None:
-    """Resolve the candidate member assigned to this repair session.
-
-    The daemon derives the active batch, revision, member, operation, partial
-    head, and branch fence from the authenticated session.  This command never
-    accepts those authority-bearing values from the caller.
-    """
-    args: dict[str, Any] = {
-        "resolved_head_sha": resolved_head_sha,
-        "resolved_tree_sha": resolved_tree_sha,
-        "repair_commit_shas": list(repair_commit_shas),
-    }
-    resolved_epoch = resolve_claim_epoch(claim_epoch)
-    if resolved_epoch is not None:
-        args["claim_epoch"] = resolved_epoch
-    _execute(ctx, "integration_resolve_candidate_member", args)
 
 
 @integration.command("reevaluate-repair")
@@ -673,138 +604,6 @@ def integration_reopen_collection(
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_reopen_collection", args)
-
-
-@integration.command("rebind-repair")
-@click.option("--task-id", required=True)
-@click.option("--dry-run/--apply", default=True, help="Prove only, or reserve the proven candidate.")
-@click.option("--head", "expected_head_sha", help="Exact candidate head reported by dry-run; required with --apply.")
-@click.pass_context
-@_handle_errors
-def integration_rebind_repair(
-    ctx: click.Context, task_id: str, dry_run: bool, expected_head_sha: str | None
-) -> None:
-    """Prove a live delegate's candidate against its current conflict intent.
-
-    Apply refreshes a stale stage and reserves the exact candidate under the
-    current intent. The attached repair session then performs the fenced push.
-    """
-    if not dry_run and not expected_head_sha:
-        raise click.UsageError("--apply requires --head from dry-run")
-    args: dict[str, Any] = {"task_id": task_id, "dry_run": dry_run}
-    if expected_head_sha is not None:
-        args["expected_head_sha"] = expected_head_sha
-    _execute(ctx, "integration_rebind_repair", args)
-
-
-@integration.command("recover-parent-head")
-@click.argument("operation_id")
-@click.option("--head", "head_sha", required=True, help="Exact published aggregate commit SHA.")
-@click.option("--dry-run/--apply", default=True)
-@click.option("--episode", "expected_episode_id", help="Episode from preview.")
-@click.option("--generation", "expected_generation", type=int, help="Generation from preview.")
-@click.option("--stage", "expected_stage", type=int, help="Repair stage from preview.")
-@click.option("--fence", "expected_fence_token", type=int, help="Current owner fence from preview.")
-@click.option("--reason", help="Operator reason; required with --apply.")
-@click.pass_context
-@_handle_errors
-def integration_recover_parent_head(
-    ctx, operation_id, head_sha, dry_run, expected_episode_id, expected_generation,
-    expected_stage, expected_fence_token, reason,
-):
-    """Prove a completed parent repair and any subsequent child collection.
-
-    Apply advances the aggregate checkpoint and requires fresh verification.
-    """
-    if not dry_run and (
-        not expected_episode_id or expected_generation is None or expected_stage is None
-        or expected_fence_token is None or not (reason or "").strip()
-    ):
-        raise click.UsageError("--apply requires --episode, --generation, --stage, --fence and --reason")
-    args = {"operation_id": operation_id, "head_sha": head_sha, "dry_run": dry_run}
-    for key, value in (("expected_episode_id", expected_episode_id),
-                       ("expected_generation", expected_generation), ("expected_stage", expected_stage),
-                       ("expected_fence_token", expected_fence_token), ("reason", reason)):
-        if value is not None:
-            args[key] = value
-    _execute(ctx, "integration_recover_parent_head", args)
-
-
-@integration.command("recover-preserved-repair")
-@click.argument("operation_id")
-@click.option("--intent", "intent_id", required=True, help="Exact current conflict intent.")
-@click.option("--candidate", "candidate_sha", required=True, help="Exact preserved commit SHA.")
-@click.option("--dry-run/--apply", default=True, help="Prove only, or publish the proven resolution.")
-@click.option("--stage", "expected_stage", type=int, help="Stage from preview.")
-@click.option("--released-fence", "expected_released_fence", type=int, help="Released fence from preview.")
-@click.option("--reason", help="Operator reason; required with --apply.")
-@click.pass_context
-@_handle_errors
-def integration_recover_preserved_repair(
-    ctx, operation_id, intent_id, candidate_sha, dry_run,
-    expected_stage, expected_released_fence, reason,
-):
-    """Recover a completed parent resolution preserved by owner recovery.
-
-    Keeps exhausted deadlines and consumed attempts. Parent verification and
-    human gates still apply. No new repair stage or writer is started.
-    """
-    if not dry_run and (expected_stage is None or expected_released_fence is None or not reason):
-        raise click.UsageError("--apply requires --stage, --released-fence and --reason")
-    args = {"operation_id": operation_id, "intent_id": intent_id,
-            "candidate_sha": candidate_sha, "dry_run": dry_run}
-    for key, value in (("expected_stage", expected_stage),
-                       ("expected_released_fence", expected_released_fence), ("reason", reason)):
-        if value is not None:
-            args[key] = value
-    _execute(ctx, "integration_recover_preserved_repair", args)
-
-
-@integration.command("rebind-detached-repair")
-@click.argument("operation_id")
-@click.option("--dry-run/--apply", default=True, help="Prove only, or rebind the proven stage.")
-@click.option("--stage", "expected_stage", type=int, help="Stage ordinal reported by dry-run.")
-@click.option(
-    "--remote-head", "expected_remote_head_sha",
-    help="Published parent head reported by dry-run; required with --apply.",
-)
-@click.option("--reason", help="Why the stage is rebound; required with --apply.")
-@click.pass_context
-@_handle_errors
-def integration_rebind_detached_repair(
-    ctx: click.Context,
-    operation_id: str,
-    dry_run: bool,
-    expected_stage: int | None,
-    expected_remote_head_sha: str | None,
-    reason: str | None,
-) -> None:
-    """Rebind OPERATION_ID's detached debug stage to its conflict at the published head.
-
-    For a parent repair whose stage is frozen on a commit the parent branch never
-    received, so no delegate can be admitted. Apply moves only the stage's
-    starting commit and trigger, keeps its deadline, attempts and fence, and
-    readies the same delegate. Nothing is pushed or recorded as delivered.
-    """
-    if not dry_run and not (expected_stage is not None and expected_remote_head_sha and reason):
-        raise click.UsageError("--apply requires --stage, --remote-head and --reason")
-    args: dict[str, Any] = {"operation_id": operation_id, "dry_run": dry_run}
-    if expected_stage is not None:
-        args["expected_stage"] = expected_stage
-    if expected_remote_head_sha is not None:
-        args["expected_remote_head_sha"] = expected_remote_head_sha
-    if reason is not None:
-        args["reason"] = reason
-    _execute(ctx, "integration_rebind_detached_repair", args)
-
-
-@integration.command("recover-candidate-member")
-@click.argument("reservation_id")
-@click.pass_context
-@_handle_errors
-def integration_recover_candidate_member(ctx: click.Context, reservation_id: str) -> None:
-    """Resolve one pushed frozen candidate-member repair reservation."""
-    _execute(ctx, "integration_recover_candidate_member", {"reservation_id": reservation_id})
 
 
 # ---------------------------------------------------------------------------

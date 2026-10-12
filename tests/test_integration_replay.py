@@ -85,6 +85,9 @@ REMOVED_CONTROLS = frozenset({"integration_development_sweep"} | {
 # here is itself an assertion: the fixture below fails if one of these handlers
 # ever comes back.
 RETIRED_CONTROLS = frozenset({
+    "integration_rebind_detached_repair", "integration_rebind_repair",
+    "integration_recover_preserved_repair", "integration_recover_candidate_member",
+    "integration_recover_parent_head", "integration_resolve_candidate_member",
     "integration_adopt", "integration_adopt_legacy_deliveries",
     "integration_bind_legacy_repositories", "integration_cancel_preserving",
     "integration_clear_stale_request", "integration_development_sweep",
@@ -93,6 +96,7 @@ RETIRED_CONTROLS = frozenset({
     "integration_release_delegates", "integration_retry_cleanup",
     "integration_settle_delivered_batch", "integration_settle_parked",
     "integration_shadow_report", "integration_waive_history",
+    "integration_development_engine_transfer",
 })
 
 

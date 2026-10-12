@@ -24,7 +24,7 @@ from src.integration.pr_delivery import (
     PR_CLOSED_DELIVERED_EVENT,
     DeliveredPullRequestClosure,
 )
-from src.integration.promotion import PromotionService
+from src.integration.repository_git import RepositoryGit
 from src.models import Project, RepoConfig, RepoSourceType
 
 
@@ -113,7 +113,7 @@ async def env(reuse_database, tmp_path, monkeypatch):
     monkeypatch.setattr(git, "_github_client", lambda _binding: github)
     # The bare remote on disk stands in for the GitHub repository.
     monkeypatch.setattr("src.integration.pr_cleanup.lacks_pull_request_host", lambda _url: False)
-    promotion = PromotionService(db, data_dir=tmp_path / "data", git_manager=git)
+    promotion = RepositoryGit(db, data_dir=tmp_path / "data", git_manager=git)
     clock = iter(float(n) for n in range(1000, 2000))
     yield SimpleNamespace(
         db=db, work=work, github=github,

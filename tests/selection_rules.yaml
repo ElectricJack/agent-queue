@@ -354,14 +354,14 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/**"], areas: ["integration-trains"] }
   - { paths: ["src/integration/repair_progress.py"], areas: ["integration-promotion", "integration-ownership"] }
   - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py"], areas: ["integration-ownership"] }
-  - { paths: ["src/integration/promotion.py", "src/integration/main_promotion.py", "src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/repair_lineage.py", "src/integration/review_evidence.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
+  - { paths: ["src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/repair_lineage.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/status.py"], areas: ["integration-controls"] }
   - { paths: ["src/integration/canonical_reservation.py"], areas: ["integration-ownership"] }
   - { paths: ["src/integration/child_delivery.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/parent_source.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/cancelled_collection_recovery.py"], areas: ["integration-promotion", "integration-controls"] }
-  - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py", "src/integration/candidates.py"], areas: ["epic-trains"] }
-  - { paths: ["src/integration/development*.py", "src/integration/development_policy_template.md", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
+  - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py"], areas: ["epic-trains"] }
+  - { paths: ["src/integration/development*.py", "src/integration/repository_git.py", "src/integration/development_policy_template.md", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
   - { paths: ["src/integration/delivery_path.py"], areas: ["development-delivery", "integration-trains"] }
   - { paths: ["src/integration/provenance*.py"], areas: ["development-delivery", "git-manager", "session-runtime"] }
   - { paths: ["src/integration/trust_manifest.py", "src/integration/app_mode.py"], areas: ["epic-trains", "integration-controls"] }
