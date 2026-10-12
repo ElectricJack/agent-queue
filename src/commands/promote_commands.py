@@ -52,6 +52,7 @@ from src.integration.promotion_steps import (
     promotion_ref,
     promotion_task_defect,
 )
+from src.models import TaskStatus
 from src.routing.sources import UNROUTED
 
 
@@ -1130,8 +1131,6 @@ class PromoteCommandsMixin:
                     .values(status="FAILED", updated_at=now)
                 )
                 if failed.rowcount:
-                    from src.models import TaskStatus
-
                     await self.db._record_recovery_failure_generation_on(
                         conn, members[0].task_id, TaskStatus.IN_PROGRESS, TaskStatus.FAILED, now,
                     )
@@ -1180,8 +1179,6 @@ class PromoteCommandsMixin:
                     status="IN_PROGRESS", profile_id=None, route_source=UNROUTED, route=None,
                     updated_at=time.time()))
                 if task["status"] == "FAILED":
-                    from src.models import TaskStatus
-
                     await self.db._record_recovery_failure_generation_on(
                         conn, task["id"], TaskStatus.FAILED, TaskStatus.IN_PROGRESS, time.time(),
                     )
