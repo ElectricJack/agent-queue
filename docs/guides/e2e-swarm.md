@@ -217,6 +217,52 @@ use the operator's audited `aq task route-override` instead. This mirrors a
 completed routing decision and makes pool claims exercise the live session's
 class and model constraints.
 
+### Deliberate policy installation and project setup
+
+The separate policy acceptance runner uses the real daemon, CLI/HTTP commands
+and PostgreSQL. Choose a unique home, port and database before running the kit:
+
+```bash
+export AQ_E2E_HOME=/tmp/aq-e2e-policy-my-run
+export AQ_E2E_PORT=8199
+export E2E_DB_NAME=agent_queue_e2e_policy_my_run
+export AQ_E2E_TMUX_SOCKET=aq-e2e-policy-my-run
+scripts/e2e-env.sh --reset
+scripts/e2e-smoke.sh
+scripts/e2e-policy.sh
+```
+
+Use an unused port and your own suffix. The policy runner owns four marked child
+homes under `$AQ_E2E_HOME/policy-cases/`, unique derived databases and dynamically
+chosen ports. It stops only its child daemons, including after failure. The parent
+smoke daemon and operator installation are independent. Child fixtures use fake
+sessions, disable real provider probes and reject direct LLM calls before traffic
+can leave the process. An attempted call records `llm-forbidden.jsonl` and fails
+acceptance. Notifications use the local database sink.
+
+`e2e-env.sh` deliberately installs initial playbooks **before** writing its fixture
+profiles/formulas. The runner records that builder inventory and pending receipt,
+then separately prepares absent, empty, existing nonempty and failed-first-import
+startup states. Ordinary restarts invoke only `e2e-daemon.sh`; they never rerun
+the builder. This distinction catches startup ordering failures that a kit with
+preloaded fixture profiles can conceal.
+
+The scenario checks the exact six-item source/bundle inventory and five initial
+activations, inactive morning reporting, deletion of a source/bundle/whole vault
+with a retained receipt, existing-vault preservation, missing/disabled/stale
+required rows, read-only doctor checks, explicit required and installed-bundle
+repairs, and consumed first-attempt failure recovery. Project create/onboard
+exercise default/exported/none, noninteractive omission, cancellation retention,
+preview acknowledgement, pending review, approval without activation, and
+unchanged existing project configuration.
+
+The complete command transcript, exit statuses, inventories, activation rows and
+tested HEAD are written to `$AQ_E2E_HOME/policy-acceptance.json` even on failure;
+`--output PATH` selects another evidence file. Child `daemon.log` files retain
+startup diagnostics. The [policy contract](../specs/design/policy-profiles.md) and
+[receipt/repair guidance](../concepts/playbooks.md#shipped-policy-local-policy-and-compatibility)
+explain the operator behavior these checks verify.
+
 ### What the pieces are
 
 | File | What it does |

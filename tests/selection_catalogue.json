@@ -12182,7 +12182,7 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:163e3be8b7eb76d9e1a0840c366084fdcdc491b8eb22023ea9b7c4ea89924340",
+      "digest": "sha256:3edadaf353247da6187d03ac7d646b012d51b895e99df9fb518e5c7752576f35",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -12199,6 +12199,7 @@
         "src.orchestrator",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
+        "src.playbooks.required",
         "src.playbooks.run_state",
         "src.playbooks.runtime",
         "src.playbooks.services",
@@ -14784,7 +14785,7 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:b611cbfde4c1eb916cfdf9cb7f6b0783a0e4bc36351e28c8af0d77b0fd78c17d",
+      "digest": "sha256:3b64657c0be344b2de7d57570651657daa14ed1732b3a8956b6f148070cea505",
       "imports": [
         "src.commands.playbook_v2_commands",
         "src.config",
@@ -14808,7 +14809,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Required V2 playbooks survive daemon restarts and activation gaps."
+      "summary": "One-shot V2 policy installation, read-only restarts and deliberate repair."
     },
     "tests/test_reset_for_tests_guard.py": {
       "areas": [

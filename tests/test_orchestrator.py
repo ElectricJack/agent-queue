@@ -103,6 +103,38 @@ async def test_startup_backfills_legacy_playbook_sources_including_inactive_arti
         await orch.shutdown()
 
 
+@pytest.mark.parametrize("empty_vault", [False, True], ids=["absent", "empty"])
+async def test_first_install_activates_policy_after_loading_profiles(tmp_path, empty_vault):
+    from pathlib import Path
+    from src.playbooks.required import (
+        DEFAULT_SYSTEM_PLAYBOOK_IDS, INSTALL_RECEIPT, REQUIRED_SYSTEM_PLAYBOOK_IDS,
+    )
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("fresh-policy.db")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    config.playbooks.enabled = True
+    if empty_vault:
+        Path(config.vault_root).mkdir(parents=True)
+    orch = Orchestrator(config, runtimes=MockAdapterFactory())
+    orch.set_command_handler(CommandHandler(orch, config))
+    try:
+        await orch.initialize()
+        assert orch.required_playbook_status["ok"], orch.required_playbook_status
+        rows = await orch.db.list_playbook_activations()
+        assert {row["playbook_id"] for row in rows} == set(
+            REQUIRED_SYSTEM_PLAYBOOK_IDS + DEFAULT_SYSTEM_PLAYBOOK_IDS
+        )
+        assert all(row["enabled"] for row in rows)
+        assert '"activation_pending": false' in (
+            Path(config.data_dir) / INSTALL_RECEIPT
+        ).read_text()
+    finally:
+        await orch.shutdown()
+
+
 async def _drain_running_tasks(orch: Orchestrator) -> None:
     """Wait for all background tasks launched by the orchestrator to complete.
 

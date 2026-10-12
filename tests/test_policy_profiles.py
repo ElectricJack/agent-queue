@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import io
 import json
@@ -24,24 +25,59 @@ MORNING = Path("tests/fixtures/playbooks/v2/morning-report")
 FLOW = [{"id": "release", "source": "main", "target": "stable", "type": "request"}]
 
 
-def test_builtin_default_roundtrips_as_an_exported_profile():
+@pytest.mark.parametrize("suffix", ["", ".aqpolicy"])
+def test_builtin_default_roundtrips_as_an_exported_profile(tmp_path, suffix):
     from src.policy_profiles.builtin import default_policy
     from src.policy_profiles.service import validate_payload
 
     bundle = default_policy()
     assert read_bundle(pack(bundle)) == bundle
+    destination = tmp_path / ("default" + suffix)
+    write_bundle(destination, bundle)
+    assert read_bundle(str(destination)) == bundle
+    assert bundle.format == "aq.policy.v1" and bundle.version == 1
     assert bundle.name == "default"
-    assert {entry.type for entry in bundle.items} == {"playbook", "routing", "template"}
+    assert {entry.id for entry in bundle.items} == {
+        "playbook:project:default-pipeline",
+        "playbook:project:supervisor-failure-triage",
+        "playbook:system:default-assignment-routing",
+        "routing:project:preferences",
+        "template:project:spec.default",
+        "template:project:plan.default",
+    }
+    assert bundle.placeholders == []
     for entry in bundle.items:
         validate_payload(entry.payload)
+        if entry.type == "playbook":
+            shipped = Path("src/prompts/reviewed_playbooks") / entry.name
+            assert entry.payload.source == (shipped / "source.md").read_text()
+            assert entry.payload.artifact == json.loads((shipped / "artifact.json").read_text())
 
 
-async def test_builtin_default_uses_preview_placement_review_and_no_activation(env):
-    handler, vault, _ = env
+@pytest.mark.parametrize("source", ["builtin", "archive", "directory", "zip", "bundle"])
+async def test_builtin_default_uses_preview_placement_review_and_no_activation(env, source):
+    from src.policy_profiles.builtin import default_policy
+
+    handler, vault, tmp_path = env
+    bundle = default_policy()
+    args = {"project_id": "target"}
+    if source == "builtin":
+        args["builtin"] = "default"
+    elif source == "archive":
+        args["archive"] = base64.b64encode(pack(bundle)).decode()
+    elif source == "bundle":
+        args["bundle"] = bundle.model_dump(mode="json")
+    else:
+        path = tmp_path / ("default.aqpolicy" if source == "zip" else "default")
+        write_bundle(path, bundle)
+        args["path"] = str(path)
+    existing = put(vault, "projects/source/templates/spec/operator.md", "Existing project policy")
+    projects_before = {pid: await handler.db.get_project(pid) for pid in ("source", "target")}
     before = await handler.db.list_playbook_activations()
-    preview = await handler.execute("policy_diff", {"project_id": "target", "builtin": "default"})
+    preview = await handler.execute("policy_diff", args)
     assert preview["success"], preview
     assert not (vault / "projects/target/policy").exists()
+    assert all(not row["selected"] for row in preview["items"] if row["original_scope"] == "system")
     selections = {
         row["id"]: {
             "scope": "skip" if row["original_scope"] == "system" else "project",
@@ -49,9 +85,7 @@ async def test_builtin_default_uses_preview_placement_review_and_no_activation(e
         }
         for row in preview["items"]
     }
-    result = await handler.execute("policy_apply", {
-        "project_id": "target", "builtin": "default", "selections": selections,
-    })
+    result = await handler.execute("policy_apply", {**args, "selections": selections})
     assert result["success"], result
     assert len(result["reviews"]) == 2
     assert result["pending_configuration"] == ["routing:project:preferences"]
@@ -59,6 +93,19 @@ async def test_builtin_default_uses_preview_placement_review_and_no_activation(e
     assert await handler.db.list_playbook_activations() == before
     assert (vault / "projects/target/templates/spec/default.md").is_file()
     assert not (vault / "system/playbooks/default-assignment-routing.md").exists()
+    for review in result["reviews"]:
+        revision = await handler.db.get_review_revision(review["review_id"], 1)
+        assert revision["playbook"]["playbook_id"].startswith("target.")
+        assert not revision["playbook"]["activate_on_approval"]
+        approved = await handler.execute("review_decide", {
+            "review_id": review["review_id"], "revision": 1, "decision": "approve",
+        })
+        assert approved["success"], approved
+        assert approved["playbook"]["stored"] and not approved["playbook"]["activated"]
+    assert await handler.db.list_playbook_activations() == before
+    assert {pid: await handler.db.get_project(pid) for pid in projects_before} == projects_before
+    assert existing.read_text() == "Existing project policy"
+    assert not (vault / "projects/source/templates/spec/default.md").exists()
 
 
 def put(root, relative, text):
@@ -528,13 +575,22 @@ async def test_export_preview_acknowledgement_is_required_and_checked(env):
     )
 
 
-@pytest.mark.parametrize("missing_source", [False, True])
-async def test_typed_routes_support_dashboard_archive_and_operator_authority(env, missing_source):
+@pytest.mark.parametrize(
+    "source,missing_source", [("archive", False), ("archive", True), ("builtin", False)]
+)
+async def test_typed_routes_support_dashboard_archive_and_operator_authority(env, source, missing_source):
     from src.api.app import create_app
     from src.api import dependencies as deps
     from src.commands.principal import ExecutionPrincipal, principal_context
 
     handler, vault, _ = env
+    if source == "builtin":
+        from src.profiles.sync import sync_profile_text_to_db
+
+        # The assignment router needs the profile installed by normal daemon setup.
+        compiler = Path("src/profiles/defaults/playbook-compiler/profile.md").read_text()
+        synced = await sync_profile_text_to_db(compiler, handler.db)
+        assert synced.success, synced.errors
     if missing_source:
         await reviewed(handler, vault, "api-lost-source")
         (await legacy_source_path(handler, "api-lost-source")).unlink()
@@ -555,13 +611,22 @@ async def test_typed_routes_support_dashboard_archive_and_operator_authority(env
             assert bool(exported.json()["warnings"]) == missing_source
             if missing_source:
                 assert exported.json()["warnings"][0]["playbook_id"] == "api-lost-source"
-            args = {"project_id": "target", "archive": exported.json()["archive"]}
+            args = {"project_id": "target"}
+            if source == "builtin":
+                args["builtin"] = "default"
+            else:
+                args["archive"] = exported.json()["archive"]
             diff = await client.post("/api/policy/diff", json=args)
             assert diff.status_code == 200, diff.text
             data = diff.json()
             acknowledge(args, data)
             applied = await client.post("/api/policy/apply", json=args)
             assert applied.status_code == 200, applied.text
+            assert applied.json()["activated"] is False
+            invalid_sources = await client.post(
+                "/api/policy/apply", json={**args, "path": "/unused/policy.aqpolicy"}
+            )
+            assert invalid_sources.status_code == 422
             invalid = await client.post(
                 "/api/policy/diff", json={"project_id": "target", "archive": "bogus"}
             )
