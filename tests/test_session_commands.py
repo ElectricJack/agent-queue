@@ -633,6 +633,22 @@ class TestDesiredStateCommands:
         # Still running: sleep is a statement of intent, not a signal.
         assert [h.name for h in await provider.list_running("s-")] == ["s-t1"]
 
+    async def test_sleep_named_session_is_carried_out_on_next_tick(
+        self, handler, db, provider, providers, config
+    ):
+        await _make_task(db)
+        row = await _make_session(
+            db, provider, sid="n1", task_id=None, name="n-supervisor--p1", lifecycle="named",
+        )
+        result = await handler.execute("session_sleep", {"session_id": row.id})
+        assert result["success"]
+        assert await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
+        reconciler = SessionReconciler(db, config, providers)
+        await reconciler.tick()
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("sleeping", "sleeping")
+        assert not await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
+
     async def test_wake_marks_a_named_session_wanted(self, handler, db, provider):
         await _make_session(
             db,

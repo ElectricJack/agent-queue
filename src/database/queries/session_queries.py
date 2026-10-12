@@ -457,6 +457,8 @@ class SessionQueryMixin:
         requested = fields.get("state", row["state"])
         if requested != row["state"] and requested not in _SESSION_TRANSITIONS.get(row["state"], ()):
             raise InvalidSessionTransition(session_id, row["state"], requested)
+        if fields.get("desired_state") == "sleeping" or fields.get("state") == "sleeping":
+            await self._cancel_sleeping_session_cron(conn, row, time.time())
         terminal_transition = requested in TERMINAL_SESSION_STATES and requested != row["state"]
         if terminal_transition:
             fields.setdefault("ended_at", time.time())

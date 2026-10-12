@@ -735,10 +735,9 @@ class SessionCommandsMixin:
     async def _cmd_session_sleep(self, args: dict) -> dict:
         """Record that a session is not wanted running.
 
-        Intent only — this does not signal the process.  The reconciler's
-        idle-drain branch takes it down on a later tick, or ``session kill``
-        does it now.  Setting intent first is what stops the up-convergence
-        branch from restarting it a tick after the kill.
+        This cancels the instance's cron schedules with the intent write.
+        The reconciler stops named sessions on the next tick, independently
+        of idle timeout. Pool sessions drain through their claim lifecycle.
         """
         return await self._set_desired_state(args, "sleeping")
 
