@@ -11,6 +11,7 @@ from ..types import UNSET, Unset
 if TYPE_CHECKING:
     from ..models.agent_settings import AgentSettings
     from ..models.agent_waiting_question import AgentWaitingQuestion
+    from ..models.session_auth_health import SessionAuthHealth
 
 
 T = TypeVar("T", bound="AgentSummary")
@@ -49,6 +50,10 @@ class AgentSummary:
         live (bool | Unset):  Default: False.
         last_heartbeat (float | None | Unset):
         session_tokens_used (int | Unset):  Default: 0.
+        session_backed (bool | Unset):  Default: False.
+        session_address (None | str | Unset):
+        idle_seconds (float | None | Unset):
+        auth_health (None | SessionAuthHealth | Unset):
     """
 
     id: str
@@ -80,10 +85,15 @@ class AgentSummary:
     live: bool | Unset = False
     last_heartbeat: float | None | Unset = UNSET
     session_tokens_used: int | Unset = 0
+    session_backed: bool | Unset = False
+    session_address: None | str | Unset = UNSET
+    idle_seconds: float | None | Unset = UNSET
+    auth_health: None | SessionAuthHealth | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.agent_waiting_question import AgentWaitingQuestion
+        from ..models.session_auth_health import SessionAuthHealth
 
         id = self.id
 
@@ -213,6 +223,28 @@ class AgentSummary:
 
         session_tokens_used = self.session_tokens_used
 
+        session_backed = self.session_backed
+
+        session_address: None | str | Unset
+        if isinstance(self.session_address, Unset):
+            session_address = UNSET
+        else:
+            session_address = self.session_address
+
+        idle_seconds: float | None | Unset
+        if isinstance(self.idle_seconds, Unset):
+            idle_seconds = UNSET
+        else:
+            idle_seconds = self.idle_seconds
+
+        auth_health: dict[str, Any] | None | Unset
+        if isinstance(self.auth_health, Unset):
+            auth_health = UNSET
+        elif isinstance(self.auth_health, SessionAuthHealth):
+            auth_health = self.auth_health.to_dict()
+        else:
+            auth_health = self.auth_health
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -273,6 +305,14 @@ class AgentSummary:
             field_dict["last_heartbeat"] = last_heartbeat
         if session_tokens_used is not UNSET:
             field_dict["session_tokens_used"] = session_tokens_used
+        if session_backed is not UNSET:
+            field_dict["session_backed"] = session_backed
+        if session_address is not UNSET:
+            field_dict["session_address"] = session_address
+        if idle_seconds is not UNSET:
+            field_dict["idle_seconds"] = idle_seconds
+        if auth_health is not UNSET:
+            field_dict["auth_health"] = auth_health
 
         return field_dict
 
@@ -280,6 +320,7 @@ class AgentSummary:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.agent_settings import AgentSettings
         from ..models.agent_waiting_question import AgentWaitingQuestion
+        from ..models.session_auth_health import SessionAuthHealth
 
         d = dict(src_dict)
         id = d.pop("id")
@@ -467,6 +508,43 @@ class AgentSummary:
 
         session_tokens_used = d.pop("session_tokens_used", UNSET)
 
+        session_backed = d.pop("session_backed", UNSET)
+
+        def _parse_session_address(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        session_address = _parse_session_address(d.pop("session_address", UNSET))
+
+        def _parse_idle_seconds(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        idle_seconds = _parse_idle_seconds(d.pop("idle_seconds", UNSET))
+
+        def _parse_auth_health(data: object) -> None | SessionAuthHealth | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                auth_health_type_0 = SessionAuthHealth.from_dict(data)
+
+                return auth_health_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | SessionAuthHealth | Unset, data)
+
+        auth_health = _parse_auth_health(d.pop("auth_health", UNSET))
+
         agent_summary = cls(
             id=id,
             name=name,
@@ -497,6 +575,10 @@ class AgentSummary:
             live=live,
             last_heartbeat=last_heartbeat,
             session_tokens_used=session_tokens_used,
+            session_backed=session_backed,
+            session_address=session_address,
+            idle_seconds=idle_seconds,
+            auth_health=auth_health,
         )
 
         agent_summary.additional_properties = d

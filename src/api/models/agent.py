@@ -59,6 +59,12 @@ class QuestionListResponse(BaseModel):
     count: int = 0
 
 
+class SessionAuthHealth(BaseModel):
+    state: str = "unknown"
+    observed_at: float | None = None
+    status_code: int | None = None
+
+
 class AgentSummary(BaseModel):
     id: str
     name: str
@@ -102,6 +108,11 @@ class AgentSummary(BaseModel):
     #: Stale by design on an idle pool worker -- never read it as liveness.
     last_heartbeat: float | None = None
     session_tokens_used: int = 0
+    #: A selectable named execution without an editable durable agent row.
+    session_backed: bool = False
+    session_address: str | None = None
+    idle_seconds: float | None = None
+    auth_health: SessionAuthHealth | None = None
 
 
 class ProfileSummary(BaseModel):

@@ -1,71 +1,24 @@
-/**
- * Chat wire — talks to /api/sessions/supervisor-<pid>/(message[s]).
- * These endpoints are not part of the codegen client (path carries the
- * session name), so we call them by URL. The generated client's baseUrl
- * config is honored via the same env-var precedence.
- */
+/** Chat and aq chat share the command-backed session relay. */
+import {
+  getSessionMessagesApiSessionsNameMessagesGet,
+  postSessionMessageApiSessionsNameMessagePost,
+  type SessionMessagesResponse,
+  type SessionMessageResponse,
+} from "./client";
 
-import type { MessageModel } from "./client";
-
-function baseUrl(): string {
-  return import.meta.env.VITE_API_URL || "";
-}
-
-function supervisorName(projectId: string): string {
-  return `supervisor-${projectId}`;
-}
-
-async function throwing(resp: Response): Promise<Response> {
-  if (resp.ok) return resp;
-  let detail: string;
-  try {
-    const body = await resp.clone().json();
-    detail =
-      typeof body?.detail === "string"
-        ? body.detail
-        : typeof body?.error === "string"
-          ? body.error
-          : JSON.stringify(body);
-  } catch {
-    detail = await resp.clone().text();
-  }
-  throw new Error(`API ${resp.status}: ${detail}`);
-}
-
-export interface ChatMessagesResponse {
-  success: boolean;
-  session: string;
-  project_id: string;
-  count: number;
-  messages: MessageModel[];
-}
+export type ChatMessagesResponse = SessionMessagesResponse;
+export type SendChatMessageResponse = SessionMessageResponse;
 
 export async function fetchChatMessages(
   projectId: string,
-  opts: {
-    since?: number;
-    limit?: number;
-    threadId?: string;
-    /** Full session address override; defaults to `supervisor-${projectId}`. */
-    sessionAddress?: string;
-  } = {},
+  opts: { since?: number; limit?: number; threadId?: string; sessionAddress?: string; allThreads?: boolean } = {},
 ): Promise<ChatMessagesResponse> {
-  const params = new URLSearchParams();
-  if (opts.since !== undefined) params.set("since", String(opts.since));
-  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
-  if (opts.threadId) params.set("thread_id", opts.threadId);
-  const session = opts.sessionAddress ?? supervisorName(projectId);
-  const url = `${baseUrl()}/api/sessions/${encodeURIComponent(
-    session,
-  )}/messages${params.toString() ? `?${params}` : ""}`;
-  const resp = await throwing(await fetch(url));
-  return (await resp.json()) as ChatMessagesResponse;
-}
-
-export interface SendChatMessageResponse {
-  success: boolean;
-  message_id: string;
-  state: string;
+  return (await getSessionMessagesApiSessionsNameMessagesGet({
+    path: { name: opts.sessionAddress ?? `supervisor-${projectId}` },
+    query: { since: opts.since, limit: opts.limit, thread_id: opts.threadId,
+      supervisor_only: opts.allThreads },
+    throwOnError: true,
+  })).data;
 }
 
 export async function sendChatMessage(
@@ -73,19 +26,9 @@ export async function sendChatMessage(
   body: string,
   opts: { from?: string; threadId?: string; sessionAddress?: string } = {},
 ): Promise<SendChatMessageResponse> {
-  const session = opts.sessionAddress ?? supervisorName(projectId);
-  const url = `${baseUrl()}/api/sessions/${encodeURIComponent(session)}/message`;
-  const resp = await throwing(
-    await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        body,
-        from: opts.from ?? "dashboard",
-        from_kind: "user",
-        thread_id: opts.threadId,
-      }),
-    }),
-  );
-  return (await resp.json()) as SendChatMessageResponse;
+  return (await postSessionMessageApiSessionsNameMessagePost({
+    path: { name: opts.sessionAddress ?? `supervisor-${projectId}` },
+    body: { body, from: opts.from ?? "dashboard", from_kind: "user", thread_id: opts.threadId },
+    throwOnError: true,
+  })).data;
 }

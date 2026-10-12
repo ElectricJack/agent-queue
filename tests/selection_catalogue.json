@@ -2042,12 +2042,13 @@
         "agent-roster"
       ],
       "default_arm": true,
-      "digest": "sha256:0480caaf44a037195eb3aa3c218122fc9312643023319c379cde058d0d1bc16d",
+      "digest": "sha256:b180d922c68e6f98e46a69dab9b54be9e3e0f1387e3e90b4e7c74493026c8a86",
       "imports": [
         "src.agents.configuration",
         "src.api.auth",
         "src.api.codegen",
         "src.api.dependencies",
+        "src.api.models.agent",
         "src.api.scope",
         "src.cli.adapters",
         "src.commands.handler",
@@ -2662,7 +2663,7 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:8a5f8031d056c542f49465ec35ff5adbc005d584c9531ea23dfdb2771e8212bc",
+      "digest": "sha256:da997a8becdd5f5d4491b6a472ad14c6c5961d7896e3539edca08a7e49b2079e",
       "imports": [
         "src.api",
         "src.api.app",
@@ -2673,6 +2674,7 @@
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.messages.delivery",
         "src.models"
       ],
       "markers": [

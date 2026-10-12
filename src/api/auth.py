@@ -152,6 +152,22 @@ class SessionTokenStore:
         #: first authenticated call is ``launch_success`` evidence
         #: (provider-failover D2).  Must be cheap and must not raise.
         self.on_session_seen: Callable[[str], None] | None = None
+        # Bounded observations, not authority. Never store bearer plaintext.
+        self._auth_health: dict[str, dict] = {}
+
+    def record_auth_result(self, session_id: str, status: int) -> None:
+        if session_id not in self._auth_health and len(self._auth_health) >= 1024:
+            self._auth_health.pop(next(iter(self._auth_health)))
+        self._auth_health[session_id] = {
+            "state": "failed" if status in {401, 403} else "healthy",
+            "observed_at": time.time(), "status_code": status,
+        }
+
+    def auth_health(self, session_id: str) -> dict:
+        observation = self._auth_health.get(session_id)
+        if observation is None or time.time() - observation["observed_at"] > 900:
+            return {"state": "unknown", "observed_at": None, "status_code": None}
+        return dict(observation)
 
     async def mint(
         self,
@@ -243,6 +259,7 @@ class SessionTokenStore:
     def _failed(self, scope: RequestScope, reason: str, now: float) -> None:
         if not scope.session_id:
             return
+        self.record_auth_result(scope.session_id, 401)
         if scope.session_id not in self.auth_failures and len(self.auth_failures) >= 256:
             self.auth_failures.pop(next(iter(self.auth_failures)))
         self.auth_failures[scope.session_id] = {

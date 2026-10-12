@@ -334,6 +334,52 @@ async def test_session_roster_preserves_unlinked_and_multiple_executions(handler
     assert {row["session_id"] for row in project["sessions"]} == set(sessions) - {"global"} | {"stopped"}
 
 
+async def test_all_running_project_supervisors_are_selectable_without_agent_rows(handler):
+    import time
+
+    from src.api.auth import SessionTokenStore
+    from src.api.models.agent import AgentSummary
+    from src.models import SessionRecord
+
+    store = handler.orchestrator.token_store = SessionTokenStore(handler.db)
+    now = time.time()
+    for number in range(13):
+        project_id = f"project-{number}"
+        await handler.db.create_project(Project(id=project_id, name=project_id))
+        await handler.db.create_session(SessionRecord(
+            id=f"sup-{number}", name=f"n-supervisor--{project_id}", project_id=project_id,
+            profile_id="supervisor", lifecycle="named", harness="codex", provider="tmux",
+            llm_provider="openai", model="launch-model", intelligence_class="standard-high",
+            state="running", work_dir="/tmp", epoch="e", instance_token=f"i-{number}",
+            started_at=now - 300, last_activity=now - 60,
+        ))
+    store.record_auth_result("sup-3", 401)
+    store.record_auth_result("sup-4", 200)
+    result = await handler._cmd_list_agents({})
+    assert len(result["agents"]) == 13
+    rows = {row["project_id"]: AgentSummary.model_validate(row) for row in result["agents"]}
+    assert rows["project-3"].auth_health.state == "failed"
+    assert rows["project-4"].auth_health.state == "healthy"
+    assert rows["project-5"].auth_health.state == "unknown"
+    for project_id, row in rows.items():
+        assert row.session_backed and row.role == "supervisor"
+        assert row.id == f"session:{row.session_id}"
+        assert row.session_address == f"supervisor-{project_id}"
+        assert project_id in row.name
+        assert row.harness == "codex" and row.model == "launch-model"
+        assert row.idle_seconds >= 60 and row.last_activity == now - 60
+    filtered = await handler._cmd_list_agents({"project_id": "project-3"})
+    assert [row["session_id"] for row in filtered["agents"]] == ["sup-3"]
+    assert await handler.db.list_agents() == []
+    # A linked execution is represented once, and stopped supervisors disappear.
+    await handler.db.create_agent(Agent(id="linked", name="Linked supervisor", profile_id="supervisor", role="supervisor"))
+    await handler.db.update_session("sup-3", agent_id="linked")
+    await handler.db.update_session("sup-5", state="stopped")
+    linked = await handler._cmd_list_agents({})
+    assert sum(row["session_id"] == "sup-3" for row in linked["agents"]) == 1
+    assert not any(row["session_id"] == "sup-5" for row in linked["agents"])
+
+
 @pytest.mark.parametrize(("title", "role"), [
     ("Repair development integration: task", "repair"),
     ("Verifier for integration subject task", "verifier"),
