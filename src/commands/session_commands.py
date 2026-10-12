@@ -1328,8 +1328,8 @@ class SessionCommandsMixin:
         # pipeline explodes, because it is the record of what the agent
         # claimed happened.
         await self.db.set_task_meta(task_id, "outcome", outcome)
-        if failure_class:
-            await self.db.set_task_meta(task_id, "failure_class", failure_class)
+        # This describes this close, not a previous attempt's transient error.
+        await self.db.set_task_meta(task_id, "failure_class", failure_class or None)
         if work_outcome:
             await self.db.set_task_meta(task_id, "work_outcome", work_outcome)
         if args.get("commit"):

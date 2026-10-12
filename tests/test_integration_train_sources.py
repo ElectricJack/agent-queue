@@ -3531,7 +3531,8 @@ def root_pr_recovery(world):
 
 
 @pytest.mark.parametrize("mode", ["direct", "pull_request"])
-async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world, mode):
+@pytest.mark.parametrize("route_source", ["router", "legacy", "role", "override"])
+async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world, mode, route_source):
     from src.integration.root_pr_recovery import RECOVERY_KEY
     from src.models import AgentProfile
 
@@ -3539,8 +3540,10 @@ async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world
     await world.db.update_project("p", integration_mode=mode)
     source = await completed(world, "red-root")
     await world.db.create_profile(AgentProfile(id="worker", name="Worker"))
-    await world.db.update_task("red-root", profile_id="worker", route_source="router",
-                               integration_mode="pull_request")
+    route = {"constraints": {"exclude_providers": ["gemini"]}, "reason": "previous selection"}
+    await world.db.update_task("red-root", profile_id="worker", route_source=route_source,
+                               intelligence_class="standard-high", class_hint="deep-high",
+                               route=route, integration_mode="pull_request")
     github.pr_runs[source] = "failure"
     rows = github._rows
 
@@ -3558,7 +3561,32 @@ async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world
     assert blocked.detail["blockers"][0]["recovery"]["outcome"] == "reopened"
     task = await world.db.get_task("red-root")
     assert task.status is TaskStatus.READY and not task.is_blocked
-    assert task.branch_name == before.branch_name and task.profile_id == "worker"
+    assert task.branch_name == before.branch_name
+    assert task.class_hint == before.class_hint == "deep-high"
+    if route_source in {"router", "legacy"}:
+        assert (task.route_source, task.profile_id, task.intelligence_class) == (
+            "unrouted", None, None,
+        )
+        assert task.provider_intent == "class_only"
+        expected_route = {"constraints": route["constraints"]}
+        if route_source == "legacy":
+            expected_route["legacy"] = {
+                "profile_id": before.profile_id,
+                "intelligence_class": before.intelligence_class,
+                "provider_intent": before.provider_intent,
+            }
+        assert task.route == expected_route
+        failures = await world.db.get_task_meta("red-root", "routing_failed_attempts")
+        assert len(failures) == 1
+        assert failures[0]["reason"] == "reopen_with_feedback"
+        assert failures[0]["profile_id"] == "worker"
+        assert failures[0]["intelligence_class"] == "standard-high"
+    else:
+        assert (task.route_source, task.profile_id, task.intelligence_class) == (
+            route_source, "worker", "standard-high",
+        )
+        assert task.route == route
+        assert await world.db.get_task_meta("red-root", "routing_failed_attempts") is None
     assert task.integration_mode == "pull_request" and task.pr_url is None
     assert "unit: failure" in task.description
     assert "FAILED tests/test_registry.py::test_new_command" in task.description
@@ -3569,6 +3597,8 @@ async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world
     train, _, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
     assert (await train.visit(MAIN, seal_now=True)).batch_id is None
     assert (await world.db.get_task_meta("red-root", RECOVERY_KEY))["attempts"] == 1
+    if route_source in {"router", "legacy"}:
+        assert await world.db.get_task_meta("red-root", "routing_failed_attempts") == failures
 
 
 @pytest.mark.parametrize("conclusion", ["pending", "cancelled", "success"])

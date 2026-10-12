@@ -190,6 +190,8 @@ class TaskFacts:
     on_train: bool = False
     #: An unfinished task waits on this one through a blocking edge.
     blocks_work: bool = False
+    #: Durable substantive failures, recorded atomically with retry/reopen.
+    failed_attempts: tuple[Mapping[str, Any], ...] = ()
 
 
 # -- outputs -------------------------------------------------------------------
@@ -444,6 +446,8 @@ class _Rule:
     raised_for_risk: str | None = None
     #: The risk was not answered, and :data:`ASSUMED_RISK` stood in for it.
     risk_assumed: bool = False
+    uses_risk_floor: bool = True
+    escalated_after_failure: Mapping[str, Any] | None = None
 
 
 #: The risk a policy that reads risks applies when the classifier answered
@@ -471,9 +475,9 @@ def _rule(
 ) -> _Rule:
     """Step 1: the kind, the merged rule and the class.
 
-    The *risk*'s floor comes last, so it beats a hint and ``max_class``: it
-    is a safety floor, and an operator who wants a task below it overrides
-    the route.
+    The *risk*'s floor beats a hint and ``max_class`` unless the kind has
+    an explicit standard-first escalation policy. Risk harness restrictions
+    still apply to that policy; design lanes retain their usual floors.
     """
     notes: list[str] = []
     kind = task.task_type or (classified.task_type if classified else None) or policy.default_kind
@@ -501,7 +505,11 @@ def _rule(
     if hint is not None and hint not in policy.class_order:
         notes.append(f"class hint {hint} is not on class_order, ignored")
         hint = None
-    chosen = hint or (classified.intelligence_class if classified else None) or class_id
+    escalation = base.escalate if lane is None else None
+    chosen = (
+        class_id if escalation is not None
+        else hint or (classified.intelligence_class if classified else None) or class_id
+    )
     clamped_from = None
     if max_class is not None and policy.rank(chosen) > policy.rank(max_class):
         clamped_from, chosen = chosen, max_class
@@ -509,11 +517,32 @@ def _rule(
     if risk_assumed:
         notes.append(f"no risk answer, treated as {risk}")
     risk_rule = policy.risk.get(risk) if risk is not None else None
-    if risk_rule is not None:
+    if risk_rule is not None and escalation is None:
         floor = risk_rule.floor(classified.flags if classified else ())
         if policy.rank(chosen) < policy.rank(floor):
             raised_from, raised_for_risk, chosen = chosen, risk, floor
             notes.append(f"class raised from {raised_from} to {chosen} for risk {risk}")
+    escalated = None
+    if escalation is not None:
+        # This policy deliberately tries the default class first. Risk still
+        # restricts harnesses in step 2, but neither a hint nor a risk floor
+        # can skip the lower-class attempt.
+        narrow = False
+        failures = [
+            dict(attempt) for attempt in task.failed_attempts
+            if attempt.get("intelligence_class") == class_id
+        ]
+        chosen = class_id
+        raised_from = raised_for_risk = None
+        if len(failures) >= escalation.after_failures:
+            chosen = escalation.to_class
+            escalated = {
+                "from": class_id, "to": chosen, "after_failures": escalation.after_failures,
+                "failed_attempts": failures,
+            }
+            notes.append(f"escalated_after_failure: {class_id} to {chosen}")
+        else:
+            notes.append(f"try {class_id} before escalation after failure")
     if kind == "operator" and chosen not in {"standard-high", "deep-high"}:
         chosen = "deep-high" if policy.rank(chosen) > policy.rank("standard-high") else "standard-high"
         notes.append("operator work requires frontier standard-high or deep-high")
@@ -522,6 +551,8 @@ def _rule(
         clamped_from=clamped_from, lane=lane, narrow=narrow,
         prefer_harnesses=prefer_harnesses, notes=tuple(notes),
         raised_from=raised_from, raised_for_risk=raised_for_risk, risk_assumed=risk_assumed,
+        uses_risk_floor=escalation is None,
+        escalated_after_failure=escalated,
     )
 
 
@@ -1044,7 +1075,7 @@ def _risk_could_change_route(
 ) -> bool:
     """A classified risk could raise *rule*'s class or remove one of *candidates*."""
     for risk_rule in policy.risk.values():
-        if policy.rank(risk_rule.min_class) > policy.rank(rule.class_id):
+        if rule.uses_risk_floor and policy.rank(risk_rule.min_class) > policy.rank(rule.class_id):
             return True
         if risk_rule.harnesses and any(
             not any(selector_matches(c.harness, s) for s in risk_rule.harnesses)
@@ -1297,6 +1328,8 @@ def plan_route(
         "preference": preference,
         "policy_sha256": policy_sha256,
         "class_clamped_from": rule.clamped_from,
+        **({"escalated_after_failure": dict(rule.escalated_after_failure)}
+           if rule.escalated_after_failure is not None else {}),
         # Present only when a risk floor raised the class, so a plan without
         # one is the plan it was before risks existed.
         **({"class_raised_for_risk": {

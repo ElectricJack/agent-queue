@@ -58,6 +58,7 @@ class _DeliveryResolution:
     checked_refs: tuple[str, ...]
     no_work: bool = False
     error: str | None = None
+    infrastructure_failure: bool = False
 
 
 class GitOpsMixin:
@@ -922,6 +923,7 @@ class GitOpsMixin:
                 None,
                 (current_ref,),
                 error=f"Could not verify delivery commits on `{current_branch}`.",
+                infrastructure_failure=True,
             )
 
         if not assigned_branch or assigned_branch == current_branch:
@@ -947,6 +949,7 @@ class GitOpsMixin:
                 None,
                 (current_ref,),
                 error=ref_error,
+                infrastructure_failure=True,
             )
         if not assigned_ref:
             if current_count > 0:
@@ -978,6 +981,7 @@ class GitOpsMixin:
                 None,
                 checked_refs,
                 error=f"Could not verify delivery commits on `{assigned_ref}`.",
+                infrastructure_failure=True,
             )
         if current_count > 0 and assigned_count > 0:
             return _DeliveryResolution(
@@ -1358,6 +1362,7 @@ class GitOpsMixin:
                     has_remote=has_remote,
                 )
             except Exception as exc:
+                ctx.verification_infrastructure_failure = True
                 resolution = _DeliveryResolution(
                     None,
                     None,
@@ -1365,6 +1370,8 @@ class GitOpsMixin:
                     error=f"Could not resolve the task delivery ref: {exc}",
                 )
             if resolution.error:
+                if resolution.infrastructure_failure:
+                    ctx.verification_infrastructure_failure = True
                 failures.append((resolution.error, False))
                 delivery_guard_blocked = True
             for relevant_ref in resolution.checked_refs:
@@ -1375,6 +1382,8 @@ class GitOpsMixin:
                     has_remote=has_remote,
                 )
                 if delivery_failure:
+                    if not delivery_failure[1]:
+                        ctx.verification_infrastructure_failure = True
                     failures.append(delivery_failure)
                     delivery_guard_blocked = True
             if resolution.delivery_ref:
@@ -1422,6 +1431,7 @@ class GitOpsMixin:
             else None
         )
         if pr_mode and not pr_delivery_branch and not delivery_guard_blocked:
+            ctx.verification_infrastructure_failure = True
             failures.append(("Could not determine the task delivery branch.", False))
 
         if (
@@ -1449,6 +1459,7 @@ class GitOpsMixin:
                     workspace, strict=True
                 )
                 if has_uncommitted is None:
+                    ctx.verification_infrastructure_failure = True
                     failures.append(("Could not verify workspace status after merge.", False))
                     has_uncommitted = True
                 elif has_uncommitted:
@@ -1602,6 +1613,7 @@ class GitOpsMixin:
                             False,
                         )
                     )
+                    ctx.verification_infrastructure_failure = True
 
         # ── Final safety net: one last remediation sweep ─────────────────
         # Intermediate steps (merge, merge-abort, push attempts) may have
@@ -1610,11 +1622,13 @@ class GitOpsMixin:
         # building the failure list.
         has_uncommitted = await self.git.ahas_uncommitted_changes(workspace, strict=True)
         if has_uncommitted is None:
+            ctx.verification_infrastructure_failure = True
             failures.append(("Could not verify final workspace status.", False))
             has_uncommitted = True
         elif has_uncommitted:
             latest_branch = await self.git.aget_current_branch(workspace, strict=True)
             if not latest_branch:
+                ctx.verification_infrastructure_failure = True
                 failures.append(("Could not verify the final checked-out branch.", False))
             else:
                 current_branch = latest_branch
@@ -1682,6 +1696,7 @@ class GitOpsMixin:
                                 f"`aq task deliver --task-id {task.id} --reason ...`."
                             )
                         failures.append((message, False))
+                        ctx.verification_infrastructure_failure = True
                         repository = None
                     pr_url = confirmed_merged_pr_url
                     if repository is not None and not pr_url:
@@ -1709,6 +1724,7 @@ class GitOpsMixin:
                             default_branch,
                         )
                     elif not pr_url and integrated is None:
+                        ctx.verification_infrastructure_failure = True
                         failures.append(
                             (
                                 f"Could not verify whether `{pr_delivery_branch}` is already "
@@ -1788,6 +1804,7 @@ class GitOpsMixin:
                                 )
                             )
                     except GitError as e:
+                        ctx.verification_infrastructure_failure = True
                         failures.append(
                             (
                                 f"Could not verify remote `{default_branch}` head: {e}",
@@ -1816,6 +1833,7 @@ class GitOpsMixin:
         fixable = [(msg, f) for msg, f in failures if f]
         unfixable = [(msg, f) for msg, f in failures if not f]
         all_msgs = [msg for msg, _ in failures]
+        ctx.verification_issues = all_msgs
 
         if unfixable:
             # Unfixable issues present — block immediately, don't waste retries

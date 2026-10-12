@@ -2764,7 +2764,15 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
     streak = {"cause": "context_thrash", "count": 2}
     await db.set_task_meta(delegate, "worker_failure_streak", streak)
     await _claimed_writer(db, delegate, epoch=1, live=False, sid="dead")
+    await db.create_profile(AgentProfile(
+        id="standard-high-codex", name="Standard", harness="codex", default_class="standard-high",
+    ))
     async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == delegate).values(
+            profile_id="standard-high-codex", intelligence_class="standard-high",
+            route_source="router", provider_intent="preferred",
+            route={"constraints": {"exclude_providers": ["claude"]}},
+        ))
         await conn.execute(update(integration_branch_owners).values(
             handoff_state=fence_state, session_id="dead",
         ))
@@ -2775,7 +2783,13 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
 
     assert "aq integration reserve-owner --task-id" in result["error"]
     assert "aq integration release-owner --task-id" in result["error"]
-    assert (await db.get_task(delegate)).status is TaskStatus.BLOCKED
+    restored = await db.get_task(delegate)
+    assert restored.status is TaskStatus.BLOCKED
+    assert (restored.profile_id, restored.intelligence_class, restored.route_source,
+            restored.provider_intent, restored.route) == (
+        "standard-high-codex", "standard-high", "router", "preferred",
+        {"constraints": {"exclude_providers": ["claude"]}},
+    )
     assert await db.get_task_meta(delegate, "worker_failure_streak") == streak
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")

@@ -223,6 +223,7 @@ TERMINAL_BLOCKED_CONTEXTS = frozenset(
         "session_close_hard_failure",
         "max_retries",
         "session_close_pipeline_stop",
+        "verification_failed",
         "merge_conflict",
         "timeout",
         "stop_task",
@@ -1311,78 +1312,39 @@ class TaskQueryMixin:
         accepted_close: dict | None = None,
         **kwargs,
     ) -> TransitionResult:
-        """Update task status with state-machine validation, on a caller-owned connection.
+        """Validate and update status on a caller-owned connection (work-graph §4.1).
 
-        Read, validate, apply and recompute ``is_blocked`` happen in **one**
-        transaction (work-graph implementation spec §4.1), so no reader can
-        observe the new status against the old projection.
+        Status, metadata, ``is_blocked`` and container settlement share one transaction.
+        The caller emits blocked/unblocked audit rows and settlement callbacks after commit.
+        The result includes flipped task ids and settled containers (§7).
+        Validation follows ``state_machine.enforce`` and the explicit ``force`` bypass.
 
-        Validation stays warn-only in this phase — the ``state_machine.
-        enforce`` flag and the ``force`` bypass land with WG-5.
+        ``_settle_depth`` is private recursion state for ``settle_containers``, never a
+        task column passed through ``**kwargs`` to ``_coerce_task_values``.
+        Same-status writes still recompute when projection inputs change: increasing
+        a FAILED task's retries to its limit can satisfy conditional-blocks edges.
 
-        Returns the set of task ids whose ``is_blocked`` flipped — including
-        any flips caused by settling a container this write completed — plus
-        any containers settled by this write (spec §7); the matching
-        ``task.blocked`` / ``task.unblocked`` audit rows and the settlement
-        listener callback are the caller's job, after the transaction commits.
+        Claim-path fast paths (§15) preserve these guarantees:
+        ``projection_stable`` skips recomputation and dependent frontier bookkeeping
+        only when both statuses are READY/IN_PROGRESS; other moves recompute even
+        with this assertion. The task's own READY/unblocked frontier entry is recorded.
+        ``extra_where`` and ``extra_values`` add guards and columns to the one status
+        UPDATE, including claim epoch and READY/unblocked/unassigned claim fences.
+        ``returning`` supplies the updated row in ``TransitionResult.row``, or None
+        when no row matched, so callers can build a Task without another read.
+        ``assume_pre_state`` skips the pre-read using ``(status, is_blocked)``; callers
+        must pin both values in ``extra_where`` so the matched UPDATE proves them.
 
-        ``_settle_depth`` is private: it is only ever passed by
-        ``settle_containers`` recursing into its own parent one level
-        deeper, and is never a real task column, so it must stay a named
-        keyword rather than fall into ``**kwargs`` (which feeds
-        ``_coerce_task_values``).
-
-        A same-status call is **not** a no-op for the projection: it can still
-        carry a ``PROJECTION_INPUT_COLUMNS`` write (a FAILED task bumped to
-        ``retry_count == max_retries`` turns a transient failure terminal,
-        satisfying every ``conditional-blocks`` edge pointing at it), so it
-        recomputes too.
-
-        The remaining keywords are the spec §15 claim-path fast paths.  All
-        are additive; every pre-existing caller keeps the behaviour above.
-
-        ``projection_stable=True`` is the caller's **assertion** that this
-        write cannot change any task's ``is_blocked``.  It is honoured only
-        when both the pre- and post-status are in
-        ``_PROJECTION_NEUTRAL_STATUSES`` (READY / IN_PROGRESS) — every other
-        move, terminal ones included, silently falls back to the full
-        recompute, so a mistaken assertion cannot corrupt the projection.
-        When honoured, ``recompute_blocked`` and the *dependents'* frontier
-        bookkeeping are skipped; the task's **own** frontier entry is still
-        recorded when its post-state is READY and unblocked (that is the
-        release path's ``task.ready`` / ``released`` audit row).
-
-        ``extra_where`` / ``extra_values`` fold a caller's guard and extra
-        columns into the single status UPDATE (the claim's epoch bump and
-        its ``status = READY AND is_blocked = 0 AND assigned_agent_id IS
-        NULL`` fence), so the write still goes through this one sanctioned
-        path.  With ``returning=True`` the updated row comes back in
-        ``TransitionResult.row`` (``None`` when the guard matched nothing)
-        and the caller builds its ``Task`` from it instead of re-reading.
-
-        ``assume_pre_state`` is ``(status, is_blocked)`` asserted by the
-        caller *in the same statement* via ``extra_where``; it skips the
-        pre-read.  Only pass it when ``extra_where`` pins both values, so
-        that a matched UPDATE proves the assertion.
-
-        ``accepted_close`` is the identity of the ``task close`` this write
-        accepts.  It is stored as ``ACCEPTED_CLOSE_KEY`` only when the status
-        write matched, in its transaction, so the identity exists exactly when
-        the close's transition committed.
-
-        ``_defer_projection`` lets a change set retain every state guard and
-        metadata write while deferring projection, settlement and frontier
-        bookkeeping until all of its graph mutations have been applied.
+        ``accepted_close`` is stored under ``ACCEPTED_CLOSE_KEY`` in this transaction
+        only after the guarded write matches, tying close identity to its commit.
+        ``_defer_projection`` retains all guards and metadata writes while a change
+        set defers projection, settlement and frontier work until all mutations apply.
         """
         values = self._coerce_task_values(kwargs)
         from src.database.tables import projects
 
-        # Only a *managed* parent (one holding an integration checkpoint) can
-        # be waived by development mode, and that is a rare shape.  Reading
-        # the project eagerly for every READY/COMPLETED transition put one
-        # extra statement on the hot release path -- see the release_claim
-        # budget in ``tests/perf/test_claim_statements.py``.  Cache it here
-        # so the two call sites below can ask for it at most once.
+        # Only managed parents can waive integration in development mode. Cache the
+        # project read lazily to preserve the release_claim statement budget.
         _development_mode: bool | None = None
 
         async def in_development_mode() -> bool:
@@ -1424,12 +1386,8 @@ class TaskQueryMixin:
             current_status = TaskStatus(row[0])
             pre_blocked = bool(row[1])
 
-        # Checklist state is part of terminal completion, not a follow-up
-        # write.  The terminal pre-state read above locks the parent before
-        # observing either its status or its rows; appenders take this same
-        # lock before allocating an ordinal, so a close cannot slip past a
-        # concurrent append.  Any later refusal in this transition rolls the
-        # explicitly requested skip back with it.
+        # The terminal pre-read's parent lock keeps completion from racing an
+        # append. Checklist skips share this transaction and roll back on refusal.
         if current_status != TaskStatus.COMPLETED and new_status == TaskStatus.COMPLETED:
             open_ordinals = [
                 row[0]
@@ -1480,6 +1438,12 @@ class TaskQueryMixin:
 
         async def _write(values: dict):
             """Run the guarded UPDATE; return ``(matched, row_or_None)``."""
+            async def record_retry() -> bool:
+                return await self.record_routing_retry_on(
+                    conn, task_id, context=context, previous_status=current_status,
+                    new_status=new_status,
+                )
+
             stmt = update(tasks).where(tasks.c.id == task_id)
             if not _manual_pause_control:
                 stmt = stmt.where(_not_manually_paused())
@@ -1503,6 +1467,10 @@ class TaskQueryMixin:
                     ))).scalar_one_or_none()
                     if paused:
                         raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
+                if out is not None and await record_retry():
+                    out = (await conn.execute(select(tasks).where(
+                        tasks.c.id == task_id,
+                    ))).mappings().one()
                 return out is not None, (dict(out) if out is not None else None)
             res = await conn.execute(stmt)
             if res.rowcount == 0:
@@ -1513,6 +1481,7 @@ class TaskQueryMixin:
                     if paused:
                         raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
                 return False, None
+            await record_retry()
             if not returning:
                 return True, None
             out = (

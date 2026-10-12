@@ -1099,14 +1099,14 @@ def test_routine_preference_falls_back_to_claude_without_raising_class(cause):
 
 def test_routine_preference_preserves_local_design_art_and_operator_rules():
     policy, digest = routine_policy()
-    narrow = plan_route(_task(task_type="bugfix"), policy, _snapshot(),
+    narrow = plan_route(_task(task_type="feature"), policy, _snapshot(),
                         policy_sha256=digest, classification={**NARROW_YES, "risk": "low"})
     assert narrow.value["provider"] == "opencode"
     assert narrow.value["decision"]["mode"] == "lane_preference"
     # The shipped narrow lanes take only work classified low risk: narrow and
     # test-verified alone no longer qualifies.  No risk answer is a medium one.
     for classification in (NARROW_YES, {**NARROW_YES, "risk": "medium"}):
-        hosted = plan_route(_task(task_type="bugfix"), policy, _snapshot(),
+        hosted = plan_route(_task(task_type="feature"), policy, _snapshot(),
                             policy_sha256=digest, classification=classification)
         assert hosted.value["provider"] == "codex", classification
         assert {c["harness"] for c in hosted.value["candidates"]} <= {"claude", "codex"}
@@ -1319,7 +1319,7 @@ def test_a_preference_may_name_one_profile_as_well_as_a_harness():
 def test_a_preference_outranks_a_lane_preference_but_not_a_hold_lane():
     policy, digest = routine_policy()
     narrow = plan_route(
-        _task(task_type="bugfix", prefer_target="claude", prefer_mode="soft"),
+        _task(task_type="feature", prefer_target="claude", prefer_mode="soft"),
         policy, _snapshot(), policy_sha256=digest,
         classification={**NARROW_YES, "risk": "low"},
     )
@@ -1757,3 +1757,86 @@ def test_operator_routing_cannot_bypass_frontier_role_using_a_benchmark_selector
     result = _plan(_task(task_type="operator", benchmark_arms=("cheap",)), _snapshot())
     assert result.outcome == "no_candidates"
     assert result.value["reason"] == "operator_work_cannot_use_benchmark_arms"
+
+
+# -- standard-first escalation --------------------------------------------------
+
+ESCALATING_POLICY = RISK_POLICY.replace(
+    "  bugfix:   {class: standard-high, max_class: deep-high,     narrow: true, "
+    "prefer_harnesses: [codex]}",
+    "  bugfix: {class: standard-high, max_class: deep-high, narrow: true, "
+    "prefer_harnesses: [codex], escalate: {after_failures: 1, to_class: deep-high}}",
+)
+assert ESCALATING_POLICY != RISK_POLICY
+
+
+@pytest.mark.parametrize("hint", [None, "deep-high", "fast-low"])
+@pytest.mark.parametrize("risk", ["low", "high", "very_high"])
+@pytest.mark.parametrize("narrow", [False, True])
+def test_bugfix_first_attempt_uses_standard_even_with_deep_classification(hint, risk, narrow):
+    result = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", class_hint=hint),
+        classification={**NARROW_NO, "narrow": narrow, "test_verified": narrow,
+                        "independent_verifier": narrow,
+                        "intelligence_class": "deep-high", "risk": risk},
+    )
+    assert result.outcome == "planned"
+    assert result.value["intelligence_class"] == "standard-high"
+    assert "escalated_after_failure" not in result.value
+    assert "class_raised_for_risk" not in result.value
+    if risk != "low":
+        assert {c["harness"] for c in result.value["candidates"]} <= {"claude", "codex"}
+
+
+def test_bugfix_escalation_names_the_failed_attempt():
+    failure = {"attempt_id": "attempt-1", "intelligence_class": "standard-high",
+               "reason": "session_close_hard_failure", "status": "BLOCKED"}
+    result = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(failure,)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert result.outcome == "planned"
+    assert result.value["intelligence_class"] == "deep-high"
+    assert result.value["escalated_after_failure"] == {
+        "from": "standard-high", "to": "deep-high", "after_failures": 1,
+        "failed_attempts": [failure],
+    }
+    assert "escalated_after_failure" in result.value["reason"]
+
+
+@pytest.mark.parametrize("failed_class", ["fast-high", "deep-high"])
+def test_failure_at_another_class_does_not_skip_the_standard_attempt(failed_class):
+    result = _risk_plan(
+        ESCALATING_POLICY,
+        _task(task_type="bugfix", failed_attempts=(
+            {"attempt_id": "other-class", "intelligence_class": failed_class},
+        )), classification={**NARROW_NO, "risk": "high"},
+    )
+    assert result.value["intelligence_class"] == "standard-high"
+
+
+def test_escalation_threshold_and_design_lane_are_policy_controlled():
+    failure = {"attempt_id": "one", "intelligence_class": "standard-high"}
+    result = _risk_plan(
+        ESCALATING_POLICY.replace("after_failures: 1", "after_failures: 2"),
+        _task(task_type="bugfix", failed_attempts=(failure,)),
+        classification={**NARROW_NO, "risk": "high"},
+    )
+    assert result.value["intelligence_class"] == "standard-high"
+    design = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="design", failed_attempts=(failure,)),
+        classification={**NARROW_NO, "task_type": "design", "risk": "very_high"},
+    )
+    assert (design.value["intelligence_class"], design.value["lane"]) == ("deep-high", "code-design")
+    assert "escalated_after_failure" not in design.value
+
+
+@pytest.mark.parametrize("rule", [
+    "{after_failures: 0, to_class: deep-high}",
+    "{after_failures: true, to_class: deep-high}",
+    "{after_failures: 1, to_class: missing}",
+    "{after_failures: 1, to_class: standard-high}",
+])
+def test_invalid_escalation_policy_is_refused(rule):
+    with pytest.raises(PolicyError):
+        parse_policy(ESCALATING_POLICY.replace("{after_failures: 1, to_class: deep-high}", rule))

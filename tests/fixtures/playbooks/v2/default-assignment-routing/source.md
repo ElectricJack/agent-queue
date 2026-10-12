@@ -94,14 +94,21 @@ harness, never by rung id. Key by key:
 - `kinds`: the class a task of that kind gets when it has no hint, and
   `max_class`, the highest class a hint may ask for; a higher hint is clamped.
   A kind with a `lane` goes to that lane. A kind with `narrow: true` may go to
-  the OpenCode lanes.
+  the OpenCode lanes. `escalate` makes a kind try its default class first,
+  regardless of a hint, classifier class or risk class floor. Bugfixes start
+  at `standard-high` and move to `deep-high` after one substantive failed
+  attempt. Worker give-up, failed verification and rejected review count;
+  explicitly transient failures, lost workers, session close errors and
+  provider outages do not. Retry/reopen goes back through this router and the
+  plan records `escalated_after_failure` with the failed attempts.
 - `risk`: what the classifier's `risk` answer does. The classifier judges
   how much damage the change could do if it is wrong, separately from how hard
   it is; the "Classifying a task" section below gives the guidance. A level
   with a rule gets that rule's `min_class` as a floor: a lower class, whether
   it came from the kind, a hint or the classifier, is raised to the floor, and
   the plan records `class_raised_for_risk`. The floor beats a kind's
-  `max_class` and a class hint. Only an operator route override goes under it.
+  `max_class` and a class hint, except for kinds with `escalate`, whose
+  attempt class takes precedence. An operator route override can also go under it.
   `harnesses` limits every candidate to those harnesses: medium, high and very
   high risk work runs only on Claude or Codex, never on local OpenCode, the
   free hosted models or any other harness. `relax` lowers a level's floor when
@@ -147,7 +154,7 @@ harness, never by rung id. Key by key:
   The `local_models` gate keeps its defaults: an integration-train bug fix,
   and work other tasks wait on, never run on a self-hosted model.
 - `reserved`: keeps deep-high Claude for code design and design review, so a
-  hard bug fix hinted deep-high lands on deep-high Codex.
+  bug fix escalated after a standard failure lands on deep-high Codex.
 - `balance`: the load score. A candidate's pressure is its live load plus one,
   over its slots times its harness weight, its provider's usage factor and its
   availability factor. The least-pressed candidate wins, and `tie_order`
@@ -170,7 +177,7 @@ kinds:
   art:      {class: deep-high,     max_class: deep-high,     lane: art-design}
   research: {class: standard-high, max_class: deep-high}
   feature:  {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
-  bugfix:   {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
+  bugfix:   {class: standard-high, max_class: deep-high,     narrow: false, prefer_harnesses: [codex], escalate: {after_failures: 1, to_class: deep-high}}
   refactor: {class: standard-high, max_class: deep-high,     narrow: true, prefer_harnesses: [codex]}
   test:     {class: standard-high, max_class: standard-high, narrow: true, prefer_harnesses: [codex]}
   docs:     {class: standard-high, max_class: standard-high, narrow: true, prefer_harnesses: [codex]}

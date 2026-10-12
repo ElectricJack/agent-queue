@@ -494,6 +494,9 @@ class RoutingCommandsMixin:
                 project, "hierarchical_integration_mode", None
             ) in TRAIN_INTEGRATION_MODES,
             blocks_work=await self.db.has_waiting_dependents(task.id),
+            failed_attempts=tuple(await self.db.get_task_meta(
+                task.id, "routing_failed_attempts",
+            ) or ()),
         )
 
     async def _cmd_task_route_plan(self, args: dict) -> dict:
@@ -746,6 +749,8 @@ class RoutingCommandsMixin:
                     # Only a plan whose risk floor raised the class carries it,
                     # so every other route record is unchanged.
                     route["class_raised_for_risk"] = raised
+                if escalated := plan.get("escalated_after_failure"):
+                    route["escalated_after_failure"] = escalated
                 prior = getattr(fresh, "route", None)
                 if constraints := route_constraints(fresh):
                     route["constraints"] = constraints
