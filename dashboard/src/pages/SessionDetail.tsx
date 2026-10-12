@@ -80,7 +80,7 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
   const [text, setText] = useState("");
   const [streamOn, setStreamOn] = useState(true);
   const focusSelection = location.state?.terminalFocus === true;
-  const [viewMode, setViewMode] = useState<"transcript" | "pane">(focusSelection ? "pane" : "transcript");
+  const [viewMode, setViewMode] = useState<"transcript" | "pane">("pane");
   const [paneRequest, setPaneRequest] = useState(0);
   useEffect(() => {
     if (focusSelection) setViewMode("pane");
