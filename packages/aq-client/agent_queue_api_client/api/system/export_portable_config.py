@@ -65,11 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ExportPortableConfigRequest,
 ) -> Response[ExportPortableConfigResponse422 | PortableConfigResponse]:
-    """Write a versioned, validated .aqbundle containing only portable tuning and global profile
-    definitions. Run preview_portable_config first to curate the exported defaults.
+    """Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes,
+    pool settings, projects and policy sources. Preview exclusions with preview_portable_config.
 
-     Write a versioned, validated .aqbundle containing only portable tuning and global profile
-    definitions. Run preview_portable_config first to curate the exported defaults.
+     Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes,
+    pool settings, projects and policy sources. Preview exclusions with preview_portable_config.
 
     Args:
         body (ExportPortableConfigRequest):
@@ -98,11 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ExportPortableConfigRequest,
 ) -> ExportPortableConfigResponse422 | PortableConfigResponse | None:
-    """Write a versioned, validated .aqbundle containing only portable tuning and global profile
-    definitions. Run preview_portable_config first to curate the exported defaults.
+    """Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes,
+    pool settings, projects and policy sources. Preview exclusions with preview_portable_config.
 
-     Write a versioned, validated .aqbundle containing only portable tuning and global profile
-    definitions. Run preview_portable_config first to curate the exported defaults.
+     Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes,
+    pool settings, projects and policy sources. Preview exclusions with preview_portable_config.
 
     Args:
         body (ExportPortableConfigRequest):
@@ -126,11 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ExportPortableConfigRequest,
 ) -> Response[ExportPortableConfigResponse422 | PortableConfigResponse]:
-    """Write a versioned, validated .aqbundle containing only portable tuning and global profile
-    definitions. Run preview_portable_config first to curate the exported defaults.
+    """Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes,
+    pool settings, projects and policy sources. Preview exclusions with preview_portable_config.
 
-     Write a versioned, validated .aqbundle containing only portable tuning and global profile
-    definitions. Run preview_portable_config first to curate the exported defaults.
+     Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes,
+    pool settings, projects and policy sources. Preview exclusions with preview_portable_config.
 
     Args:
         body (ExportPortableConfigRequest):
@@ -157,11 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ExportPortableConfigRequest,
 ) -> ExportPortableConfigResponse422 | PortableConfigResponse | None:
-    """Write a versioned, validated .aqbundle containing only portable tuning and global profile
-    definitions. Run preview_portable_config first to curate the exported defaults.
+    """Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes,
+    pool settings, projects and policy sources. Preview exclusions with preview_portable_config.
 
-     Write a versioned, validated .aqbundle containing only portable tuning and global profile
-    definitions. Run preview_portable_config first to curate the exported defaults.
+     Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes,
+    pool settings, projects and policy sources. Preview exclusions with preview_portable_config.
 
     Args:
         body (ExportPortableConfigRequest):

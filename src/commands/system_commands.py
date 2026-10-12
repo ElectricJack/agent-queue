@@ -318,18 +318,22 @@ class SystemCommandsMixin:
     async def _cmd_preview_portable_config(self, args: dict) -> dict:
         """Show the reviewed, non-secret configuration that bundle export would use."""
         from src.portable_config import PortableBundleError, bundle_preview
+        from src.portable_setup import collect_setup
 
         path = self.orchestrator.config._config_path
         if not path or not os.path.exists(path):
             return {"error": "No config file path is set on this daemon."}
         try:
-            return bundle_preview(path, self.config.data_dir)
-        except PortableBundleError as exc:
+            setup = await collect_setup(self.db, self.config.data_dir)
+            result = await asyncio.to_thread(bundle_preview, path, self.config.data_dir, setup=setup)
+            return {"success": True, **result}
+        except (PortableBundleError, ValueError, OSError) as exc:
             return {"error": str(exc)}
 
     async def _cmd_export_portable_config(self, args: dict) -> dict:
         """Export the curated preview as a versioned ``.aqbundle`` archive."""
         from src.portable_config import PortableBundleError, export_bundle
+        from src.portable_setup import collect_setup
 
         destination = args.get("destination")
         path = self.orchestrator.config._config_path
@@ -338,8 +342,12 @@ class SystemCommandsMixin:
         if not path or not os.path.exists(path):
             return {"error": "No config file path is set on this daemon."}
         try:
-            return export_bundle(destination, path, self.config.data_dir)
-        except PortableBundleError as exc:
+            setup = await collect_setup(self.db, self.config.data_dir)
+            result = await asyncio.to_thread(
+                export_bundle, destination, path, self.config.data_dir, setup=setup
+            )
+            return {"success": True, **result}
+        except (PortableBundleError, ValueError, OSError) as exc:
             return {"error": str(exc)}
 
     async def _cmd_import_portable_config(self, args: dict) -> dict:
@@ -362,16 +370,20 @@ class SystemCommandsMixin:
                 conflict=args.get("conflict", "keep"),
                 dry_run=bool(args.get("dry_run", False)),
             )
-        except PortableBundleError as exc:
+        except (PortableBundleError, ValueError, OSError) as exc:
             return {"error": str(exc)}
+        if result.get("applied") and result.get("intelligence_classes"):
+            result["class_reload"] = await self._reload_intelligence_classes()
         imported = set(result.get("config_sections", []))
         result["requires_restart"] = sorted(imported - HOT_RELOADABLE_SECTIONS)
+        if result.get("pending_policy_sources"):
+            result["requires_restart"].append("vault policy registries")
         if result.get("applied") and imported & HOT_RELOADABLE_SECTIONS:
             watcher = self.orchestrator._config_watcher
             if watcher:
                 reloaded = await watcher.reload()
                 result["applied_sections"] = reloaded.get("applied", []) or []
-        return result
+        return {"success": "error" not in result, **result}
 
     async def _cmd_update_config(self, args: dict) -> dict:
         """Replace one top-level section in the YAML config and reload.
