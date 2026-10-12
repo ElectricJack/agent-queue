@@ -33,30 +33,4 @@ or termination expires the record and archives its pending wake. New owner
 instances must register again. No schedule cold-starts a replacement owner.
 Recording session sleep intent or transitioning to sleeping cancels the current
 instance's active registrations and archives undelivered scheduled prompts atomically
-with the session update. Waking does not restore cancelled registrations.
-
-Missed ticks coalesce into one prompt. A schedule retains at most one pending
-message, with a stable message ID per emitted tick. Cron coalescing counts are a
-diagnostic lower bound after outages exceeding seven days; recurrence advances
-directly past every missed tick. Pending prompts expire after
-one hour and have at most five terminal submission attempts, at least 30 seconds
-apart with exponential backoff. Busy/absent owners consume no attempt. The
-normal message engine and session lens perform idle detection and terminal
-submission. A one-line wake points to `aq cron show ID --consume --json`, which
-returns the prompt and consumes only that schedule's pending notification.
-Reading/listing without consume has no delivery side effect. New ticks never
-replay every missed interval. Submission is at least once under an ambiguous
-terminal crash; consumers should make patrol actions idempotent.
-
-Show/list expose timezone, epoch and local next-fire, coalesced count, pending
-message/expiry, attempt count, and last submission time/status/error. Show also
-returns the latest message delivery/read receipt. Exhausted delivery produces
-a daemon warning alongside the persisted failure. Cancellation archives pending delivery. An already authorized
-in-flight terminal submission may finish; cancellation cannot undo execution.
-Delivered prompts may be handled while the session remains busy; later ticks
-wait through the ordinary activity gate. Schedule expiry retains history.
-
-Fresh profiles grant the four public commands on supported harnesses. Supervisor
-capability sync adds shipped grants on reload; worker templates and skills remain
-write-if-absent and operators inspect installed drift. Existing `aq wait`
-conditions and reviewed playbook artifacts are unchanged.
+with the session update. Waking does not restore cancelled registrations; cancelled idempotency keys remain cancelled.
