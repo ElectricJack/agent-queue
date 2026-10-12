@@ -1562,6 +1562,8 @@ async def test_repository_budget_admits_new_work_and_keeps_inbox_reconciliation_
         assert row["timing"]["selection"]["stages"]["root_delivery"]["items"] == 1
 
         db = SimpleNamespace(
+            expire_finished_task_notices=AsyncMock(return_value=0),
+            alert_global_supervisor_backlog=AsyncMock(return_value=None),
             redirect_disabled_supervisor_messages=AsyncMock(return_value=0),
             get_pending_recipients=AsyncMock(return_value=[("user", "dashboard", "p")]),
             get_pending_messages=AsyncMock(return_value=[Message(

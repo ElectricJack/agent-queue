@@ -636,6 +636,7 @@ class MessageCommandsMixin:
                             return scope_error
                     recipients.extend([session.name, f"supervisor-{suffix}"])
         if supervisor_mailbox:
+            await self.db.expire_finished_task_notices()
             await self.db.redirect_disabled_supervisor_messages()
         pending = []
         for recipient in recipients:
