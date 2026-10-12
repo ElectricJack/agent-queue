@@ -434,14 +434,41 @@ async def test_stale_pending_incident_is_superseded_when_task_resumes(env):
     assert (await env.db.get_message("msg-" + replacement["id"])).archived_at is None
 
 
-async def test_retry_preserves_work_and_routing_records_comment_and_consumes_budget_once(env):
+@pytest.mark.parametrize("route_source", ["legacy", "router", "role", "override"])
+async def test_retry_preserves_work_and_routing_records_comment_and_consumes_budget_once(
+    env, route_source,
+):
+    route = {"constraints": {"exclude_providers": ["gemini"]}, "reason": "previous selection"}
+    await env.db.update_task("t", route_source=route_source, route=route,
+                             class_hint="standard-high")
+    before = await env.db.get_task("t")
     current = await incident(env)
     results = await asyncio.gather(decide(env, current), decide(env, current))
     assert sum("error" not in r for r in results) == 1, results
     task = await env.db.get_task("t")
     assert task.status == TaskStatus.READY
     assert task.retry_count == 1
-    assert task.profile_id == "worker" and task.intelligence_class == "deep-high"
+    assert task.class_hint == before.class_hint == "standard-high"
+    if route_source in {"legacy", "router"}:
+        assert (task.route_source, task.profile_id, task.intelligence_class) == (
+            "unrouted", None, None,
+        )
+        assert task.provider_intent == "class_only"
+        expected_route = {"constraints": route["constraints"]}
+        if route_source == "legacy":
+            expected_route["legacy"] = {
+                "profile_id": before.profile_id,
+                "intelligence_class": before.intelligence_class,
+                "provider_intent": before.provider_intent,
+            }
+        assert task.route == expected_route
+    else:
+        assert (task.route_source, task.profile_id, task.intelligence_class) == (
+            route_source, "worker", "deep-high",
+        )
+        assert task.route == route
+    # A stuck-session recovery requests a fresh route without a work verdict.
+    assert await env.db.get_task_meta("t", "routing_failed_attempts") is None
     assert task.branch_name == "aq/keep" and task.description == "Keep requirements"
     assert await env.db.get_task_meta("t", "needs_attention") is None
     assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") == 1
