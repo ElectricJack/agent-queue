@@ -3823,10 +3823,12 @@ class GitIdentityConfig:
 
 @dataclass
 class DeployConfig:
-    """Optional tag selection; unset preserves the installation's branch updater."""
+    """Optional release selection or automatic tracking of an installed branch."""
 
     tag_glob: str | None = None
     target: str = "main"
+    track_branch: str | None = None
+    poll_interval_seconds: float = 300.0
 
     def validate(self) -> list[ConfigError]:
         errors = []
@@ -3836,6 +3838,20 @@ class DeployConfig:
             errors.append(ConfigError("deploy", "tag_glob", "must be a non-empty string or null"))
         if not isinstance(self.target, str) or not self.target.strip():
             errors.append(ConfigError("deploy", "target", "must be a non-empty branch name"))
+        if self.track_branch is not None and (
+            not isinstance(self.track_branch, str) or not self.track_branch.strip()
+            or self.track_branch.startswith("-") or any(c.isspace() for c in self.track_branch)
+        ):
+            errors.append(ConfigError("deploy", "track_branch", "must be a branch name or null"))
+        if self.track_branch is not None and self.tag_glob is not None:
+            errors.append(ConfigError("deploy", "track_branch", "cannot be combined with tag_glob"))
+        if (
+            isinstance(self.poll_interval_seconds, bool)
+            or not isinstance(self.poll_interval_seconds, (int, float))
+            or not math.isfinite(self.poll_interval_seconds)
+            or self.poll_interval_seconds < 60
+        ):
+            errors.append(ConfigError("deploy", "poll_interval_seconds", "must be finite and >= 60"))
         return errors
 
 
@@ -4318,7 +4334,7 @@ HOT_RELOADABLE_SECTIONS = {
     # an edit governs the next launch and retires stale pool sessions at
     # their next claim (docs/specs/git-identity.md).
     "git_identity",
-    "deploy",  # selectors are read per operator update
+    "deploy",  # selectors and automatic branch-check cadence are read live
     # Read per use through lambda getters (``orchestrator.core`` knowledge
     # reads and ``records`` outbox/export), so an edit bites on the next
     # access without a restart.

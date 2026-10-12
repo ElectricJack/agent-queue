@@ -1604,6 +1604,17 @@ export function useSystemConfig() {
   });
 }
 
+export function useDeploymentHistory() {
+  return useQuery({
+    queryKey: ["deployment-history"],
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const { data } = await getConfig({ body: { section: "deploy" }, throwOnError: true });
+      return (data as GetConfigResponse).deployment_history;
+    },
+  });
+}
+
 export function useSystemConfigSchema() {
   return useQuery({
     queryKey: ["system-config-schema"],

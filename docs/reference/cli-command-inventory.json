@@ -20094,6 +20094,7 @@
       "parameters": {
         "required": [],
         "optional": [
+          "--automatic",
           "--check",
           "--yes",
           "--ref",

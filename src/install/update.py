@@ -198,6 +198,7 @@ def plan_update(
     tag_glob: str | None = None,
     promotion_target: str = "main",
     allow_rollback: bool = False,
+    track_branch: str | None = None,
 ) -> UpdatePlan:
     """Decide whether and how *checkout* can be updated; raise UpdateRefused if not."""
     env = os.environ if environ is None else environ
@@ -210,6 +211,11 @@ def plan_update(
 
     try:
         record = read_record(state_dir) if state_dir is not None else None
+        if track_branch and (ref or tag_glob or record):
+            raise UpdateRefused(
+                "branch tracking conflicts with a tag selector or deploy.json",
+                "Disable tracking or restore the installation branch and remove its tag record.",
+            )
         if ref or tag_glob or record:
             return _plan_deploy(
                 checkout, execute=execute, ref=ref, tag_glob=tag_glob,
@@ -235,6 +241,16 @@ def plan_update(
             "`aq update`.",
         )
     upstream_name = upstream.out.strip()
+    if track_branch:
+        valid = _git(execute, checkout, "check-ref-format", f"refs/heads/{track_branch}")
+        if (
+            not valid.ok or branch.out.strip() != track_branch
+            or upstream_name.partition("/")[2] != track_branch
+        ):
+            raise UpdateRefused(
+                f"installation branch/upstream does not match deploy.track_branch={track_branch!r}",
+                "Check out the configured branch and set its matching remote upstream as operator.",
+            )
 
     dirty = _git(execute, checkout, "status", "--porcelain", "--untracked-files=no")
     if not dirty.ok:
@@ -258,6 +274,12 @@ def plan_update(
             "Check the network and your access to the repository, then rerun `aq update`.",
         )
 
+    if track_branch and (
+        _git(execute, checkout, "rev-parse", "--is-shallow-repository").out == "true"
+    ):
+        expanded = _git(execute, checkout, "fetch", "--quiet", "--unshallow", remote)
+        if not expanded.ok:
+            raise UpdateRefused("could not prove fast-forward ancestry", expanded.message())
     head = _git(execute, checkout, "rev-parse", "HEAD").out.strip()
     target = _git(execute, checkout, "rev-parse", "@{u}").out.strip()
     shallow = _git(execute, checkout, "rev-parse", "--is-shallow-repository").out.strip() == "true"
@@ -269,6 +291,8 @@ def plan_update(
         target=target,
         shallow=shallow,
     )
+    if track_branch:
+        validate_target_migrations(checkout, target, execute=execute)
     if plan.up_to_date:
         return plan
 
@@ -295,6 +319,32 @@ def plan_update(
         if subjects.ok
         else (),
     )
+
+
+def validate_target_migrations(
+    checkout: Path, target: str, *, execute: CommandRunner = run_command
+) -> None:
+    """Inspect the pinned target's graph without importing or executing its migrations."""
+    from src.database.additive_migrations import MigrationTree
+
+    paths = _git(execute, checkout, "ls-tree", "-r", "--name-only", target, "migrations/versions")
+    sources = {}
+    try:
+        if not paths.ok:
+            raise ValueError(paths.message())
+        for path in paths.out.splitlines():
+            if not path.endswith(".py") or Path(path).name == "__init__.py":
+                continue
+            source = _git(execute, checkout, "show", f"{target}:{path}")
+            if not source.ok:
+                raise ValueError(source.message())
+            sources[path] = source.stdout
+        MigrationTree(sources)
+    except (ValueError, SyntaxError) as error:
+        raise UpdateRefused(
+            f"target Alembic preflight failed: {error}",
+            "Repair the tracked branch's migration graph before deploying it.",
+        ) from error
 
 
 def _plan_deploy(
@@ -513,9 +563,13 @@ def apply_update(
     with os.fdopen(descriptor, "w") as handle:
         handle.write(f"{os.getpid()}\n")
     try:
-        if plan.selection:
+        if plan.selection or plan.branch:
             if _git(host.execute, plan.checkout, "rev-parse", "HEAD").out != plan.current:
                 raise UpdateRefused("checkout changed after preflight", "Rerun aq update.")
+            if plan.branch:
+                branch = _git(host.execute, plan.checkout, "symbolic-ref", "--short", "-q", "HEAD")
+                if not branch.ok or branch.out != plan.branch:
+                    raise UpdateRefused("installation branch changed after preflight", "Rerun aq update.")
             dirty = _git(host.execute, plan.checkout, "status", "--porcelain", "--untracked-files=no")
             if not dirty.ok or dirty.out:
                 raise UpdateRefused("checkout has local changes after preflight", "Rerun aq update.")
@@ -814,8 +868,16 @@ def _start_daemon(
     it is started, but not failing it is not what restores that state.
     """
     started = host.execute([host.aq, "start", "--no-dashboard"], timeout=DAEMON_TIMEOUT)
-    if not started.ok or not healthy():
-        raise _StepFailed("Start the daemon", started.message() or "it did not answer /health")
+    if not started.ok:
+        raise _StepFailed("Start the daemon", started.message())
+    # /health=503 proves a process is alive, not that the deployment works.
+    # Give the initial health snapshot time to settle before declaring success.
+    for _ in range(30):
+        if host.probe(f"{base}/health") == 200 and host.probe(f"{base}/ready") == 200:
+            break
+        host.sleep(1.0)
+    else:
+        raise _StepFailed("Start the daemon", "daemon did not pass /health and /ready")
     try:
         return _check_dashboard_server(host, checkout)
     except _StepFailed:

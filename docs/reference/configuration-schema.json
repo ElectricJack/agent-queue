@@ -308,10 +308,16 @@
     "deploy": {
       "additionalProperties": false,
       "default": {
+        "poll_interval_seconds": 300.0,
         "tag_glob": null,
-        "target": "main"
+        "target": "main",
+        "track_branch": null
       },
       "properties": {
+        "poll_interval_seconds": {
+          "default": 300.0,
+          "type": "number"
+        },
         "tag_glob": {
           "default": null,
           "type": [
@@ -322,6 +328,13 @@
         "target": {
           "default": "main",
           "type": "string"
+        },
+        "track_branch": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object",

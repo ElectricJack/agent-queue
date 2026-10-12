@@ -107,6 +107,51 @@ class TestUpdateAndRestart:
         assert result["commit"] == "b" * 40
         assert (tmp_path / "update.log").exists()
 
+    async def test_tracked_branch_launch_is_detached_and_scrubbed(self, handler, monkeypatch, tmp_path):
+        from src.commands import system_commands
+        from src.install import update
+        from src.install.update import UpdatePlan
+
+        handler.config.data_dir = str(tmp_path)
+        handler.config.deploy.track_branch = "dev"
+        monkeypatch.setenv("UNRELATED_SECRET", "must-not-reach-updater")
+        monkeypatch.setattr(update, "plan_update", lambda checkout, **kwargs: UpdatePlan(
+            checkout, "dev", "origin/dev", "a" * 40, "b" * 40, False,
+        ))
+        launch = AsyncMock(return_value=MagicMock(pid=42, wait=AsyncMock(return_value=0)))
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
+        handler.orchestrator._emit_text_notify = AsyncMock()
+        result = await handler._cmd_update_and_restart({"automatic": True})
+        assert result["success"] and result["selector"] == "origin/dev"
+        assert launch.call_args.args[-1] == "--automatic"
+        assert launch.call_args.kwargs["start_new_session"] is True
+        assert "UNRELATED_SECRET" not in launch.call_args.kwargs["env"]
+        assert (tmp_path / "update.log").stat().st_mode & 0o777 == 0o600
+
+    async def test_tracking_holds_failed_target_and_respects_update_lock(
+        self, handler, monkeypatch, tmp_path,
+    ):
+        from src.commands import system_commands
+        from src.install import update
+        from src.install.deploy_history import record_deploy
+        from src.install.update import UpdatePlan
+
+        handler.config.data_dir = str(tmp_path)
+        handler.config.deploy.track_branch = "dev"
+        monkeypatch.setattr(update, "plan_update", lambda checkout, **kwargs: UpdatePlan(
+            checkout, "dev", "origin/dev", "a" * 40, "b" * 40, False,
+        ))
+        record_deploy(tmp_path, "rolled_back", target="b" * 40, automatic=True)
+        launch = AsyncMock()
+        monkeypatch.setattr(system_commands.asyncio, "create_subprocess_exec", launch)
+        result = await handler._cmd_update_and_restart({"automatic": True})
+        assert result["error"] == "deployment_failed"
+        launch.assert_not_awaited()
+        (tmp_path / "update.lock").touch()
+        result = await handler._cmd_update_and_restart({"automatic": True})
+        assert result["status"] == "updating"
+        launch.assert_not_awaited()
+
     async def test_does_not_launch_or_restart_when_release_preflight_refuses(
         self, handler, monkeypatch
     ):
