@@ -955,7 +955,8 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_project",
         "description": (
             "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
-            "budget_limit, assignment_playbook_id (LOCAL-only router binding), "
+            "budget_limit, supervisor_enabled (default false), "
+            "assignment_playbook_id (LOCAL-only router binding), "
             "repo_default_branch, the operator-only Git commit identity override "
             "(git_identity_name/git_identity_email; empty on both inherits the installation "
             "default), or LOCAL-only hierarchical integration configuration. "
@@ -968,6 +969,14 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID"},
                 "name": {"type": "string", "description": "New project name (optional)"},
+                "supervisor_enabled": {
+                    "type": "boolean",
+                    "description": (
+                        "Enable a project supervisor on the next message. Default false: "
+                        "the global supervisor handles this project. Disabling drains "
+                        "the running project supervisor after its current turn."
+                    ),
+                },
                 "credit_weight": {
                     "type": "number",
                     "description": "New scheduling weight (optional)",

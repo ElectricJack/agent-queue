@@ -173,7 +173,7 @@ class TestGlobalSupervisorColdStart:
         # project-scoped token (elevated=True, project_id=<pid>).
         from src.models import Project
 
-        await db.create_project(Project(id="proj1", name="Proj1"))
+        await db.create_project(Project(id="proj1", name="Proj1", supervisor_enabled=True))
         ok = await lens.ensure_started(
             kind="session", target_id="supervisor-proj1", project_id="proj1"
         )

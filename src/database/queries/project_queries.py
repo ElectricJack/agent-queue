@@ -17,6 +17,7 @@ from src.database.tables import (
     project_constraints,
     projects,
     repos,
+    sessions,
     task_comments,
     task_completion_records,
     task_context,
@@ -150,6 +151,7 @@ class ProjectQueryMixin:
                     repo_url=project.repo_url,
                     repo_default_branch=project.repo_default_branch,
                     preferred_provider=project.preferred_provider,
+                    supervisor_enabled=project.supervisor_enabled,
                     # Never unbound (routing spec §8): the command layer passes
                     # ``routing.default_router``; a caller that passes nothing
                     # gets that key's default.
@@ -240,6 +242,15 @@ class ProjectQueryMixin:
                     ),
                 )
             await conn.execute(update(projects).where(projects.c.id == project_id).values(**values))
+            if values.get("supervisor_enabled") is False:
+                # Persist intent with the setting. The reconciler owns stopping
+                # the instance and waits for the current turn to finish.
+                await conn.execute(update(sessions).where(
+                    sessions.c.project_id == project_id,
+                    sessions.c.lifecycle == "named",
+                    sessions.c.name == "n-supervisor--" + project_id,
+                ).values(desired_state="stopped"))
+                await self.redirect_disabled_supervisor_messages(conn=conn)
 
     @staticmethod
     async def _validate_hierarchical_integration_project(
@@ -445,6 +456,7 @@ class ProjectQueryMixin:
             if row.get("repo_default_branch")
             else "main",
             preferred_provider=row.get("preferred_provider"),
+            supervisor_enabled=bool(row.get("supervisor_enabled", False)),
             # NOT NULL; an empty binding is read as stored, so doctor
             # (``routing.bypassed``) sees the project as unbound.
             assignment_playbook_id=row.get("assignment_playbook_id") or "",

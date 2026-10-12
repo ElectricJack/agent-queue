@@ -111,6 +111,23 @@ describe("ProjectSubject", () => {
     mockProject(project);
   });
 
+  it("saves the project supervisor toggle and restores it on discard", async () => {
+    const mutateAsync = mockEdit();
+    const view = renderSubject();
+    const toggle = screen.getByRole("switch", { name: "Project supervisor" });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+    expect(view.action("save").disabled).toBe(false);
+    view.action("discard").onClick();
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(mutateAsync).not.toHaveBeenCalled();
+    await userEvent.click(toggle);
+    view.action("save").onClick();
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ supervisor_enabled: true }),
+    ));
+  });
+
   it("renders repo_url read-only and enables Save once edited", async () => {
     const mutateAsync = vi.fn().mockResolvedValue(project);
     vi.spyOn(hooks, "useEditProject").mockReturnValue({
@@ -181,6 +198,7 @@ describe("ProjectSubject", () => {
         max_concurrent_agents: 2,
         credit_weight: 1,
         budget_limit: null,
+        supervisor_enabled: false,
       }),
     );
     expect(mutateAsync.mock.calls[0]![0]).not.toHaveProperty("git_identity_name");

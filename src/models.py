@@ -441,6 +441,7 @@ class Project:
     # installation default ``git_identity``; see ``src/git/identity.py``).
     git_identity_name: str | None = None
     git_identity_email: str | None = None
+    supervisor_enabled: bool = False
 
 
 @dataclass

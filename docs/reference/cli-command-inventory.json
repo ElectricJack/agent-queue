@@ -9623,6 +9623,62 @@
       }
     },
     {
+      "path": "aq project edit",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "edit_project",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--name",
+          "--supervisor-enabled",
+          "--credit-weight",
+          "--max-concurrent-agents",
+          "--budget-limit",
+          "--assignment-playbook-id",
+          "--repo-default-branch",
+          "--review-delegate-to",
+          "--git-identity-name",
+          "--git-identity-email",
+          "--integration-repository-id",
+          "--hierarchical-integration-policy",
+          "--hierarchical-integration-mode",
+          "--promotion-flow",
+          "--expected-integration-generation",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--hierarchical-integration-policy",
+          "--promotion-flow"
+        ],
+        "nullable": [
+          "--budget-limit",
+          "--integration-repository-id"
+        ]
+      }
+    },
+    {
       "path": "aq project edit-workspace",
       "registration": "generated",
       "owner_kind": "core",
