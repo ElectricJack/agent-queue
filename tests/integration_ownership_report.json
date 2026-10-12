@@ -9685,6 +9685,21 @@
     },
     "src/doctor/stall_checks.py::_escalation_delivery_findings": {
       "reason": "Stall sweep adapter for overdue human escalation delivery: scopes the generic notification query to active projects and maps it into integration-owned sweep findings."
+    },
+    "src/database/queries/dependency_queries.py::DependencyQueryMixin._guard_dependency_target": {
+      "reason": "Worker dependency admission locks the hierarchy and uses the integration-owned container predicate to reject scheduling edges onto containers before writing an edge."
+    },
+    "src/doctor/task_checks.py::container_dependency_report": {
+      "reason": "Read-only doctor report uses the same integration-owned container predicate to identify unfinished leaf scheduling edges onto containers; it never rewrites historical dependencies."
+    },
+    "src/doctor/task_checks.py::import from src.database.queries.hierarchy_queries import container_flag_exists, never_leaseable_container": {
+      "reason": "Imports the shared container predicates for leaf dependency diagnostics and lifecycle checks."
+    },
+    "src/doctor/task_checks.py::import from src.database.tables import agent_waits, archived_tasks, integration_branch_owners, messages, task_dependencies, task_metadata, tasks": {
+      "reason": "Imports task dependency rows alongside branch-owner and ordinary task state for read-only container dependency and lifecycle diagnostics."
+    },
+    "src/doctor/stall_checks.py::_container_dependency_findings": {
+      "reason": "Stall sweep adapter scopes the reviewed read-only container dependency report to active projects and reports leaf-to-container prerequisite edges for operator review."
     }
   },
   "shared_state": {

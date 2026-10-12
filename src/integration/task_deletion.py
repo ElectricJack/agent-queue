@@ -65,9 +65,7 @@ async def _lock_deletion_rows(conn, ids):
 
 async def _audit(db, conn, event, root, **payload):
     return await db.log_event(
-        event,
-        project_id=root["project_id"],
-        task_id=root["id"],
+        event, project_id=root["project_id"], task_id=root["id"],
         payload=json.dumps(payload),
         conn=conn,
     )
@@ -82,15 +80,12 @@ async def deletion_plan(
         ids = await db.subtree_ids(task_id, conn=conn) if recursive else [task_id]
         snapshots = await _related(conn, t.tasks, ids)
         sessions = await _related(conn, t.sessions, ids, "task_id")
-        workspaces = await _rows(
-            conn, t.workspaces, t.workspaces.c.project_id == root["project_id"]
-        )
+        workspaces = await _rows(conn, t.workspaces, t.workspaces.c.project_id == root["project_id"])
         repositories = await _rows(conn, t.repos, t.repos.c.project_id == root["project_id"])
         origins = await _related(conn, t.task_branch_origins, ids, "task_id")
         checkpoints = await _related(conn, t.task_integration_checkpoints, ids, "task_id")
         owners = await _rows(
-            conn,
-            t.integration_branch_owners,
+            conn, t.integration_branch_owners,
             or_(
                 t.integration_branch_owners.c.owner_id.in_(ids),
                 t.integration_branch_owners.c.session_id.in_([row["id"] for row in sessions]),
@@ -107,8 +102,7 @@ async def deletion_plan(
         reviews = await _related(conn, t.doc_reviews, ids, "author_task_id")
         gate_ids += [row["gate_id"] for row in reviews if row["gate_id"]]
         gates = await _rows(
-            conn,
-            t.gates,
+            conn, t.gates,
             or_(
                 t.gates.c.id.in_(gate_ids),
                 (t.gates.c.gate_type == "task") & t.gates.c.await_id.in_(ids),
@@ -127,8 +121,7 @@ async def deletion_plan(
         batches = await _related(conn, t.integration_batches, batch_ids)
         operation = t.integration_repair_operations
         operations = await _rows(
-            conn,
-            operation,
+            conn, operation,
             or_(
                 operation.c.parent_task_id.in_(ids),
                 operation.c.verifier_task_id.in_(ids),
@@ -146,8 +139,7 @@ async def deletion_plan(
             ),
         )
         subjects = await _rows(
-            conn,
-            t.integration_subjects,
+            conn, t.integration_subjects,
             or_(
                 t.integration_subjects.c.task_id.in_(ids),
                 t.integration_subjects.c.writer_task_id.in_(ids),
@@ -159,8 +151,7 @@ async def deletion_plan(
         )
         history = await find_integration_task_references(conn, ids)
         pause_metadata = await _rows(
-            conn,
-            t.task_metadata,
+            conn, t.task_metadata,
             t.task_metadata.c.task_id.in_(ids) & (t.task_metadata.c.key == "manual_pause"),
         )
         from src.integration.development import OPEN_OPERATION_STATES, operation_rows_on
@@ -173,9 +164,7 @@ async def deletion_plan(
             if set(ids) & {m.get("task_id") for m in row.get("manifest", [])}
         ]
         project_path = await conn.scalar(
-            select(t.projects.c.workspace_path).where(
-                t.projects.c.id == root["project_id"],
-            )
+            select(t.projects.c.workspace_path).where(t.projects.c.id == root["project_id"])
         )
 
     notices = []
@@ -198,37 +187,25 @@ async def deletion_plan(
             warning("dependents", f"Dependency edges will be dropped for: {', '.join(dependents)}.")
         )
     for code, rows, message in (
-        (
-            "gates",
-            gates,
+        ("gates", gates,
             "Selected decision gates will be withdrawn; other waiters may need attention.",
         ),
         ("reviews", reviews, "Open authored reviews will be withdrawn."),
         ("escalations", escalations, "Open task escalations will be cancelled."),
         ("sealed", batches, "Affected unpromoted integration batches will be aborted."),
-        (
-            "integration_owned",
-            operations + subjects + development,
+        ("integration_owned", operations + subjects + development,
             "Live integration authority will be cancelled.",
         ),
-        (
-            "integration_cleanup_blocked",
-            owners,
+        ("integration_cleanup_blocked", owners,
             "Branch owners and writer leases will be released.",
         ),
-        (
-            "delivery_target_fixed",
-            receipts,
+        ("delivery_target_fixed", receipts,
             "Delivery records will remain as history after the task is deleted.",
         ),
-        (
-            "integration_history_retained",
-            origins + checkpoints + history,
+        ("integration_history_retained", origins + checkpoints + history,
             "Integration history will remain with the deletion audit.",
         ),
-        (
-            "pause_cleanup_pending",
-            pause_metadata,
+        ("pause_cleanup_pending", pause_metadata,
             "Any pending pause cleanup will be retried during deletion.",
         ),
     ):
@@ -293,14 +270,10 @@ async def _branch_plan(orchestrator, plan, captured, project_path):
         entry = found.setdefault(
             key,
             {
-                "task_ids": [],
-                "repository_id": repository_id,
-                "branch": branch,
-                "local_refs": [],
-                "remote_sha": None,
-                "remote_state": "unknown",
-                "worktrees": [],
-                "action": plan["branches"],
+                "task_ids": [], "repository_id": repository_id,
+                "branch": branch, "local_refs": [],
+                "remote_sha": None, "remote_state": "unknown",
+                "worktrees": [], "action": plan["branches"],
             },
         )
         if task_id not in entry["task_ids"]:
@@ -439,28 +412,18 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
         captured["sessions"] = await _rows(conn, t.sessions, t.sessions.c.task_id.in_(ids))
         # These holds are internal to the confirmed delete and prevent fresh claims.
         await _update_ids(
-            conn,
-            t.tasks,
-            ids,
-            status="PAUSED",
-            resume_after=None,
+            conn, t.tasks, ids,
+            status="PAUSED", resume_after=None,
             claim_epoch=t.tasks.c.claim_epoch + 1,
             updated_at=now,
         )
         await _update_ids(
-            conn,
-            t.sessions,
-            ids,
-            key="task_id",
-            desired_state="stopped",
-            end_reason="task deleted by operator",
+            conn, t.sessions, ids, key="task_id",
+            desired_state="stopped", end_reason="task deleted by operator",
         )
         await _cancel_authority(db, conn, plan, captured, actor, reason, now)
         audit_id = await _audit(
-            db,
-            conn,
-            "task.delete_requested",
-            root,
+            db, conn, "task.delete_requested", root,
             actor=actor,
             reason=reason,
             preview=plan,
@@ -486,9 +449,7 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
             token_store = getattr(orchestrator, "token_store", None)
             if token_store is not None:
                 await token_store.revoke_session(session["id"])
-            provider = orchestrator.session_providers.create(
-                session["provider"], orchestrator.config
-            )
+            provider = orchestrator.session_providers.create(session["provider"], orchestrator.config)
             await provider.stop(
                 SessionHandle(session["name"], session["provider"], session["instance_token"]),
                 grace=2.0,
@@ -519,9 +480,7 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
                 f"claim file:{session['id']}",
                 lambda session=session, task=task: asyncio.to_thread(
                     remove_claim_file_if_matches,
-                    session["work_dir"],
-                    task["id"],
-                    task["claim_epoch"],
+                    session["work_dir"], task["id"], task["claim_epoch"],
                 ),
             )
     if plan["branches"] == "delete":
@@ -545,10 +504,7 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
             await conn.execute(
                 update(t.tasks)
                 .where(t.tasks.c.id == child["id"])
-                .values(
-                    parent_task_id=parent_id,
-                    updated_at=time.time(),
-                )
+                .values(parent_task_id=parent_id, updated_at=time.time())
             )
             if parent_id:
                 await conn.execute(
@@ -581,15 +537,9 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
                 conn, t.workspaces, removed_worktrees, key="workspace_path", enabled=False
             )
         await _update_ids(
-            conn,
-            t.sessions,
-            ids,
-            key="task_id",
-            task_id=None,
-            state="stopped",
-            desired_state="stopped",
-            claim_phase=None,
-            claim_phase_at=None,
+            conn, t.sessions, ids, key="task_id",
+            task_id=None, state="stopped", desired_state="stopped",
+            claim_phase=None, claim_phase_at=None,
             ended_at=time.time(),
             last_claim_result="task_deleted",
         )
@@ -600,12 +550,8 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
         )
         for task_id in reversed(ids):
             await db._delete_one(
-                task_id,
-                conn=conn,
-                preserve_comments=True,
-                preserve_completion=True,
-                preserve_subtasks=True,
-                operator_delete=True,
+                task_id, conn=conn, preserve_comments=True, preserve_completion=True,
+                preserve_subtasks=True, operator_delete=True,
             )
         flipped = await db.recompute_blocked(affected, conn=conn) if affected else set()
         ready = [
@@ -662,106 +608,68 @@ async def _cancel_authority(db, conn, plan, captured, actor, reason, now):
             )
         )
         .values(
-            handoff_state="released",
-            holder=None,
-            expires_at=now,
+            handoff_state="released", holder=None, expires_at=now,
             fence_token=t.integration_branch_owners.c.fence_token + 1,
             updated_at=now,
         )
     )
     await _update_ids(
-        conn,
-        t.task_branch_origins,
-        ids,
-        key="task_id",
-        retired_at=now,
-        discard_state=None,
-        discard_next_attempt_at=None,
+        conn, t.task_branch_origins, ids, key="task_id",
+        retired_at=now, discard_state=None, discard_next_attempt_at=None,
     )
     await _update_ids(
-        conn,
-        t.integration_batches,
-        plan["batch_ids"],
+        conn, t.integration_batches, plan["batch_ids"],
         t.integration_batches.c.lifecycle.not_in(["promoted", "empty"]),
-        intent="aborted",
-        lifecycle="aborted",
+        intent="aborted", lifecycle="aborted",
         human_abort_reason=reason or "task deleted",
-        cleanup_state="pending",
-        updated_at=now,
+        cleanup_state="pending", updated_at=now,
     )
     await _update_ids(
-        conn,
-        t.integration_repair_operations,
-        plan["operation_ids"],
+        conn, t.integration_repair_operations, plan["operation_ids"],
         t.integration_repair_operations.c.state.in_(["active", "escalated", "human_required"]),
-        state="cancelled",
-        updated_at=now,
+        state="cancelled", updated_at=now,
     )
     await _update_ids(
-        conn,
-        t.integration_subjects,
-        [s["id"] for s in captured["subjects"]],
-        phase="done",
-        next_due_at=None,
-        gate_id=None,
+        conn, t.integration_subjects, [s["id"] for s in captured["subjects"]],
+        phase="done", next_due_at=None, gate_id=None,
         closed_reason=reason or "task deleted",
-        writer_task_id=None,
-        writer_session_id=None,
-        writer_fence_token=None,
-        writer_status="none",
-        wait_reason=None,
+        writer_task_id=None, writer_session_id=None, writer_fence_token=None,
+        writer_status="none", wait_reason=None,
         version=t.integration_subjects.c.version + 1,
         updated_at=now,
     )
     await _update_ids(
-        conn,
-        t.doc_reviews,
-        plan["review_ids"],
+        conn, t.doc_reviews, plan["review_ids"],
         t.doc_reviews.c.state.in_(["in_review", "changes_requested"]),
         state="withdrawn",
-        withdrawn_by=actor,
-        withdrawn_at=now,
-        withdrawn_via="task_delete",
-        withdrawal_reason=reason,
-        updated_at=now,
+        withdrawn_by=actor, withdrawn_at=now, withdrawn_via="task_delete",
+        withdrawal_reason=reason, updated_at=now,
     )
     await _update_ids(
-        conn,
-        t.gates,
-        plan["gate_ids"],
+        conn, t.gates, plan["gate_ids"],
         t.gates.c.status == "open",
-        status="cancelled",
-        resolved_by=actor,
+        status="cancelled", resolved_by=actor,
         resolution=reason or "task deleted",
     )
     await _update_ids(
-        conn,
-        t.escalations,
-        plan["escalation_ids"],
+        conn, t.escalations, plan["escalation_ids"],
         t.escalations.c.state.in_(["needs_human", "reply_received", "resolving"]),
-        state="cancelled",
-        terminal_at=now,
+        state="cancelled", terminal_at=now,
         terminal_outcome=reason or "Task deleted",
-        outcome="human",
-        updated_at=now,
+        outcome="human", updated_at=now,
         revision=t.escalations.c.revision + 1,
     )
     await _update_ids(
-        conn,
-        t.agent_questions,
-        ids,
+        conn, t.agent_questions, ids,
         t.agent_questions.c.state.in_(["supervisor", "human", "answered"]),
         key="task_id",
-        state="stale",
-        reason="task deleted",
-        updated_at=now,
+        state="stale", reason="task deleted", updated_at=now,
     )
     from src.integration.development import revise_operation_on
 
     for operation in captured["development"]:
         await revise_operation_on(
-            conn,
-            operation["id"],
+            conn, operation["id"],
             lambda row: {
                 "state": "cancelled",
                 "error": reason or "task deleted by operator",
@@ -779,9 +687,7 @@ async def _delete_branches(orchestrator, plan, cleanup):
             await cleanup(
                 f"remote branch:{branch}",
                 lambda entry=entry: git.adelete_remote_ref_exact(
-                    entry["remote_path"],
-                    entry["branch"],
-                    entry["remote_sha"],
+                    entry["remote_path"], entry["branch"], entry["remote_sha"],
                 ),
             )
         elif entry["remote_state"] in {"unknown", "error"}:
@@ -808,8 +714,7 @@ async def _delete_branches(orchestrator, plan, cleanup):
                 await cleanup(
                     f"local branch:{branch}@{local['path']}",
                     lambda local=local, branch=branch: git.adelete_local_ref_exact(
-                        local["path"],
-                        ref=f"refs/heads/{branch}",
+                        local["path"], ref=f"refs/heads/{branch}",
                         expected_old_oid=local["sha"],
                     ),
                 )
@@ -820,12 +725,8 @@ async def _delete_branches(orchestrator, plan, cleanup):
                     # A successful push-delete can already remove this tracking ref.
                     if await git.arev_parse(local["path"], ref) is not None:
                         await git.adelete_remote_tracking_ref_exact(
-                            local["path"],
-                            ref=ref,
+                            local["path"], ref=ref,
                             expected_old_oid=local["tracking_sha"],
                         )
 
-                await cleanup(
-                    f"tracking branch:{branch}@{local['path']}",
-                    delete_tracking,
-                )
+                await cleanup(f"tracking branch:{branch}@{local['path']}", delete_tracking)
