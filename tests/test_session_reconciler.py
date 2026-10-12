@@ -2854,6 +2854,84 @@ class TestDesiredState:
         row = await db.get_session("n1")
         assert row.state == "sleeping" and row.desired_state == "sleeping"
 
+    @pytest.mark.parametrize("state", ["starting", "running"])
+    @pytest.mark.parametrize("timeout", [0, 600])
+    async def test_explicit_sleep_overrides_activity_work_and_pending_submit(
+        self, db, provider, reconciler, bus, monkeypatch, state, timeout
+    ):
+        await _task(db)
+        row = await self._named(db, provider, state=state, last_activity=NOW)
+        await self._idle_profile(db, monkeypatch, timeout=timeout)
+        provider.resubmit_pending = AsyncMock(return_value=True)
+        starter = self._Starter()
+        reconciler.starter = starter
+        # Intent can arrive after the tick's observation snapshot.
+        live = await db.list_sessions(live_only=True)
+        await db.update_session(row.id, desired_state="sleeping")
+        await reconciler._step_named(live, NOW)
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("sleeping", "sleeping")
+        assert current.sleep_reason == "desired_sleeping"
+        assert not await provider.is_running(reconciler._handle(row))
+        provider.resubmit_pending.assert_not_awaited()
+        assert bus.payload("session.sleeping")["reason"] == "desired_sleeping"
+        await reconciler.tick(now=NOW + 1)
+        assert starter.calls == []
+        assert bus.types().count("session.sleeping") == 1
+
+    async def test_explicit_sleep_stop_failure_retries_without_claiming_success(
+        self, db, provider, reconciler, bus, monkeypatch
+    ):
+        row = await self._named(db, provider, desired_state="sleeping")
+        stop = provider.stop
+        failed_stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+        monkeypatch.setattr(provider, "stop", failed_stop)
+        await reconciler.tick(now=NOW)
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("running", "sleeping")
+        assert "session.sleeping" not in bus.types()
+        monkeypatch.setattr(provider, "stop", stop)
+        await reconciler.tick(now=NOW + 1)
+        assert (await db.get_session(row.id)).state == "sleeping"
+        assert not await provider.is_running(reconciler._handle(row))
+
+    async def test_explicit_sleep_defers_incomplete_provider_observation(
+        self, db, provider, reconciler, bus
+    ):
+        row = await self._named(db, provider, desired_state="sleeping")
+        reconciler._deferred_prefixes.add("n-")
+        await reconciler._step_named([row], NOW)
+        assert (await db.get_session(row.id)).state == "running"
+        assert await provider.is_running(reconciler._handle(row))
+        assert "session.sleeping" not in bus.types()
+
+    async def test_explicit_sleep_skips_replaced_instance(self, db, provider, reconciler):
+        row = await self._named(db, provider, desired_state="sleeping")
+        await db.update_session(row.id, instance_token="successor", desired_state="running")
+        await reconciler._step_named([row], NOW)
+        current = await db.get_session(row.id)
+        assert (current.state, current.instance_token) == ("running", "successor")
+        assert await provider.is_running(reconciler._handle(row))
+
+    async def test_wake_during_sleep_stop_remains_wanted(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        row = await self._named(db, provider, desired_state="sleeping", started_at=NOW - 1000)
+        stop = provider.stop
+
+        async def wake_then_stop(handle, *, grace):
+            await db.update_session(row.id, desired_state="running")
+            await stop(handle, grace=grace)
+
+        monkeypatch.setattr(provider, "stop", wake_then_stop)
+        starter = self._Starter()
+        reconciler.starter = starter
+        await reconciler._step_named([row], NOW)
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("sleeping", "running")
+        await reconciler._step_named([], NOW + 1)
+        assert starter.calls == [("supervisor-p1", "p1")]
+
     async def test_wanted_but_not_live_is_started(self, db, provider, reconciler, bus):
         starter = self._Starter()
         reconciler.starter = starter

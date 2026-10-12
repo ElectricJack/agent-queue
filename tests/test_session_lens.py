@@ -18,10 +18,11 @@ import time
 import pytest
 
 from src.messages import Activity, SessionLens, SessionManagerProto
+from src.intelligence_classes import IntelligenceClass
 from src.models import AgentProfile, Project, SessionRecord, Task
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
-from src.sessions.harness_parser import Harness
+from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionHandle
 from src.sessions.spec import SessionSpecBuilder
@@ -415,6 +416,51 @@ class TestEnsureStarted:
         assert row.project_id == "proj1"
         assert row.profile_id == "supervisor"
         assert row.state == "running"
+
+    @pytest.mark.parametrize("project_id", [None, "proj1"])
+    @pytest.mark.parametrize("harness_name", ["claude", "codex"])
+    @pytest.mark.parametrize("wake_mode", ["fresh", "resume"])
+    async def test_wake_resolves_current_profile_class_and_model(
+        self, db, providers, lens, harness_registry, spec_builder,
+        supervisor_profile, project_id, harness_name, wake_mode
+    ):
+        provider_key = "anthropic" if harness_name == "claude" else "openai"
+        harness_registry.upsert(Harness(
+            id=harness_name, command=harness_name, provider=provider_key,
+            model_flag="--model", session_id_flag="--session-id",
+            resume=ResumeSpec(style="flag" if harness_name == "claude" else "subcommand"),
+        ))
+        supervisor_profile.harness = harness_name
+        supervisor_profile.wake_mode = wake_mode
+        supervisor_profile.default_class = "old-class"
+        spec_builder._intelligence_classes.update({
+            key: IntelligenceClass(id=key, name=key, description="", mapping={
+                provider_key: {"model": model},
+            }) for key, model in (("old-class", "old-model"), ("new-class", "new-model"))
+        })
+        address = _supervisor_address(project_id or "global")
+        runtime_name = _supervisor_runtime_name(project_id or "global")
+        assert await lens.ensure_started(kind="session", target_id=address, project_id=project_id)
+        previous = await db.get_session_by_name(runtime_name)
+        assert (previous.intelligence_class, previous.model) == ("old-class", "old-model")
+        fake = providers.create("fake")
+        await fake.stop(SessionHandle(previous.name, previous.provider, previous.instance_token))
+        await db.update_session(previous.id, state="sleeping", desired_state="sleeping")
+        supervisor_profile.default_class = "new-class"
+        # Operator wake and the reconciler use this same lens start path.
+        await db.update_session(previous.id, desired_state="running")
+        assert await lens.ensure_started(kind="session", target_id=address, project_id=project_id)
+        current = await db.get_session_by_name(runtime_name)
+        assert current.id != previous.id
+        assert (current.intelligence_class, current.model) == ("new-class", "new-model")
+        argv = fake.starts[-1].command
+        assert argv[argv.index("--model") + 1] == "new-model"
+        if wake_mode == "resume":
+            assert current.session_key == previous.session_key
+            assert previous.session_key in argv
+        else:
+            assert current.session_key != previous.session_key
+        assert (await db.get_session(previous.id)).model == "old-model"
 
     async def test_concurrent_supervisor_alias_wakes_start_once(self, db, providers, lens):
         """Two concurrent wakes of the same supervisor address (message

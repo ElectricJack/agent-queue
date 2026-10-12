@@ -15912,12 +15912,13 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:bd1d0d894deed42ad4994a84d0491473d61db16937a9b28a2ed8e1f9dcf9474c",
+      "digest": "sha256:af8da6567e00008d59dc09c71cb0ba3d9fe99368bcd45fd662b2dac7c60a9fea",
       "imports": [
         "src.agents.configuration",
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.intelligence_classes",
         "src.messages",
         "src.messages.delivery",
         "src.models",
