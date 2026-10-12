@@ -497,7 +497,7 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
         # Migration a00000000085 adds promotion_flow to this restored table.
         await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
-        # Human ask revisions require the existing review, escalation and input
+        # Human ask revisions require the existing review, escalation, input and outbox
         # ledgers. Recreate those dependencies without their later additions.
         restored_metadata = MetaData()
         Table("projects", restored_metadata, Column("id", Text, primary_key=True))
@@ -505,7 +505,7 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         for name in (
             "doc_reviews", "doc_review_revisions", "doc_review_comments",
             "escalations", "escalation_messages", "escalation_actions",
-            "supervisor_conversations", "conversation_inputs",
+            "supervisor_conversations", "conversation_inputs", "outbound_deliveries",
         ):
             absent = {column.name for column in ADDITIONS.get(name, ())}
             if name == "conversation_inputs":
@@ -513,6 +513,12 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
                     "ask_id", "project_id", "routing_state", "routing_evidence", "receipt",
                     "guild_id", "reference_message_id", "external_thread_id", "source_version",
                     "retention_entry_id",
+                }
+            if name == "outbound_deliveries":
+                absent |= {
+                    "ask_id", "binding_id", "project_id", "decision_generation", "display_version",
+                    "mode_generation", "root_generation", "send_kind", "write_started_at",
+                    "attempt_token",
                 }
             Table(name, restored_metadata, *(
                 column._copy() for column in metadata.tables[name].c if column.name not in absent
