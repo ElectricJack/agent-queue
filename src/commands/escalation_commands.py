@@ -67,7 +67,7 @@ class EscalationCommandsMixin:
         if principal.kind is PrincipalKind.LOCAL:
             if supervisor_required:
                 return None, _error(
-                    "out_of_scope", "the owning supervisor must execute this escalation action"
+                    "out_of_scope", "a project or global supervisor must execute this action"
                 )
             return principal, None
         if principal.kind is PrincipalKind.SERVICE:
@@ -93,12 +93,20 @@ class EscalationCommandsMixin:
         row = await self.db.get_session(principal.session_id)
         if (
             row is None
-            or row.profile_id != "supervisor"
+            or row.profile_id not in {"supervisor", "supervisor-global"}
             or row.lifecycle != "named"
             or row.state not in _LIVE_SESSION_STATES
             or row.desired_state != "running"
         ):
             return None, _error("out_of_scope", "a live supervisor session is required")
+        # The global supervisor's logical address can also be its installed
+        # profile id. Both its authenticated scope and stored session must be
+        # projectless; a project supervisor cannot gain global authority by
+        # dropping a project argument.
+        if row.profile_id == "supervisor-global" and (
+            row.project_id is not None or principal.project_id is not None
+        ):
+            return None, _error("out_of_scope", "a global supervisor must have system scope")
         if principal.project_id is not None and principal.project_id != project_id:
             return None, _error("out_of_scope", "escalation belongs to another project")
         if row.project_id is not None and row.project_id != project_id:
@@ -425,7 +433,7 @@ class EscalationCommandsMixin:
 
         Two properties are load-bearing:
 
-        * **Only the owning supervisor may resolve.**  ``supervisor_required``
+        * **The project or global supervisor may resolve.** ``supervisor_required``
           is the same fence ``escalation_update`` and ``escalation_apply_reply``
           use, so a worker or a dashboard session cannot close a question a human
           is still answering.

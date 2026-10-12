@@ -97,6 +97,17 @@ A unique source-incident key returns the same escalation for repeated events fro
 
 State changes use revision checks/CAS. `reply_received` means persisted, not resolved. `resolving` means a supervisor has taken ownership. `resolved` requires recorded action/outcome or an explicit no-action decision. Another human reply can move an open resolving conversation back to `reply_received`; it must not be lost behind an in-flight supervisor turn. Replies to terminal/stale incidents do not reopen work. Acknowledge the closed state and link to the dashboard without creating a new task implicitly.
 
+After a verified reply, routine human reminders stop in every subsequent state.
+Pending initial posts and replacement generations must not ask the human again;
+receipt acknowledgements, state edits and explicit supervisor follow-ups remain
+available on the existing thread. An unresolved answer instead earns an internal
+reminder to its logical supervisor owner after
+`supervisor_delivery_timeout_minutes` (default 15), repeated at that interval
+with at most one undelivered reminder. This timing survives restarts and does
+not alter reply evidence or escalation revisions. A live authenticated global
+supervisor may resolve or cancel any project's escalation; project supervisors
+remain fenced to their project, and verified-answer/CAS requirements still apply.
+
 ## 5. Commands, identity and events
 
 Introduce typed core commands (names are part of this spec):

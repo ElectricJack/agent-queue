@@ -149,11 +149,11 @@ def plan_replacement(
 ) -> PlannedDelivery | None:
     """A new root generation after the previous post or thread was deleted.
 
-    Refused for a terminal incident — §7 is explicit that a replacement must
-    not reopen resolved work — and refused while another root is still owed,
+    Refused once answered or terminal — a replacement must not reopen a
+    decision already made — and refused while another root is still owed,
     which is the "at most one pending replacement at a time" rule.
     """
-    if facts.is_terminal or not facts.wants_human_delivery:
+    if not facts.needs_human_answer:
         return None
     generation = current_generation(deliveries)
     if has_pending_root(deliveries):
@@ -202,10 +202,13 @@ def plan_deliveries(
 
     root_key = root_dedup_key(facts.id, generation)
     if root_key not in known:
-        if facts.is_terminal and not binding.has_root:
+        if not facts.needs_human_answer and not binding.has_root:
             # Closed before it was ever posted: nothing to announce, and a
             # post now would ask a human for a decision nobody still needs.
-            skipped.append("terminal incident was never posted")
+            skipped.append(
+                "terminal incident was never posted" if facts.is_terminal
+                else "answered incident was never posted"
+            )
         else:
             planned.append(
                 PlannedDelivery(
@@ -217,7 +220,7 @@ def plan_deliveries(
                 )
             )
 
-    posted = binding.has_root or root_key in known
+    posted = binding.has_root or (root_key in known and facts.needs_human_answer)
     if posted:
         for message in messages:
             message_id = str(message["id"])
