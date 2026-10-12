@@ -4,8 +4,25 @@ import {
   client,
   approvePullRequestApiReviewsPullRequestsTaskIdApprovePost,
   getPendingPullRequestsApiReviewsPullRequestsGet,
+  getPullRequestProjectSummariesApiReviewsPullRequestsSummaryGet,
   type PendingPullRequestsResponse,
+  type PullRequestProjectSummariesResponse,
 } from "./client";
+
+export function usePullRequestProjectSummaries() {
+  return useQuery({
+    queryKey: ["reviews", "pull-requests", "summary"],
+    queryFn: async () => {
+      const { data } = await getPullRequestProjectSummariesApiReviewsPullRequestsSummaryGet({
+        client,
+        throwOnError: true,
+      });
+      return data as PullRequestProjectSummariesResponse;
+    },
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+}
 
 export function usePendingPullRequests() {
   return useQuery({

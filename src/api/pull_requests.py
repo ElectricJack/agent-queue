@@ -16,10 +16,12 @@ from pydantic import BaseModel
 
 from src.api.auth import LOCAL_SCOPE, request_operator_viewer
 from src.database.queries.pull_request_queries import (
-    list_known_pull_requests, mark_pull_request_approved, read_pull_request_snapshot,
+    list_known_pull_requests, mark_pull_request_approved, read_pull_request_project_counts,
+    read_pull_request_snapshot,
     replace_pull_request_snapshot_row, train_states_for_tasks, write_pull_request_snapshot,
 )
 from src.git.github import GitHubAccess, GitHubClient
+from src.projects.github import GitHubError, parse_github_repository
 
 log = logging.getLogger(__name__)
 REFRESH_SECONDS = 60
@@ -45,6 +47,20 @@ class PendingPullRequestsResponse(BaseModel):
     snapshot_at: float | None = None
     snapshot_age_seconds: float | None = None
     can_approve: bool = False
+
+
+class PullRequestProjectSummary(BaseModel):
+    project_id: str
+    project_name: str
+    repository: str
+    pulls_url: str
+    open_pr_count: int
+
+
+class PullRequestProjectSummariesResponse(BaseModel):
+    projects: list[PullRequestProjectSummary]
+    snapshot_at: float | None = None
+    snapshot_age_seconds: float | None = None
 
 
 class ApprovePendingPullRequestRequest(BaseModel):
@@ -292,6 +308,34 @@ def build_pull_requests_router(*, db, github_access=None, command_handler=None,
             await inbox.stop()
 
     router = APIRouter(lifespan=lifespan)
+
+    @router.get(
+        "/api/reviews/pull-requests/summary",
+        response_model=PullRequestProjectSummariesResponse,
+    )
+    async def get_pull_request_project_summaries(
+        request: Request,
+    ) -> PullRequestProjectSummariesResponse:
+        scope = getattr(request.state, "scope", LOCAL_SCOPE)
+        if scope.kind != "local" and not (scope.elevated and scope.project_id is None):
+            raise HTTPException(status_code=403, detail="Pull requests are out of scope")
+        rows, updated_at = await read_pull_request_project_counts(db)
+        summaries = []
+        for row in rows:
+            try:
+                repository = parse_github_repository(row["repo_url"] or "")
+            except GitHubError:
+                continue
+            summaries.append(PullRequestProjectSummary(
+                project_id=row["project_id"], project_name=row["project_name"],
+                repository=repository.full_name,
+                pulls_url=f"https://github.com/{repository.full_name}/pulls",
+                open_pr_count=row["open_pr_count"],
+            ))
+        return PullRequestProjectSummariesResponse(
+            projects=summaries, snapshot_at=updated_at,
+            snapshot_age_seconds=max(0, time.time() - updated_at) if updated_at else None,
+        )
 
     @router.get("/api/reviews/pull-requests", response_model=PendingPullRequestsResponse)
     async def get_pending_pull_requests(request: Request) -> PendingPullRequestsResponse:

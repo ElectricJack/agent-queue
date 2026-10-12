@@ -2270,6 +2270,24 @@
         }
       }
     },
+    "/api/reviews/pull-requests/summary": {
+      "get": {
+        "summary": "Get Pull Request Project Summaries",
+        "operationId": "get_pull_request_project_summaries_api_reviews_pull_requests_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestProjectSummariesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/reviews/pull-requests": {
       "get": {
         "summary": "Get Pending Pull Requests",
@@ -60562,6 +60580,77 @@
           "head_sha"
         ],
         "title": "PullRequestApproveResponse"
+      },
+      "PullRequestProjectSummariesResponse": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/PullRequestProjectSummary"
+            },
+            "type": "array",
+            "title": "Projects"
+          },
+          "snapshot_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot At"
+          },
+          "snapshot_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Age Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "projects"
+        ],
+        "title": "PullRequestProjectSummariesResponse"
+      },
+      "PullRequestProjectSummary": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "project_name": {
+            "type": "string",
+            "title": "Project Name"
+          },
+          "repository": {
+            "type": "string",
+            "title": "Repository"
+          },
+          "pulls_url": {
+            "type": "string",
+            "title": "Pulls Url"
+          },
+          "open_pr_count": {
+            "type": "integer",
+            "title": "Open Pr Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "project_name",
+          "repository",
+          "pulls_url",
+          "open_pr_count"
+        ],
+        "title": "PullRequestProjectSummary"
       },
       "PushBranchRequest": {
         "properties": {

@@ -118,7 +118,7 @@ export default function ReviewsInbox() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-gray-100">Reviews</h1>
-          <p className="text-xs text-gray-500">Pending pull requests and document reviews.</p>
+          <p className="text-xs text-gray-500">Project pull requests and document reviews.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <label className="text-xs text-gray-400">

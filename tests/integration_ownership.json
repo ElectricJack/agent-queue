@@ -593,7 +593,7 @@
         183
       ]
     },
-    "src/api/pull_requests.py::import from src.database.queries.pull_request_queries import list_known_pull_requests, mark_pull_request_approved, read_pull_request_snapshot, replace_pull_request_snapshot_row, train_states_for_tasks, write_pull_request_snapshot": {
+    "src/api/pull_requests.py::import from src.database.queries.pull_request_queries import list_known_pull_requests, mark_pull_request_approved, read_pull_request_project_counts, read_pull_request_snapshot, replace_pull_request_snapshot_row, train_states_for_tasks, write_pull_request_snapshot": {
       "reason": "Imports or references an explicitly owned integration primitive.",
       "baseline_span": [
         18,
@@ -15444,6 +15444,7 @@
     "src/database/queries/provider_availability_queries.py::ProviderAvailabilityQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/pull_request_queries.py::mark_pull_request_approved": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/queries/pull_request_queries.py::read_pull_request_project_counts": "Project PR counts from the cached inbox snapshot; reads no integration lifecycle, admission, ownership or delivery state.",
     "src/database/queries/pull_request_queries.py::read_pull_request_snapshot": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/pull_request_queries.py::replace_pull_request_snapshot_row": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/database/queries/pull_request_queries.py::write_pull_request_snapshot": "Generic dependency; integration-specific definitions in this file are charged independently.",
