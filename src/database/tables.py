@@ -1462,6 +1462,8 @@ sessions = Table(
     Column("claim_phase_at", Float, nullable=True),
     Column("last_claim_epoch", Integer, nullable=True),
     Column("last_claim_result", Text, nullable=True),
+    # Session-wide refusal streak/cooldown, independent of a failed task's backoff.
+    Column("claim_refusal", JSONB, nullable=True),
     Column("session_key", Text, nullable=True),  # harness resume key
     Column("work_dir", Text, nullable=False),
     Column("epoch", Text, nullable=False),  # AQ_DAEMON_EPOCH at launch

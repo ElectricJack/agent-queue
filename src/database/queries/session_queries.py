@@ -140,6 +140,7 @@ def _row_to_session(row) -> SessionRecord:
         claim_phase_at=row.get("claim_phase_at"),
         last_claim_epoch=row.get("last_claim_epoch"),
         last_claim_result=row.get("last_claim_result"),
+        claim_refusal=row.get("claim_refusal"),
         hooks_provisioned=bool(row.get("hooks_provisioned")),
         git_identity_digest=row.get("git_identity_digest"),
     )
@@ -225,6 +226,7 @@ class SessionQueryMixin:
                 claim_phase_at=session.claim_phase_at,
                 last_claim_epoch=session.last_claim_epoch,
                 last_claim_result=session.last_claim_result,
+                claim_refusal=session.claim_refusal,
                 hooks_provisioned=session.hooks_provisioned,
                 git_identity_digest=session.git_identity_digest,
             )
@@ -357,6 +359,38 @@ class SessionQueryMixin:
         async with self._engine.begin() as conn:
             result = await conn.execute(query)
             return [_row_to_session(r) for r in result.mappings().fetchall()]
+
+    async def record_claim_refusal(
+        self, session_id: str, *, result: str, reason: str, now: float,
+    ) -> SessionRecord | None:
+        """Count actual identical failures, never cooldown replays or an active claim.
+
+        Serialize concurrent callers on the session row. An idle worker with a repeated
+        blocker drains; a retained preparation keeps all ownership evidence intact.
+        """
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == session_id,
+            ).with_for_update())).mappings().one_or_none()
+            if row is None:
+                return None
+            if row["claim_phase"] == "active" or row["desired_state"] != "running":
+                return _row_to_session(row)
+            prior = row["claim_refusal"] or {}
+            identical = (prior.get("result"), prior.get("reason")) == (result, reason)
+            if identical and prior["retry_at"] > now:
+                return _row_to_session(row)
+            count = prior["count"] + 1 if identical else 1
+            delay = min(1800, 300 * 2 ** min(count - 2, 3)) if count > 1 else 60
+            fields = {"claim_refusal": {
+                "result": result, "reason": reason, "count": count, "retry_at": now + delay,
+            }}
+            if count >= 2 and row["task_id"] is None and row["claim_phase"] is None:
+                fields["desired_state"] = "stopped"
+            updated = (await conn.execute(update(sessions).where(
+                sessions.c.id == session_id,
+            ).values(**fields).returning(*sessions.c))).mappings().one()
+            return _row_to_session(updated)
 
     async def publish_session_running(
         self, session_id: str, instance_token: str, *, conn=None,

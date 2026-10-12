@@ -479,8 +479,20 @@ failure, or if the reconciler finds `claim_phase = 'preparing'` with
 mid-reset): `release_claim` (§11.2) runs with context `slot_reset_failed`,
 `task_metadata.needs_attention = slot_reset_failed`, and the response is `prepare_failed`.
 `claims` is untouched, so a capped worker is not exhausted by failures it did not cause;
-three consecutive `prepare_failed` on one session quarantine it via the existing ladder,
-which is the bound on a slot that cannot be reset.
+Task preparation keeps its existing failure ladder. Independently, each pool session
+persists `claim_refusal` (nullable JSONB: result, reason, count, retry_at) so repeated
+identical `prepare_failed` or `not_admissible` responses cannot drive a claim hot loop,
+including across daemon restarts. The first refusal delays new attempts for 60 seconds;
+identical refusals after that deadline back off to 300, 600, 1200, then 1800 seconds.
+Requests during the cooldown replay the refusal with remaining `retry_after` seconds
+and `refusal_count`, without preparing work or advancing the count/deadline. `--wait`
+parks on the daemon for up to its bounded wait window. A changed admission reason or
+successful activation clears the old streak. Profile/provider drains take precedence.
+On the second identical refusal an **idle** session is marked for drain and receives
+`drain_requested`, with the blocker and retry evidence. A retained preparation claim
+is never released by this mechanism: its worker reports the blocker once and ends
+the turn awaiting supervisor inbox delivery. Durable message waits require an active
+claim. This preserves attached integration writers.
 
 **Per-claim fence — the epoch travels in a session-local file, not the environment.** A
 running process cannot receive a new environment variable, so `AQ_CLAIM_EPOCH` is only
@@ -505,9 +517,9 @@ stale shell in a reset slot finds no file and gets `stale_claim` too. Ownership 
 | `claimed` | task is yours (`claim_epoch` returned; idempotent repeat returns the same) | `aq prime --task <id>`, work |
 | `no_ready_work` | frontier empty (after `wait`) | pool: claim again or drain-ack |
 | `claim_conflict` | explicit `task_id` was taken | try `--next` |
-| `prepare_failed` | claimed but the slot reset failed; task released | claim again; after 3 the ladder quarantines |
+| `prepare_failed` | preparation failed; consult `.aq/claim.json` for retained ownership | respect `retry_after`; on repetition report once and wait for guidance, or drain-ack if idle |
 | `claim_in_progress` | this session's attempt is still `preparing` and `wait` elapsed (`task_id`, `claim_epoch`, `claim_phase_at` returned) | claim again with `--wait` |
-| `not_admissible` | project paused / budget exhausted (`reason` given) | wait (`--wait`) or drain-ack |
+| `not_admissible` | project paused / budget exhausted (`reason` given) | respect `retry_after`; on repetition report once and wait or drain-ack if idle |
 | `session_exhausted` | `max_claims_per_session` reached | `aq session drain-ack` |
 | `drain_requested` | pool scaled down, or the profile was disabled (`reason: pool is disabled`) | `aq session drain-ack` |
 | `stale_claim` | (on mutations) epoch mismatch | stop; the task is no longer yours |
@@ -644,10 +656,11 @@ You are a {profile} pool worker for project {project} in {work_dir}.
 Loop:
   1. `aq task claim --next --wait 60`
      - claimed        → `aq prime --task <id>`, then do the work
-     - no_ready_work / not_admissible → run the claim again (the wait is cheap);
-                        after three empty waits run `aq session drain-ack`
-     - prepare_failed → run the claim again immediately (the daemon released the
-                        task; a third failure in a row will quarantine this session)
+     - no_ready_work / claim_conflict → claim again with --wait 60
+     - prepare_failed / not_admissible → respect retry_after; on a repeated
+                        identical refusal, report the blocker once to the supervisor.
+                        With no held claim, drain-ack and exit. With a retained claim,
+                        end the turn awaiting supervisor inbox delivery.
      - session_exhausted / drain_requested → `aq session drain-ack`
   2. Before anything quiet for more than a few minutes: `aq task heartbeat <id>`
   3. When done: `aq task close <id> --outcome pass --work-outcome shipped --summary "..." --claim-next`

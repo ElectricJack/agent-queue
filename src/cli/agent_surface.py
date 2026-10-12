@@ -415,6 +415,12 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
             console.print(f"claim_epoch={data['claim_epoch']}")
         if data.get("reason"):
             console.print(f"[dim]{data['reason']}[/]")
+        if data.get("retry_after") is not None:
+            console.print(
+                f"retry_after={data['retry_after']}s; refusal_count={data.get('refusal_count', 0)}"
+            )
+        if data.get("instructions"):
+            console.print(data["instructions"])
 
     emit(ctx, result, render=_render)
 

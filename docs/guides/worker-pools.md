@@ -683,6 +683,26 @@ claim loop. AQ sessions never receive an interactive offer to start the daemon.
 An ambiguous response failure is not automatically replayed: after a lost close
 response, inspect the current claim and task status before attempting another close.
 
+Persistent preparation/admission blockers use a separate, durable session cooldown.
+`prepare_failed` and `not_admissible` return `retry_after` seconds, `refusal_count`
+and actionable instructions. The first refusal waits 60 seconds; actual identical
+failures after the deadline back off to 300/600/1200/1800 seconds. Calls during that
+cooldown prepare nothing, replay the remaining delay without advancing the streak,
+and park for the requested `--wait` window. Successful activation or a changed
+admission reason resets the streak. On a second identical failure an idle session
+is marked for drain and receives `drain_requested`, stopping even older workers'
+claim loops. A retained preparation is never released by this guard.
+
+Workers report a repeated blocker once to the project supervisor. Idle workers
+drain-ack and exit; workers with retained preparation end their turn awaiting the
+supervisor's inbox delivery (durable waits require an active claim). Workers with
+active claims can register one durable message wait for the reply. They do not poll
+claims or inboxes, reread unchanged context, or repeat reports. Installed skills are
+write-if-absent: after
+deploying this change, operators use `aq doctor --check skills.installed_drift`
+to reconcile the installed `aq-tasks` skill. New launches receive the updated
+bootstrap and prime instructions directly.
+
 Busy workers receive queued feedback before completing their task: a session's
 close returns `messages.pending_before_close` if its task or session inbox has
 undelivered messages. The response gives the exact `aq message inbox --inject`
