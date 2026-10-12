@@ -662,3 +662,80 @@ class TestStopIntentPending:
     async def test_no_database_is_informational(self):
         result = await session_checks.run_check(None, _Handler(FakeProvider()), STOP_INTENT)
         assert result.severity is Severity.INFO
+
+
+async def test_running_session_auth_failures_are_reported_and_recovery_clears(db):
+    from types import SimpleNamespace
+
+    from src.api.auth import SessionTokenStore
+    from src.doctor.models import DoctorContext
+
+    row = await _running_session(db, FakeProvider())
+    store = SessionTokenStore(db)
+    token = await store.mint(
+        session_id=row.id, session_instance_token=row.instance_token,
+        task_id=row.task_id, project_id=row.project_id,
+    )
+    await store.revoke_session(row.id)
+    assert await store.validate(token) is None
+    handler = SimpleNamespace(orchestrator=SimpleNamespace(token_store=store))
+    ctx = DoctorContext(config=None, db=db, handler=handler)
+    result = await session_checks._check_authentication(ctx)
+    assert result.severity is Severity.ERROR
+    assert result.data["sessions"][0]["session_id"] == row.id
+    assert result.data["sessions"][0]["reason"] == "revoked"
+    assert token not in repr(result.data)
+    new_token = await store.mint(
+        session_id=row.id, session_instance_token=row.instance_token,
+        task_id=row.task_id, project_id=row.project_id,
+    )
+    assert await store.validate(new_token) is not None
+    assert (await session_checks._check_authentication(ctx)).severity is Severity.OK
+
+
+async def test_supervisor_without_valid_launch_token_reported_after_pruning(db):
+    from types import SimpleNamespace
+
+    from src.api.auth import SessionTokenStore
+    from src.doctor.models import DoctorContext
+
+    await db.create_session(SessionRecord(
+        id="sup", project_id=PROJECT_ID, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--proj", lifecycle="named", work_dir="/w",
+        epoch="e", instance_token="sup-instance", started_at=1, state="running",
+    ))
+    ctx = DoctorContext(config=None, db=db, handler=SimpleNamespace(orchestrator=None))
+    result = await session_checks._check_authentication(ctx)
+    assert result.severity is Severity.ERROR and result.data["count"] == 1
+    assert result.data["sessions"][0]["recovery_command"] == "aq session token sup --json"
+    store = SessionTokenStore(db)
+    token = await store.mint(session_id="sup", session_instance_token="sup-instance",
+                             task_id=None, project_id=PROJECT_ID, elevated=True)
+    assert await store.validate(token) is not None
+    assert (await session_checks._check_authentication(ctx)).severity is Severity.OK
+
+
+@pytest.mark.parametrize("change", ["replacement", "stopped", "old_failure"])
+async def test_auth_diagnostics_ignore_old_launches_and_old_failures(db, change):
+    from types import SimpleNamespace
+
+    from src.api.auth import SessionTokenStore
+    from src.doctor.models import DoctorContext
+
+    row = await _running_session(db, FakeProvider())
+    store = SessionTokenStore(db)
+    token = await store.mint(
+        session_id=row.id, session_instance_token=row.instance_token,
+        task_id=row.task_id, project_id=row.project_id,
+    )
+    await store.revoke_session(row.id)
+    assert await store.validate(token) is None
+    if change == "replacement":
+        await db.update_session(row.id, instance_token="replacement")
+    elif change == "stopped":
+        await db.update_session(row.id, state="stopped")
+    else:
+        store.auth_failures[row.id]["at"] = time.time() - 901
+    ctx = DoctorContext(config=None, db=db,
+                        handler=SimpleNamespace(orchestrator=SimpleNamespace(token_store=store)))
+    assert (await session_checks._check_authentication(ctx)).severity is Severity.OK

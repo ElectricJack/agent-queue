@@ -227,6 +227,8 @@ class TestSessionTokenStore:
             expires_at=time.time() - 3600,
         )
         assert await store.validate(pt) is None
+        assert store.auth_failures["s2"]["reason"] == "expired"
+        assert pt not in repr(store.auth_failures) and real_h not in repr(store.auth_failures)
         await db.close()
 
     async def test_cache_short_circuits_second_validate(self, tmp_path, monkeypatch):
@@ -262,6 +264,34 @@ class TestSessionTokenStore:
         n = await store.revoke_expired()
         assert n == 1
         await db.close()
+
+    @pytest.mark.parametrize("reason", ["expired", "revoked"])
+    async def test_pruned_credentials_still_identify_rejected_calls(self, tmp_path,
+                                                                 monkeypatch, reason):
+        from types import SimpleNamespace
+
+        db, store = await self._store(tmp_path)
+        now = [time.time()]
+        monkeypatch.setattr("src.api.auth.time", SimpleNamespace(time=lambda: now[0]))
+        try:
+            token = await store.mint(session_id="s1", task_id="t1", project_id="p1")
+            if reason == "revoked":
+                await store.revoke_session("s1")
+                now[0] += 61
+            else:
+                now[0] += store._ttl_seconds + 1
+            await store.revoke_expired()
+            assert await db.get_api_token(hashlib.sha256(token.encode()).hexdigest()) is None
+            assert store.auth_failures == {}  # Expiry alone is not a failed call.
+            assert await store.validate(token) is None
+            assert store.auth_failures["s1"]["reason"] == reason
+            # Diagnostic identity retention is bounded; no old token is revived.
+            now[0] += 901
+            await store.revoke_expired()
+            assert store._rejected_tokens == {}
+            assert await store.validate(token) is None
+        finally:
+            await db.close()
 
     @pytest.mark.parametrize("project_id", [None, "p1"])
     async def test_supervisor_token_survives_launch_ttl_and_store_restart(
@@ -508,6 +538,37 @@ async def _seed_app(tmp_path, *, require=False):
 
 
 class TestTokenAuthMiddleware:
+    async def test_expired_recipient_cannot_consume_a_notified_message(self, tmp_path):
+        db, store, ch, app = await _seed_app(tmp_path)
+        try:
+            msg = await db.create_message(
+                project_id="p1", from_kind="session", from_id="worker",
+                to_kind="session", to_id="s1", body="A blocker that must remain visible",
+            )
+            await db.claim_message_notification(msg.id, now=time.time(), retry_delay=0)
+            token = TOKEN_PREFIX + "expired-recipient"
+            await db.insert_api_token(
+                token_hash=hashlib.sha256(token.encode()).hexdigest(),
+                session_id="s1", task_id="t1", project_id="p1",
+                created_at=time.time() - 7200, expires_at=time.time() - 3600,
+            )
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/execute", headers={"Authorization": f"Bearer {token}"},
+                    json={"command": "message_status", "args": {"message_id": msg.id}},
+                )
+            assert response.status_code == 401
+            stored = await db.get_message(msg.id)
+            assert stored.delivered_at is None and stored.read_at is None
+            assert [item.id for item in await db.get_pending_messages("session", "s1")] == [msg.id]
+            assert store.auth_failures["s1"]["reason"] == "expired"
+        finally:
+            deps._orchestrator = None
+            deps._command_handler = None
+            deps._token_store = None
+            deps._require_session_token = False
+            await db.close()
+
     async def test_no_token_local_scope_allows_any_command(self, tmp_path):
         db, store, ch, app = await _seed_app(tmp_path)
         try:

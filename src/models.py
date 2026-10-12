@@ -1067,6 +1067,8 @@ class Message:
     body_kind: str | None = None
     pane_open: str | None = None  # JSON-encoded {view, args}
     created_seq: int | None = None  # server sequence for typed message waits
+    last_notified_at: float | None = None
+    notification_attempts: int = 0
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).

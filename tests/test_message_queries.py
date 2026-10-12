@@ -7,12 +7,50 @@ archive semantics, and ``since`` filtering.
 from __future__ import annotations
 
 import time
+from importlib import import_module
 
 import pytest
 
 from src.database import Database
 from src.models import Message, Project
 from tests.db_fixtures import lease_dsn
+
+
+async def test_notification_migration_recovers_only_unread_legacy_nudges(db, monkeypatch):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    migration = import_module("migrations.versions.a00000000091_message_notification_receipts")
+    unread = await _send(db)
+    read = await _send(db)
+    archived = await _send(db)
+    injected = await _send(db)
+    pending = await _send(db)
+    for msg in (unread, read, archived):
+        await db.mark_delivered(msg.id, via="nudge")
+    await db.mark_read(read.id)
+    await db.archive_messages([archived.id])
+    await db.mark_delivered(injected.id, via="prime")
+    old_stamp = (await db.get_message(unread.id)).delivered_at
+
+    def upgrade_legacy(connection):
+        monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(connection)))
+        migration.downgrade()
+        migration.upgrade()
+        migration.upgrade()
+
+    async with db._engine.begin() as connection:
+        await connection.run_sync(upgrade_legacy)
+    recovered = await db.get_message(unread.id)
+    assert recovered.delivered_at is None and recovered.read_at is None
+    assert recovered.last_notified_at == old_stamp and recovered.notification_attempts == 1
+    for msg in (read, archived, injected):
+        assert (await db.get_message(msg.id)).delivered_at is not None
+    untouched = await db.get_message(pending.id)
+    assert untouched.last_notified_at is None and untouched.notification_attempts == 0
+    assert {msg.id for msg in await db.get_pending_messages("session", "supervisor-p1")} == {
+        unread.id, pending.id,
+    }
 
 
 @pytest.fixture

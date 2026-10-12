@@ -1091,7 +1091,7 @@ class TestStatusMailboxFence:
             {"message_id": sent["message_id"], "_scope": _session_scope(task_id=None)},
         )
         assert "error" not in result, result
-        assert result["state"] == "delivered"
+        assert result["state"] == "acknowledged"
         assert result["message"]["body"] == "rebase onto main first"
 
     async def test_own_session_and_pinned_task_messages_are_readable(self, setup):
@@ -1102,7 +1102,7 @@ class TestStatusMailboxFence:
                 "message_status",
                 {"message_id": sent["message_id"], "_scope": _session_scope()},
             )
-            assert result["state"] == "queued", (to_kind, result)
+            assert result["state"] == "acknowledged", (to_kind, result)
 
     @pytest.mark.parametrize(
         ("to_kind", "to_id"),
@@ -1191,11 +1191,16 @@ class TestStatusRecipientProject:
         assert sent["message"]["project_id"] == "p2", sent
         assert sent["message"]["to_id"] == "supervisor-p1"
 
+        await db.create_session(SessionRecord(
+            id="sess-sup-p1", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="sup-token", started_at=1, state="running",
+        ))
         sessions = _NudgeRecorder()
         engine = MessageDeliveryEngine(
             db=db, sessions=sessions, config=MessagesConfig(enabled=True), bus=None
         )
-        assert (await engine.run_delivery_pass())["delivered"] == 1
+        assert (await engine.run_delivery_pass())["delivered"] == 0
         [(kind, target_id, text)] = sessions.nudges
         assert (kind, target_id) == ("session", "supervisor-p1")
         pointer = re.fullmatch(r"Handle `aq message status (\S+) --json`\.", text)
@@ -1205,7 +1210,7 @@ class TestStatusRecipientProject:
             handler, "message_status", {"message_id": pointer.group(1)}, _supervisor_scope("p1")
         )
         assert "error" not in result, result
-        assert (result["state"], result["via"]) == ("delivered", "nudge")
+        assert (result["state"], result["via"]) == ("acknowledged", "read")
         assert result["message"]["body"] == "registry investigation needed"
 
         # The supported answer reaches the sender's mailbox in its project.
@@ -1385,3 +1390,27 @@ class TestEventRegistration:
 
         assert "notify." in _FORWARDED_PREFIXES
         assert "message." in _FORWARDED_PREFIXES
+
+
+@pytest.mark.parametrize("mailbox", ["session", "task", "profile"])
+async def test_only_recipient_body_read_acknowledges_notification(setup, mailbox):
+    handler, db, bus = setup
+    recipient = await _create_live_worker(db, project_id="p1", suffix="reader")
+    target = {"session": recipient.id, "task": recipient.task_id,
+              "profile": recipient.profile_id}[mailbox]
+    sent = await handler._cmd_message_send(_send_args(to_kind=mailbox, to_id=target))
+    msg_id = sent["message_id"]
+    assert await db.claim_message_notification(msg_id, now=1, retry_delay=0)
+    # Operator observation returns the body without consuming another mailbox.
+    assert (await handler._cmd_message_status({"message_id": msg_id}))["state"] == "queued"
+    assert (await db.get_message(msg_id)).read_at is None
+    scope = _session_scope(session_id=recipient.id, task_id=recipient.task_id, project_id="p1")
+    result = await _execute_as(handler, "message_status", {"message_id": msg_id}, scope)
+    assert result["state"] == "acknowledged"
+    assert result["message"]["body"] == "what is the status?"
+    assert result["delivered_at"] is not None and result["acknowledged_at"] is not None
+    assert await db.get_pending_messages(mailbox, target) == []
+    events = bus.of_type("message.delivered")
+    assert len(events) == 1 and events[0]["method"] == "read"
+    await _execute_as(handler, "message_status", {"message_id": msg_id}, scope)
+    assert bus.of_type("message.delivered") == events

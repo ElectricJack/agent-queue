@@ -29,11 +29,13 @@ that ran `aq inbox --inject` was removed on 2026-08-27. Pending messages
 reach you when `aq prime` runs (start, resume, post-compact) and through
 the cascade's nudge, which types a one-line pointer into the session once it
 goes idle: ``Handle `aq message status <id> --json`.`` Run that command to
-read the body. The nudge has already marked the message delivered, so
-`aq message inbox` no longer lists it. A plain session may read the status
+read the body. The nudge records a notification attempt; the message stays
+in `aq message inbox` until its recipient reads it or inbox/prime injects
+the body. Unread notifications retry with bounded backoff, then alert the
+global supervisor once. Operator status inspections do not consume mail.
+A plain session may read the status
 only of messages addressed to its own session, held task or profile;
-anything else answers "not found". (A task comment is the exception: its
-body is typed in directly.) `aq inbox --inject` is still a supported command,
+anything else answers "not found". `aq inbox --inject` is still a supported command,
 so run it yourself when you want the queue rendered inline mid-task;
 `aq message inbox` is the same queue as data.
 

@@ -297,7 +297,13 @@ async def test_message_pointer_arrives_while_scheduler_git_work_is_blocked(orch,
 
     monkeypatch.setattr(orch, "_drain_branch_materializations", stalled_git)
     monkeypatch.setattr(orch.session_lens, "activity", AsyncMock(return_value="idle"))
-    nudge = AsyncMock(return_value=True)
+    notified = asyncio.Event()
+
+    async def submit_nudge(**_kwargs):
+        notified.set()
+        return True
+
+    nudge = AsyncMock(side_effect=submit_nudge)
     monkeypatch.setattr(orch.session_lens, "nudge", nudge)
     orch.config.messages.delivery_interval = 0.1
     scheduler = asyncio.create_task(orch.run_one_cycle())
@@ -311,11 +317,12 @@ async def test_message_pointer_arrives_while_scheduler_git_work_is_blocked(orch,
             "message_id": msg.id, "project_id": None, "from_kind": "user",
             "to_kind": "session", "to_id": msg.to_id,
         })
-        async with asyncio.timeout(15):
-            while (stored := await orch.db.get_message(msg.id)).delivered_at is None:
-                await asyncio.sleep(0.02)
+        await asyncio.wait_for(notified.wait(), timeout=15)
+        stored = await orch.db.get_message(msg.id)
         assert not scheduler.done()
         assert stored.via == "nudge" and stored.read_at is None
+        assert stored.delivered_at is None and stored.notification_attempts == 1
+        assert stored.last_notified_at is not None
         nudge.assert_awaited_once_with(
             kind="session", target_id=msg.to_id, project_id=None,
             text=f"Handle `aq message status {msg.id} --json`.",

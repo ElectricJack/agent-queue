@@ -90,6 +90,11 @@ aq collaboration show <THREAD_ID> --after 42
 aq collaboration show <THREAD_ID> --after 42 --json
 ```
 
+A member read acknowledges its own copies of the messages returned in that
+page and its thread notices. Other members' copies stay pending, and operator
+or supervisor inspection does not acknowledge anyone's mail. A terminal nudge
+only points at this command; it leaves the message pending until the body is read.
+
 The response carries:
 
 - `state`: `"active"` | `"closed"` | `"expired"`
