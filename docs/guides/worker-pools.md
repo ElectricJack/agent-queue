@@ -318,6 +318,21 @@ usage-limit screen ends with reason `usage_limit_screen` instead and records a
 rate-limit exit against the provider, so two such workers trip it and pool
 sizing stops relaunching into the limit (provider-failover D13).
 
+### Repeated claim preparation refusals
+
+Repeated claim preparation refusals have a separate limit: three identical
+failures in one session return `drain_requested`. The count is persisted across
+daemon restarts; empty-frontier polls do not clear it, and activation does.
+The worker runs `aq session drain-ack` and exits. The daemon also enforces the
+stop if the worker continues retrying, and disables the affected workspace to
+keep replacement workers off it. Its checkout and any attached branch bindings
+are retained for recovery. Repair the workspace and prove its work safe before
+re-enabling it; do not delete Git locks or discard a retained branch.
+`aq session list` exposes `claims` and the `claim_failure_*` diagnostics.
+`aq doctor --check stall.sweep` and the supervisor's stall sweep flag workers
+that have activated no claim after 15 minutes despite matching READY work or
+preparation refusals, even if their claim loop keeps reporting activity.
+
 ### Interactive prompts on idle workers
 
 `aq doctor --check pools.session_awaiting_input` distinguishes a silent claim

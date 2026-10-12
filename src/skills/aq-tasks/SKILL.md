@@ -189,6 +189,13 @@ does) and the daemon closes whichever task this session currently holds —
 which is the only sane form for a pool worker, whose task changes with every
 claim. The same goes for `aq task heartbeat`.
 
+Three identical preparation refusals in one session persist across daemon
+restarts and return `drain_requested`; the daemon disables that workspace
+and stops the worker through guarded pool teardown. On `prepare_failed`,
+retry the claim. On `drain_requested` or `session_exhausted`, run
+`aq session drain-ack` and exit 0. A quarantined workspace keeps its checkout
+and any branch attachment for operator recovery; never delete its Git locks.
+
 `task_close --claim-next` attempts another claim after closing. By default,
 AQ retires the conversation after one task and returns `drain_requested` or
 `session_exhausted`; stop and let AQ start fresh context for the next task.

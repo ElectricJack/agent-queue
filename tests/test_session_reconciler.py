@@ -4617,3 +4617,32 @@ async def test_opt_in_real_harness_wait_idle(db, config, tmp_path, monkeypatch):
         await asyncio.wait_for(process.wait(), timeout=10)
         socket_root = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
         (socket_root / config.sessions.tmux_socket).unlink(missing_ok=True)
+
+
+async def test_reconciler_stops_repeating_claims_despite_fresh_activity(
+    db, provider, pool_reconciler
+):
+    row = await _session(
+        db, provider, sid="refusing", task_id=None, lifecycle="pool",
+        last_activity=NOW, desired_state="stopped", end_reason="claim_refusals",
+        claim_failure_count=3, claim_failure_reason="own branch handoff is unproven",
+    )
+    await pool_reconciler._step_claim_refusals([row], NOW)
+    assert pool_reconciler.test_orch.terminations == [(row.id, "claim_refusals")]
+    assert (await db.get_session(row.id)).state == "stopped"
+    await pool_reconciler._step_claim_refusals([row], NOW + 1)
+    assert len(pool_reconciler.test_orch.terminations) == 1
+
+
+@pytest.mark.parametrize("changed", [
+    {"instance_token": "successor"}, {"desired_state": "running"},
+    {"claim_phase": "active"}, {"claim_failure_count": 0},
+])
+async def test_refusal_reconciliation_revalidates_instance(db, provider, pool_reconciler, changed):
+    row = await _session(
+        db, provider, sid="refusing", task_id=None, lifecycle="pool",
+        desired_state="stopped", end_reason="claim_refusals", claim_failure_count=3,
+    )
+    await db.update_session(row.id, **changed)
+    await pool_reconciler._step_claim_refusals([row], NOW)
+    assert not pool_reconciler.test_orch.terminations

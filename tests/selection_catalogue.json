@@ -839,6 +839,7 @@
         "tests/test_migration_parent_subjects.py",
         "tests/test_migration_playbook_blocked_lifecycle.py",
         "tests/test_migration_playbook_v2.py",
+        "tests/test_migration_pool_claim_refusals.py",
         "tests/test_migration_postgres_upgrade_head.py",
         "tests/test_migration_project_router_binding.py",
         "tests/test_migration_repair_stages.py",
@@ -11684,6 +11685,22 @@
         "migration"
       ],
       "summary": "Playbook V2 schema and partial-index contracts at the current baseline."
+    },
+    "tests/test_migration_pool_claim_refusals.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "digest": "sha256:84816910a7c4189feb74e7229ceedc8a27971358445795d3ca263e4cf1f67ebd",
+      "imports": [
+        "src.database",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "Legacy sessions acquire a durable refusal budget without losing their bindings."
     },
     "tests/test_migration_postgres_upgrade_head.py": {
       "areas": [

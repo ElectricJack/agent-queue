@@ -249,6 +249,25 @@ the [supervisor-agent](supervisor-agent.md) routing story settled first.
 
 ### 4.3 Heartbeats, leases, and the stall ladder
 
+Pool claim preparation has a separate persisted refusal budget. Three consecutive
+preparation failures with the same reason, in the same session, request a drain and
+disable that session's workspace. Empty-frontier polls and admission waits neither
+spend nor clear this budget; a different failure starts a new streak, and successful
+activation clears it. The count survives daemon restarts. The write is fenced by
+the session instance and preparation epoch, and cannot affect an active claim.
+The response is `drain_requested` and instructs the worker to run `aq session
+drain-ack` and exit. Reconciliation stops the exact session through normal guarded
+pool teardown even if the worker ignores the response. Attached branch ownership
+and its claim/workspace bindings remain available for recovery; quarantining a
+workspace never deletes its checkout or removes an index lock. An operator repairs
+and re-enables it after proving the retained work safe.
+
+Both operator stall sweeps report live pool workers with zero activated claims
+after 15 minutes, even when repeated claim attempts keep `last_activity` fresh.
+Idle pools without matching READY work and without preparation failures are normal
+standby and are excluded. Preparations in flight remain governed by their own
+timeout, rather than this report.
+
 The orphan sweep also checks assigned `IN_PROGRESS` tasks with **no session row**.
 After both the task revision and its assigned agent's task heartbeat are older
 than `sessions.lease_ttl_seconds` (at least 120 seconds for launch grace), a task

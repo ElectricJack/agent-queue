@@ -43,6 +43,8 @@ from enum import StrEnum
 from src.claim_file import read_claim_file, remove_claim_file_if_matches
 from src.models import SessionRecord, TaskStatus
 from src.pool_claims import (
+    CLAIM_FAILURE_DRAIN_REASON,
+    MAX_IDENTICAL_CLAIM_FAILURES,
     idle_pool_claim_loop_stalled,
     is_live_pool_claim_task_status,
     pool_claim_budget_exhausted,
@@ -337,6 +339,7 @@ class SessionReconciler:
         live = await self._step_observe(now)
         for step in (
             self._step_flock_audit,
+            self._step_claim_refusals,
             self._step_drain_ack,
             self._step_prepare_timeout,
             self._step_exits,
@@ -884,6 +887,35 @@ class SessionReconciler:
         eligible for recycling.
         """
         return pool_claim_loop_stall_seconds(self.config.swarm)
+
+    async def _step_claim_refusals(self, live: list[SessionRecord], now: float) -> None:
+        """Stop a repeating preparation even if its harness ignores the drain.
+
+        Stop intent and workspace quarantine were committed together with
+        the failure count. The normal pool teardown proves process exit and
+        retains attached ownership; no active task is interrupted here.
+        """
+        if self.orchestrator is None:
+            return
+        for observed in live:
+            if (observed.lifecycle != "pool" or observed.desired_state != "stopped"
+                    or observed.end_reason != CLAIM_FAILURE_DRAIN_REASON
+                    or observed.claim_failure_count < MAX_IDENTICAL_CLAIM_FAILURES):
+                continue
+            if observed.task_id and self._task_control_held(observed.task_id):
+                continue
+            current = await self._still_live(observed)
+            if (current is None or current.instance_token != observed.instance_token
+                    or current.desired_state != "stopped"
+                    or current.end_reason != CLAIM_FAILURE_DRAIN_REASON
+                    or current.claim_failure_count < MAX_IDENTICAL_CLAIM_FAILURES
+                    or current.claim_phase in {"active", "claiming"}):
+                continue
+            if current.task_id and self._task_control_held(current.task_id):
+                continue
+            await self.orchestrator._terminate_pool_session(
+                current, reason=CLAIM_FAILURE_DRAIN_REASON,
+            )
 
     async def _step_abandoned_pool_claim_loop(
         self, live: list[SessionRecord], now: float
