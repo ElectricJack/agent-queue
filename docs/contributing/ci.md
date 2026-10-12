@@ -351,7 +351,10 @@ remaining integration tests.
   `E2E CLI` jobs' service image, is pulled from Google's Docker Hub mirror,
   `mirror.gcr.io/library/postgres:18`: anonymous Docker Hub pulls are rate
   limited per runner IP, and a login secret would not reach pull requests from
-  forks. GitHub Actions service
+  forks. The test matrix explicitly pulls the image before starting the
+  container, retrying up to three times with five seconds between attempts to
+  recover from transient mirror errors such as `unknown blob`. Exhausted pulls
+  fail the job; container-start errors are not retried. GitHub Actions service
   containers do not accept PostgreSQL server arguments. The server runs with
   `max_connections=300` so concurrent xdist workers can lease databases without
   exhausting the default 100 connections. It also uses `fsync=off`,

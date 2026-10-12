@@ -359,6 +359,114 @@ def test_postgres_comes_from_a_mirror_without_docker_hubs_anonymous_pull_limit()
                 assert '.' in registry and 'docker.io' not in registry, (path, image)
 
 
+@pytest.mark.parametrize(
+    ("pull_failures", "run_status", "readiness_failures", "exit_status"),
+    [
+        (0, 0, 0, 0),
+        (1, 0, 0, 0),
+        (2, 0, 0, 0),
+        (99, 0, 0, 125),
+        (0, 125, 0, 125),
+        (0, 0, 3, 0),
+        (0, 0, 99, 1),
+    ],
+)
+def test_postgres_start_recovers_pull_errors_and_preserves_startup_failures(
+    tmp_path, pull_failures, run_status, readiness_failures, exit_status
+):
+    # Execute the actual Actions step. The failing train shards never ran tests:
+    # their implicit image pull exited 125 with `unknown blob`.
+    start = next(
+        step for step in workflow()["jobs"]["test"]["steps"] if step["name"] == "Start PostgreSQL"
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker_stub = bin_dir / "docker"
+    docker_stub.write_text(
+        f"#!{sys.executable}\n"
+        + """
+import json
+import os
+import sys
+from pathlib import Path
+
+trace = Path('docker-calls.json')
+calls = json.loads(trace.read_text()) if trace.exists() else []
+calls.append(sys.argv[1:])
+trace.write_text(json.dumps(calls))
+operation = sys.argv[1]
+count = sum(call[0] == operation for call in calls)
+if operation == 'pull':
+    if count <= int(os.environ['CI_POSTGRES_PULL_FAILURES']):
+        print('docker: unknown blob', file=sys.stderr)
+        sys.exit(125)
+    sys.exit(0)
+if operation == 'run':
+    sys.exit(int(os.environ['CI_POSTGRES_RUN_STATUS']))
+if operation == 'exec':
+    sys.exit(1 if count <= int(os.environ['CI_POSTGRES_READINESS_FAILURES']) else 0)
+raise AssertionError(sys.argv)
+"""
+    )
+    docker_stub.chmod(0o755)
+    sleep_stub = bin_dir / "sleep"
+    sleep_stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> retry-delays\n')
+    sleep_stub.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", start["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "CI_POSTGRES_PULL_FAILURES": str(pull_failures),
+            "CI_POSTGRES_RUN_STATUS": str(run_status),
+            "CI_POSTGRES_READINESS_FAILURES": str(readiness_failures),
+        },
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == exit_status, result.stdout + result.stderr
+    calls = json.loads((tmp_path / "docker-calls.json").read_text())
+    pulls = [call for call in calls if call[0] == "pull"]
+    starts = [call for call in calls if call[0] == "run"]
+    probes = [call for call in calls if call[0] == "exec"]
+    assert pulls == [["pull", POSTGRES_IMAGE]] * min(pull_failures + 1, 3)
+    if pull_failures >= 3:
+        assert not starts and not probes
+        assert "::error::PostgreSQL image pull failed" in result.stdout
+    else:
+        assert len(starts) == 1
+        assert "--pull=never" in starts[0] and POSTGRES_IMAGE in starts[0]
+        assert calls[: len(pulls)] == pulls
+        if run_status:
+            assert not probes
+        else:
+            assert probes == [
+                [
+                    "exec",
+                    "ci-postgres",
+                    "pg_isready",
+                    "-h",
+                    "127.0.0.1",
+                    "-U",
+                    "agent_queue",
+                    "-d",
+                    "agent_queue",
+                ]
+            ] * min(readiness_failures + 1, 60)
+            if readiness_failures >= 60:
+                assert "::error::PostgreSQL did not become ready" in result.stdout
+    delays = tmp_path / "retry-delays"
+    expected_delays = ["5"] * min(pull_failures, 2)
+    if pull_failures < 3 and not run_status:
+        expected_delays += ["1"] * min(readiness_failures, 60)
+    assert (delays.read_text().splitlines() if delays.exists() else []) == expected_delays
+
+
 def test_dashboard_checks_the_candidate_with_locked_workspace_dependencies():
     job = workflow()['jobs']['dashboard']
     assert job['if'] == workflow()['jobs']['test']['if']

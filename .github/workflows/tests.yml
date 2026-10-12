@@ -143,7 +143,22 @@ jobs:
       # reach pull requests from forks.
       - name: Start PostgreSQL
         run: |
-          docker run --detach --name ci-postgres \
+          # A mirror can fail mid-pull with `unknown blob` (run 38157010908).
+          # Retry image fetching separately so a container-start error is fatal.
+          for pull_attempt in 1 2 3; do
+            if docker pull mirror.gcr.io/library/postgres:18; then
+              break
+            else
+              pull_status=$?
+            fi
+            if (( pull_attempt == 3 )); then
+              echo "::error::PostgreSQL image pull failed after $pull_attempt attempts"
+              exit "$pull_status"
+            fi
+            echo "::warning::PostgreSQL image pull failed (attempt $pull_attempt/3); retrying in 5s"
+            sleep 5
+          done
+          docker run --pull=never --detach --name ci-postgres \
             --publish 127.0.0.1:5432:5432 \
             --env POSTGRES_USER=agent_queue \
             --env POSTGRES_PASSWORD=agent_queue \
