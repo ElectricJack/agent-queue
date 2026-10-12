@@ -498,6 +498,7 @@ async def test_needs_you_excludes_delivery_incidents_and_answered_escalations(db
         incident_key="question:answered-stale",
         supervisor_owner="supervisor-p",
         summary="Choose a branch",
+        task_title="Choose a release branch",
         investigation="Two branches contain the fix",
         decision_requested="Which branch should ship?",
         severity="medium",

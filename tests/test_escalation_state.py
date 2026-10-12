@@ -116,6 +116,7 @@ async def answered_for_owner(env):
         id="answered", project_id="p", source_kind="supervisor_decision",
         source_identity="authorization", incident_key="authorization",
         supervisor_owner="supervisor-p", summary="Authorization needed",
+        task_title="Authorize the deployment",
         investigation="Inspected policy", decision_requested="Authorize?", severity="high", now=100,
     )
     reply = await env.db.accept_escalation_reply(
@@ -134,6 +135,7 @@ async def test_unresolved_answers_remind_only_the_owner_at_the_configured_interv
             "answered", expected_revision=1, new_state=state, now=120,
         )
     before = await env.db.get_escalation("answered")
+    before_deliveries = await env.db.list_escalation_deliveries("answered")
     env.config.discord.escalation.supervisor_delivery_timeout_minutes = 5
     env.config.discord.escalation.enabled = False  # core reminders don't depend on Discord
     await watchdog(env).tick(409)
@@ -156,7 +158,8 @@ async def test_unresolved_answers_remind_only_the_owner_at_the_configured_interv
     assert len(await env.db.get_pending_messages("session", "supervisor-p")) == 1
     assert await env.db.get_escalation("answered") == before
     assert len(await env.db.list_escalation_messages("answered")) == 1
-    assert await env.db.list_escalation_deliveries("answered") == []
+    # Creation owns the initial root intent; owner reminders add no deliveries.
+    assert await env.db.list_escalation_deliveries("answered") == before_deliveries
 
 
 async def test_owner_reminder_ticks_serialize_and_stop_after_a_new_answer_or_terminal_state(env):
