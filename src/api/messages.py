@@ -15,6 +15,8 @@ session-runtime spec and is deliberately not referenced here.
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -105,14 +107,7 @@ async def post_message(
     scope_err = check_command_scope("message_send", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "session_instance_token": scope.session_instance_token,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        "elevated": scope.elevated,
-    }
+    args["_scope"] = asdict(scope)
     result = await ch.execute("message_send", args)
     if "error" in result:
         return JSONResponse(result, status_code=422)
@@ -187,18 +182,10 @@ async def post_session_message(
         "thread_id": payload.thread_id,
         "priority": payload.priority,
     }
-    args.pop("_scope", None)
     scope_err = check_command_scope("message_send", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "session_instance_token": scope.session_instance_token,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        "elevated": scope.elevated,
-    }
+    args["_scope"] = asdict(scope)
 
     result = await ch.execute("message_send", args)
     if "error" in result:
@@ -238,18 +225,10 @@ async def get_session_messages(
         "limit": limit,
         "include_archived": include_archived,
     }
-    args.pop("_scope", None)
     scope_err = check_command_scope("message_list", args, scope)
     if scope_err is not None:
         return JSONResponse({"error": scope_err}, status_code=403)
-    args["_scope"] = {
-        "kind": scope.kind,
-        "session_id": scope.session_id,
-        "session_instance_token": scope.session_instance_token,
-        "task_id": scope.task_id,
-        "project_id": scope.project_id,
-        "elevated": scope.elevated,
-    }
+    args["_scope"] = asdict(scope)
 
     failure = None
     if supervisor_only:
