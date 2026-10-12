@@ -457,6 +457,8 @@ class TaskRoutePlanValue(CommandValue):
     #: ``{from, to, risk}`` when the policy's ``risk`` floor raised the class;
     #: ``task_route_apply`` copies it into the route record.
     class_raised_for_risk: dict[str, Any] | None = None
+    #: The lower class, target and durable failed attempts behind escalation.
+    escalated_after_failure: dict[str, Any] | None = None
     classification: dict[str, Any] | None = None
     #: The policy's ``balance`` block, for ``task_route_apply``'s re-selection.
     balance: dict[str, Any] | None = None

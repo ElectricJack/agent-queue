@@ -15350,7 +15350,7 @@
         "task-routing"
       ],
       "default_arm": true,
-      "digest": "sha256:37d5526ca0f9c2e03e05719e60544ac4936d2dae119da927a0020734c2d85c4d",
+      "digest": "sha256:1db900d2c092c23784d2a51dc6da8bf11d2e4132d31ec92da96da2b2097b7282",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -15361,6 +15361,7 @@
         "src.config",
         "src.database",
         "src.database.queries.routing_queries",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.event_schemas",
         "src.intelligence_classes",
@@ -15697,7 +15698,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:4cbd5798d5fd7b92541129a3ab025e6f67f342f1e28f83d02a6beb3bcdfd52cd",
+      "digest": "sha256:00fbfcd7f5a63eff8a37680ba8ca610000cdef47b042fb0c880c0d6dc6819ed0",
       "imports": [
         "src.config",
         "src.database",
@@ -15706,7 +15707,8 @@
         "src.orchestrator"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "``notify.*`` task-outcome events raised by the session-close path."
     },

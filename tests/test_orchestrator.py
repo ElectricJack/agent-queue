@@ -2713,6 +2713,8 @@ class TestPhaseVerifyNormalTask:
 
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.STOP
+        assert ctx.verification_issues
+        assert ctx.verification_infrastructure_failure
 
 
 class TestPhaseVerifyApprovalTask:

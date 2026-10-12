@@ -1,5 +1,52 @@
 # Live context for delegation
 
+## Standard-first bugfix attempts
+
+A kind may declare `escalate: {after_failures: 1, to_class: deep-high}`.
+It then runs at its default `class` until that many substantive attempts at
+that class have failed. Neither a class hint, the classifier's class,
+nor a risk class floor may skip this initial attempt. Risk harness restrictions
+still apply. The target must rank above the default and within `max_class`.
+Narrow lanes cannot substitute another attempt class. Design lanes keep their
+existing class and harness policy.
+
+The shipped bugfix rule starts at `standard-high` and escalates to `deep-high`
+after one substantive failure. The plan and applied route record
+`escalated_after_failure`, including the source and target classes and the
+failed attempt identities, classes, timestamps and reasons. Failed worker
+closes (other than explicitly transient failures), verification failures and
+review rejection via `reopen_with_feedback` count. Infrastructure transitions
+such as session launch/close errors, lost workers and provider outages do not.
+Unknown Git observations, authorization failures and failed delivery pushes
+are infrastructure failures; a blocked close alone is not a work verdict.
+
+Transitions journal qualifying failures in `routing_failed_attempts` task
+metadata, in the same transaction as the guarded status write. An attempt
+counts once, including a failure followed by review feedback. The journal
+survives retry-count resets and infrastructure restarts, so an escalated task
+does not fall back to standard after a later infrastructure incident.
+On retry/reopen, router-owned routes return to `unrouted` before the task can
+be claimed. The original `class_hint` and route constraints survive; the prior
+routing result does not become a new hint. Role routes and emergency overrides
+retain their authority. Unknown historical failures have no journal evidence
+and do not automatically escalate.
+
+Rebuild and import the reviewed bundle before activating its exact artifact
+hash. The installed shared-fleet bundle is another copy of the same system
+playbook id and must receive the same replacement source and artifact. Import,
+activation and live activation-health verification require the operator's
+scope and the deployed mechanism; a worker's compiled fixture is not proof of
+deployment or readiness.
+
+The published bundle paths are
+`src/prompts/reviewed_playbooks/default-assignment-routing` and
+`docs/playbooks/shared-fleet/default-assignment-routing`. Both carry identical
+canonical reviewed bytes and the same playbook id. Reconcile both installed
+copies, then import and activate this system id once. An import directory's
+basename must equal `default-assignment-routing`; the legacy flat
+`default-assignment-routing-shared-fleet` alias is only a mirror, or can contain
+a nested `default-assignment-routing` directory for import.
+
 `task_route_plan` extends the mandatory router's existing `Snapshot` with
 `live_context` and `live_summary`. These describe compatible worker profiles
 and providers without changing policy, provider choice, fleet limits, gates,

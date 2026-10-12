@@ -1253,3 +1253,128 @@ async def test_a_worker_filing_may_name_a_preference(handler, orch):
     assert result["success"], result
     task = await orch.db.get_task(result["task_id"])
     assert (task.prefer_target, task.prefer_mode) == ("claude", "strict")
+
+
+# -- retries and durable escalation evidence ------------------------------------
+
+@pytest.mark.parametrize("context", [
+    "session_close_hard_failure", "verification_failed", "verification_reopen",
+    "retry", "reopen_with_feedback",
+])
+async def test_work_failure_retry_routes_to_deep_with_durable_evidence(handler, orch, context):
+    from tests.test_routing_planner import ESCALATING_POLICY
+
+    previous = TaskStatus.COMPLETED if context == "reopen_with_feedback" else TaskStatus.IN_PROGRESS
+    await _create(orch.db, "escalate", status=previous, task_type=TaskType.BUGFIX,
+                  profile_id="standard-high-codex", intelligence_class="standard-high",
+                  route_source=ROUTER, route={"constraints": {"exclude_providers": ["claude"]}})
+    if context in {"session_close_hard_failure", "verification_failed"}:
+        await orch.db.transition_task("escalate", TaskStatus.BLOCKED, context=context)
+        restarted = await handler.execute("restart_task", {"task_id": "escalate"})
+        assert "error" not in restarted, restarted
+    elif context == "reopen_with_feedback":
+        reopened = await handler.execute("reopen_with_feedback", {
+            "task_id": "escalate", "feedback": "Reviewer found a missed race condition",
+        })
+        assert "error" not in reopened, reopened
+    else:
+        await orch.db.transition_task("escalate", TaskStatus.READY, context=context)
+    task = await orch.db.get_task("escalate")
+    assert (task.route_source, task.profile_id, task.intelligence_class) == (UNROUTED, None, None)
+    failures = await orch.db.get_task_meta("escalate", "routing_failed_attempts")
+    assert len(failures) == 1
+    assert failures[0]["intelligence_class"] == "standard-high"
+    assert failures[0]["reason"] == context
+    plan = await handler.execute("task_route_plan", {
+        "task_id": "escalate", "policy": ESCALATING_POLICY,
+        "classification": {**NARROW_NO, "risk": "very_high"},
+    })
+    assert plan["outcome"] == "planned", plan
+    assert plan["intelligence_class"] == "deep-high"
+    assert plan["escalated_after_failure"]["failed_attempts"] == failures
+    with _as_playbook():
+        applied = await handler.execute("task_route_apply", {"task_id": "escalate", "plan": plan})
+    assert applied["outcome"] == "routed", applied
+    routed = await orch.db.get_task("escalate")
+    assert routed.route["escalated_after_failure"] == plan["escalated_after_failure"]
+    assert routed.route["constraints"] == {"exclude_providers": ["claude"]}
+    # A later infrastructure failure and restart preserve the earlier failure.
+    await orch.db.transition_task("escalate", TaskStatus.IN_PROGRESS, force=True)
+    await orch.db.transition_task("escalate", TaskStatus.BLOCKED,
+                                  context="session_close_failed", force=True)
+    await handler.execute("restart_task", {"task_id": "escalate"})
+    replanned = await handler.execute("task_route_plan", {
+        "task_id": "escalate", "policy": ESCALATING_POLICY,
+        "classification": {**NARROW_NO, "risk": "high"},
+    })
+    assert replanned["intelligence_class"] == "deep-high"
+    assert replanned["escalated_after_failure"]["failed_attempts"] == failures
+
+
+@pytest.mark.parametrize("context", [
+    "session_close_failed", "session_exited_without_close_exhausted",
+    "session_launch_failed", "provider_outage", "session_close_pipeline_stop",
+])
+async def test_infrastructure_failure_restart_does_not_escalate(handler, orch, context):
+    from tests.test_routing_planner import ESCALATING_POLICY
+
+    await _create(orch.db, "infra", status=TaskStatus.IN_PROGRESS, task_type=TaskType.BUGFIX,
+                  profile_id="standard-high-codex", intelligence_class="standard-high",
+                  route_source=ROUTER)
+    await orch.db.transition_task("infra", TaskStatus.BLOCKED, context=context, force=True)
+    await handler.execute("restart_task", {"task_id": "infra"})
+    plan = await handler.execute("task_route_plan", {
+        "task_id": "infra", "policy": ESCALATING_POLICY,
+        "classification": {**NARROW_NO, "intelligence_class": "deep-high", "risk": "very_high"},
+    })
+    assert plan["outcome"] == "planned", plan
+    assert plan["intelligence_class"] == "standard-high"
+    assert not plan.get("escalated_after_failure")
+    assert await orch.db.get_task_meta("infra", "routing_failed_attempts") is None
+
+
+async def test_explicit_transient_close_does_not_record_a_work_failure(handler, orch):
+    await _create(orch.db, "transient", status=TaskStatus.IN_PROGRESS, task_type=TaskType.BUGFIX,
+                  profile_id="standard-high-codex", intelligence_class="standard-high",
+                  route_source=ROUTER)
+    await orch.db.set_task_meta("transient", "failure_class", "transient")
+    await orch.db.transition_task("transient", TaskStatus.READY, context="retry")
+    assert await orch.db.get_task_meta("transient", "routing_failed_attempts") is None
+    assert (await orch.db.get_task("transient")).route_source == UNROUTED
+
+
+async def test_stale_failure_transition_cannot_journal_or_invalidate_a_route(handler, orch):
+    from src.database.queries.task_queries import StaleClaim
+
+    await _create(orch.db, "stale-retry", status=TaskStatus.IN_PROGRESS,
+                  profile_id="standard-high-codex", intelligence_class="standard-high",
+                  route_source=ROUTER)
+    with pytest.raises(StaleClaim):
+        await orch.db.transition_task("stale-retry", TaskStatus.READY, context="retry",
+                                      expect_claim_epoch=999)
+    assert (await orch.db.get_task("stale-retry")).route_source == ROUTER
+    assert await orch.db.get_task_meta("stale-retry", "routing_failed_attempts") is None
+
+
+async def test_failure_journal_uses_launch_identity_and_deduplicates_reopen(handler, orch):
+    task = await _create(orch.db, "attempt", status=TaskStatus.IN_PROGRESS,
+                         profile_id="deep-high-codex", intelligence_class="deep-high",
+                         route_source=ROUTER)
+    await orch.db.create_session(SessionRecord(
+        id="failed-standard", project_id="p", task_id=task.id,
+        profile_id="standard-high-codex", intelligence_class="standard-high",
+        harness="codex", provider="fake", name="standard attempt", lifecycle="task",
+        work_dir="/disposable", epoch="epoch", instance_token="token", state="stopped",
+        started_at=time.time(),
+    ))
+    await orch.db.transition_task(task.id, TaskStatus.BLOCKED,
+                                  context="session_close_hard_failure")
+    await orch.db.transition_task(task.id, TaskStatus.READY, context="reopen_with_feedback",
+                                  force=True)
+    failures = await orch.db.get_task_meta(task.id, "routing_failed_attempts")
+    (attempt,) = await orch.db.list_task_session_attempts(task.id)
+    assert len(failures) == 1
+    assert failures[0]["attempt_id"] == attempt["id"]
+    assert failures[0]["session_id"] == "failed-standard"
+    assert failures[0]["intelligence_class"] == "standard-high"
+    assert failures[0]["profile_id"] == "standard-high-codex"

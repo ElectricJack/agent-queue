@@ -1304,6 +1304,18 @@ class TestTaskClose:
     async def test_missing_task_id(self, handler):
         assert "error" in await handler.execute("task_close", {"outcome": "pass"})
 
+    async def test_close_without_failure_class_clears_previous_transient_metadata(
+        self, handler, db, provider,
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+        await db.set_task_meta("t1", "failure_class", "transient")
+        result = await handler.execute("task_close", {
+            "task_id": "t1", "outcome": "fail", "summary": "Worker could not fix the bug",
+        })
+        assert result["success"] is True
+        assert await db.get_task_meta("t1", "failure_class") is None
+
     async def test_invalid_outcome_is_rejected(self, handler, db, provider):
         await _make_task(db)
         r = await handler.execute("task_close", {"task_id": "t1", "outcome": "maybe"})

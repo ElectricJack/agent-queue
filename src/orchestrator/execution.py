@@ -1805,7 +1805,11 @@ class ExecutionMixin:
             # COMPLETED: the agent's word triggers verification but does not
             # replace its verdict.
             new_status = TaskStatus.BLOCKED
-            context = "session_close_pipeline_stop"
+            context = (
+                "verification_failed"
+                if ctx.verification_issues and not ctx.verification_infrastructure_failure
+                else "session_close_pipeline_stop"
+            )
         elif failure_class == "hard":
             new_status = TaskStatus.BLOCKED
             context = "session_close_hard_failure"

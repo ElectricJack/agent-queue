@@ -1389,8 +1389,11 @@ class PipelineContext:
     #: stays IN_PROGRESS under its claim and the close is refused with
     #: feedback.
     verification_retry_in_session: bool = False
-    #: The fixable issues behind ``verification_retry_in_session``.
+    #: Issues observed by Git verification, including blocked delivery.
     verification_issues: list[str] = field(default_factory=list)
+    #: A failed probe, authorization or push prevented a work verdict. Such
+    #: infrastructure failures must not count toward router escalation.
+    verification_infrastructure_failure: bool = False
     #: True when the refused close is blocked on daemon-side delivery state
     #: the closing workspace cannot change (no integration workspace, a
     #: workspace locked by another task, a repository mismatch).  The task is

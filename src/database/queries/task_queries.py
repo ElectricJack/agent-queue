@@ -219,6 +219,7 @@ TERMINAL_BLOCKED_CONTEXTS = frozenset(
         "session_close_hard_failure",
         "max_retries",
         "session_close_pipeline_stop",
+        "verification_failed",
         "merge_conflict",
         "timeout",
         "stop_task",
@@ -1453,6 +1454,12 @@ class TaskQueryMixin:
 
         async def _write(values: dict):
             """Run the guarded UPDATE; return ``(matched, row_or_None)``."""
+            async def record_retry() -> bool:
+                return await self.record_routing_retry_on(
+                    conn, task_id, context=context, previous_status=current_status,
+                    new_status=new_status,
+                )
+
             stmt = update(tasks).where(tasks.c.id == task_id)
             if not _manual_pause_control:
                 stmt = stmt.where(_not_manually_paused())
@@ -1476,6 +1483,10 @@ class TaskQueryMixin:
                     ))).scalar_one_or_none()
                     if paused:
                         raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
+                if out is not None and await record_retry():
+                    out = (await conn.execute(select(tasks).where(
+                        tasks.c.id == task_id,
+                    ))).mappings().one()
                 return out is not None, (dict(out) if out is not None else None)
             res = await conn.execute(stmt)
             if res.rowcount == 0:
@@ -1486,6 +1497,7 @@ class TaskQueryMixin:
                     if paused:
                         raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
                 return False, None
+            await record_retry()
             if not returning:
                 return True, None
             out = (

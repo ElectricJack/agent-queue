@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:46340ed52df4e6133ff75031ac315f745efd617c7cbedf4411388c9ffabbec60` |
+| Contract fingerprint | `sha256:06364f953b0b5dcbf257fc54fc94bb1688f8443561a691ab2354227a9b9739c7` |
 
 ## Parameters
 
@@ -50,6 +50,7 @@
 | `policy_sha256` | `string \| null` | Policy digest |
 | `class_clamped_from` | `string \| null` | Hint clamped from |
 | `class_raised_for_risk` | `object \| null` | Class raised for risk |
+| `escalated_after_failure` | `object \| null` | — |
 | `classification` | `object \| null` | Classification |
 | `balance` | `object \| null` | Load-score weights |
 | `title` | `string \| null` | — |
