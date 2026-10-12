@@ -56,6 +56,9 @@ somehow declares none.
 
 ## Capabilities
 
+<!-- Capabilities JSON generated from worker-codex/profile.md. Edit that shared
+list and run python scripts/generate-worker-capabilities.py. -->
+
 ```json
 {
   "harness_tools": [

@@ -10,8 +10,8 @@ right default for operator edits and the wrong default for load-bearing
 the require-a-PR close gate for a session that is told never to push
 (``src/orchestrator/git_ops.py`` ``_task_produces_no_code``).  The same blind
 spot applies to capability grants: a shipped release adding a command to
-``## Capabilities.aq_commands`` never reaches a vault copy that already
-exists, so this check also reports ``missing_grants`` per profile
+``## Capabilities`` (including ``plugin_tools.git_push``) never reaches a vault
+copy that already exists, so this check also reports ``missing_grants`` per profile
 (:func:`src.profiles.drift.diff_profile`).
 
 Report-only by design.  There is no ``--fix``: overwriting the vault copy
