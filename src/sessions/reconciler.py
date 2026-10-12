@@ -2798,8 +2798,10 @@ class SessionReconciler:
         which one is wanted (see
         ``docs/superpowers/specs/2026-08-27-session-desired-state-design.md``):
 
-        * **down** — a running session past its profile's ``idle_timeout``
-          is drained to ``sleeping``, and its *intent* becomes ``sleeping``
+        * **down** — explicit sleep intent stops a starting/running session
+          regardless of activity or outstanding work. Otherwise a running
+          session past its profile's ``idle_timeout`` is drained to
+          ``sleeping``, and its *intent* becomes ``sleeping``
           at the same moment.  That second half is what stops the flap: a
           drained session stops being wanted, so the up-branch does not
           immediately undo the down-branch.
@@ -2812,10 +2814,40 @@ class SessionReconciler:
         and work_dir resolution, and two copies of that would drift.
         """
         await self._converge_named_up(now)
-        idle_rows = [r for r in live if r.lifecycle == "named" and r.state == "running"]
-        if not idle_rows:
+        named_rows = [r for r in live if r.lifecycle == "named"]
+        if not named_rows:
             return
-        for row in idle_rows:
+        for observed in named_rows:
+            if self._is_deferred(observed.name):
+                continue
+            row = await self._still_live(observed)
+            if (row is None or row.instance_token != observed.instance_token
+                    or row.lifecycle != "named" or row.state not in {"starting", "running"}):
+                continue
+            if row.desired_state == "sleeping":
+                provider = self._provider_for(row)
+                if provider is None:
+                    continue
+                try:
+                    await provider.stop(self._handle(row), grace=2.0)
+                except Exception:
+                    logger.warning("Sleeping session %s failed; retrying next tick", row.id,
+                                   exc_info=True)
+                    continue
+                # Preserve a wake arriving during stop: the process is asleep,
+                # but running intent must launch its successor on the next tick.
+                changed = await self.db.update_session_instance(
+                    row.id, row.instance_token, state="sleeping",
+                    sleep_reason="desired_sleeping", end_reason="desired_sleeping",
+                )
+                if changed:
+                    await self._emit(
+                        "session.sleeping", session_id=row.id, name=row.name,
+                        project_id=row.project_id, reason="desired_sleeping",
+                    )
+                continue
+            if row.state != "running" or row.desired_state != "running":
+                continue
             # Named supervisors have no task stall ladder. Recover an owned
             # notification even if its message was consumed through the inbox
             # and therefore no longer produces another delivery attempt.

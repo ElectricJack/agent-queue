@@ -43,6 +43,10 @@ session must register its patrol again. Workers also bind to their current task
 claim; claim turnover expires their schedules. Recurrence grants no inactivity
 exemption: use [one-shot waits](agent-waits.md) to retain a worker claim while idle.
 
+`aq session sleep` cancels the session instance's active schedules and archives
+pending scheduled prompts immediately. The reconciler stops named sessions on
+the next tick. Waking the session does not restore those schedules.
+
 Missed ticks coalesce into one pending prompt per schedule. No backlog replays
 every missed tick after restart. Busy owners wait; absent/sleeping owners are
 never cold-started by cron. Cron coalescing counts are a lower bound after outages
