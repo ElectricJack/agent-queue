@@ -43,7 +43,7 @@ class _RecordingBus:
 async def setup(tmp_path):
     db = Database(lease_dsn("messages.db"))
     await db.initialize()
-    await db.create_project(Project(id="p1", name="test"))
+    await db.create_project(Project(id="p1", name="test", supervisor_enabled=True))
 
     bus = _RecordingBus()
     orch = MagicMock()
@@ -220,7 +220,7 @@ class TestSendRecipientProject:
 
     async def test_recipient_project_beats_the_ambient_active_project(self, setup):
         handler, db, _bus = setup
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         worker = await _create_live_worker(db, project_id="p2", suffix="b")
         handler._active_project_id = "p1"
         args = _send_args(to_kind="task", to_id=worker.task_id)
@@ -230,7 +230,7 @@ class TestSendRecipientProject:
 
     async def test_explicit_project_is_kept(self, setup):
         handler, db, _bus = setup
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         worker = await _create_live_worker(db, project_id="p2", suffix="c")
         result = await handler._cmd_message_send(
             _send_args(project_id="p1", to_kind="task", to_id=worker.task_id)
@@ -298,7 +298,7 @@ class TestSendSupervisorAddress:
     )
     async def test_suffix_naming_a_project_is_kept(self, setup, to_id, project_id):
         handler, db, _bus = setup
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         result = await handler._cmd_message_send(
             _send_args(to_id=to_id, project_id=project_id)
         )
@@ -387,7 +387,7 @@ class TestSupervisorAgentMessage:
     @pytest.mark.parametrize("target", ["task-p2", "session-p2", "worker-p2"])
     async def test_project_scope_rejects_foreign_targets(self, setup, target):
         handler, db, _bus = setup
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         await _create_live_worker(db, project_id="p2", suffix="p2")
 
         result = await handler._cmd_agent_message(
@@ -401,7 +401,7 @@ class TestSupervisorAgentMessage:
     async def test_project_scoped_broadcast_only_targets_its_project(self, setup):
         handler, db, _bus = setup
         own_session = await _create_live_worker(db, project_id="p1", suffix="p1")
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         await _create_live_worker(db, project_id="p2", suffix="p2")
 
         result = await handler._cmd_agent_message(
@@ -441,7 +441,7 @@ class TestSupervisorAgentMessage:
     async def test_reply_to_must_name_a_message_in_the_workers_project(self, setup):
         handler, db, _bus = setup
         await _create_live_worker(db, project_id="p1", suffix="w")
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         foreign = await handler._cmd_message_send(
             _send_args(project_id="p2", to_id="supervisor-p2", thread_id="t")
         )
@@ -471,7 +471,7 @@ class TestSupervisorAgentMessage:
         --reply-to <that id>`` answered "not found" for the body it held."""
         handler, db, _bus = setup
         await _create_live_worker(db, project_id="p1", suffix="w")
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         report = await handler._cmd_message_send(
             _send_args(
                 project_id="p2",
@@ -526,7 +526,7 @@ class TestSupervisorAgentMessage:
     async def test_status_hides_messages_from_other_projects(self, setup, to_kind):
         """Another project's traffic to its own mailboxes stays out of view."""
         handler, db, _bus = setup
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         worker = await _create_live_worker(db, project_id="p2", suffix="p2")
         to_id = {"supervisor": "supervisor-p2", "session": worker.id, "task": worker.task_id}
         sent = await handler._cmd_message_send(
@@ -1174,7 +1174,7 @@ class TestStatusRecipientProject:
 
     async def test_nudged_cross_project_report_is_readable_by_its_recipient(self, setup):
         handler, db, _bus = setup
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         await db.create_project(Project(id="p3", name="third"))
         sent = await _execute_as(
             handler,
@@ -1232,7 +1232,7 @@ class TestStatusRecipientProject:
     @pytest.mark.parametrize("mailbox", ["supervisor", "named_supervisor", "session", "task"])
     async def test_another_projects_row_to_an_own_mailbox_is_readable(self, setup, mailbox):
         handler, db, _bus = setup
-        await db.create_project(Project(id="p2", name="other"))
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         worker = await _create_live_worker(db, project_id="p1", suffix="own")
         to_kind, to_id = {
             "supervisor": ("session", "supervisor-p1"),

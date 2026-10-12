@@ -57,8 +57,8 @@ async def test_notification_migration_recovers_only_unread_legacy_nudges(db, mon
 async def db(tmp_path):
     database = Database(lease_dsn("messages.db"))
     await database.initialize()
-    await database.create_project(Project(id="p1", name="p1"))
-    await database.create_project(Project(id="p2", name="p2"))
+    await database.create_project(Project(id="p1", name="p1", supervisor_enabled=True))
+    await database.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
     yield database
     await database.close()
 

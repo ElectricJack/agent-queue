@@ -122,6 +122,7 @@ async def _check_authentication(ctx: DoctorContext) -> CheckResult:
 UNREACHABLE_CHECK_ID = "sessions.stall_unreachable"
 
 STOP_INTENT_CHECK_ID = "sessions.stop_intent_pending"
+PROJECT_SUPERVISOR_CHECK_ID = "sessions.disabled_project_supervisors"
 
 #: Refusal reasons a person is responsible for: the ladder will not advance
 #: on these however long the holder is idle, so they are the ones an operator
@@ -714,9 +715,35 @@ async def _check_flock(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_disabled_project_supervisors(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id=PROJECT_SUPERVISOR_CHECK_ID,
+            severity=Severity.INFO,
+            detail="no database is available to read sessions from",
+        )
+    findings = []
+    for row in await ctx.db.list_sessions(lifecycle="named", live_only=True):
+        if row.project_id is None or row.name != "n-supervisor--" + row.project_id:
+            continue
+        project = await ctx.db.get_project(row.project_id)
+        if project is not None and not project.supervisor_enabled:
+            findings.append({"session_id": row.id, "project_id": row.project_id,
+                             "name": row.name, "state": row.state})
+    return CheckResult(
+        PROJECT_SUPERVISOR_CHECK_ID, Severity.WARN if findings else Severity.OK,
+        f"{len(findings)} project supervisor(s) running while disabled; "
+        "the reconciler stops them after their current turn" if findings
+        else "no disabled project supervisors are running",
+        data={"count": len(findings), "sessions": findings},
+    )
+
+
 def session_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=AUTH_CHECK_ID, run=_check_authentication, owner=OWNER),
+        DoctorCheck(id=PROJECT_SUPERVISOR_CHECK_ID, run=_check_disabled_project_supervisors,
+                    owner=OWNER),
         DoctorCheck(id="sessions.untracked", run=_check_flock, owner=OWNER, timeout_s=15.0),
         DoctorCheck(id=ENV_CHECK_ID, run=_check_env_markers, owner=OWNER),
         DoctorCheck(

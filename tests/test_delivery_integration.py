@@ -131,7 +131,9 @@ PROJECT_ID = "p-int"
 
 
 async def _seed_project(orch):
-    await orch.db.create_project(Project(id=PROJECT_ID, name="integration"))
+    await orch.db.create_project(Project(
+        id=PROJECT_ID, name="integration", supervisor_enabled=True,
+    ))
 
 
 def _supervisor_address(project_id: str = PROJECT_ID) -> str:

@@ -107,6 +107,7 @@ class MessageDeliveryEngine:
         if self._delivery_lock.locked():
             return result
         async with self._delivery_lock:
+            await self._db.redirect_disabled_supervisor_messages()
             recipients = await self._db.get_pending_recipients()
             seen = set()
             for to_kind, to_id, _project_id in recipients:

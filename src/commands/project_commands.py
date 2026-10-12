@@ -72,6 +72,7 @@ class ProjectCommandsMixin:
                 "status": p.status.value,
                 "credit_weight": p.credit_weight,
                 "max_concurrent_agents": p.max_concurrent_agents,
+                "supervisor_enabled": p.supervisor_enabled,
                 "workspace": ws_path,
             }
             if p.repo_url:
@@ -537,6 +538,10 @@ class ProjectCommandsMixin:
                 operator_id=operator_id,
             )
         updates = {}
+        if "supervisor_enabled" in args:
+            if not isinstance(args["supervisor_enabled"], bool):
+                return {"success": False, "error": "supervisor_enabled must be a boolean"}
+            updates["supervisor_enabled"] = args["supervisor_enabled"]
         if "name" in args:
             updates["name"] = args["name"]
         if "credit_weight" in args:
@@ -565,7 +570,7 @@ class ProjectCommandsMixin:
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, "
                     "assignment_playbook_id, repo_default_branch, "
-                    "review_delegate_to, or git_identity_name/git_identity_email."
+                    "review_delegate_to, supervisor_enabled, or git_identity_name/git_identity_email."
                 )
             }
         await self.db.update_project(pid, **updates)
@@ -833,6 +838,7 @@ class ProjectCommandsMixin:
             "max_concurrent_agents": project.max_concurrent_agents,
             "total_tokens_used": project.total_tokens_used,
             "tokens_used_recent": usage,
+            "supervisor_enabled": project.supervisor_enabled,
         }
         if project.budget_limit is not None:
             info["budget_limit"] = project.budget_limit

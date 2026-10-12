@@ -25,7 +25,7 @@ import uuid
 from sqlalchemy import and_, case, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import messages
+from src.database.tables import messages, projects
 from src.models import Message
 
 
@@ -65,6 +65,60 @@ def _row_to_message(row) -> Message:
 class MessageQueriesMixin:
     """Query mixin for ``messages``.  Expects ``self._engine``."""
 
+    async def _supervisor_recipient(self, conn, to_kind, to_id, project_id):
+        """Resolve opt-in routing without changing the sender's project context."""
+        recipient_project = None
+        if to_kind == "profile" and to_id == "supervisor":
+            recipient_project = project_id
+        elif to_kind == "session":
+            for prefix in ("supervisor-", "n-supervisor--"):
+                if to_id.startswith(prefix):
+                    suffix = to_id[len(prefix):]
+                    if suffix != "global":
+                        recipient_project = suffix
+                    break
+        if recipient_project:
+            enabled = (await conn.execute(select(projects.c.supervisor_enabled).where(
+                projects.c.id == recipient_project,
+            ))).scalar_one_or_none()
+            if enabled is False:
+                return "session", "supervisor-global"
+        return to_kind, to_id
+
+    async def redirect_disabled_supervisor_messages(self, *, conn=None) -> int:
+        """Route unread event notices and old backlog to the global supervisor.
+
+        Internal producers can insert notices in their own transaction. Delivery
+        and inbox commands apply this same policy before consuming those rows.
+        Delivered but unread messages become pending again, so an abandoned
+        supervisor turn cannot swallow a worker's report.
+        """
+        disabled_recipient = select(projects.c.id).where(
+            projects.c.supervisor_enabled.is_(False),
+            or_(
+                and_(
+                    messages.c.to_kind == "session",
+                    projects.c.id != "global",
+                    messages.c.to_id.in_([
+                        "supervisor-" + projects.c.id,
+                        "n-supervisor--" + projects.c.id,
+                    ]),
+                ),
+                and_(
+                    messages.c.to_kind == "profile", messages.c.to_id == "supervisor",
+                    messages.c.project_id == projects.c.id,
+                ),
+            ),
+        ).exists()
+        stmt = update(messages).where(
+            messages.c.read_at.is_(None), messages.c.archived_at.is_(None),
+            disabled_recipient,
+        ).values(to_kind="session", to_id="supervisor-global", delivered_at=None, via=None)
+        if conn is not None:
+            return (await conn.execute(stmt)).rowcount
+        async with self._engine.begin() as owned:
+            return (await owned.execute(stmt)).rowcount
+
     async def create_message(
         self,
         *,
@@ -101,6 +155,9 @@ class MessageQueriesMixin:
             pane_open=pane_open,
         )
         async with self._engine.begin() as conn:
+            msg.to_kind, msg.to_id = await self._supervisor_recipient(
+                conn, msg.to_kind, msg.to_id, msg.project_id,
+            )
             result = await conn.execute(
                 insert(messages).values(
                     id=msg.id,

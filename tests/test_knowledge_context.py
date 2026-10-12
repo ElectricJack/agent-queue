@@ -304,6 +304,7 @@ async def test_named_supervisor_launch_injects_worker_selection_only_after_succe
     context_setup, tmp_path, launch,
 ):
     db, config, service, worker, _, _ = context_setup
+    await db.update_project("p", supervisor_enabled=True)
     from src.messages import SessionLens
     from src.sessions import SessionProviderRegistry
     from src.sessions.fake import FakeProvider

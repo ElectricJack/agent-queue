@@ -39,7 +39,7 @@ from tests.db_fixtures import lease_dsn
 async def db(tmp_path):
     database = Database(lease_dsn("delivery.db"))
     await database.initialize()
-    await database.create_project(Project(id="p1", name="p1"))
+    await database.create_project(Project(id="p1", name="p1", supervisor_enabled=True))
     yield database
     await database.close()
 
@@ -470,6 +470,9 @@ class TestDeliveryPolicy:
             def __init__(self):
                 self.marked: list = []
                 self.archived: list = []
+
+            async def redirect_disabled_supervisor_messages(self):
+                return 0
 
             async def get_pending_recipients(self):
                 return [("webhook", "w1", "p1")]
@@ -934,7 +937,7 @@ class TestTranscriptTailDeduplication:
         {"to_id": "other-worker"}, {"project_id": "p2"},
     ])
     async def test_fallback_does_not_suppress_other_conversations(self, db, different):
-        await db.create_project(Project(id="p2", name="p2"))
+        await db.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
         sessions = FakeSessionManager()
         first = await _send(db, to_kind="task", to_id="review", thread_id="discord:channel")
         other = await _send(db, **({"to_kind": "task", "to_id": "review",
@@ -1022,7 +1025,7 @@ class TestTranscriptTailFanout:
 
     async def test_tail_dedupe_key_distinguishes_projects(self, db):
         # Two projects, same thread_id — both tails should be recovered.
-        await db.create_project(Project(id="p2", name="p2"))
+        await db.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
         sessions = FakeSessionManager()
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
@@ -1441,7 +1444,7 @@ class TestIndependentDelivery:
             await service.stop()
 
     async def test_cross_project_mailbox_coalesces_while_busy_and_idle(self, db):
-        await db.create_project(Project(id="p2", name="p2"))
+        await db.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
         first = await _send(db)
         second = await _send(db, project_id="p2")
         manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "busy"})

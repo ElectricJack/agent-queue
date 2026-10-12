@@ -11881,8 +11881,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
-        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
+        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
+        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
         "operationId": "edit_project",
         "requestBody": {
           "content": {
@@ -31434,6 +31434,18 @@
             "title": "Name",
             "description": "New project name (optional)"
           },
+          "supervisor_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supervisor Enabled",
+            "description": "Enable a project supervisor on the next message. Default false: the global supervisor handles this project. Disabling drains the running project supervisor after its current turn."
+          },
           "credit_weight": {
             "anyOf": [
               {
@@ -36750,6 +36762,11 @@
               }
             ],
             "title": "Assignment Playbook Id"
+          },
+          "supervisor_enabled": {
+            "type": "boolean",
+            "title": "Supervisor Enabled",
+            "default": false
           },
           "git_identity_name": {
             "anyOf": [
@@ -56957,6 +56974,11 @@
               }
             ],
             "title": "Assignment Playbook Id"
+          },
+          "supervisor_enabled": {
+            "type": "boolean",
+            "title": "Supervisor Enabled",
+            "default": false
           }
         },
         "type": "object",

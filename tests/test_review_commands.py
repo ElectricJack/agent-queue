@@ -111,7 +111,7 @@ async def env(command_handler_factory, tmp_path):
     handler.orchestrator.bus = EventBus(env="dev")
     ensure_default_intelligence_classes(handler.config.data_dir)
     handler.orchestrator.intelligence_classes = load_intelligence_classes(handler.config.data_dir)
-    await db.create_project(Project(id="p", name="Project P"))
+    await db.create_project(Project(id="p", name="Project P", supervisor_enabled=True))
     await db.create_project(Project(id="other", name="Other"))
     await db.create_profile(
         AgentProfile(

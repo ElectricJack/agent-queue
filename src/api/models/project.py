@@ -16,6 +16,7 @@ class ProjectSummary(BaseModel):
     workspace: str | None = None
     repo_url: str | None = None
     assignment_playbook_id: str | None = None
+    supervisor_enabled: bool = False
 
 
 class GitIdentityPair(BaseModel):
@@ -53,6 +54,7 @@ class GetProjectResponse(BaseModel):
     tokens_used_recent: int = 0
     budget_limit: int | None = None
     assignment_playbook_id: str | None = None
+    supervisor_enabled: bool = False
     #: The project's own override (both null = inherits the installation default).
     git_identity_name: str | None = None
     git_identity_email: str | None = None

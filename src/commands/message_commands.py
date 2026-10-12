@@ -608,6 +608,10 @@ class MessageCommandsMixin:
         if mailbox_error:
             return mailbox_error
 
+        supervisor_mailbox = (to_kind == "profile" and to_id == "supervisor") or (
+            to_kind == "session" and to_id.startswith(("supervisor-", "n-supervisor--"))
+        )
+
         inject = bool(args.get("inject", False))
         include_consumed = bool(args.get("include_consumed", False))
         limit = args.get("limit")
@@ -623,6 +627,7 @@ class MessageCommandsMixin:
         ):
             session = await self.db.get_session(to_id)
             if session is not None and session.lifecycle == "named" and session.profile_id == "supervisor":
+                supervisor_mailbox = True
                 suffix = session.project_id or "global"
                 if session.name == f"n-supervisor--{suffix}":
                     if suffix == "global":
@@ -630,6 +635,8 @@ class MessageCommandsMixin:
                         if scope_error:
                             return scope_error
                     recipients.extend([session.name, f"supervisor-{suffix}"])
+        if supervisor_mailbox:
+            await self.db.redirect_disabled_supervisor_messages()
         pending = []
         for recipient in recipients:
             pending.extend(await self.db.get_pending_messages(to_kind, recipient, limit=limit))
