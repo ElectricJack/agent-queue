@@ -106,7 +106,6 @@ list and run python scripts/generate-worker-capabilities.py. -->
     "formula_show",
     "get_schema",
     "get_task",
-    "integration_resolve_candidate_member",
     "message_inbox",
     "message_reply",
     "message_send",

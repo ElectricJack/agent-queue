@@ -11708,14 +11708,6 @@
         "type": "object"
       }
     },
-    "integration_parent_action": {
-      "name": "integration_parent_action",
-      "description": "Internal visit dispatch: process-bound engine scope is the authority.",
-      "input_schema": {
-        "type": "object",
-        "properties": {}
-      }
-    },
     "integration_parent_verify": {
       "name": "integration_parent_verify",
       "description": "Record one parent verification against its exact checkpoint head and evidence.",

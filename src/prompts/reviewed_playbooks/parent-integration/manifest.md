@@ -1,19 +1,17 @@
 ---
 playbook_id: parent-integration
-artifact_sha256: sha256:a7455b7c3a2d2bdca62365e6d1d7f4ebe158a47aa0db5009812b8294349ddacd
-source_sha256: sha256:7dcad46a111fc4f0c9eae94ca3b57ed44252212c236f934aafa2957e7d4de13c
-contract_fingerprint: sha256:a4b6e09f12c8c3111b1987f4d09fd86c45b973a1cc83b9d689f566d4e937b4c0
+artifact_sha256: sha256:fbc422d0376150126534bca9fa9421a162aba8741062ff7810f42cb892258169
+source_sha256: sha256:9bd6983f7bda7401354515c55a81c78861dd14593e291c557132afa2603c78f8
+contract_fingerprint: sha256:840b9ffe5c9a42814ae0ee6f8aa17f1b586bead5e8efd80723c7c34976ce748f
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - delivery_promote
   - gate_create
   - integration_checkpoint_parent
   - integration_complete_parent
   - integration_delivery_readiness
   - integration_file_children
   - integration_parent_verify
-  - integration_reconcile_promotion
   - integration_record_repair
   - integration_repair_dispatch
   - integration_repair_start
@@ -62,3 +60,11 @@ backing off forever. The `blocked-reopen` case matches the recorded
 existing no-default `red` gate; it adds no command, transition or capability,
 and the marker it reads is scoped to one episode, operation, head and
 generation, so a later generation clears it.
+
+## Publisher retirement repair (2026-10-12)
+
+Removed event rules and recorded grants for retired publisher commands. Candidate
+construction and publication belong to the Git train. Retained recovery, release
+and cleanup rules compile against the live registry; the authored integration
+policy tables are unchanged. The refreshed digest requires operator review
+before activation.

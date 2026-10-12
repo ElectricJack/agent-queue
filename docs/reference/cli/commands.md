@@ -298,9 +298,7 @@ branches are validated and published. `status` is the read every diagnosis
 starts from: rollout mode, readiness, active work and cleanup for one project.
 Every other leaf is a control verb, and control verbs are **local operator
 only**: a session token is refused with `out of scope: integration control
-requires local operator`. The one exception is
-`resolve-candidate-member`, which a live repair session may run for the
-candidate it was assigned. All leaves are hand-written because they take
+requires local operator`. All leaves are hand-written because they take
 positional identities and explicit compare-and-set fences (`enable` takes the
 generation `status` reported, so a stale operator cannot flip a mode that has
 moved).
@@ -310,8 +308,6 @@ moved).
 |---|---|---|---|
 | `aq integration app-setup` | `—` | hand | Print what App credential mode still needs for PROJECT_ID and the exact fix; `--apply` sets only the differing Actions variables with your `gh` login and verifies again ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
 | `aq integration app-verify` | `—` | hand | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each, exit 1 when one fails ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
-| `aq integration recover-candidate-member` | `—` | hand | Resolve one pushed frozen candidate-member repair reservation. |
-| `aq integration resolve-candidate-member` | `—` | hand | Resolve the candidate member assigned to this repair session. |
 | `aq integration status` | `—` | hand | Show rollout, readiness, active work, and cleanup for PROJECT_ID. |
 | `aq integration trust-manifest` | `—` | hand | Render the App-mode trust manifest from the policy, the binding and the daemon's App; `--write`, `--print` or `--check` the default-branch copy ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
 
@@ -646,7 +642,6 @@ group is large.
 | `aq system create-workflow` | `create_workflow` | gen | Create a new coordination workflow record. |
 | `aq system db-preflight-hierarchy` | `db_preflight_hierarchy` | gen | Dry-run the hierarchy canonicalisation used by migration revision b2c3d4e5f6a7 (spec §17): pick one canonical parent per task from the current pare… |
 | `aq system delete-intelligence-class` | `delete_intelligence_class` | gen | Retire an unreferenced intelligence class in the vault; refuses active agent, profile, and task references. |
-| `aq system delivery-promote` | `delivery_promote` | gen | Prepare and lease-push one reviewed squash to its immediate parent. |
 | `aq system delivery-receipts` | `delivery_receipts` | gen | Read repository-qualified delivery evidence for one source task. |
 | `aq system doctor` | `doctor` | gen | Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, an… |
 | `aq system edit-intelligence-class` | `edit_intelligence_class` | gen | Edit an existing global intelligence class in the vault. |
@@ -660,7 +655,6 @@ group is large.
 | `aq system get-stuck-tasks` | `get_stuck_tasks` | gen | Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their per-status threshold. |
 | `aq system get-token-usage` | `get_token_usage` | gen | Get token usage breakdown by project or task. |
 | `aq system get-workflow` | `get_workflow` | gen | Fetch a single workflow by ID. |
-| `aq system integration-build-candidate` | `integration_build_candidate` | gen | Build exact root candidate |
 | `aq system integration-checkpoint-parent` | `integration_checkpoint_parent` | gen | Pin the parent head and generation before waiting for child deliveries. |
 | `aq system integration-ci-evidence` | `integration_ci_evidence` | gen | Observe exact root candidate CI |
 | `aq system integration-cleanup` | `integration_cleanup` | gen | Materialize and advance bounded cleanup for one terminal root batch. |
@@ -669,18 +663,11 @@ group is large.
 | `aq system integration-file-children` | `integration_file_children` | gen | Reserve child origins and advance the parent integration generation atomically. |
 | `aq system integration-mutate-hierarchy` | `integration_mutate_hierarchy` | gen | Apply a guarded hierarchy change and invalidate affected parent generations. |
 | `aq system integration-parent-verify` | `integration_parent_verify` | gen | Execute the integration_parent_verify command. |
-| `aq system integration-promote-main` | `integration_promote_main` | gen | Reconcile and fast-forward main to the exact trusted green candidate. |
-| `aq system integration-push-conflict-resolution` | `integration_push_conflict_resolution` | gen | Push a frozen conflict resolution under the current repair writer fence. |
-| `aq system integration-reconcile-promotion` | `integration_reconcile_promotion` | gen | Compare a durable prepared intent with the remote and finalize its receipt. |
 | `aq system integration-record-repair` | `integration_record_repair` | gen | Execute the integration_record_repair command. |
-| `aq system integration-recover-unwritten-resolution` | `integration_recover_unwritten_resolution` | gen | Supersede a malformed reservation only after an operator proves no remote write occurred. |
 | `aq system integration-release` | `integration_release` | gen | Release terminal root train |
 | `aq system integration-repair-dispatch` | `integration_repair_dispatch` | gen | Execute the integration_repair_dispatch command. |
 | `aq system integration-repair-start` | `integration_repair_start` | gen | Execute the integration_repair_start command. |
 | `aq system integration-repair-timeout` | `integration_repair_timeout` | gen | Execute the integration_repair_timeout command. |
-| `aq system integration-resolve-conflict` | `integration_resolve_conflict` | gen | Freeze an active repair session's exact conflict resolution before push. |
-| `aq system integration-schedule-due` | `integration_schedule_due` | gen | Coalesce a periodic or manual trigger into one durable sweep request. |
-| `aq system integration-seal` | `integration_seal` | gen | Atomically snapshot the full eligible integration frontier. |
 | `aq system integration-transfer-owner` | `integration_transfer_owner` | gen | Stop and detach the current branch writer before granting a fresh fence. |
 | `aq system list-event-triggers` | `list_event_triggers` | gen | List event types that are valid playbook triggers, grouped by category (e.g. |
 | `aq system list-intelligence-classes` | `list_intelligence_classes` | gen | List the intelligence classes seeded under ``vault/intelligence-classes`` — id, name, description, and the provider→config mapping each one resolve… |

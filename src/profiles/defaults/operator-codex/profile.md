@@ -98,7 +98,6 @@ somehow declares none.
     "integration_cutover_plan",
     "integration_eject",
     "integration_release_owner",
-    "integration_resolve_candidate_member",
     "integration_retire_origin",
     "integration_status",
     "integration_trust_manifest",

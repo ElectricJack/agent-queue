@@ -1,19 +1,14 @@
 ---
 playbook_id: agent-queue-root-train
-artifact_sha256: sha256:0b01412a51b1e122fa4f7fd85a79380a2e0e0f3d05b04a4cb5ff2116f172b8bb
-source_sha256: sha256:4a490651f6c86fb7cef3a1be29f94e5708795736977bc94cb2d39c17d6adf1a5
-contract_fingerprint: sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41
+artifact_sha256: sha256:f17f082f3e2e1aae663a61e42ca0be904e46885dcf22a6f7e19f4ffd5b0b0e0e
+source_sha256: sha256:5732246f323dfa2f9ac2b8ebe1419d387fcb2f3d19e272142486c14093efa2b9
+contract_fingerprint: sha256:365c5f42781909921f64f205484f5fad3df3e340f07184b5f84b4bc44767ddc2
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - integration_build_candidate
-  - integration_ci_evidence
-  - integration_repair_close_current
   - integration_cleanup
-  - integration_promote_main
   - integration_release
   - integration_repair_dispatch
-  - integration_seal
   harness_tools: []
   plugin_tools: []
 profiles_referenced: []
@@ -55,3 +50,11 @@ The subject table and its CI observation action now pin the sixteen-check
 and project policy. The added check is `Dashboard (typecheck/build)`. Rebuilt
 with `scripts/rebuild-reviewed-playbook-artifacts.py`; no compiler questions
 remain. Existing subjects retain their frozen artifacts and policy snapshots.
+
+## Publisher retirement repair (2026-10-12)
+
+Removed event rules and recorded grants for retired publisher commands. Candidate
+construction and publication belong to the Git train. Retained recovery, release
+and cleanup rules compile against the live registry; the authored integration
+policy tables are unchanged. The refreshed digest requires operator review
+before activation.

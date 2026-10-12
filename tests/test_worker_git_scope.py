@@ -633,27 +633,20 @@ async def test_old_custom_worker_profile_reports_and_merges_missing_grants(tmp_p
     assert diff_profile(profile_id, data_dir).missing_grants == {}
 
 
-@pytest.mark.parametrize('command', [
-    'integration_resolve_conflict', 'integration_push_conflict_resolution',
+@pytest.mark.parametrize("command", [
+    "integration_resolve_conflict", "integration_push_conflict_resolution",
+    "integration_resolve_candidate_member",
 ])
-@pytest.mark.parametrize('assignment', ['parent', 'batch', 'inactive', 'ordinary'])
-async def test_conflict_commands_require_live_parent_repair(env, monkeypatch, command, assignment):
+async def test_retired_conflict_commands_are_refused_before_repair_lookup(env, monkeypatch, command):
     from unittest.mock import AsyncMock
 
     db, scope = env
-    repair = None if assignment == 'ordinary' else {
-        'active': assignment != 'inactive', 'writer_kind': 'repair_delegate',
-        'target_kind': assignment,
-    }
-    lookup = AsyncMock(return_value=repair)
-    monkeypatch.setattr(db, 'get_repair_filing_scope', lookup)
-    args = {'intent_id': 'intent', 'fence': {}}
-    result = await check_request_scope(command, args, scope, db=db)
-    assert (result is None) == (assignment == 'parent')
-    assert args == {'intent_id': 'intent', 'fence': {}}
-    lookup.assert_awaited_once_with('t1', session_id='s1')
-    await db.update_task('t1', status=TaskStatus.COMPLETED)
-    assert await check_request_scope(command, args, scope, db=db) is not None
+    lookup = AsyncMock()
+    monkeypatch.setattr(db, "get_repair_filing_scope", lookup)
+    args = {"intent_id": "intent", "fence": {}}
+    assert await check_request_scope(command, args, scope, db=db) == f"out of scope: {command}"
+    assert args == {"intent_id": "intent", "fence": {}}
+    lookup.assert_not_awaited()
 
 
 async def test_worker_pull_updates_only_its_checkout(worker_git):
