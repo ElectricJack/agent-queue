@@ -22,12 +22,14 @@ def upgrade() -> None:
         ))
     # A legacy pointer is not proof that the body was read. Recover this
     # backlog without reopening injected, read or intentionally archived mail.
-    op.execute(sa.text("""
-        UPDATE messages SET last_notified_at = delivered_at,
-            notification_attempts = 1, delivered_at = NULL
-        WHERE via = 'nudge' AND delivered_at IS NOT NULL
-            AND read_at IS NULL AND archived_at IS NULL
-    """))
+    # Older restored schemas may not contain delivery receipts yet.
+    if {"via", "delivered_at", "read_at", "archived_at"} <= columns:
+        op.execute(sa.text("""
+            UPDATE messages SET last_notified_at = delivered_at,
+                notification_attempts = 1, delivered_at = NULL
+            WHERE via = 'nudge' AND delivered_at IS NOT NULL
+                AND read_at IS NULL AND archived_at IS NULL
+        """))
 
 
 def downgrade() -> None:
