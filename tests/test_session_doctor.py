@@ -31,6 +31,14 @@ CHECK = "sessions.stuck_composer"
 NUDGE = "No progress for 8 min on task t1. Close or continue: ..."
 
 
+async def test_disabled_project_supervisor_check_without_database_is_informational():
+    result = await session_checks.run_check(None, None, "sessions.disabled_project_supervisors")
+
+    assert result.id == "sessions.disabled_project_supervisors"
+    assert result.severity is Severity.INFO
+    assert "no database" in result.detail
+
+
 async def test_doctor_flags_running_disabled_project_supervisor(db):
     row = SessionRecord(
         id="disabled-sup", project_id=PROJECT_ID, profile_id="supervisor", harness="codex",

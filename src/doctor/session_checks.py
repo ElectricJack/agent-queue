@@ -676,6 +676,12 @@ async def _check_flock(ctx: DoctorContext) -> CheckResult:
 
 
 async def _check_disabled_project_supervisors(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id=PROJECT_SUPERVISOR_CHECK_ID,
+            severity=Severity.INFO,
+            detail="no database is available to read sessions from",
+        )
     findings = []
     for row in await ctx.db.list_sessions(lifecycle="named", live_only=True):
         if row.project_id is None or row.name != "n-supervisor--" + row.project_id:
