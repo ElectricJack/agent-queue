@@ -14780,13 +14780,13 @@
       "reason": "task.removed audit records the confirmed operator decision, removed subtree, disposition and cancelled operations/batches; preserves history without asserting ref or delivery truth."
     },
     "src/commands/proposal_commands.py::TaskProposalCommandsMixin._materialize_proposal::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 518,
+      "line": 526,
       "owner": "TaskProposalCommandsMixin._materialize_proposal",
       "call": "insert",
-      "owner_fingerprint": "e8836451c93c803b62334041f2ef9a8a473244470dbcfa284c160e41fb0a1735",
+      "owner_fingerprint": "f7d68047f11280c437e50889974f8db7761f382ca0277eba5ed19b864f1b51cf",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Immutable task change-set audit containing actor, source, reviewed diff and receipt in the proposal transaction; no ref replay or authoritative delivery lifecycle state."
+      "reason": "Immutable task change-set audit containing actor, source, reviewed diff and receipt in the proposal transaction. Re-reviewed approved commits against current task state: missing-task and skipped-operation entries describe proposal omissions, with no ref replay or authoritative delivery lifecycle state."
     },
     "src/integration/train_sources.py::DatabaseBatches._admission_times::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 406,

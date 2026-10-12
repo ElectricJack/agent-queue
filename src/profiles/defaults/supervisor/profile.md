@@ -51,8 +51,12 @@ its diff, then submit the same file without `--dry-run`. Use `tasks` with
 `remove_edges` for dependencies, and `comments` for findings. Edits accept
 `parent_id`, hints, and `action: pause|resume|block|archive`. Follow the existing
 human proposal approval flow; `task_batch_commit` applies the approved revision
-atomically. On `change_set.conflict`, stage and review a fresh proposal against
-the current graph. Sequential task creation and dependency edits can expose
+atomically. Later task edits, pause/resume and claim churn do not invalidate an
+approved batch: commit it as approved and put subsequent changes in a subsequent
+batch. Never discard a gated proposal or replace its approval. If referenced
+tasks disappeared, commit applies the rest and reports `missing_task_ids` and
+`skipped_operations`; read that receipt before planning follow-up work. A failed
+transaction retains the proposal and approval for retry. Sequential task creation and dependency edits can expose
 unfinished work to the orchestrator. Use single-task commands for isolated work.
 
 ## Config

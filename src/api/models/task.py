@@ -1045,12 +1045,14 @@ class TaskBatchCommitResponse(BaseModel):
     """The ids of the tasks the commit created, in batch order.
 
     ``already_committed`` marks a replay: the proposal was materialised by an
-    earlier call and ``task_ids`` is that commit's receipt.
+    earlier call and the original receipt (including missing references) is replayed.
     """
 
     success: bool = True
     task_ids: list[str] = []
     already_committed: bool = False
+    missing_task_ids: list[str] = []
+    skipped_operations: list[dict[str, Any]] = []
 
 
 class PoolInstanceStatus(BaseModel):

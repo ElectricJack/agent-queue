@@ -23,14 +23,14 @@ import time
 from pathlib import Path
 
 from ruamel.yaml import YAML
-from sqlalchemy import insert, select, update
+from sqlalchemy import exists, insert, select, update
 
 from src.api.auth import RequestScope
 from src.api.scope import spec_ingest_task_for_session
 from src.commands import task_changes
 from src.commands.principal import PrincipalKind, current_principal
 from src.database.queries import proposal_queries
-from src.database.tables import events, task_metadata, task_proposals, tasks
+from src.database.tables import events, gates, task_metadata, task_proposals, tasks
 from src.models import Task, TaskStatus
 from src.reviews.vault import spec_kind_from_content, split_frontmatter
 from src.routing.filing import choice_forbidden
@@ -212,7 +212,6 @@ class TaskProposalCommandsMixin:
             }
         finally:
             await savepoint.rollback()
-        payload["expected"] = expected
         return payload
 
     @staticmethod
@@ -322,7 +321,7 @@ class TaskProposalCommandsMixin:
                 ):
                     raise task_changes.ChangeSetError(
                         f"proposal '{proposal_id}' already has an approval gate; its payload is frozen; "
-                        "discard it and propose the revised change set"
+                        "commit it as approved and put subsequent changes in a new batch"
                     )
         except Exception as exc:
             return self._change_set_failure(exc, "task_batch_update")
@@ -338,17 +337,26 @@ class TaskProposalCommandsMixin:
                 "success": False,
                 "error": f"proposal '{proposal_id}' not found",
             }
-        async with self.db.immediate() as conn:
+        async with task_changes.boundary(self.db, row["project_id"]) as conn:
+            approval_gate = exists().where(
+                gates.c.project_id == row["project_id"],
+                gates.c.gate_type == "human",
+                gates.c.await_id == proposal_id,
+            )
             result = await conn.execute(
                 update(task_proposals)
                 .where(
                     task_proposals.c.id == proposal_id,
                     task_proposals.c.status.in_(("draft", "ready")),
+                    ~approval_gate,
                 )
                 .values(status="discarded", updated_at=time.time())
             )
             if not result.rowcount:
-                return {"success": False, "error": "proposal already committed or discarded"}
+                return {
+                    "success": False,
+                    "error": "proposal has an approval gate or was already committed or discarded",
+                }
         await self._emit_proposal_event(
             "proposal.status_changed",
             {
@@ -483,6 +491,8 @@ class TaskProposalCommandsMixin:
                 "task_ids": stored["receipt"]["task_ids"]
                 if "receipt" in stored
                 else await self._proposal_task_ids(proposal_id),
+                "missing_task_ids": stored.get("receipt", {}).get("missing_task_ids", []),
+                "skipped_operations": stored.get("receipt", {}).get("skipped_operations", []),
             }, None
         if current["status"] != "ready":
             raise task_changes.ChangeSetError("proposal not in 'ready' state")
@@ -494,16 +504,14 @@ class TaskProposalCommandsMixin:
             conn,
             current["project_id"],
             payload,
-            previous=stored.get("expected"),
+            allow_missing=True,
         )
-        if "expected" in stored and expected != stored["expected"]:
-            raise task_changes.ChangeSetError(
-                "change set conflicts with task versions or graph state; propose a fresh revision",
-                "change_set.conflict",
-            )
+        payload, omissions = task_changes.surviving_operations(payload, rows)
         receipt, notifications = await task_changes.apply(
-            self, conn, current["project_id"], payload, expected, rows, project, current["source"]
+            self, conn, current["project_id"], payload, expected, rows, project, current["source"],
+            approved=True,
         )
+        receipt.update(omissions)
         for task_id in receipt["task_ids"]:
             await self.db._upsert_meta(task_id, PROPOSAL_ID_META, proposal_id, conn=conn)
         stored["receipt"] = receipt
@@ -530,7 +538,7 @@ class TaskProposalCommandsMixin:
                 timestamp=time.time(),
             )
         )
-        return {"success": True, "task_ids": receipt["task_ids"]}, notifications
+        return {"success": True, "task_ids": receipt["task_ids"], **omissions}, notifications
 
     async def _publish_committed(
         self, proposal_id: str, project_id: str, task_ids: list[str], notifications: dict

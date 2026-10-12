@@ -6756,7 +6756,7 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_batch_update",
         "description": (
-            "Replace a pending change set, re-running final graph, state and version "
+            "Replace a pending change set, re-running final graph and state "
             "checks as task_batch_propose. Only "
             "proposals still in ``draft`` or ``ready`` can be updated — a "
             "committed or discarded one is history."
@@ -6786,12 +6786,16 @@ _ALL_TOOL_DEFINITIONS = [
             "unless a resolved human gate in the proposal's project, awaiting "
             "this proposal, carries an approval resolution (``approve`` or "
             "``approved``), or the server stamped approved-document authority "
-            "from a live spec-ingest role. Task versions and graph state are rechecked under the "
-            "routing/hierarchy/write locks; two concurrent commits cannot both win. Any failure "
+            "from a live spec-ingest role. Later task changes never invalidate approval; "
+            "approved fields overwrite later values, leaving other fields alone. "
+            "Missing task references skip only affected operations and are reported as "
+            "missing_task_ids and skipped_operations in the durable receipt. "
+            "Routing/hierarchy/write locks serialize commits. A transaction failure "
             "rolls back all changes, the audit and receipt in PostgreSQL, leaving the "
-            "proposal in ``ready`` for a retry. A conflict requires a fresh proposal. Committing an already "
+            "proposal and approval in ``ready`` for a retry. Committing an already "
             "committed proposal returns its original task ids with "
-            "``already_committed: true``. Returns the created task ids."
+            "``already_committed: true``, including the original skipped operations. "
+            "Subsequent changes belong in a subsequent batch. Returns the created task ids."
         ),
         "input_schema": {
             "type": "object",
@@ -6816,7 +6820,7 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "task_batch_discard",
         "description": (
             "Discard a pending proposal without creating anything. Refused if "
-            "it was already committed or discarded."
+            "it has a human approval gate or was already committed or discarded."
         ),
         "input_schema": {
             "type": "object",

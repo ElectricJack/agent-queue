@@ -113,7 +113,7 @@ def task_batch_propose(ctx, change_file, project_id, source, dry_run, **operatio
         args["project_id"] = project_id
 
     async def run():
-        async with _get_client(ctx) as client:
+        async with _get_client(ctx.obj.get("api_url") if ctx.obj else None) as client:
             return await client.execute("task_batch_propose", args)
 
     result = _run(run())

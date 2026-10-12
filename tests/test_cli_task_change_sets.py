@@ -134,3 +134,35 @@ def test_inline_batch_options_keep_existing_cli_compatible():
             "dry_run": False,
         },
     )
+
+
+@pytest.mark.parametrize("placement", ["default", "before", "after"])
+def test_batch_propose_constructs_real_http_client(monkeypatch, placement):
+    """Mock the wire, so a Click context passed as the URL fails as in production."""
+    import httpx
+
+    monkeypatch.setenv("AQ_API_URL", "http://default.test:8081")
+    requests = []
+
+    async def send(request, **kwargs):
+        requests.append(request)
+        return httpx.Response(200, request=request, json={
+            "ok": True, "result": {"success": True, "proposal_id": "p"},
+        })
+
+    command = ["--json", "task", "batch-propose", "--file", "-"]
+    override = ["--api-url", "http://override.test:8082"]
+    if placement == "before":
+        command = override + command
+    elif placement == "after":
+        command += override
+    with patch("httpx.AsyncClient.send", side_effect=send):
+        result = CliRunner().invoke(
+            cli, command, input=json.dumps({
+                "project_id": "p", "source": "test", "comments": [{"task_id": "t", "body": "hi"}],
+            }),
+        )
+    assert result.exit_code == 0, (result.output, result.exception)
+    base = "http://default.test:8081" if placement == "default" else "http://override.test:8082"
+    assert [str(request.url) for request in requests] == [base + "/api/health", base + "/api/execute"]
+    assert json.loads(requests[-1].content)["command"] == "task_batch_propose"
