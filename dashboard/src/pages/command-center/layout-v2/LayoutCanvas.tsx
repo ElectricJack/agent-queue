@@ -754,6 +754,8 @@ function Inner(props: LayoutCanvasProps) {
           nodesFocusable={false}
           edgesFocusable={false}
           elementsSelectable={false}
+          // Keep an epic's opaque frame below its children when selected.
+          elevateNodesOnSelect={false}
           deleteKeyCode={null}
           selectionKeyCode={null}
           disableKeyboardA11y

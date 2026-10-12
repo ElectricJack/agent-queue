@@ -1790,7 +1790,7 @@
         "graph-layout"
       ],
       "default_arm": true,
-      "digest": "sha256:ea6380deed0b1c4b7a7924999d22758ae58d458710d81f8a96fad77a8242643d",
+      "digest": "sha256:3494d8aebcad450c4d01d3f29d946925bc99fe9d4a6f496484149d8ac69baeea",
       "imports": [
         "src.task_graph.layout",
         "src.task_graph.layout.constants",
@@ -1798,7 +1798,9 @@
         "src.task_graph.layout.engine",
         "src.task_graph.layout.model"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": ""
     },
     "tests/task_graph/layout/test_flow.py": {
@@ -1904,7 +1906,7 @@
         "graph-layout"
       ],
       "default_arm": true,
-      "digest": "sha256:2902156ce3a72951b8de6d694811b9819e2f6a8318538013cf158c3d99d6b771",
+      "digest": "sha256:3641bbc0d577cddbb865abcc529eb3341417be34f61e580d7f78362da6a90136",
       "imports": [
         "src.database",
         "src.database.queries",
@@ -1914,7 +1916,6 @@
         "src.task_graph.layout",
         "src.task_graph.layout.constants",
         "src.task_graph.layout.driver",
-        "src.task_graph.layout.flow",
         "src.task_graph.layout.model"
       ],
       "markers": [
