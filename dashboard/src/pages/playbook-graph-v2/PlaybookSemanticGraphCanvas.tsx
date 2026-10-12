@@ -30,6 +30,7 @@ import {
   SEMANTIC_NODE_TYPE,
   TRAVERSED_EDGE_WIDTH,
   UNTRAVERSED_EDGE_OPACITY,
+  connectedEdgeStyle,
   selectedEdgeStyle,
   type RunOverlayInput,
 } from "./types";
@@ -156,10 +157,24 @@ export default function PlaybookSemanticGraphCanvas({
     [positionedNodes, selectedNodeId, select, onSaveLayout],
   );
 
+  // Every edge out of or into the selected step — failure edges included,
+  // whatever their kind — so the full neighbourhood of the step reads at a
+  // glance. Computed here, in the canvas, rather than per card: this canvas is
+  // where selection state lives, and both event scopes run through it.
+  const connectedEdgeIds = useMemo(() => {
+    if (selectedNodeId === null) return new Set<string>();
+    return new Set(
+      edges
+        .filter((edge) => edge.source === selectedNodeId || edge.target === selectedNodeId)
+        .map((edge) => edge.id),
+    );
+  }, [edges, selectedNodeId]);
+
   const decoratedEdges = useMemo(
     () =>
       edges.map((edge) => {
         const selected = edge.id === selectedEdgeId;
+        const connected = connectedEdgeIds.has(edge.id);
         return {
           ...edge,
           selected,
@@ -167,12 +182,23 @@ export default function PlaybookSemanticGraphCanvas({
           // a screen reader announces which transition is picked, not just that
           // one can be.
           domAttributes: { ...edge.domAttributes, "aria-pressed": selected },
+          // A picked edge emphasises over its connected neighbours, which rise
+          // over the faded default edges. Clearing the selection restores the
+          // defaults: `connectedEdgeIds` empties with it.
+          style: selected
+            ? selectedEdgeStyle(connectedEdgeStyle(edge.style ?? {}))
+            : connected
+              ? connectedEdgeStyle(edge.style ?? {})
+              : edge.style,
           ...(selected
-            ? { style: selectedEdgeStyle(edge.style ?? {}), zIndex: (edge.zIndex ?? 0) + 1 }
-            : {}),
+            ? { zIndex: (edge.zIndex ?? 0) + 2 }
+            : connected
+              ? { zIndex: (edge.zIndex ?? 0) + 1 }
+              : {}),
+          data: { ...edge.data, connected },
         };
       }),
-    [edges, selectedEdgeId],
+    [edges, selectedEdgeId, connectedEdgeIds],
   );
 
   const edgeKinds = useMemo(

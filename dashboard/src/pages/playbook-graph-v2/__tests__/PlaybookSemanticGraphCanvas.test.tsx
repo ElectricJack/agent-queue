@@ -4,8 +4,8 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import PlaybookSemanticGraphCanvas from "../PlaybookSemanticGraphCanvas";
-import { EDGE_KIND_STYLES, RULE_CLUSTER_NODE_TYPE, SEMANTIC_NODE_TYPE } from "../types";
-import { graph } from "./fixtures";
+import { EDGE_KIND_STYLES, NEUTRAL_EDGE_STYLE, RULE_CLUSTER_NODE_TYPE, SEMANTIC_NODE_TYPE, UNTRAVERSED_EDGE_OPACITY } from "../types";
+import { graph, runOverlay } from "./fixtures";
 
 interface FlowProps {
   nodes: Node<Record<string, unknown>>[];
@@ -366,6 +366,127 @@ describe("PlaybookSemanticGraphCanvas", () => {
   it("reports an empty scope instead of rendering a blank canvas", () => {
     render(<PlaybookSemanticGraphCanvas graph={{ ...graph, nodes: [], edges: [] }} onSelectNode={vi.fn()} />);
     expect(screen.getByText("No rules match this event scope.")).toBeInTheDocument();
+  });
+
+  it("raises a connected failure edge back to full opacity over the overlay's faded defaults", () => {
+    // `for-each-task::failed` is untraversed in the run, so the overlay fades
+    // it to `UNTRAVERSED_EDGE_OPACITY` by default — but it is an edge out of
+    // `for-each-task`, so selecting that step must bring it back to full opacity.
+    const failureEdgeId = "sweep-on-spec-approved::for-each-task::failed";
+    render(
+      <PlaybookSemanticGraphCanvas
+        graph={graph}
+        overlay={runOverlay}
+        selectedNodeId="for-each-task"
+        onSelectNode={vi.fn()}
+      />,
+    );
+    const failureEdge = drawn(failureEdgeId);
+    expect(failureEdge.data!.connected).toBe(true);
+    expect(failureEdge.style!.strokeOpacity).toBe(1);
+    expect(failureEdge.style!.strokeOpacity).toBeGreaterThan(UNTRAVERSED_EDGE_OPACITY);
+    // The overlay's untraversed edges that are *not* connected stay faded.
+    const unconnectedFaded = drawnAll().find(
+      (e) =>
+        e.source !== "for-each-task" &&
+        e.target !== "for-each-task" &&
+        e.style?.strokeOpacity === UNTRAVERSED_EDGE_OPACITY,
+    );
+    expect(unconnectedFaded).toBeDefined();
+    expect(drawn(unconnectedFaded!.id).data!.connected).toBe(false);
+  });
+
+  function drawn(id: string) {
+    return flow.current!.edges.find((e) => e.id === id)!;
+  }
+
+  function drawnAll() {
+    return flow.current!.edges;
+  }
+
+  it("draws every edge out of or into the selected step at full opacity, above the faded defaults", () => {
+    render(
+      <PlaybookSemanticGraphCanvas
+        graph={graph}
+        selectedNodeId="classify-risk"
+        onSelectNode={vi.fn()}
+      />,
+    );
+
+    const connected = () =>
+      drawnAll().filter((e) => e.source === "classify-risk" || e.target === "classify-risk");
+    const unconnected = () =>
+      drawnAll().filter((e) => e.source !== "classify-risk" && e.target !== "classify-risk");
+    // Both directions: `classify-risk` has incoming and outgoing edges.
+    expect(connected().filter((e) => e.source === "classify-risk").length).toBeGreaterThan(0);
+    expect(connected().filter((e) => e.target === "classify-risk").length).toBeGreaterThan(0);
+    expect(unconnected().length).toBeGreaterThan(0);
+
+    for (const edge of drawnAll()) {
+      const isConnected =
+        edge.source === "classify-risk" || edge.target === "classify-risk";
+      expect(drawn(edge.id).data!.connected).toBe(isConnected);
+      if (isConnected) {
+        // A connected edge rises out of the faded default edges: full opacity
+        // and a higher z. The dash pattern is untouched either way.
+        expect(drawn(edge.id).style!.strokeOpacity).toBe(1);
+        expect(drawn(edge.id).zIndex!).toBeGreaterThan(
+          Math.max(...unconnected().map((e) => drawn(e.id).zIndex ?? 0)),
+        );
+      } else {
+        expect(drawn(edge.id).style).toEqual(
+          EDGE_KIND_STYLES[String(edge.data!.edgeKind)] ?? NEUTRAL_EDGE_STYLE,
+        );
+      }
+    }
+  });
+
+  it("restores the default view when the selection clears", () => {
+    const { rerender } = render(
+      <PlaybookSemanticGraphCanvas
+        graph={graph}
+        selectedNodeId="classify-risk"
+        onSelectNode={vi.fn()}
+      />,
+    );
+    expect(drawnAll().some((e) => drawn(e.id).data!.connected === true)).toBe(true);
+
+    rerender(
+      <PlaybookSemanticGraphCanvas
+        graph={graph}
+        selectedNodeId={null}
+        onSelectNode={vi.fn()}
+      />,
+    );
+    expect(drawnAll().every((e) => drawn(e.id).data!.connected === false)).toBe(true);
+  });
+
+  it("keeps a picked edge above its connected neighbours", async () => {
+    const edgeId = "review-on-task-completed::escalate::failed";
+    const neighbourId = "review-on-task-completed::escalate::completed";
+    render(
+      <PlaybookSemanticGraphCanvas
+        graph={graph}
+        selectedNodeId="escalate"
+        onSelectNode={vi.fn()}
+      />,
+    );
+    const neighbour = drawn(neighbourId);
+    expect(drawn(edgeId).selected).toBe(false);
+    expect(drawn(edgeId).data!.connected).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: `select edge ${edgeId}` }));
+    expect(drawn(edgeId).selected).toBe(true);
+    expect(drawn(edgeId).zIndex!).toBeGreaterThan(neighbour.zIndex!);
+    expect(drawn(edgeId).zIndex!).toBeGreaterThan(3);
+    // A picked edge is heavier than its connected neighbours and keeps its
+    // own kind's dash at full opacity.
+    expect(drawn(edgeId).style!.strokeWidth).toBeGreaterThan(neighbour.style!.strokeWidth as number);
+    expect(drawn(edgeId).style!.strokeOpacity).toBe(1);
+    expect(String(drawn(edgeId).style!.strokeDasharray)).toBe(
+      EDGE_KIND_STYLES.failure!.strokeDasharray,
+    );
+    expect(neighbour.data!.connected).toBe(true);
+    expect(neighbour.style!.strokeOpacity).toBe(1);
   });
 
   it("warns when a transition references a step outside the projection", () => {
