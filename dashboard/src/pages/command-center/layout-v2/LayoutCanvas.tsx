@@ -754,6 +754,9 @@ function Inner(props: LayoutCanvasProps) {
           nodesFocusable={false}
           edgesFocusable={false}
           elementsSelectable={false}
+          // Frames must stay below their children. React Flow otherwise adds
+          // 1000 to a selected frame's z-index, covering the child cards.
+          elevateNodesOnSelect={false}
           deleteKeyCode={null}
           selectionKeyCode={null}
           disableKeyboardA11y
