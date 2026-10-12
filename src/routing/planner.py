@@ -668,8 +668,6 @@ def _candidates(
     """Step 2.  *flags* ``None`` means the classification is still unknown;
     *risk* ``None`` means no risk was classified."""
     risk_harnesses = _risk_harnesses(policy, risk)
-    if rule.kind == "operator" and "operator" not in policy.kinds:
-        return _Pool((), (), "operator_rule_missing")
     if rule.lane is not None:
         lane = policy.lanes[rule.lane]
         class_id = lane.class_ or rule.class_id
@@ -1173,6 +1171,16 @@ def plan_route(
     flags = (classified.flags if classified else frozenset()) if known else None
     risk, risk_assumed = _effective_risk(policy, classification, classified)
     rule = _rule(task, policy, classified, risk, risk_assumed=risk_assumed)
+    if rule.kind == "operator" and "operator" not in policy.kinds:
+        return PlanResult("no_candidates", {
+            "task_id": task.task_id,
+            "reason": "operator_rule_missing",
+            "detail": (
+                "kinds.operator: the executed routing policy has no operator rule; "
+                "import and activate a reviewed routing artifact containing kinds.operator"
+            ),
+            "policy_sha256": policy_sha256,
+        })
     unmatched = policy.unmatched_selectors(snapshot.harnesses) if snapshot.harnesses else []
     if unmatched:
         # Reported, never refused: OpenCode harnesses are operator-installed, so

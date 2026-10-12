@@ -163,6 +163,21 @@ def test_operator_capacity_is_never_general_worker_capacity():
     assert unavailable.outcome == "no_candidates"
 
 
+@pytest.mark.parametrize("prefer_mode", ["soft", "strict"])
+def test_missing_operator_rule_names_the_executed_policy_and_activation_fix(prefer_mode):
+    operators = tuple(replace(p, id="operator-" + p.id, operator=True) for p in _fleet())
+    result = _plan(
+        _task(task_type="operator", prefer_target="codex", prefer_mode=prefer_mode),
+        _snapshot((*_fleet(), *operators)),
+    )
+    assert result.outcome == "no_candidates"
+    assert result.value["reason"] == "operator_rule_missing"
+    assert result.value["policy_sha256"] == DIGEST
+    assert "kinds.operator" in result.value["detail"]
+    assert "activate" in result.value["detail"]
+    assert "kinds.feature" not in result.value["detail"]
+
+
 def test_operator_profiles_cannot_use_local_or_cheap_models():
     assert not worker_classes(_rung("fast-high", "codex", operator=True))
     assert not worker_classes(_rung("standard-high", "opencode", operator=True))

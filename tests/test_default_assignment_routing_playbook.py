@@ -10,6 +10,7 @@ the invocation ``task_route_apply`` checks is the artifact's own.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -21,7 +22,7 @@ from src.commands.principal import ExecutionPrincipal, PrincipalKind
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
-from src.models import AgentProfile, Project, Task, TaskStatus, TaskType
+from src.models import AgentProfile, Project, RepoSourceType, Task, TaskStatus, TaskType, Workspace
 from src.orchestrator import Orchestrator
 from src.playbooks.definition import load_definition_json
 from src.playbooks.engine import PlaybookEngine
@@ -30,6 +31,7 @@ from src.playbooks.executors.base import EngineServices
 from src.playbooks.executors.llm import _result as llm_result
 from src.profiles.capabilities import CapabilityPolicy
 from src.routing.sources import LEGACY, ROUTER, UNROUTED
+from src.scheduler import PoolKey
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
 from tests.playbook_v2_engine_helpers import (
@@ -207,6 +209,62 @@ async def test_a_task_whose_kind_and_hint_decide_the_route_needs_no_llm(
     assert (routed.profile_id, routed.intelligence_class) == ("deep-high-codex", "deep-high")
     assert routed.route["rule"] == "kinds.bugfix"
     assert routed.route["classification"] is None
+
+
+@pytest.mark.parametrize("class_hint", ["standard-high", "deep-high"])
+async def test_reviewed_router_routes_operator_work_and_launches_its_own_pool(
+    handler, monkeypatch, tmp_path, class_hint,
+):
+    # Exercise the actual compiled policy and live profile snapshot, rather
+    # than injecting operator candidates into a pure planner fixture.
+    for profile in _profiles():
+        if profile.lifecycle == "pool":
+            await handler.db.create_profile(replace(
+                profile, id="operator-" + profile.id, max_active=1,
+                aq_commands=["operator_execute"],
+            ))
+    task = await _create(handler, "setup", task_type=TaskType.OPERATOR, class_hint=class_hint)
+    llm = _ScriptedLlm({
+        "task_type": "operator", "intelligence_class": class_hint,
+        "narrow": False, "test_verified": False, "independent_verifier": False,
+        "risk": "medium", "risk_reason": "project setup", "reason": "operator setup",
+    })
+
+    result, runs = await _dispatch(handler, task, llm, monkeypatch)
+
+    assert tuple(result.rules_selected) == ("route-task",)
+    (run,) = runs.snapshots.values()
+    assert run.lifecycle.value == "completed", run.error
+    routed = await handler.db.get_task(task.id)
+    assert routed.route_source == ROUTER
+    assert routed.profile_id == f"operator-{class_hint}-codex"
+    assert routed.intelligence_class == class_hint
+    assert routed.route["rule"] == "kinds.operator"
+    assert all(c["profile_id"].startswith("operator-") for c in routed.route["candidates"])
+
+    orch = handler.orchestrator
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey(routed.profile_id)] == 1
+    # The fake harness adapter still runs the real reservation, capability
+    # and session construction path on an isolated PostgreSQL database.
+    kind = await handler.db.resolve_workspace_kind("__system__", "project-repo")
+    await handler.db.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
+    workspace = tmp_path / "operator-workspace"
+    workspace.mkdir()
+    await handler.db.create_workspace(Workspace(
+        id="operator-ws", project_id="p", workspace_path=str(workspace),
+        source_type=RepoSourceType.LINK, kind_id="project-repo",
+    ))
+    orch._ensure_control_files_excluded = AsyncMock(return_value=True)
+    session_id = await orch._launch_pool_session(
+        await handler.db.get_project("p"), await handler.db.get_profile(routed.profile_id),
+    )
+    assert session_id is not None
+    session = await handler.db.get_session(session_id)
+    assert (session.profile_id, session.harness, session.intelligence_class) == (
+        routed.profile_id, "codex", class_hint,
+    )
+    assert (await handler.db.get_agent(session.agent_id)).profile_id == routed.profile_id
 
 
 @pytest.mark.parametrize(
