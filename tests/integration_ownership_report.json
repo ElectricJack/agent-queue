@@ -9703,6 +9703,24 @@
     },
     "src/doctor/stall_checks.py::_container_dependency_findings": {
       "reason": "Stall sweep adapter scopes the reviewed read-only container dependency report to active projects and reports leaf-to-container prerequisite edges for operator review."
+    },
+    "src/policy_profiles/service.py::_validate_promotion_payload": {
+      "reason": "Promotion draft validator extracted from validate_payload; retains read-only FlowSchema validation without storage, activation or trust authority."
+    },
+    "src/portable_setup.py::ProjectSettings.integration_preferences": {
+      "reason": "Typed portable integration preference draft; carries desired mode, policy and repository identity without runtime state."
+    },
+    "src/portable_setup.py::ProjectSettings.valid_policy": {
+      "reason": "Read-only validation of portable integration modes and review delegation."
+    },
+    "src/portable_setup.py::ProjectSettings.with_project_preferences": {
+      "reason": "Read-only typed projection of desired integration mode, policy and repository identity; generic project and repository export remains separate."
+    },
+    "src/portable_config.py::_project_fields": {
+      "reason": "Portable project import explicitly excludes active integration preferences from the generic project update."
+    },
+    "src/portable_config.py::_stage_project_preferences": {
+      "reason": "Writes a pending portable integration preference draft, retaining destination-local trust and rollout requirements without activation."
     }
   },
   "shared_state": {

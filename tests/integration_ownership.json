@@ -8632,6 +8632,24 @@
     },
     "src/doctor/stall_checks.py::_container_dependency_findings": {
       "reason": "Stall sweep adapter scopes the reviewed read-only container dependency report to active projects and reports leaf-to-container prerequisite edges for operator review."
+    },
+    "src/policy_profiles/service.py::_validate_promotion_payload": {
+      "reason": "Promotion draft validator extracted from validate_payload; retains read-only FlowSchema validation without storage, activation or trust authority."
+    },
+    "src/portable_setup.py::ProjectSettings.integration_preferences": {
+      "reason": "Typed portable integration preference draft; carries desired mode, policy and repository identity without runtime state."
+    },
+    "src/portable_setup.py::ProjectSettings.valid_policy": {
+      "reason": "Read-only validation of portable integration modes and review delegation."
+    },
+    "src/portable_setup.py::ProjectSettings.with_project_preferences": {
+      "reason": "Read-only typed projection of desired integration mode, policy and repository identity; generic project and repository export remains separate."
+    },
+    "src/portable_config.py::_project_fields": {
+      "reason": "Portable project import explicitly excludes active integration preferences from the generic project update."
+    },
+    "src/portable_config.py::_stage_project_preferences": {
+      "reason": "Writes a pending portable integration preference draft, retaining destination-local trust and rollout requirements without activation."
     }
   },
   "exclusions": {
@@ -16049,7 +16067,9 @@
     "src/commands/operator_authority.py::bind_operator_dispatch": "Generic per-dispatch operator scoping: narrows the grant to the exact audited command and arguments and refuses unwrapped operator setup commands; integration handlers are charged independently.",
     "src/models.py::DAEMON_AUTHORED_TASK_TYPES": "Generic daemon task-kind classification used by startup recovery and routing; missing-session recovery only uses it to exclude daemon-authored work, and integration-specific guards remain independently charged.",
     "src/dashboard_paths.py::escalation_path": "Generic dashboard route escaping for every human incident. No code integration, ref identity, lifecycle state or delivery authority; integration callers remain charged separately.",
-    "src/doctor/escalation_checks.py::undelivered_escalations": "Generic read-only notification-transport health query across human incidents and root receipts. No code-delivery state, branch ownership or integration policy; the stall sweep adapter is charged separately."
+    "src/doctor/escalation_checks.py::undelivered_escalations": "Generic read-only notification-transport health query across human incidents and root receipts. No code-delivery state, branch ownership or integration policy; the stall sweep adapter is charged separately.",
+    "src/policy_profiles/service.py::contained": "Generic filesystem containment check shared by every portable policy family; no integration state, ref or authority.",
+    "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

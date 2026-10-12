@@ -31,27 +31,14 @@ SETUP_NAME = "setup.json"
 # are removed without discarding the rest of the section's policy.
 PORTABLE_CONFIG_SECTIONS = frozenset(
     {
-        "agents_config",
-        "integration",
-        "scheduling",
-        "monitoring",
-        "archive",
-        "auto_task",
-        "llm_logging",
-        "pricing",
-        "surface",
-        "state_machine",
-        "work_graph",
+        "agents_config", "integration", "scheduling", "monitoring",
+        "archive", "auto_task", "llm_logging", "pricing",
+        "surface", "state_machine", "work_graph",
         # Only limits and policy switches (artifact/result/snapshot sizes,
         # pending-event and retention policy) -- no path, no credential.
-        "playbooks",
-        "swarm",
-        "resources",
-        "metrics",
-        "global_token_budget_daily",
-        "max_daily_playbook_tokens",
-        "max_concurrent_playbook_runs",
-        "rate_limits",
+        "playbooks", "swarm", "resources", "metrics",
+        "global_token_budget_daily", "max_daily_playbook_tokens",
+        "max_concurrent_playbook_runs", "rate_limits",
         "database", "env", "profile", "validate_events", "messaging_platform", "discord",
         "reports", "llm", "supervisor", "health_check", "docs", "deploy", "logging",
         "memory", "knowledge", "mcp_server", "sessions", "worktrees", "streams", "security",
@@ -61,21 +48,14 @@ PORTABLE_CONFIG_SECTIONS = frozenset(
     }
 )
 
-# A section that is only *partly* portable: the keys named here travel, and
-# every other key in it is dropped and reported as excluded.  ``integration``
-# is the case this exists for — its merge policy is exactly the kind of
-# reviewed tuning a bundle should carry, while ``github_app`` and
-# ``scratch_probe`` name an installation's own app id, repository and key
-# paths.
+# Partly portable sections export only these keys and report all others as
+# exclusions. Integration merge policy travels; installation-specific GitHub
+# App credentials and scratch-probe repositories and paths stay local.
 PORTABLE_SECTION_KEYS: dict[str, frozenset[str]] = {
     "integration": frozenset(
         {
-            "default_mode",
-            "merge_ci_policy",
-            "merge_required_checks",
-            "merge_require_up_to_date",
-            "owner_recovery_sweep",
-            "publisher_stall_after",
+            "default_mode", "merge_ci_policy", "merge_required_checks",
+            "merge_require_up_to_date", "owner_recovery_sweep", "publisher_stall_after",
             "reconciler_shadow", "reconciler_active", "git_first",
             "service_source_timeout_seconds", "service_item_timeout_seconds",
             "service_source_timeouts",
@@ -472,14 +452,10 @@ def inspect_bundle(source: str) -> dict[str, Any]:
 
 
 def validate_candidate_config(config_path: str, candidate: dict[str, Any]) -> list[str]:
-    """Load ``candidate`` as a config file next to ``config_path``.
+    """Validate beside ``config_path`` and return individual load errors.
 
-    Returns the load errors as strings — one entry per :class:`ConfigError`,
-    so a caller can tell an error it introduced from one the file already
-    had — or an empty list when the document is valid.  The temp file lives
-    in the same directory so ``${ENV_VAR}`` resolution and any sibling
-    ``config.{env}.yaml`` overlay behave as they will once the document is
-    written for real.
+    The sibling temporary file preserves environment expansion and config
+    overlays. An empty list means the candidate is valid.
     """
     from src.config import ConfigValidationError, load_config
 
@@ -685,10 +661,17 @@ async def import_bundle(
         synced = await sync_profile_text_to_db(text, db, source_path=str(target), fallback_id=profile_id)
         if not synced.success:
             return {"error": f"profile {profile_id!r} could not be synced", "validation_errors": synced.errors or []}
+    await _apply_project_settings(selected_projects, db, vault, result)
+    result["applied"] = bool(selected_config or writes or selected_projects)
+    return result
+
+
+async def _apply_project_settings(selected_projects, db, vault, result) -> None:
+    """Apply portable project fields; leave integration trust as a pending draft."""
     from src.models import Project, ProjectStatus, RepoConfig, RepoSourceType
 
     for identifier, settings in selected_projects.items():
-        fields = settings.model_dump(exclude={"repos", "integration_preferences"})
+        fields = _project_fields(settings)
         fields["status"] = ProjectStatus(fields["status"])
         previous = await db.get_project(identifier)
         if previous:
@@ -706,14 +689,24 @@ async def import_bundle(
                     id=repo.id, project_id=identifier, source_type=RepoSourceType(repo.source_type),
                     url=repo.url, default_branch=repo.default_branch,
                 ))
-        # Active integration still needs destination-local repository trust.
-        if settings.integration_preferences.get("mode") != "disabled":
-            target = contained(vault, f"projects/{identifier}/policy/project_settings/settings.json")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps({"type": "project_settings", "settings": settings.model_dump(mode="json")}, indent=2) + "\n")
-            result["pending_configuration"].append(f"{identifier}: integration trust and rollout")
-    result["applied"] = bool(selected_config or writes or selected_projects)
-    return result
+        _stage_project_preferences(identifier, settings, vault, result)
+
+
+def _project_fields(settings) -> dict:
+    return settings.model_dump(exclude={"repos", "integration_preferences"})
+
+
+def _stage_project_preferences(identifier, settings, vault, result) -> None:
+    """Keep desired integration policy pending destination-local trust and rollout."""
+    from src.policy_profiles.service import contained
+
+    if settings.integration_preferences.get("mode") != "disabled":
+        target = contained(vault, f"projects/{identifier}/policy/project_settings/settings.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({
+            "type": "project_settings", "settings": settings.model_dump(mode="json"),
+        }, indent=2) + "\n")
+        result["pending_configuration"].append(f"{identifier}: integration trust and rollout")
 
 
 def _merge_mapping(existing: dict, incoming: dict) -> dict:

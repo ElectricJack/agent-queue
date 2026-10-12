@@ -160,6 +160,23 @@ def render_profile(name: str, payload: PolicyAgentSettings, existing: str = "") 
 
 
 def validate_payload(payload) -> None:
+    """Validate setup semantics and promotion drafts equally on reads and writes."""
+    if isinstance(payload, PromotionPolicy):
+        _validate_promotion_payload(payload)
+    else:
+        _validate_setup_payload(payload)
+
+
+def _validate_promotion_payload(payload: PromotionPolicy) -> None:
+    from jsonschema import Draft202012Validator
+    from src.integration.promotion_steps import FlowSchema
+
+    errors = list(Draft202012Validator(FlowSchema.schema()).iter_errors(payload.flow))
+    if errors:
+        raise ValueError(f"invalid promotion draft: {errors[0].message}")
+
+
+def _validate_setup_payload(payload) -> None:
     """Type-specific semantic validation applies equally to reads and writes."""
     if isinstance(payload, PolicyAgentSettings) and not payload.override:
         from src.profiles.parser import parse_profile
@@ -185,13 +202,6 @@ def validate_payload(payload) -> None:
         definition = load_definition_json(json.dumps(payload.artifact))
         if definition.source_hash != source_digest(payload.source):
             raise ValueError("playbook source does not match its compiled artifact")
-    elif isinstance(payload, PromotionPolicy):
-        from jsonschema import Draft202012Validator
-        from src.integration.promotion_steps import FlowSchema
-
-        errors = list(Draft202012Validator(FlowSchema.schema()).iter_errors(payload.flow))
-        if errors:
-            raise ValueError(f"invalid promotion draft: {errors[0].message}")
     elif isinstance(payload, RoutingPreferences) and payload.policy is not None:
         from src.routing.policy import parse_policy
 

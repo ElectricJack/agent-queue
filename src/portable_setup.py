@@ -64,6 +64,14 @@ class ProjectSettings(Settings):
     repos: list[RepoSettings] = []
     integration_preferences: dict = {}
 
+    @classmethod
+    def with_project_preferences(cls, project, **fields):
+        return cls(**fields, integration_preferences={
+            "mode": project.hierarchical_integration_desired_mode,
+            "policy": project.hierarchical_integration_policy,
+            "repository_id": project.integration_repository_id,
+        })
+
     @model_validator(mode="after")
     def valid_policy(self):
         from src.models import INTEGRATION_MODES
@@ -194,7 +202,7 @@ def pool_profile_text(identifier: str, pool: PoolSettings, existing: str = "") -
 async def project_settings(db, project) -> ProjectSettings:
     fields = {
         key: getattr(project, key) for key in ProjectSettings.model_fields
-        if key not in {"repos", "integration_preferences"}
+        if key != "repos" and hasattr(project, key)
     }
     fields["status"] = project.status.value
     fields["repo_url"] = portable_url(project.repo_url)
@@ -202,12 +210,7 @@ async def project_settings(db, project) -> ProjectSettings:
         id=repo.id, url=portable_url(repo.url), default_branch=repo.default_branch,
         source_type=repo.source_type.value,
     ) for repo in await db.list_repos(project.id)]
-    fields["integration_preferences"] = {
-        "mode": project.hierarchical_integration_desired_mode,
-        "policy": project.hierarchical_integration_policy,
-        "repository_id": project.integration_repository_id,
-    }
-    return ProjectSettings(**fields)
+    return ProjectSettings.with_project_preferences(project, **fields)
 
 
 def collect_policy_files(root: Path, patterns: tuple[str, ...]) -> dict[str, str]:

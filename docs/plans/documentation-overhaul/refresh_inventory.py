@@ -596,6 +596,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Resource-aware default tuning a fresh install is given."),
     ("src/portable_config.py", "vault", "docs/guides/default-tuning.md", PRODUCTION,
      "Portable config bundles: the allowlisted sections and profiles an `.aqbundle` carries."),
+    ("src/portable_setup.py", "vault", "docs/specs/portable-config.md", PRODUCTION,
+     "Typed portable setup metadata, intelligence classes and project policy sources."),
     ("src/vault*.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Vault storage, indexing and watching."),
     ("src/file_watcher.py", "vault", "docs/concepts/configuration-and-vault.md",
