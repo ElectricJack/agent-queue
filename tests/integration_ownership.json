@@ -13334,13 +13334,13 @@
       "reason": "Audit of an exact stopped pool claim release: session id, claim epoch and prior task status only; no git ref replay or duplicate integration lifecycle authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1007,
+      "line": 1110,
       "owner": "ClaimQueryMixin.activate_claim",
       "call": "delete",
-      "owner_fingerprint": "c8eeea9f8d0cc5c3800b39cd142757f23accd1871fc5e55c4f4c1554d3c8459e",
+      "owner_fingerprint": "28a3fa85e8c4bdbbe0d74814244baf61c8155c2c0cb70b772964b6f1819831ae",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary deletion of stale attention and preparation-backoff metadata after guarded claim activation; session/task locks still precede activation and cleanup. Contains no remote OIDs, publication intent or ref replay authority."
+      "reason": "Ordinary deletion of stale attention and preparation-backoff metadata after guarded PostgreSQL claim activation. Session/task locks still precede activation and cleanup; successful activation also clears session claim_refusal. Contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/database/queries/event_queries.py::EventQueryMixin._insert_event_row::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "line": 50,
