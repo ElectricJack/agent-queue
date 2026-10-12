@@ -1,11 +1,12 @@
 /**
- * The outage banner on every page (provider-failover D20).
+ * The outage banner on every desktop page (provider-failover D20).
  *
  * Shown while any provider's server-derived ``half`` is ``unavailable`` —
  * nothing launches against it, so work routed there is being moved or held,
  * and an operator on the Graph tab needs to know without visiting Metrics.
  * One line per unavailable provider: *"Codex unavailable — logged out since
  * 12:04 · 5 tasks moved · 4 held"*, linking to that provider's card.
+ * At mobile widths the banner is hidden; provider state stays on Metrics.
  *
  * The browser never decides that a provider is down: the line exists because
  * the availability response says ``half: "unavailable"``, and it disappears
@@ -17,6 +18,7 @@
 import { Link } from "react-router-dom";
 import { ExclamationTriangleIcon } from "@heroicons/react/24/outline";
 import { useProviderAvailability, type ProviderAvailabilityStatus } from "../api/providers";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 import {
   TONE_CLASSES,
   formatClock,
@@ -80,8 +82,9 @@ function BannerLine({ status, now }: { status: ProviderAvailabilityStatus; now: 
 }
 
 export default function ProviderAvailabilityBanner() {
+  const compact = useCompactViewport();
   const { data, isError } = useProviderAvailability();
-  if (isError || !data) return null;
+  if (compact || isError || !data) return null;
   const unavailable = sortStatuses(data.providers ?? []).filter(isUnavailable);
   if (unavailable.length === 0) return null;
   return (

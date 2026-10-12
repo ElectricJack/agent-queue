@@ -1301,9 +1301,11 @@ receive no provider events, matching the operator-only provider API.
   its expiry, held and re-routed counts, and actions — *Disable for…*,
   *Recheck*, *Clear override*. The rule the cards already follow applies: a state
   is server-derived and never recomputed in the browser.
-* **A banner** on every page while any provider is unavailable: *"Codex
+* **A banner** on every desktop page while any provider is unavailable: *"Codex
   unavailable — logged out since 12:04 · 5 tasks moved to Claude · 4 held"*,
-  linking to the card.
+  linking to the card. Hide it below the dashboard's 768 CSS px mobile
+  breakpoint; provider state remains available on mobile in the Metrics
+  provider cards.
 * **Task detail**: an intent chip (*Pinned* / *Preferred* / *Class only*),
   editable where routing is editable; *"re-routed from `standard-high-codex` ·
   undo"*; and the hold, rendered like `TaskAttention` with the `kind` in words.
