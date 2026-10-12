@@ -2522,8 +2522,19 @@ class SessionReconciler:
                 continue
             row = await self.db.get_session_for_task(task.id)
             if row is None:
-                # Never launched as a session (legacy runtime, or the
-                # scheduler is mid-launch).  Not ours to touch.
+                # A pool's task pointer can disappear before its task/agent
+                # assignment is released. No live-row step can see that task.
+                # The command rechecks liveness, launch grace and resource
+                # identity before checkpointing and requeueing it.
+                handler = getattr(self.orchestrator, "_command_handler", None)
+                if handler is not None:
+                    try:
+                        await handler.recover_missing_session_task(task.id, now=now)
+                    except Exception:
+                        logger.warning(
+                            "Missing-session recovery retained task %s for retry", task.id,
+                            exc_info=True,
+                        )
                 continue
             waiting, _ = await self._wait_lease(row, now)
             if waiting:

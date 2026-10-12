@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 
 from sqlalchemy import and_, delete, insert, or_, select, update
 
@@ -30,7 +31,8 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.models import TaskStatus
+from src.agents.liveness import LIVE_SESSION_STATES
+from src.models import DAEMON_AUTHORED_TASK_TYPES, AgentState, TaskStatus
 
 logger = logging.getLogger(__name__)
 INCIDENT_KEY = "supervisor_recovery_incident"
@@ -176,6 +178,178 @@ def _recovery_message_body(incident):
 
 
 class TaskRecoveryQueryMixin:
+    async def _missing_session_candidate(self, conn, task_id, *, now, grace, lock=False):
+        """Snapshot a stale assigned task, excluding every known owner of execution.
+
+        Called again under row locks after the command's checkpoint/probe. Missing
+        session rows are the gap the session reconciler cannot classify as exits.
+        Task/agent locks also serialize a launch reservation with the final write.
+        """
+        async def one(query):
+            return (await conn.execute(query.with_for_update() if lock else query)).mappings().first()
+
+        task = await one(select(tasks).where(tasks.c.id == task_id))
+        if (
+            task is None or task["status"] != TaskStatus.IN_PROGRESS.value
+            or not task["assigned_agent_id"] or task["resume_after"] is not None
+            or task["task_type"] in DAEMON_AUTHORED_TASK_TYPES
+            or now - task["updated_at"] <= grace
+        ):
+            return None
+        agent = await one(select(agents).where(agents.c.id == task["assigned_agent_id"]))
+        if agent and agent["last_heartbeat"] and now - agent["last_heartbeat"] <= grace:
+            return None
+        if await self.is_container(task_id, conn=conn):
+            return None
+        project = await one(select(projects).where(projects.c.id == task["project_id"]))
+        if project is None or project["status"] != "ACTIVE":
+            return None
+        if await one(select(project_constraints).where(
+            project_constraints.c.project_id == task["project_id"],
+            project_constraints.c.pause_scheduling == 1,
+        )) is not None:
+            return None
+        eligible = apply_label_filters(
+            select(tasks.c.id).where(tasks.c.id == task_id, ~blocked_predicate()),
+            exclude_hold=True,
+        )
+        if (await conn.execute(eligible)).first() is None:
+            return None
+        # Any task-bound row belongs to the existing exit/orphan machinery.
+        # A live agent row with a missing task pointer is still a possible writer.
+        session = await one(select(sessions).where(or_(
+            sessions.c.task_id == task_id,
+            and_(sessions.c.agent_id == task["assigned_agent_id"],
+                 sessions.c.state.in_(LIVE_SESSION_STATES)),
+        )))
+        if session is not None:
+            return None
+        meta, attempt = await self._recovery_context(conn, task)
+        incident = meta.get(INCIDENT_KEY) or {}
+        if (
+            "manual_pause" in meta or meta.get("needs_attention")
+            or incident.get("id") and incident.get("decision") in (None, "hold")
+        ):
+            return None
+        if (await self._recovery_owner(conn, task))["kind"] != "supervisor":
+            return None
+        if await one(select(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == task_id,
+            task_integration_checkpoints.c.episode_id.is_not(None),
+        )) is not None:
+            return None
+        # Legacy attached owners need their own stopped-writer/detach proof.
+        # Never unlock their checkout because the task/session pointers vanished.
+        if await one(select(integration_branch_owners).where(
+            integration_branch_owners.c.owner_id == task_id,
+            integration_branch_owners.c.fence.is_(None),
+            integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+        )) is not None:
+            return None
+        query = select(workspaces).where(workspaces.c.locked_by_task_id == task_id)
+        owned = (await conn.execute(query.with_for_update() if lock else query)).mappings().all()
+        if len(owned) > 1:
+            return None  # No single checkout can prove all of this task's work is kept.
+        workspace = dict(owned[0]) if owned else None
+        if workspace:
+            if (
+                workspace["job_pin_count"]
+                or workspace["locked_by_agent_id"] not in (None, task["assigned_agent_id"])
+            ):
+                return None
+            if await one(select(integration_branch_owners).where(
+                integration_branch_owners.c.workspace_id == workspace["id"],
+                integration_branch_owners.c.fence.is_(None),
+                integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+            )) is not None:
+                return None
+            if await one(select(sessions).where(
+                sessions.c.work_dir == workspace["workspace_path"],
+                sessions.c.state.in_(LIVE_SESSION_STATES),
+            )) is not None:
+                return None
+        previous = None
+        if attempt is not None:
+            previous = await one(select(sessions).where(sessions.c.id == attempt["session_id"]))
+            if previous is None:
+                return None
+        else:
+            previous = await one(select(sessions).where(
+                sessions.c.agent_id == task["assigned_agent_id"],
+            ).order_by(sessions.c.started_at.desc()).limit(1))
+        if previous is not None and (
+            previous["state"] not in ("stopped", "quarantined")
+            or previous["desired_state"] != "stopped"
+        ):
+            return None
+        return {
+            "task": dict(task), "workspace": workspace,
+            "agent": dict(agent) if agent is not None else None,
+            "session": dict(previous) if previous is not None else None,
+        }
+
+    async def missing_session_recovery_candidate(self, task_id, *, now, grace):
+        async with self._engine.connect() as conn:
+            return await self._missing_session_candidate(conn, task_id, now=now, grace=grace)
+
+    async def recover_missing_session_task(self, observed, *, now, grace):
+        """Release and requeue exactly the checkpointed orphan, once, in one transaction."""
+        task_id = observed["task"]["id"]
+        async with self.immediate() as conn:
+            current = await self._missing_session_candidate(
+                conn, task_id, now=now, grace=grace, lock=True,
+            )
+            if current != observed:
+                return None
+            task, agent, workspace = current["task"], current["agent"], current["workspace"]
+            retry = task["retry_count"] < task["max_retries"]
+            status = TaskStatus.READY if retry else TaskStatus.FAILED
+            if workspace:
+                await conn.execute(update(workspaces).where(workspaces.c.id == workspace["id"])
+                                   .values(locked_by_task_id=None, locked_by_agent_id=None,
+                                           locked_at=None, lock_mode=None))
+            if agent and agent["current_task_id"] == task_id:
+                await conn.execute(update(agents).where(agents.c.id == agent["id"]).values(
+                    current_task_id=None,
+                    state=AgentState.IDLE.value if agent["state"] == AgentState.BUSY.value
+                    else agent["state"],
+                ))
+            if current["session"]:
+                await self.finish_task_session_attempt(
+                    current["session"]["id"], task_id=task_id, ended_at=now,
+                    end_reason="session_missing", conn=conn,
+                )
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "claimed_by_session",
+            ))
+            if not retry:
+                await self._upsert_meta(task_id, "needs_attention", "session_missing", conn=conn)
+            result = await self._apply_transition(
+                conn, task_id, status, context="session_missing", assigned_agent_id=None,
+                retry_count=task["retry_count"] + int(retry),
+                preferred_workspace_id=task["preferred_workspace_id"] or (
+                    workspace["id"] if workspace else None
+                ),
+            )
+            await conn.execute(insert(task_comments).values(
+                id="comment-" + uuid.uuid4().hex, kind="note",
+                task_id=task_id, project_id=task["project_id"], author_kind="supervisor",
+                author_id="session-reconciler", created_at=now,
+                body=(
+                    f"Recovered orphaned IN_PROGRESS assignment: agent {task['assigned_agent_id']} "
+                    f"had no live session after {grace:g}s task-heartbeat grace. "
+                    f"Branch {task['branch_name'] or '(not yet created)'} retained; "
+                    + ("checkout checkpointed; " if workspace else "no retained checkout; ")
+                    + (f"retry {task['retry_count'] + 1}/{task['max_retries']}."
+                       if retry else "retry budget exhausted; supervisor recovery required.")
+                ),
+            ))
+        await self.log_blocked_flips(result.flipped)
+        await self._notify_settled(result.settled)
+        await self._notify_ready(result.ready)
+        return status
+
     async def _recovery_context(self, conn, task):
         meta = {
             r.key: _decoded(r.value)

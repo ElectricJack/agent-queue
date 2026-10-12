@@ -439,7 +439,25 @@ for p in pools if isinstance(pools, list) else pools.get("pools", []):
 
 # A project-scoped token lists only its own sessions; a global one running
 # `--project` lists every project's, so keep the project's rows here.
-sessions = [s for s in aq("session", "list") or [] if ONLY in (None, s.get("project_id"))]
+session_rows = aq("session", "list")
+sessions = [s for s in session_rows or [] if ONLY in (None, s.get("project_id"))]
+# An empty successful list proves absence; a failed/truncated read does not.
+# Check assignments as well as session rows: an orphan has no row to be idle.
+if session_rows is not None:
+    live = [s for s in session_rows if s.get("state") in ("starting", "running", "draining")]
+    for pid, project_tasks in tasks_by_project.items():
+        for t in project_tasks:
+            assigned = t.get("assigned_agent") or t.get("assigned_agent_id")
+            if (t["status"] != "IN_PROGRESS" or not assigned
+                    or NOW - float(t["updated_at"]) <= SESSION_IDLE_S):
+                continue
+            if any(s.get("task_id") == t["id"] or s.get("agent_id") == assigned for s in live):
+                continue
+            findings.append(
+                f"ORPHANED {pid} {t['id']} [IN_PROGRESS {age(t['updated_at'])}] "
+                f"assigned agent {assigned} has no live session -> inspect task heartbeat "
+                "and recovery; retain its branch and checkout"
+            )
 for s in sessions:
     if s.get("state") not in ("running", "starting") or not s.get("stalled"):
         continue

@@ -122,6 +122,39 @@ def _scoped_responses(task_response):
     }}
 
 
+def test_orphaned_assignment_without_session_is_reported(tmp_path):
+    responses = _scoped_responses([
+        _task("lost", "IN_PROGRESS", assigned_agent="idle-agent"),
+        _task("fresh", "IN_PROGRESS", assigned_agent="new-agent", age_s=30),
+        _task("container", "IN_PROGRESS"),
+        _task("busy", "IN_PROGRESS", assigned_agent="busy-agent"),
+        _task("starting", "IN_PROGRESS", assigned_agent="starting-agent"),
+    ])
+    responses["aq"]["session list"] = [
+        _session("busy-worker", "rom", "busy") | {"stalled": False},
+        _session("launching", "rom", None) | {
+            "state": "starting", "agent_id": "starting-agent", "stalled": False,
+        },
+    ]
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    orphaned = [line for line in proc.stdout.splitlines() if "ORPHANED" in line]
+    assert len(orphaned) == 1
+    assert "lost" in orphaned[0] and "idle-agent" in orphaned[0]
+
+
+@pytest.mark.parametrize("failure", [
+    _reply({"error": "unavailable"}, exit_code=3),
+    _reply(_page([], total=1, truncated=True)),
+])
+def test_orphaned_requires_complete_successful_session_read(tmp_path, failure):
+    responses = _scoped_responses([_task("lost", "IN_PROGRESS", assigned_agent="idle")])
+    responses["aq"]["session list"] = failure
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert "SWEEP-ERROR" in proc.stdout
+    assert "ORPHANED" not in proc.stdout
+
+
 def test_scoped_sweep_never_reads_or_reports_another_project(tmp_path):
     responses = {"aq": {
         "task list -p matter": [
