@@ -7,10 +7,10 @@ and historical integration identities survive independently of active tasks.
 from __future__ import annotations
 
 import asyncio
-from contextvars import ContextVar
 import hashlib
 import json
 import time
+from contextvars import ContextVar
 from pathlib import Path
 
 from sqlalchemy import or_, select, update
@@ -43,6 +43,24 @@ async def _column(conn, column, *conditions):
 
 async def _update_ids(conn, table, ids, *conditions, key="id", **values):
     await conn.execute(update(table).where(table.c[key].in_(ids), *conditions).values(**values))
+
+
+async def _lock_deletion_rows(conn, ids):
+    # Claim release and pool termination lock session -> task -> agent. Both
+    # deletion transactions must follow that order, including after external
+    # cleanup: the reconciler may still be releasing a stopped session then.
+    await conn.execute(
+        select(t.sessions.c.id)
+        .where(t.sessions.c.task_id.in_(ids))
+        .order_by(t.sessions.c.id)
+        .with_for_update()
+    )
+    await conn.execute(
+        select(t.tasks.c.id)
+        .where(t.tasks.c.id.in_(ids))
+        .order_by(t.tasks.c.id)
+        .with_for_update()
+    )
 
 
 async def _audit(db, conn, event, root, **payload):
@@ -417,18 +435,7 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
     reason = (reason or "").strip()
     async with db.immediate() as conn:
         await db.lock_hierarchy_project(conn, root["project_id"])
-        await conn.execute(
-            select(t.sessions.c.id)
-            .where(t.sessions.c.task_id.in_(ids))
-            .order_by(t.sessions.c.id)
-            .with_for_update()
-        )
-        await conn.execute(
-            select(t.tasks.c.id)
-            .where(t.tasks.c.id.in_(ids))
-            .order_by(t.tasks.c.id)
-            .with_for_update()
-        )
+        await _lock_deletion_rows(conn, ids)
         captured["sessions"] = await _rows(conn, t.sessions, t.sessions.c.task_id.in_(ids))
         # These holds are internal to the confirmed delete and prevent fresh claims.
         await _update_ids(
@@ -522,6 +529,7 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
 
     async with db.immediate() as conn:
         await db.lock_hierarchy_project(conn, root["project_id"])
+        await _lock_deletion_rows(conn, ids)
         affected = await db._collect_affected(set(ids), conn)
         affected -= set(ids)
         parent_id = root["parent_task_id"]

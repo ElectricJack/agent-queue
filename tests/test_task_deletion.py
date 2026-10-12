@@ -1,14 +1,16 @@
 """Unified deletion previews and resolves state holds instead of refusing them."""
 
+import asyncio
 import json
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import DBAPIError
 
 from src.database import tables as t
 from src.models import TaskStatus
-from tests.test_task_controls import command, env as env, running_session
+from tests.test_task_controls import command, running_session
+from tests.test_task_controls import env as env  # noqa: PLC0414
 from tests.test_task_removal import child, delivered_batch, operation, state
 
 pytestmark = pytest.mark.asyncio
@@ -128,6 +130,63 @@ async def test_running_claim_stops_or_reports_cleanup_without_refusing(env, tmp_
         assert any(row["outcome"] == "failed" for row in result["cleanup_results"])
     else:
         assert "task-session" not in provider.running
+
+
+async def test_delete_serializes_with_pool_session_termination(env, tmp_path, monkeypatch):
+    """A reconciler holding the session must finish before deletion takes its agent."""
+    provider, _ = await running_session(env, tmp_path, lifecycle="pool")
+    session_locked, final_started = asyncio.Event(), asyncio.Event()
+    original_lock = env.db.lock_hierarchy_project
+    original_stop = provider.stop
+    phases = 0
+    deletion_pid = None
+
+    async def observe_phase(conn, project_id):
+        nonlocal phases, deletion_pid
+        await original_lock(conn, project_id)
+        phases += 1
+        if phases == 2:
+            deletion_pid = await conn.scalar(select(func.pg_backend_pid()))
+            final_started.set()
+
+    async def terminate():
+        async with env.db.immediate() as conn:
+            pid = await conn.scalar(select(func.pg_backend_pid()))
+            await conn.execute(
+                select(t.sessions.c.id).where(t.sessions.c.id == "s").with_for_update()
+            )
+            session_locked.set()
+            await final_started.wait()
+            # Wait for an actual lock conflict, rather than depending on a sleep
+            # to place the two transactions in the failing CI interleaving.
+            async with asyncio.timeout(10):
+                while pid not in await conn.scalar(select(func.pg_blocking_pids(deletion_pid))):
+                    await asyncio.sleep(0.01)
+            released = await env.db.terminate_pool_session(
+                "s", reason="operator_stop", task_status=TaskStatus.PAUSED, conn=conn
+            )
+            assert released.released
+            await conn.execute(
+                update(t.sessions).where(t.sessions.c.id == "s").values(state="stopped")
+            )
+
+    monkeypatch.setattr(env.db, "lock_hierarchy_project", observe_phase)
+    async with asyncio.timeout(20), asyncio.TaskGroup() as group:
+        async def stop(handle, *, grace):
+            await original_stop(handle, grace=grace)
+            group.create_task(terminate())
+            await session_locked.wait()
+
+        monkeypatch.setattr(provider, "stop", stop)
+        result = await delete_task(env)
+    assert result["success"], result
+    assert await env.db.get_task("t") is None
+    session = await env.db.get_session("s")
+    assert session.state == "stopped"
+    assert session.task_id is None
+    assert (await env.db.get_agent("agent")).current_task_id is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id is None
+    assert await env.db.get_task("peer") is not None
 
 
 async def test_pause_cleanup_pending_becomes_warning_and_does_not_block_delete(env):

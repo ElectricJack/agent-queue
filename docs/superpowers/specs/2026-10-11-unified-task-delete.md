@@ -32,6 +32,12 @@ batches, retires branch origins, and deletes task identities while retaining aud
 and integration history. Frozen batch manifests remain historical; cancellation
 removes their authority to publish the deleted work.
 
+Both the initial fence and the final task transaction lock selected sessions
+before selected tasks, ordering each set by id, before changing agents or other
+owned resources. This matches pool claim release and session termination, so a
+reconciler can finish stopping a session during external cleanup without
+deadlocking the confirmed delete.
+
 Branch discovery combines task branch names, origins (including old origins),
 checkpoints, owner refs, selected worktree checkouts and task recovery refs. It
 examines matching repository clones and retained stores. Keep lists everything
