@@ -8627,7 +8627,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:797ea82c8ab48d4c5e67a82c140cc978a187915c5af02b6889752e92f3947fb2",
+      "digest": "sha256:875816204ecd567398786b7fc9266d3fc148faba2b4cd9ff0077a55b061f2df5",
       "imports": [
         "src.api.auth",
         "src.commands.handler",
@@ -8642,6 +8642,7 @@
         "src.models",
         "src.orchestrator",
         "src.orchestrator.core",
+        "src.orchestrator.workspace_attachments",
         "src.orchestrator.worktree_manager",
         "src.sessions",
         "src.sessions.fake",

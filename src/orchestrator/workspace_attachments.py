@@ -85,6 +85,7 @@ async def mark_integration_handoff_released(
     *,
     workspace,
     task_id: str,
+    preparation_epoch: int | None = None,
 ) -> bool:
     """Atomically record detach proof and release the exact old DB lock.
 
@@ -155,6 +156,11 @@ async def mark_integration_handoff_released(
         ):
             return False
 
+        if preparation_epoch is not None and not await _preparation_claim_is_current(
+            conn, session_row, task_id, preparation_epoch
+        ):
+            return False
+
         released_owner = await conn.execute(
             update(integration_branch_owners)
             .where(
@@ -191,8 +197,9 @@ async def mark_integration_handoff_released(
                 raise RuntimeError("integration pool handoff claim changed before release")
             claim_release = await db.release_claim(
                 session_row["id"],
-                # The successor decides when the old writer may run again.
-                task_status=TaskStatus.PAUSED,
+                # An unactivated preparation has no work to hold for a
+                # successor. Other transfers retain the ordinary pause.
+                task_status=(TaskStatus.READY if preparation_epoch is not None else TaskStatus.PAUSED),
                 context="integration_handoff",
                 now=time.time(),
                 expected_task_id=task_id,
@@ -341,6 +348,7 @@ async def mark_integration_pool_handoff_released(
     task_id: str,
     session_instance_token: str,
     conn=None,
+    preparation_epoch: int | None = None,
 ) -> bool:
     """Record a **pool** writer's detach proof without unbinding its slot.
 
@@ -374,6 +382,7 @@ async def mark_integration_pool_handoff_released(
             return await mark_integration_pool_handoff_released(
                 db, owner, workspace=workspace, task_id=task_id,
                 session_instance_token=session_instance_token, conn=owned_conn,
+                preparation_epoch=preparation_epoch,
             )
     # Match release_claim: session before owner/workspace.
     session_row = (await conn.execute(select(sessions).where(
@@ -418,6 +427,11 @@ async def mark_integration_pool_handoff_released(
     ):
         return False
 
+    if preparation_epoch is not None and not await _preparation_claim_is_current(
+        conn, session_row, task_id, preparation_epoch
+    ):
+        return False
+
     released_owner = await conn.execute(
         update(integration_branch_owners)
         .where(
@@ -439,6 +453,22 @@ async def mark_integration_pool_handoff_released(
     if released_owner.rowcount != 1:
         raise RuntimeError("integration pool handoff release lost its compare-and-swap")
     return True
+
+
+async def _preparation_claim_is_current(conn, session_row, task_id: str, epoch: int) -> bool:
+    """Revalidate the unactivated claim that permits a published-default checkout."""
+    task_row = (await conn.execute(
+        select(tasks).where(tasks.c.id == task_id).with_for_update()
+    )).mappings().one_or_none()
+    return bool(
+        task_row is not None
+        and session_row["lifecycle"] == "pool"
+        and session_row["claim_phase"] == "preparing"
+        and session_row["last_claim_epoch"] == epoch
+        and task_row["claim_epoch"] == epoch
+        and task_row["status"] == TaskStatus.IN_PROGRESS.value
+        and task_row["assigned_agent_id"] == session_row["agent_id"]
+    )
 
 
 async def mark_stopped_integration_pool_handoff_released(

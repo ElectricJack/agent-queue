@@ -747,6 +747,23 @@ ASSIGNED/IN_PROGRESS task may be rebound as a repair stage's existing writer. A 
 is none of those things. `collector` remains excluded everywhere: its owner is an operation, not a
 task, so it has no claim for the proof to read.
 
+Ownership attaches before pool slot preparation. If preparation fails before activation,
+the checkout can still be detached at the published default-branch tip, rather than at the
+task tip. That checkout can release only under the exact current `preparing` claim: its
+epoch, task, agent, session and workspace bindings must agree. Git must freshly prove the
+checkout clean, the task's local tip equal to its published origin tip, and the detached HEAD
+equal to the published default tip. The release CAS revalidates the preparation phase and
+epoch. This saves no new work, changes no resume point, and never admits an active claim,
+dirty checkout or unpublished detached HEAD. A failed preparation releases to READY;
+an external task stop uses the same proof and returns that unactivated task to READY too.
+
+When the ordinary stop proof is unavailable, stop retains every binding and names the exact
+writer session and the supervisor recovery commands. `aq session kill` requests termination;
+`aq integration release-owner --task-id TASK_ID --dry-run` previews the provider-backed,
+work-preserving release, and applying it releases only the proved attachment. This control
+does not require a task recovery incident. A still-IN_PROGRESS task can then be stopped,
+and `aq task restart` intentionally retries the preserved task.
+
 Qualified candidate conflict repairs have one additional publication proof, evaluated only by
 `integration_resolve_candidate_member` during acceptance of its server-owned pushed reservation.
 The canonical integration ref still names the partial candidate until the collector's

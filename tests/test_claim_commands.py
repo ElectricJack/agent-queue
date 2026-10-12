@@ -915,6 +915,41 @@ class TestClaim:
         assert owner["session_id"] == sid
         assert reset.await_count == 2
 
+    async def test_failed_prepare_on_published_default_releases_claim(self, handler, db, tmp_path):
+        """A reset failure before checkout must not retain an idle writer forever."""
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, wd = await pool_session(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = RuntimeError("reset failed before checkout")
+
+        async def run(args, *, cwd):
+            if args[:2] == ["rev-parse", "--abbrev-ref"]:
+                return "HEAD"
+            if args[:2] in (["status", "--porcelain"], ["fetch", "origin"]):
+                return ""
+            if args[:2] == ["ls-remote", "--exit-code"]:
+                return f"{'b' * 40}\tHEAD"
+            if args == ["rev-parse", "HEAD"]:
+                return "b" * 40
+            if args[0] == "rev-parse":
+                return "a" * 40
+            raise AssertionError(args)
+
+        handler.orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "prepare_failed"
+        task = await db.get_task("child")
+        session = await db.get_session(sid)
+        owner = await ownership.get_owner(fence.target)
+        assert task.status is TaskStatus.READY and task.assigned_agent_id is None
+        assert (session.task_id, session.claim_phase, session.claims) == (None, None, 0)
+        assert session.state == "running"
+        assert owner["handoff_state"] == "reserved"
+        assert owner["fence_token"] == fence.token + 1
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id is None
+        assert not (wd / ".aq" / "claim.json").exists()
+
     async def test_reconciler_release_honors_fresh_context_drain(self, handler, db, config, tmp_path, monkeypatch):
         """A reconciler-won close release keeps fresh-context drain semantics."""
         await mktask(db, "t1", profile_id="worker")

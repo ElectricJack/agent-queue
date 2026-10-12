@@ -447,6 +447,13 @@ needed and both refuse an IN_PROGRESS parent anyway.
 
 ### Stopped pool-writer handoff recovery
 
+Failed pool preparation can attach a branch owner before checking out the task branch.
+If the exact claim is still `preparing`, the checkout is clean and detached at the freshly
+published default tip, and the task branch is fully published, failed preparation releases
+the claim to READY. `aq task stop TASK_ID` uses the same proof for a retained preparation
+and also returns it to READY; `aq task restart TASK_ID` can then retry it. This preserves
+the task's existing resume point and never discards dirty or unpublished work.
+
 Preview `aq integration release-owner --task-id TASK_ID --dry-run`. The existing
 owner recovery probes the provider, verifies the current fence, preserves
 unpublished work and releases only a proved stopped attachment. It refuses a
@@ -461,6 +468,12 @@ control and wait for confirmed termination; a stopped database status alone is
 insufficient. Release preserves the task's failure status. After reviewing the
 failure, use `aq task restart TASK_ID` for an intentional retry. `aq task recover`
 does not automatically retry a hard failure.
+
+An IN_PROGRESS task whose stop returns `Integration branch handoff is unproven` uses this
+same recovery control. The refusal names its exact writer and the commands to run: kill
+that session, wait for termination to be confirmed, preview and apply `release-owner`,
+then retry task stop if it remains IN_PROGRESS and restart it. A recovery incident is not
+required. The release audits and preserves work before freeing the branch and claim.
 
 Failed-close cleanup keeps HEAD at the task tip until handoff verifies and
 detaches it. A live pool worker uses its claim and checkout proof, while a

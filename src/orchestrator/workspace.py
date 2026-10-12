@@ -1677,6 +1677,14 @@ class WorkspaceMixin:
         )
         if current_branch not in {str(owner.get("ref") or "").removeprefix("refs/heads/"), "HEAD"}:
             return False
+        preparation_epoch = (
+            task.claim_epoch
+            if session.lifecycle == "pool" and session.claim_phase == "preparing"
+            and session.last_claim_epoch == task.claim_epoch
+            and task.status == TaskStatus.IN_PROGRESS
+            and task.assigned_agent_id == session.agent_id
+            else None
+        )
         # Read-only checkout proof must pass *before* we kill a live writer.
         # Stopping the session destroys its process; if the checkout turns out
         # to be dirty or unpushed at that point there is no recovery, and any
@@ -1687,6 +1695,7 @@ class WorkspaceMixin:
         # branch: a verifier's scratch edits are not the task's work.
         may_save_wip = (
             save_wip_reason is not None
+            and preparation_epoch is None
             and owner.get("owner_role") in RETRYABLE_INTEGRATION_OWNER_ROLES
             and owner.get("owner_id") == task.id
         )
@@ -1705,6 +1714,7 @@ class WorkspaceMixin:
                     expected_branch=str(owner["ref"]),
                     repository_url=repository.url,
                     default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
             else:
                 probed = await probe_workspace_for_integration_handoff(
@@ -1714,6 +1724,7 @@ class WorkspaceMixin:
                     expected_branch=str(owner["ref"]),
                     repository_url=repository.url,
                     default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
             if not probed and not may_save_wip:
                 logger.warning(
@@ -1773,6 +1784,7 @@ class WorkspaceMixin:
                 return False
         if (
             save_wip_reason is not None
+            and preparation_epoch is None
             and owner.get("owner_role") == "worker"
             and owner.get("owner_id") == task.id
         ):
@@ -1808,6 +1820,7 @@ class WorkspaceMixin:
                     expected_branch=str(owner["ref"]),
                     repository_url=repository.url,
                     default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
             else:
                 detached = await detach_workspace_for_integration_handoff(
@@ -1817,6 +1830,7 @@ class WorkspaceMixin:
                     expected_branch=str(owner["ref"]),
                     repository_url=repository.url,
                     default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
             if not detached:
                 return False
@@ -1842,7 +1856,8 @@ class WorkspaceMixin:
                 end_reason="integration_handoff",
             )
         if not await mark_integration_handoff_released(
-            self.db, owner, workspace=workspace, task_id=session.task_id
+            self.db, owner, workspace=workspace, task_id=session.task_id,
+            preparation_epoch=preparation_epoch,
         ):
             return False
         released = await self.db.get_workspace(workspace.id)
@@ -2064,6 +2079,17 @@ class WorkspaceMixin:
         ):
             return False
 
+        # Ownership attaches before reset. A failed, unactivated preparation
+        # may still be detached at the published default tip rather than the
+        # task tip. Prove both tips are published; never discard local work.
+        preparation_epoch = (
+            task.claim_epoch
+            if session.claim_phase == "preparing"
+            and session.last_claim_epoch == task.claim_epoch
+            and task.status == TaskStatus.IN_PROGRESS
+            and task.assigned_agent_id == session.agent_id
+            else None
+        )
         try:
             from src.orchestrator.workspace_attachments import (
                 detach_slot_for_integration_handoff,
@@ -2080,6 +2106,7 @@ class WorkspaceMixin:
                     expected_branch=str(owner["ref"]),
                     repository_url=repository.url,
                     default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
             else:
                 detached = await detach_workspace_for_integration_handoff(
@@ -2089,6 +2116,7 @@ class WorkspaceMixin:
                     expected_branch=str(owner["ref"]),
                     repository_url=repository.url,
                     default_branch=repository.default_branch,
+                    allow_published_detached_head=preparation_epoch is not None,
                 )
             if not detached and retained_preparation and session.claim_phase == "preparing":
                 base = await self.db.get_workspace(workspace.base_workspace_id) if (
@@ -2121,7 +2149,8 @@ class WorkspaceMixin:
             return False
         return await mark_integration_pool_handoff_released(
             self.db, owner, workspace=workspace, task_id=session.task_id,
-            session_instance_token=session.instance_token
+            session_instance_token=session.instance_token,
+            preparation_epoch=preparation_epoch,
         )
 
     async def aconfirm_integration_pool_published_repair_handoff(
