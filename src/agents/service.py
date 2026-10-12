@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
 from src.agents.liveness import LIVE_SESSION_STATES, is_live, session_last_activity
+from src.agents.sessions import session_role
 from src.models import AgentState, TaskStatus
 
 _ACTIVE_SESSIONS = set(LIVE_SESSION_STATES)
@@ -26,7 +27,7 @@ def configured_settings(agent) -> dict:
 async def list_agent_flock(
     orchestrator, *, project_id: str | None = None, agents=None, sessions=None, tasks=None,
 ) -> list[dict]:
-    """Return durable identities; a project filter means current assignment."""
+    """Return durable agents and live named supervisors in their current project."""
     from src.agents.subagents import build_subagent_index, subagent_counts
 
     db = orchestrator.db
@@ -205,4 +206,43 @@ async def list_agent_flock(
             "session_tokens_used": agent.session_tokens_used,
             **count,
         })
+    # Named supervisors are execution identities even when no agent owns them.
+    # Keep one selectable row per live execution and avoid duplicating a linked row.
+    represented = {row["session_id"] for row in rows}
+    for session in sessions:
+        if (session.id in represented or session.lifecycle != "named"
+                or session.state not in _ACTIVE_SESSIONS
+                or session.project_id is None
+                or session_role(session) != "supervisor"
+                or (project_id is not None and session.project_id != project_id)):
+            continue
+        name = f"Supervisor · {session.project_id}"
+        last_activity = session_last_activity(session)
+        count = await subagent_counts(
+            db, f"session:{session.id}", sessions, tasks, owned_sessions=[session],
+            native_by_session=native_by_session, index=subagent_index,
+        )
+        rows.append({
+            "id": f"session:{session.id}", "name": name, "profile_id": session.profile_id,
+            "role": "supervisor", "enabled": True, "state": session.state,
+            "provider": session.llm_provider, "harness": session.harness,
+            "model": session.model, "intelligence_class": session.intelligence_class,
+            "project_id": session.project_id, "current_project_id": session.project_id,
+            "session_id": session.id, "session_state": session.state,
+            "session_provider": session.provider, "session_backed": True,
+            "settings": {"name": name, "profile_id": session.profile_id},
+            "last_activity": last_activity,
+            "live": is_live(last_activity, now=now, ttl=lease_ttl),
+            **count,
+        })
+    token_store = getattr(orchestrator, "token_store", None)
+    for row in rows:
+        if row["role"] == "supervisor":
+            row["session_address"] = f"supervisor-{row['project_id'] or 'global'}"
+            stamp = row["last_activity"]
+            row["idle_seconds"] = max(0, now - stamp) if stamp is not None else None
+            row["auth_health"] = (
+                token_store.auth_health(row["session_id"])
+                if token_store is not None and row["session_id"] else {"state": "unknown"}
+            )
     return sorted(rows, key=lambda row: (row["role"] != "supervisor", row["name"].casefold(), row["id"]))

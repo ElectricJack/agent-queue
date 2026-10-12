@@ -361,6 +361,26 @@ supervisor's resumed harness session, not in the REPL.
 events. Neither holds chat history of its own — the supervisor's session is the
 conversation of record (visible via `aq session peek supervisor-<pid>` / attach).
 
+The dashboard flock includes every live named project supervisor, including sessions
+without a durable agent row. Each entry names its project and exposes the persisted
+harness/model, state, idle duration and last activity. Selecting it opens its existing
+terminal and a Messages tab using the same logical address as `aq chat <project>`.
+Session-backed entries have no agent settings or enable toggle. Project access labels
+must name that project; only the global supervisor is labelled as supervising all projects.
+
+Messages shows recent inbound mail and replies across threads for that supervisor,
+including mail from other surfaces. Queued/unread, delivered, read and replied states
+come from durable message timestamps and reply links. A refused delivery remains pending
+for retry and displays the session lens's latest delivery diagnostic. Message events refresh
+the pane; bounded polling reconciles missed events and read acknowledgements.
+
+Auth health reports recent API authentication/authorization outcomes for the session:
+an observed 401/403 is red for fifteen minutes, and a successful later call restores
+healthy status. An absent or old observation is unknown. Expired/revoked tokens are
+attributed only by a matching server-side token record; arbitrary invalid tokens are
+never attributed to a session. These bounded diagnostics are process-local and reset
+to unknown on daemon restart; they do not change authentication or delivery policy.
+
 ---
 
 ## 8. Specs and task graphs

@@ -518,9 +518,6 @@ from .get_recent_events_response import GetRecentEventsResponse
 from .get_recent_events_response_422 import GetRecentEventsResponse422
 from .get_schema_request import GetSchemaRequest
 from .get_schema_response_422 import GetSchemaResponse422
-from .get_session_messages_api_sessions_name_messages_get_response_get_session_messages_api_sessions_name_messages_get import (
-    GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet,
-)
 from .get_status_request import GetStatusRequest
 from .get_status_response import GetStatusResponse
 from .get_status_response_422 import GetStatusResponse422
@@ -1574,12 +1571,14 @@ from .selection_scope import SelectionScope
 from .session_attach_request import SessionAttachRequest
 from .session_attach_response import SessionAttachResponse
 from .session_attach_response_422 import SessionAttachResponse422
+from .session_auth_health import SessionAuthHealth
 from .session_cleanup_request import SessionCleanupRequest
 from .session_cleanup_response import SessionCleanupResponse
 from .session_cleanup_response_422 import SessionCleanupResponse422
 from .session_cleanup_response_pruned_item import SessionCleanupResponsePrunedItem
 from .session_cleanup_response_sessions_item import SessionCleanupResponseSessionsItem
 from .session_cleanup_response_skipped_item import SessionCleanupResponseSkippedItem
+from .session_delivery_diagnostic import SessionDeliveryDiagnostic
 from .session_desired_state_response import SessionDesiredStateResponse
 from .session_input_request import SessionInputRequest
 from .session_input_response import SessionInputResponse
@@ -1594,6 +1593,7 @@ from .session_logs_response import SessionLogsResponse
 from .session_logs_response_422 import SessionLogsResponse422
 from .session_message_request import SessionMessageRequest
 from .session_message_response import SessionMessageResponse
+from .session_messages_response import SessionMessagesResponse
 from .session_nudge_request import SessionNudgeRequest
 from .session_nudge_response import SessionNudgeResponse
 from .session_nudge_response_422 import SessionNudgeResponse422
@@ -2438,7 +2438,6 @@ __all__ = (
     "GetRecentEventsResponse422",
     "GetSchemaRequest",
     "GetSchemaResponse422",
-    "GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet",
     "GetStatusRequest",
     "GetStatusResponse",
     "GetStatusResponse422",
@@ -3486,12 +3485,14 @@ __all__ = (
     "SessionAttachRequest",
     "SessionAttachResponse",
     "SessionAttachResponse422",
+    "SessionAuthHealth",
     "SessionCleanupRequest",
     "SessionCleanupResponse",
     "SessionCleanupResponse422",
     "SessionCleanupResponsePrunedItem",
     "SessionCleanupResponseSessionsItem",
     "SessionCleanupResponseSkippedItem",
+    "SessionDeliveryDiagnostic",
     "SessionDesiredStateResponse",
     "SessionInputRequest",
     "SessionInputResponse",
@@ -3506,6 +3507,7 @@ __all__ = (
     "SessionLogsResponse422",
     "SessionMessageRequest",
     "SessionMessageResponse",
+    "SessionMessagesResponse",
     "SessionNudgeRequest",
     "SessionNudgeResponse",
     "SessionNudgeResponse422",

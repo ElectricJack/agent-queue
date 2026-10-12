@@ -71,6 +71,24 @@ async def test_counts_active_direct_workers_from_previous_parent_sessions_once()
     }
 
 
+async def test_named_supervisor_counts_children_without_a_durable_agent_identity():
+    from src.agents.subagents import subagent_counts
+
+    supervisor = replace(session("named-supervisor", None, hooks=True),
+                         profile_id="supervisor", lifecycle="named")
+    rows = [supervisor, session("child-s", "child", task_id="a")]
+    lookup = AgentLookup(native={supervisor.id: events(3, 1)})
+    result = await subagent_counts(
+        lookup, f"session:{supervisor.id}", rows, [task("a", creator=supervisor.id)],
+        owned_sessions=[supervisor],
+    )
+    assert result == {
+        "active_subagent_count": 3, "subagent_count_complete": True,
+        "aq_subagent_count": 1, "native_subagent_count": 2,
+        "subagents_spawned_total": 3,
+    }
+
+
 @pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.DEFINED, TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.PAUSED])
 async def test_queued_and_finished_tasks_do_not_count_even_with_stale_sessions(status):
     rows = [session("parent-old", "parent", state="stopped"), session("child-s", "child", task_id="a")]

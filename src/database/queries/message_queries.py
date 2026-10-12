@@ -321,6 +321,7 @@ class MessageQueriesMixin:
         include_archived: bool = False,
         since: float | None = None,
         limit: int = 100,
+        session_addresses: list[str] | None = None,
     ) -> list[Message]:
         """List messages newest-first; system_only selects NULL-project records.
 
@@ -345,6 +346,12 @@ class MessageQueriesMixin:
             conditions.append(messages.c.archived_at.is_(None))
         if since is not None:
             conditions.append(messages.c.created_at > since)
+
+        if session_addresses is not None:
+            conditions.append(or_(
+                and_(messages.c.to_kind == "session", messages.c.to_id.in_(session_addresses)),
+                and_(messages.c.from_kind == "session", messages.c.from_id.in_(session_addresses)),
+            ))
 
         stmt = select(messages)
         if conditions:

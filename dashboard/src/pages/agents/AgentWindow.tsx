@@ -1,10 +1,11 @@
 import { useEffect, useId, useState } from "react";
-import { CommandLineIcon, Cog6ToothIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
+import { CommandLineIcon, Cog6ToothIcon, ArrowPathIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
 import { useRestartSupervisor, type FlockAgent } from "../../api/agents";
-import { AgentSubagents, AgentState, AgentEligibility } from "./AgentMetadata";
+import { AgentSubagents, AgentState, AgentEligibility, SupervisorHealth, supervisorScope } from "./AgentMetadata";
 import AgentSettings from "./AgentSettings";
 import AgentTerminal from "./AgentTerminal";
 import TerminalPane, { TerminalTabs } from "../../components/TerminalPane";
+import ChatConversation from "../chat/ChatConversation";
 
 export default function AgentWindow({ agent, onClose, resetToken, focusRequest }: {
   agent: FlockAgent;
@@ -12,7 +13,7 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
   resetToken: string | null;
   focusRequest: string | null;
 }) {
-  const [tab, setTab] = useState<"terminal" | "settings">("terminal");
+  const [tab, setTab] = useState<"terminal" | "settings" | "messages">("terminal");
   const [resume, setResume] = useState(false);
   const restart = useRestartSupervisor();
   const supervisor = agent.role === "supervisor" || agent.id === "supervisor-global";
@@ -21,9 +22,10 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
     if (resetToken || focusRequest) setTab("terminal");
   }, [resetToken, focusRequest]);
 
-  const tabs = [
+  const tabs: { id: "terminal" | "settings" | "messages"; label: string; Icon: typeof CommandLineIcon }[] = [
     { id: "terminal" as const, label: "Terminal", Icon: CommandLineIcon },
-    { id: "settings" as const, label: "Settings", Icon: Cog6ToothIcon },
+    ...(supervisor ? [{ id: "messages" as const, label: "Messages", Icon: ChatBubbleLeftRightIcon }] : []),
+    ...(!agent.session_backed ? [{ id: "settings" as const, label: "Settings", Icon: Cog6ToothIcon }] : []),
   ];
 
   return (
@@ -35,15 +37,17 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
           <div>Role: {agent.role || "worker"}</div>
           <div>Profile: {agent.profile_id}</div>
           <div>{agent.provider || "Provider unknown"} · {agent.model || "Model unknown"}</div>
+          <div>Harness: {agent.harness || "unknown"}</div>
           <div>Intelligence: {agent.intelligence_class || "Unknown"}</div>
           <div><AgentSubagents agent={agent} /></div>
           <div><AgentEligibility agent={agent} /></div>
-          <div>Task: {agent.current_task_title || agent.current_task_id || (supervisor ? "Supervises all AQ projects" : "Idle — no assigned task")}</div>
+          <div>Task: {agent.current_task_title || agent.current_task_id || (supervisor ? supervisorScope(agent) : "Idle — no assigned task")}</div>
+          <SupervisorHealth agent={agent} />
           {agent.current_task_id && <div>Task ID: {agent.current_task_id}</div>}
           <div>Session: {agent.session_id || "No active session"} · {agent.session_state || "unknown"}</div>
           {!supervisor && agent.project_id && <div>Attached project: {agent.project_id}</div>}
         </div>
-        {agent.role === "supervisor" && (
+        {agent.role === "supervisor" && !agent.session_backed && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <select data-primary-control aria-label="Restart conversation" value={resume ? "resume" : "fresh"}
               disabled={restart.isPending}
@@ -68,7 +72,12 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
         </p>}
       </>}>
       <div role="tabpanel" id={id + "-panel"} aria-labelledby={id + "-title"} className="min-h-0 flex-1 overflow-hidden">
-        {tab === "terminal" ? <AgentTerminal agent={agent} focusRequest={focusRequest} /> : <AgentSettings agent={agent} onDeleted={onClose} />}
+        {tab === "terminal" ? <AgentTerminal agent={agent} focusRequest={focusRequest} />
+          : tab === "messages" ? <div className="flex h-full min-h-0 flex-col p-3">
+            <ChatConversation key={agent.session_address || agent.id} projectId={agent.project_id ?? ""}
+              sessionAddress={agent.session_address || (agent.project_id ? "supervisor-" + agent.project_id : "supervisor-global")}
+              allThreads headerText={"Messages with " + agent.name} />
+          </div> : <AgentSettings agent={agent} onDeleted={onClose} />}
       </div>
       </TerminalPane>
     </section>

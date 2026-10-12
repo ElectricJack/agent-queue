@@ -6,31 +6,62 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar(
-    "T", bound="GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet"
-)
+from ..types import UNSET, Unset
+
+T = TypeVar("T", bound="SessionDeliveryDiagnostic")
 
 
 @_attrs_define
-class GetSessionMessagesApiSessionsNameMessagesGetResponseGetSessionMessagesApiSessionsNameMessagesGet:
-    """ """
+class SessionDeliveryDiagnostic:
+    """
+    Attributes:
+        at (float):
+        reason (str):
+        deferred (bool | Unset):  Default: False.
+    """
 
+    at: float
+    reason: str
+    deferred: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        at = self.at
+
+        reason = self.reason
+
+        deferred = self.deferred
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
+        field_dict.update(
+            {
+                "at": at,
+                "reason": reason,
+            }
+        )
+        if deferred is not UNSET:
+            field_dict["deferred"] = deferred
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        get_session_messages_api_sessions_name_messages_get_response_get_session_messages_api_sessions_name_messages_get = cls()
+        at = d.pop("at")
 
-        get_session_messages_api_sessions_name_messages_get_response_get_session_messages_api_sessions_name_messages_get.additional_properties = d
-        return get_session_messages_api_sessions_name_messages_get_response_get_session_messages_api_sessions_name_messages_get
+        reason = d.pop("reason")
+
+        deferred = d.pop("deferred", UNSET)
+
+        session_delivery_diagnostic = cls(
+            at=at,
+            reason=reason,
+            deferred=deferred,
+        )
+
+        session_delivery_diagnostic.additional_properties = d
+        return session_delivery_diagnostic
 
     @property
     def additional_keys(self) -> list[str]:

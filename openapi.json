@@ -317,6 +317,16 @@
               "default": false,
               "title": "Include Archived"
             }
+          },
+          {
+            "name": "supervisor_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Supervisor Only"
+            }
           }
         ],
         "responses": {
@@ -325,9 +335,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Get Session Messages Api Sessions  Name  Messages Get"
+                  "$ref": "#/components/schemas/SessionMessagesResponse"
                 }
               }
             }
@@ -22165,6 +22173,43 @@
             "type": "integer",
             "title": "Session Tokens Used",
             "default": 0
+          },
+          "session_backed": {
+            "type": "boolean",
+            "title": "Session Backed",
+            "default": false
+          },
+          "session_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Address"
+          },
+          "idle_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Seconds"
+          },
+          "auth_health": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionAuthHealth"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -66242,6 +66287,39 @@
         ],
         "title": "SessionAttachResponse"
       },
+      "SessionAuthHealth": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State",
+            "default": "unknown"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "status_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Code"
+          }
+        },
+        "type": "object",
+        "title": "SessionAuthHealth"
+      },
       "SessionCleanupRequest": {
         "properties": {
           "project_id": {
@@ -66321,6 +66399,29 @@
         "type": "object",
         "title": "SessionCleanupResponse",
         "description": "``session_cleanup`` \u2014 taskless sleeping named sessions stopped and pruned.\n\nWith ``dry_run`` only ``count`` and ``sessions`` are filled."
+      },
+      "SessionDeliveryDiagnostic": {
+        "properties": {
+          "at": {
+            "type": "number",
+            "title": "At"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "deferred": {
+            "type": "boolean",
+            "title": "Deferred",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "at",
+          "reason"
+        ],
+        "title": "SessionDeliveryDiagnostic"
       },
       "SessionDesiredStateResponse": {
         "properties": {
@@ -66808,6 +66909,58 @@
         ],
         "title": "SessionMessageResponse",
         "description": "Response shape from design \u00a77."
+      },
+      "SessionMessagesResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "session": {
+            "type": "string",
+            "title": "Session"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/MessageModel"
+            },
+            "type": "array",
+            "title": "Messages"
+          },
+          "delivery_failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionDeliveryDiagnostic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "session",
+          "count",
+          "messages"
+        ],
+        "title": "SessionMessagesResponse"
       },
       "SessionNudgeRequest": {
         "properties": {
