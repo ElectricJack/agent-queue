@@ -219,6 +219,26 @@ worker parked on a human answer are all correctly counted as *not* active
 
 ## Answering an escalation
 
+New human escalations require a subject title, a project, and a plain-language
+explanation of why a person must decide. `escalation_create` uses the task's title
+when `task_id` is supplied; otherwise the caller supplies `task_title` (the subject
+title also applies to project-level decisions). `investigation` holds the reason
+and what was checked; `decision_requested` states the choice. Blank or whitespace-only
+fields are refused. The returned `deep_link` is the incident's canonical dashboard
+path, `/focus/escalations/<id>`; external posts join it to the configured dashboard origin.
+
+Creation commits the incident and its initial delivery together, even when Discord
+is disabled. The outbox keeps the request until delivery can run. Internal
+supervisor-delivery notices stay in the supervisor inbox. Replay reuses the existing
+delivery and repairs a legacy open incident with no root; it preserves confirmed
+receipts and ambiguous sends.
+
+`aq doctor --check escalations.undelivered` and `aq doctor --check stall.sweep`
+flag open human incidents with no confirmed root delivery after five minutes.
+Findings include the incident link, age, outbox status (including `missing`), and
+last error. Disabled delivery and paused projects retain their queued requests;
+the dedicated check reports those too, while the stall sweep checks active projects.
+
 When a supervisor escalates, the channel gets two body lines and one link: the
 decision needed, the context behind it, and the incident's page on the
 dashboard. What did not fit — what was already tried, the options — waits in

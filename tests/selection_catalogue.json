@@ -5542,10 +5542,11 @@
         "discord"
       ],
       "default_arm": true,
-      "digest": "sha256:ec40ed9d29cdccaf98f4ad0076f7e910d0fc44a55792100c8255cb453a1b9267",
+      "digest": "sha256:af73508afbc390283180c59751265865f9a8ef2256813e57b600ea22fe59b3d6",
       "imports": [
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.discord.cutover",
         "src.models"
       ],
@@ -6377,14 +6378,19 @@
         "escalations"
       ],
       "default_arm": true,
-      "digest": "sha256:5c9e5fcd46cd2faa893f886bbbf0b7b277dd7e7ae783ed3a4e54c57c23fbabb4",
+      "digest": "sha256:c61701da0d59e3fb7c40eeab39567408af3a87d58a252c916713785f8c3e82cc",
       "imports": [
+        "src.config",
         "src.database",
         "src.database.queries.escalation_queries",
         "src.database.tables",
+        "src.doctor.escalation_checks",
+        "src.doctor.models",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Durable escalation, reply, delivery, and digest persistence on PostgreSQL."
     },
     "tests/test_escalation_state.py": {

@@ -9679,6 +9679,9 @@
         71,
         76
       ]
+    },
+    "src/doctor/stall_checks.py::_escalation_delivery_findings": {
+      "reason": "Stall sweep adapter for overdue human escalation delivery: scopes the generic notification query to active projects and maps it into integration-owned sweep findings."
     }
   },
   "shared_state": {
@@ -10065,7 +10068,8 @@
     "src/commands/operator_authority.py::HUMAN_DECISION_COMMANDS": "Names operator-worker setup commands that require an exact recorded human decision before dispatch; the named commands keep their own charged handlers. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
-    "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority."
+    "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",
@@ -10336,5 +10340,30 @@
     },
     "owned_total": 155468,
     "reason": "Reviewed generic task display helpers and worker recovery metadata separately from the fenced parent-conflict snapshot. Extracted ordinary context rendering from the charged adapter; immutable baseline, landing measurements, transition allowance and table caps remain unchanged."
+  },
+  "escalation_delivery_source_ci_repair": {
+    "source_head": "a2755f5993b048a07ebe4c138647b10ef00e814e",
+    "failed_job": "https://github.com/ElectricJack/agent-queue/actions/runs/38160634858/job/114532613120",
+    "generic_dependencies": {
+      "src/dashboard_paths.py::escalation_path": "Generic dashboard route escaping for every human incident. No code integration, ref identity, lifecycle state or delivery authority; integration callers remain charged separately.",
+      "src/doctor/escalation_checks.py::undelivered_escalations": "Generic read-only notification-transport health query across human incidents and root receipts. No code-delivery state, branch ownership or integration policy; the stall sweep adapter is charged separately."
+    },
+    "notification_transport_exclusion": {
+      "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+    },
+    "owned_definition_additions": [
+      "src/doctor/stall_checks.py::_escalation_delivery_findings"
+    ],
+    "refactored_definitions": [
+      "src/integration/repair.py::RepairService._current_receipts_on",
+      "src/integration/repair.py::RepairService._dossier_with_evidence",
+      "src/integration/repair.py::RepairService._escalate_stuck_batch_on",
+      "src/integration/repair.py::RepairService._escalate_unstaged_parent_red_on",
+      "src/integration/repair.py::RepairService._stage_notice_on"
+    ],
+    "owned_total_before": 155543,
+    "owned_total_after": 155453,
+    "transition_cap": 155499,
+    "reason": "Consolidated existing supervisor-message writes and dossier projections, preserving recipients, deduplication identities, priorities and evidence history. Reviewed generic notification helpers separately from the charged stall sweep adapter; delivery_status in the overdue notification query is transport, not code delivery. Immutable baseline, landing measurements, storage classifications and caps remain unchanged."
   }
 }

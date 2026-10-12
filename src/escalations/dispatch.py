@@ -85,8 +85,8 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120.0
 #: Reconciliation re-derives the whole desired set for every open incident, so
 #: it runs on its own slower cadence than the pump.  Nothing is lost by the
-#: gap: a new incident's first delivery is enqueued by the next pass and the
-#: outbox is what actually orders the work.
+#: gap: creation enqueues the first delivery atomically; reconciliation
+#: repairs legacy gaps and queues follow-ups. The outbox orders the work.
 RECONCILE_INTERVAL_SECONDS = 30.0
 #: A closed incident stops being re-derived once its resolution has had ample
 #: time to go out; without this the newest hundred rows would be re-queried
@@ -826,6 +826,20 @@ class EscalationDeliveryService:
     ) -> None:
         channel_id = self._channel_id
         generation = int(row["generation"])
+        if (
+            facts.is_terminal
+            and not binding.has_root
+            and not row.get("root_message_id")
+            and int(row["attempt_count"]) == 1
+        ):
+            # Creation queues the root before any transport runs. A decision
+            # accepted in that interval must retain the never-posted silence
+            # rule; previous attempts still need receipt reconciliation below.
+            await self._finish(
+                row, report, status="unknown",
+                last_error="terminal incident was never posted; delivery withheld",
+            )
+            return
         if binding.has_root and binding.generation > generation:
             await self._finish(
                 row,

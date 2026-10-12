@@ -74,6 +74,7 @@ async def env(tmp_path):
 def create_args(**overrides):
     values = {
         "project_id": "p",
+        "task_title": "Decide how to resume project work",
         "source_kind": "core",
         "source_identity": "incident-source-1",
         "incident_key": "incident-1",
@@ -103,6 +104,15 @@ async def supervisor_execute(handler, command, args):
     )
 
 
+@pytest.mark.parametrize("field", ["task_title", "project_id", "investigation"])
+@pytest.mark.parametrize("empty", [None, "", " \n\t"])
+async def test_create_refuses_missing_human_context(env, field, empty):
+    handler, db = env
+    result = await handler.execute("escalation_create", create_args(**{field: empty}))
+    assert result["success"] is False and result["error_code"] == "invalid_request"
+    assert await db.list_escalations() == []
+
+
 async def test_create_replay_scoped_reads_and_stable_cas_errors(env):
     handler, db = env
     created = await handler.execute("escalation_create", create_args())
@@ -111,6 +121,8 @@ async def test_create_replay_scoped_reads_and_stable_cas_errors(env):
     assert replay["created"] is False
     assert replay["escalation"]["id"] == created["escalation"]["id"]
     assert created["escalation"]["supervisor_owner"] == "supervisor-p"
+    assert created["escalation"]["deep_link"].startswith("/focus/escalations/")
+    assert len(await db.list_escalation_deliveries(created["escalation"]["id"])) == 1
 
     visible = await supervisor_execute(
         handler, "escalation_get", {"escalation_id": created["escalation"]["id"]}

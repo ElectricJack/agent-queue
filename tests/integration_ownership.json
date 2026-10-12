@@ -8608,6 +8608,9 @@
         71,
         76
       ]
+    },
+    "src/doctor/stall_checks.py::_escalation_delivery_findings": {
+      "reason": "Stall sweep adapter for overdue human escalation delivery: scopes the generic notification query to active projects and maps it into integration-owned sweep findings."
     }
   },
   "exclusions": {
@@ -8704,7 +8707,8 @@
     "src/commands/operator_authority.py::HUMAN_DECISION_COMMANDS": "Names operator-worker setup commands that require an exact recorded human decision before dispatch; the named commands keep their own charged handlers. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
-    "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority."
+    "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -12620,7 +12624,13 @@
     "d61c532e290a4f47aaa3ba9430654ed7bd95686bb4d245e574bbae9808b82163",
     "e313b1c6bdac0c5e80fe435e948167945a7fba877ad6a8b431b29cfea7bd158f",
     "f25ce1911cebb826367a19884c725dde2137fa5edeef5b61a73b19bdcdcc9737",
-    "f8d8b501c89e2845bb4b10073342f248ca87f0c059b7bf665b05cc61839ef423"
+    "f8d8b501c89e2845bb4b10073342f248ca87f0c059b7bf665b05cc61839ef423",
+    "39941d808369628843d10ee32c968b079e2e7cfb4a5cac2c0f831415e8698551",
+    "68aade41616cf5edf78a56587bceedc79b43e08e653bde72d8b9c0371b7613d9",
+    "9286d2bd1ed4411cd57a776c216ccdab9a808647171f01039fb1e90e87b09cf4",
+    "b21c32a8c394481661c22adf29429a69efe6e8843c531d2b8af8fb89418cf26c",
+    "e0fc1cf5330bca638663d64d9289f82cf88987cea25879f3fee7aeec1ea328cf",
+    "ea6455ddf2f8a1e47396f7ca3a0ab733b9e6c43f24b60ce8072fbb5bbf37c3ad"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -16006,7 +16016,9 @@
     "src/commands/operator_authority.py::operator_grant_var": "Generic request-local operator grant context storage; it binds one audited command and argument digest, and every integration handler it reaches is charged independently.",
     "src/commands/operator_authority.py::local_or_operator": "Generic authority predicate: LOCAL principal or an operator grant for exactly the dispatched command; integration-specific checks that call it are charged independently.",
     "src/commands/operator_authority.py::bind_operator_dispatch": "Generic per-dispatch operator scoping: narrows the grant to the exact audited command and arguments and refuses unwrapped operator setup commands; integration handlers are charged independently.",
-    "src/models.py::DAEMON_AUTHORED_TASK_TYPES": "Generic daemon task-kind classification used by startup recovery and routing; missing-session recovery only uses it to exclude daemon-authored work, and integration-specific guards remain independently charged."
+    "src/models.py::DAEMON_AUTHORED_TASK_TYPES": "Generic daemon task-kind classification used by startup recovery and routing; missing-session recovery only uses it to exclude daemon-authored work, and integration-specific guards remain independently charged.",
+    "src/dashboard_paths.py::escalation_path": "Generic dashboard route escaping for every human incident. No code integration, ref identity, lifecycle state or delivery authority; integration callers remain charged separately.",
+    "src/doctor/escalation_checks.py::undelivered_escalations": "Generic read-only notification-transport health query across human incidents and root receipts. No code-delivery state, branch ownership or integration policy; the stall sweep adapter is charged separately."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

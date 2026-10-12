@@ -95,6 +95,7 @@ async def seed_pile(world) -> dict[str, list[str]]:
             "incident_key": f"core:{escalation_id}",
             "supervisor_owner": "supervisor-p",
             "summary": f"old question {escalation_id}",
+            "task_title": "Review the outstanding project decision",
             "investigation": "left over from before the stateful phase",
             "decision_requested": "Does this still matter?",
             "severity": "medium",
@@ -249,7 +250,8 @@ async def historical_incident(world, *, task_id=None, source_kind="supervisor", 
     row, _ = await world.db.create_escalation(
         id="esc-history", project_id="p", task_id=task_id, source_kind=source_kind,
         source_identity=identity, incident_key="history", supervisor_owner="supervisor-p",
-        summary="Historical request", investigation="Preserved evidence",
+        task_title="Historical request", summary="Historical request",
+        investigation="Preserved evidence",
         decision_requested="Does this still need action?", severity="medium", now=NOW,
     )
     return row

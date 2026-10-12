@@ -176,7 +176,10 @@ class EscalationCommandsMixin:
             "decision_requested",
             "severity",
         )
-        missing = [name for name in required if not isinstance(args.get(name), str) or not args[name]]
+        missing = [
+            name for name in required
+            if not isinstance(args.get(name), str) or not args[name].strip()
+        ]
         if missing:
             return _error("invalid_request", "required fields: " + ", ".join(missing))
         project_id = args["project_id"]
@@ -235,6 +238,8 @@ class EscalationCommandsMixin:
             "choices": choices,
             "severity": args["severity"],
         }
+        if not isinstance(values["task_title"], str) or not values["task_title"].strip():
+            return _error("invalid_request", "task_title is required when no task supplies a title")
         try:
             incident, created = await self.db.create_escalation(**values)
         except EscalationConflict as exc:

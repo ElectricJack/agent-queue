@@ -19,6 +19,7 @@ class EscalationRecord(BaseModel):
     supervisor_owner: str
     task_title: str | None = None
     task_status: str | None = None
+    deep_link: str | None = None
     summary: str
     investigation: str
     decision_requested: str

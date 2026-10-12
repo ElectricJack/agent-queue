@@ -63,6 +63,22 @@ async def test_worker_relaunch_streak_is_visible_to_stall_sweep():
     assert findings[0]["count"] == 2 and findings[0]["cause"] == "context_thrash"
 
 
+async def test_undelivered_human_escalations_reach_stall_sweep(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    checks = import_module("src.doctor.escalation_checks")
+    read = AsyncMock(return_value=[{
+        "project_id": "one", "escalation_id": "esc-gate", "detail": "Root is missing",
+        "deep_link": "/focus/escalations/esc-gate", "age_seconds": 301,
+        "delivery_status": "missing",
+    }])
+    monkeypatch.setattr(checks, "undelivered_escalations", read)
+    [finding] = await module._escalation_delivery_findings(context, {"one"}, NOW)
+    read.assert_awaited_once_with(context, project_ids={"one"}, now=NOW)
+    assert finding["kind"] == "escalation_undelivered"
+    assert finding["escalation_id"] == "esc-gate" and finding["delivery_status"] == "missing"
+
+
 async def test_continuous_promotion_lag_and_unavailable_evidence_reach_sweep(context, monkeypatch):
     import importlib
     from unittest.mock import AsyncMock
