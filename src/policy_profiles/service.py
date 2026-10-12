@@ -34,6 +34,9 @@ from src.policy_profiles.models import (
     SelectionPolicy,
     SelectionRules,
     TemplatePolicy,
+    IntelligenceClassPolicy,
+    PoolPolicy,
+    ProjectPolicy,
     checksum,
     encoded,
 )
@@ -126,8 +129,14 @@ def render_profile(name: str, payload: PolicyAgentSettings, existing: str = "") 
     local_config = {
         key: value for key, value in previous.config.items() if key not in AgentConfig.model_fields
     }
+    # Omitted policy fields retain local customization. Explicitly authored
+    # null bounds reset a pool to unlimited and must remain JSON null.
+    config = dict(previous.config)
+    config.update(payload.config.model_dump(exclude_none=True))
+    if payload.pool is not None:
+        config.update(payload.pool.config())
     for heading, value in (
-        ("Config", {**local_config, **payload.config.model_dump(exclude_none=True)}),
+        ("Config", {**local_config, **config}),
         (
             "Capabilities",
             payload.capabilities.model_dump() if payload.capabilities is not None else None,
@@ -151,6 +160,23 @@ def render_profile(name: str, payload: PolicyAgentSettings, existing: str = "") 
 
 
 def validate_payload(payload) -> None:
+    """Validate setup semantics and promotion drafts equally on reads and writes."""
+    if isinstance(payload, PromotionPolicy):
+        _validate_promotion_payload(payload)
+    else:
+        _validate_setup_payload(payload)
+
+
+def _validate_promotion_payload(payload: PromotionPolicy) -> None:
+    from jsonschema import Draft202012Validator
+    from src.integration.promotion_steps import FlowSchema
+
+    errors = list(Draft202012Validator(FlowSchema.schema()).iter_errors(payload.flow))
+    if errors:
+        raise ValueError(f"invalid promotion draft: {errors[0].message}")
+
+
+def _validate_setup_payload(payload) -> None:
     """Type-specific semantic validation applies equally to reads and writes."""
     if isinstance(payload, PolicyAgentSettings) and not payload.override:
         from src.profiles.parser import parse_profile
@@ -158,19 +184,24 @@ def validate_payload(payload) -> None:
         parsed = parse_profile(render_profile("portable-profile", payload))
         if not parsed.is_valid:
             raise ValueError("invalid profile policy: " + "; ".join(parsed.errors))
+    elif isinstance(payload, IntelligenceClassPolicy):
+        from src.intelligence_classes import _parse_text
+        from src.portable_setup import validate_class_text
+
+        parsed = _parse_text(payload.source, "class.md")
+        if parsed is None:
+            raise ValueError("invalid intelligence class source")
+        validate_class_text(parsed.id, payload.source)
+    elif isinstance(payload, (PoolPolicy, ProjectPolicy)):
+        from src.portable_config import _assert_portable_value
+
+        _assert_portable_value(payload.settings.model_dump(mode="json"), payload.type)
     elif isinstance(payload, PlaybookPolicy):
         from src.playbooks.definition import load_definition_json, source_digest
 
         definition = load_definition_json(json.dumps(payload.artifact))
         if definition.source_hash != source_digest(payload.source):
             raise ValueError("playbook source does not match its compiled artifact")
-    elif isinstance(payload, PromotionPolicy):
-        from jsonschema import Draft202012Validator
-        from src.integration.promotion_steps import FlowSchema
-
-        errors = list(Draft202012Validator(FlowSchema.schema()).iter_errors(payload.flow))
-        if errors:
-            raise ValueError(f"invalid promotion draft: {errors[0].message}")
     elif isinstance(payload, RoutingPreferences) and payload.policy is not None:
         from src.routing.policy import parse_policy
 
@@ -207,6 +238,9 @@ class PolicyFiles:
                 "ci_test",
                 "routing",
                 "template",
+                "intelligence_class",
+                "pool",
+                "project_settings",
             ):
                 directory = contained(self.root(scope), f"policy/{policy_type}")
                 for path in sorted(directory.glob("*.json")):
@@ -370,6 +404,18 @@ class PolicyFiles:
                 path = contained(self.vault, relative)
                 existing = path.read_text() if path.is_file() else ""
                 writes[path] = render_profile(entry.name, payload, existing).encode()
+        elif isinstance(payload, IntelligenceClassPolicy) and scope == "global":
+            from src.portable_setup import validate_class_text
+
+            validate_class_text(entry.name, payload.source)
+            writes[contained(self.vault, f"intelligence-classes/{entry.name}.md")] = payload.source.encode()
+        elif isinstance(payload, PoolPolicy) and scope == "global":
+            from src.portable_setup import pool_profile_text
+
+            path = contained(self.vault, f"agent-types/{entry.name}/profile.md")
+            writes[path] = pool_profile_text(
+                entry.name, payload.settings, path.read_text() if path.is_file() else ""
+            ).encode()
         elif isinstance(payload, TemplatePolicy):
             name = entry.name.removeprefix(payload.kind + ".")
             relative = (
@@ -491,7 +537,8 @@ class PolicyFiles:
                     else "system template"
                     if scope == "global"
                     else "pending configuration"
-                    if entry.type in {"promotion_flow", "routing", "agent_settings"}
+                    if entry.type in {"promotion_flow", "routing", "agent_settings",
+                                      "intelligence_class", "pool", "project_settings"}
                     else "copy",
                 )
             )

@@ -2914,7 +2914,7 @@
     },
     {
       "name": "preview_portable_config",
-      "description": "Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain. Project data, history, paths, credentials, and secrets are excluded.",
+      "description": "Preview portable configuration, global profiles, intelligence classes, configured pools, projects, repository bindings and policy sources. Credentials, personal accounts, machine paths and runtime history are excluded.",
       "input_schema": {
         "type": "object",
         "properties": {}
@@ -2922,7 +2922,7 @@
     },
     {
       "name": "export_portable_config",
-      "description": "Write a versioned, validated .aqbundle containing only portable tuning and global profile definitions. Run preview_portable_config first to curate the exported defaults.",
+      "description": "Write a versioned, validated .aqbundle with portable configuration, profiles, intelligence classes, pool settings, projects and policy sources. Preview exclusions with preview_portable_config.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -2938,7 +2938,7 @@
     },
     {
       "name": "import_portable_config",
-      "description": "Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default; use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.",
+      "description": "Validate and import portable configuration, profiles, classes, pools and projects. Existing customization is kept by default; conflict=replace merges portable settings while preserving destination credentials and paths, and conflict=error reports collisions. Imported policy sources still require normal review and setup.",
       "input_schema": {
         "type": "object",
         "properties": {

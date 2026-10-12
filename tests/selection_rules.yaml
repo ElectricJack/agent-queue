@@ -168,7 +168,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/vault.py"], areas: ["vault", "profiles", "intelligence-classes", "harnesses"] }
   - { paths: ["src/assignment_routing.py", "src/explain.py"], areas: ["task-routing", "work-graph"] }
   - { paths: ["src/claim_file.py", "src/pool_claims.py"], areas: ["claims", "worker-pools"] }
-  - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py"], areas: ["config"] }
+  - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py", "src/portable_setup.py"], areas: ["config"] }
   - { paths: ["src/conversations/**"], areas: ["discord-conversations", "supervisor"] }
   - { paths: ["src/deliverables.py", "src/state_machine.py", "src/task_summary.py", "src/task_names.py"], areas: ["task-lifecycle"] }
   - { paths: ["src/docs_urls.py"], areas: ["docs-guards", "playbook-authoring"] }

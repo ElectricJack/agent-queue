@@ -13003,7 +13003,7 @@
         "policy-profiles"
       ],
       "default_arm": true,
-      "digest": "sha256:a0e829f65732590e76cb8ce1005adfb08d2d4f6c69352218333277bf18c960d4",
+      "digest": "sha256:ec22591f55f7859033141d1f7badc99d7dd9344660779c6d88fab43e9f593e0e",
       "imports": [
         "src.api",
         "src.api.app",
@@ -13023,6 +13023,7 @@
         "src.policy_profiles.models",
         "src.policy_profiles.service",
         "src.profiles",
+        "src.profiles.catalog",
         "src.profiles.parser",
         "src.profiles.project_override_migration",
         "src.profiles.sync"
@@ -13247,10 +13248,15 @@
         "config"
       ],
       "default_arm": true,
-      "digest": "sha256:e63165e8c4c728523ce01c12472ecc7dbde00a59af9482f9226bf0b2e92ba52a",
+      "digest": "sha256:7607e3c2e2b4be175b91cd31795d51ac2ab0966ea8508ae682f8bc526bae3447",
       "imports": [
+        "src.config",
+        "src.models",
         "src.portable_config",
-        "src.profiles.parser"
+        "src.portable_setup",
+        "src.profiles.catalog",
+        "src.profiles.parser",
+        "src.profiles.sync"
       ],
       "markers": [
         "asyncio"
