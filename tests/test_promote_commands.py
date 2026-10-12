@@ -601,6 +601,37 @@ async def test_cancel_closes_pr_then_aborts_and_replays(promote_env):
     assert not git(e.ops.git.remote_path, "for-each-ref", "refs/tags/")
 
 
+async def test_cancelled_promotion_recovery_hold_survives_diagnosis_and_reconciliation(promote_env):
+    e = promote_env
+    created = await request(e)
+    assert (await e.handler._cmd_promote_cancel({
+        "project_id": "p", "request_id": created["request_id"],
+    }))["outcome"] == "cancelled"
+    tid = created["task_id"]
+    first = await e.db.notify_task_recovery(tid, project_id="p")
+    current = await e.db.get_task_meta(tid, "supervisor_recovery_incident")
+    assert current["attempt_id"] is None and current["retry_allowed"] is False
+    await e.db.add_task_comment(
+        tid, "Aborted PR has a replacement; leave this intent retired.",
+        author_kind="supervisor", author_id="supervisor-p",
+    )
+    await e.db.update_task(tid, pr_url=created["pr_url"])
+    assert await e.db.queue_task_recovery_notifications() == 0
+    assert (await e.db.notify_task_recovery(tid))["incident_id"] == first["incident_id"]
+    before = await e.db.get_task(tid)
+    result = await e.db.decide_task_recovery(
+        tid, first["incident_id"], "hold", "Keep aborted promotion retired.",
+        author_kind="supervisor", author_id="supervisor-p", project_id="p",
+    )
+    assert result["status"] == "FAILED"
+    assert await e.db.get_task(tid) == before
+    assert (await e.store.get(created["batch_id"])).intent == "aborted"
+    assert (await e.db.get_message("msg-" + first["incident_id"])).archived_at is not None
+    assert await e.db.queue_task_recovery_notifications() == 0
+    assert (await e.db.get_task_meta(tid, "supervisor_recovery_incident"))["decision"] == "hold"
+    assert git(e.ops.git.remote_path, "rev-parse", "main") == e.base
+
+
 async def test_changing_commands_wake_only_their_own_promotion_target(promote_env):
     """grand-lantern-78.4: a held promotion revisits at once after a promote command."""
     e = promote_env

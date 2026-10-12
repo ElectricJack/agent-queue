@@ -11,7 +11,7 @@ import uuid
 from sqlalchemy import and_, delete, insert, or_, select, update
 
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
-from src.database.queries.task_queries import STALE_OPEN_ATTENTION
+from src.database.queries.task_queries import RECOVERY_FAILURE_AT_KEY, STALE_OPEN_ATTENTION
 from src.database.tables import (
     agent_questions,
     agents,
@@ -52,7 +52,7 @@ RETRYABLE_REASONS = frozenset(
 ROUTING_FIELDS = ("profile_id", "intelligence_class", "affinity_agent_id", "preferred_workspace_id")
 #: A terminal ``BLOCKED`` close leg (``blocked_terminal``) is one failure the
 #: ``task.failed`` event reports. A terminal ``FAILED`` transition can have
-#: no worker attempt at all, so it uses its durable task revision as the
+#: no worker attempt at all, so it uses its durable failure-transition clock as the
 #: failure generation. An operator's own stop is a decision, not an incident.
 TERMINAL_BLOCKED_KEY = "blocked_terminal"
 _NOT_INCIDENTS = frozenset({"stop_task"})
@@ -76,12 +76,12 @@ async def _recovery_row(conn, query, *, required=False):
     return rows.one() if required else rows.first()
 
 
-def _incident_id(task, attempt, reason):
+def _incident_id(task, attempt, reason, meta):
     """Stable identity for one failure generation, including no-attempt failures."""
     generation = (
         ("attempt", attempt["id"])
         if attempt is not None
-        else ("terminal_transition", task["status"], task["updated_at"])
+        else ("terminal_transition", task["status"], meta[RECOVERY_FAILURE_AT_KEY])
     )
     identity = [
         task["id"],
@@ -92,6 +92,20 @@ def _incident_id(task, attempt, reason):
         reason,
     ]
     return "recovery-" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
+
+
+def _incident_is_current(task, meta, attempt, incident_id):
+    """Holds and reconciliation fence exactly the failure eligible for notification."""
+    reason = incident_reason(meta, task)
+    return (
+        task["status"] in _FAILURE_STATUSES
+        and bool(reason)
+        and (
+            (attempt is not None and attempt["state"] in ("stopped", "quarantined"))
+            or (attempt is None and task["status"] == TaskStatus.FAILED.value)
+        )
+        and incident_id == _incident_id(task, attempt, reason, meta)
+    )
 
 
 def _decoded(raw):
@@ -383,6 +397,18 @@ class TaskRecoveryQueryMixin:
             .mappings()
             .first()
         )
+        if (
+            task["status"] == TaskStatus.FAILED.value and attempt is None
+            and RECOVERY_FAILURE_AT_KEY not in meta
+        ):
+            # Existing installations (and daemon-authored legacy writers) may
+            # lack a generation. All FAILED callers hold the task-row lock, so
+            # freeze the current revision once, before creating/validating an
+            # incident. Future comments and reconciliation cannot move it.
+            meta[RECOVERY_FAILURE_AT_KEY] = task["updated_at"]
+            await self._upsert_meta(
+                task["id"], RECOVERY_FAILURE_AT_KEY, task["updated_at"], conn=conn,
+            )
         return meta, attempt
 
     async def _recovery_owner(self, conn, task):
@@ -536,16 +562,7 @@ class TaskRecoveryQueryMixin:
             incident = meta.get(INCIDENT_KEY) or {}
             if incident.get("id") != expected_id or incident.get("decision"):
                 return
-            reason = incident_reason(meta, task)
-            current = (
-                task["status"] in _FAILURE_STATUSES
-                and bool(reason)
-                and (
-                    (attempt is not None and attempt["state"] in ("stopped", "quarantined"))
-                    or (attempt is None and task["status"] == TaskStatus.FAILED.value)
-                )
-                and expected_id == _incident_id(task, attempt, reason)
-            )
+            current = _incident_is_current(task, meta, attempt, expected_id)
             owner = await self._recovery_owner(conn, task) if current else None
             if current and owner["kind"] != "retired":
                 return
@@ -631,7 +648,7 @@ class TaskRecoveryQueryMixin:
                         f"{owner['operation_state']}; the delegate is retired, not recovered"
                     ),
                 }
-            incident_id = _incident_id(task, attempt, reason)
+            incident_id = _incident_id(task, attempt, reason, meta)
             previous = meta.get(INCIDENT_KEY) or {}
             notify_supervisor = not (
                 owner["kind"] == "integration_operation" and owner["role"] == "delegate"
@@ -878,13 +895,11 @@ class TaskRecoveryQueryMixin:
                 or (expected_hold_at is not None and not releasing_hold)
             ):
                 raise ValueError("Incident is stale or already has a decision")
-            if (
-                task["status"] != "BLOCKED"
-                or not attempt
-                or incident_id != _incident_id(task, attempt, incident_reason(meta))
-            ):
+            if not _incident_is_current(task, meta, attempt, incident_id):
                 raise ValueError("Task or execution attempt changed; incident is stale")
             if decision == "retry":
+                if task["status"] != TaskStatus.BLOCKED.value or attempt is None:
+                    raise ValueError("Retry requires a BLOCKED task with a stopped execution attempt")
                 owner = await self._recovery_owner(conn, task)
                 if owner["kind"] == "integration_operation":
                     raise ValueError(
@@ -958,7 +973,9 @@ class TaskRecoveryQueryMixin:
                     project_id=task["project_id"],
                     body=(
                         (f"Cleared recovery hold from {expected_hold_at}.\n" if releasing_hold else "")
-                        + f"Recovery decision: {decision} ({incident['reason']}, session {attempt['session_id']}).\n{reason}"
+                        + f"Recovery decision: {decision} ({incident['reason']}, "
+                        + (f"session {attempt['session_id']}" if attempt else "no worker attempt")
+                        + f").\n{reason}"
                         + (
                             f"\nOperator handoff evidence: {json.dumps(handoff, sort_keys=True)}"
                             if decision == "retry" and handoff
@@ -980,7 +997,7 @@ class TaskRecoveryQueryMixin:
             "task_id": task_id,
             "incident_id": incident_id,
             "decision": decision,
-            "status": "READY" if decision == "retry" else "BLOCKED",
+            "status": "READY" if decision == "retry" else task["status"],
         }
 
     async def _guard_operator_handoff(

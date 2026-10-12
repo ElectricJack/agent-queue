@@ -922,6 +922,121 @@ async def test_failed_task_without_a_worker_attempt_gets_one_triage_incident(env
     assert len(await queued_messages(env)) == 1
 
 
+@pytest.mark.parametrize("daemon_authored", [False, True])
+async def test_failed_without_attempt_hold_preserves_failure_and_archives_notice(env, daemon_authored):
+    if daemon_authored:
+        await env.db.update_task("t", task_type="promotion", created_by_kind="promotion")
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    first = await notify(env)
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    before = asdict(await env.db.get_task("t"))
+
+    assert "error" in await decide(env, current)  # No attempt can prove a safe retry.
+    result = await decide(env, current, "hold")
+    assert "error" not in result, result
+    assert result["status"] == "FAILED"
+    assert asdict(await env.db.get_task("t")) == before
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert held["decision"] == "hold" and held["retry_allowed"] is False
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+    assert (await env.db.get_message("msg-" + first["incident_id"])).archived_at is not None
+    comments = (await env.db.list_task_comments("t"))["comments"]
+    assert len(comments) == 1 and "no worker attempt" in comments[0]["body"]
+    assert "error" in await decide(env, current, "hold")
+    assert await env.db.queue_task_recovery_notifications() == 0
+    assert len(await queued_messages(env)) == 1
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize("edit", ["comment", "description", "reconciliation"])
+async def test_no_attempt_incident_survives_ordinary_task_updates(env, held, edit):
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    first = await notify(env)
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if held:
+        assert "error" not in await decide(env, current, "hold")
+    before = await env.db.get_task("t")
+    if edit == "comment":
+        await env.db.add_task_comment(
+            "t", "Diagnosis: preserve the aborted promotion.",
+            author_kind="supervisor", author_id="supervisor-p",
+        )
+    elif edit == "description":
+        await env.db.update_task_description("t", "Keep requirements plus diagnosis")
+    else:
+        await env.db.transition_task(
+            "t", TaskStatus.FAILED, force=True, context="integration_reconciliation",
+            pr_url="https://github.com/test/repo/pull/1403",
+        )
+    assert (await env.db.get_task("t")).updated_at != before.updated_at
+
+    assert await env.db.queue_task_recovery_notifications() == 0
+    replay = await notify(env)
+    assert replay["outcome"] == "existing" and replay["incident_id"] == first["incident_id"]
+    assert replay["redelivered"] is False
+    assert len(await queued_messages(env)) == 1
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert recorded["id"] == current["id"]
+    assert recorded["decision"] == ("hold" if held else None)
+    if not held:
+        assert "error" not in await decide(env, current, "hold")
+
+
+@pytest.mark.parametrize("write", ["transition", "update"])
+async def test_new_no_attempt_failure_rejects_old_hold_before_scan(env, write):
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    await notify(env)
+    old = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    for status in (TaskStatus.READY, TaskStatus.FAILED):
+        if write == "transition":
+            await env.db.transition_task("t", status, force=True)
+        else:
+            await env.db.update_task("t", status=status)
+    result = await decide(env, old, "hold")
+    assert "incident is stale" in result["error"]
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] is None
+    assert await env.db.queue_task_recovery_notifications() == 1
+    new = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert new["id"] != old["id"]
+    assert (await env.db.get_message("msg-" + old["id"])).archived_at is not None
+    assert "error" not in await decide(env, new, "hold")
+
+
+@pytest.mark.parametrize("change", ["new_stopped_attempt", "new_live_attempt", "claim_epoch"])
+async def test_hold_rejects_genuine_execution_changes_before_scan(env, change):
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    await notify(env)
+    old = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if change == "claim_epoch":
+        await env.db.update_task("t", claim_epoch=1)
+    elif change == "new_stopped_attempt":
+        await stopped_attempt(env, sid="new", started=9000, attention=False)
+    else:
+        await env.db.create_session(SessionRecord(
+            id="new", name="new", task_id="t", project_id="p", profile_id="worker",
+            harness="fake", provider="fake", lifecycle="task", state="running",
+            desired_state="running", epoch="test", instance_token="new",
+            work_dir="/never-used", started_at=9000,
+        ))
+    result = await decide(env, old, "hold")
+    assert "incident is stale" in result["error"]
+    assert not (await env.db.list_task_comments("t"))["comments"]
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] is None
+
+
+async def test_legacy_failed_row_without_generation_keeps_one_incident_after_comment(env):
+    # An installed row from before failure generations existed.
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "t").values(status="FAILED"))
+    first = await notify(env)
+    await env.db.add_task_comment(
+        "t", "Legacy failure diagnosis", author_kind="supervisor", author_id="supervisor-p",
+    )
+    assert await env.db.queue_task_recovery_notifications() == 0
+    assert (await notify(env))["incident_id"] == first["incident_id"]
+    assert len(await queued_messages(env)) == 1
+
+
 async def test_remaining_budget_counts_down_across_recoveries(env):
     current = await incident(env)
     assert "error" not in await decide(env, current)
