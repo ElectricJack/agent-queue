@@ -738,3 +738,1072 @@ class SessionCommandsMixin:
         This cancels the instance's cron schedules with the intent write.
         The reconciler stops named sessions on the next tick, independently
         of idle timeout. Pool sessions drain through their claim lifecycle.
+        """
+        return await self._set_desired_state(args, "sleeping")
+
+    async def _cmd_session_wake(self, args: dict) -> dict:
+        """Mark a sleeping named session as wanted again.
+
+        The next reconciler tick starts it (through the same lens cold-start
+        path an inbound message uses).  Waking is always explicit: nothing
+        infers it from activity.
+        """
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if session.lifecycle != "named":
+            return {
+                "success": False,
+                "error": (
+                    "only named sessions are wake-on-demand; a task session is "
+                    "started by the task lifecycle"
+                ),
+                "session_id": session.id,
+            }
+        # Clear the restart budget: it counts *consecutive* failed starts,
+        # and an operator asking for a wake is a fresh intent, not a retry
+        # of the one that failed.
+        await self.db.update_session(
+            session.id, desired_state="running", restarts=0, last_activity=None
+        )
+        return {
+            "success": True,
+            "session_id": session.id,
+            "desired_state": "running",
+            "state": session.state,
+            "note": "the next reconciler tick starts it",
+        }
+
+    async def _set_desired_state(self, args: dict, desired: str) -> dict:
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        await self.db.update_session(session.id, desired_state=desired)
+        return {
+            "success": True,
+            "session_id": session.id,
+            "desired_state": desired,
+            "state": session.state,
+        }
+
+    async def _cmd_session_drain_ack(self, args: dict) -> dict:
+        """Agent-facing: "I am done, you may kill me."
+
+        The reconciler verifies the task is actually closed before killing.
+        An ack with the task still open is a *premature* drain and earns one
+        nudge, not a kill — otherwise an agent could end its own task by
+        acking early, which is precisely the exit-as-signal failure this
+        runtime exists to remove.
+
+        A **pool** session also gets ``desired_state="stopped"`` written
+        here.  ``_step_drain_ack`` never reads the provider meta key for a
+        pool row (a pool worker's teardown is
+        ``_terminate_pool_session``, not the task-session stop path) — it
+        keys entirely off ``desired_state``.  Writing only ``state`` left an
+        acked worker parked in ``draining`` forever: agent never RETIRED,
+        workspace lock never released, token never revoked.  The intent is
+        unambiguous — the agent just said it is finished, and for a pool
+        worker there is no further work to come back for
+        (``session_exhausted`` / ``drain_requested`` are the only two
+        results that tell it to ack).
+
+        An ack is a request to tear a session down, so it is fenced like the
+        other session commands: an elevated per-project supervisor may ack
+        only its own project's sessions
+        (:meth:`_session_project_scope_error`).  A plain session reaches this
+        command at all only with its own ``session_id`` — the scope layer pins
+        that field for ``AGENT_COMMAND_SET`` members — so the fence only
+        closes the elevated path.
+        """
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
+        provider = self._provider_for_session(session)
+        if provider is None:
+            return {"error": f"Provider '{session.provider}' is not available"}
+        try:
+            await provider.set_meta(self._session_handle(session), DRAIN_ACK_KEY, "1")
+        except Exception as exc:
+            return {"error": f"could not record drain-ack: {exc}"}
+        if session.lifecycle == "pool":
+            await self.db.update_session(
+                session.id, state="draining", desired_state="stopped"
+            )
+            await self.orchestrator.bus.emit(
+                "pool.session_drained",
+                {
+                    "project_id": session.project_id,
+                    "profile_id": session.profile_id,
+                    "session_id": session.id,
+                    "name": session.name,
+                    "reason": "drain_ack",
+                },
+            )
+        else:
+            await self.db.update_session(session.id, state="draining")
+        return {
+            "success": True,
+            "session_id": session.id,
+            "state": "draining",
+            "note": "acknowledged; the reconciler stops this session once the task is closed",
+        }
+
+    # ------------------------------------------------------------------
+    # agent surface — the completion protocol
+    # ------------------------------------------------------------------
+
+    async def _scoped_held_task_id(self) -> str | None:
+        """``sessions.task_id`` of the session in scope, if any (I3).
+
+        A pool worker's task changes with every claim, so the completion
+        protocol tells it to run ``aq task close --outcome … --claim-next``
+        with no TASK_ID; the CLI then sends none and the daemon resolves it
+        from whatever the calling session currently holds.
+        """
+        session_id = (self._current_scope or {}).get("session_id")
+        if not session_id:
+            return None
+        session = await self.db.get_session(str(session_id))
+        return session.task_id if session is not None else None
+
+    async def _close_task_obsolete(self, args: dict) -> dict:
+        """``aq task close <id> --obsolete --reason``: retire superseded work.
+
+        An operator or supervisor decision (``integration_operator``), never a
+        worker's: it releases the task's branch owners and drops it from parked
+        development batches (:mod:`src.sessions.obsolete`).  No
+        completion pipeline runs and nothing is published.
+        """
+        from src.commands.supervisor_authority import integration_operator
+        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.sessions.obsolete import (
+            ObsoleteClose,
+            ObsoleteCloseRefused,
+            obsolete_owner_release_for,
+        )
+
+        task_id = str(args.get("task_id") or "").strip()
+        if not task_id:
+            return {
+                "success": False,
+                "code": "obsolete.task_required",
+                "error": "--obsolete needs the id of the task to close",
+            }
+        if args.get("outcome"):
+            return {
+                "success": False,
+                "code": "obsolete.outcome_conflict",
+                "error": "--obsolete is its own outcome; drop --outcome",
+            }
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return {"success": False, "code": "obsolete.not_found", "error": f"No task '{task_id}'"}
+        principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return {
+                "success": False,
+                "code": "obsolete.not_authorized",
+                "error": (
+                    f"closing a task as obsolete is an operator or supervisor decision: {refusal}. "
+                    "A worker closes its own task with --outcome and names the superseding "
+                    "work in its summary."
+                ),
+            }
+        service = ObsoleteClose(
+            self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
+            git_manager=self.orchestrator.git,
+        )
+        try:
+            result = await service.close(
+                task_id, reason=str(args.get("reason") or ""), principal=principal
+            )
+        except ObsoleteCloseRefused as exc:
+            return {"success": False, "code": exc.code, "error": exc.detail}
+        except HierarchyError as exc:
+            return {
+                "success": False,
+                "code": f"hierarchy.{exc.code}",
+                "error": f"hierarchy.{exc.code}: {exc.detail}",
+            }
+        cleanup = result["cleanup"]
+        if result["outcome"] == "closed":
+            body = (
+                f"Closed as obsolete by {principal} (was {result['previous_status']}): "
+                f"{result['reason']}"
+            )
+            try:
+                await self.db.add_task_comment(
+                    task_id,
+                    body,
+                    author_kind="user" if principal.startswith("human:") else "supervisor",
+                    author_id=principal,
+                )
+            except Exception:
+                logger.warning("Could not comment on obsolete task %s", task_id, exc_info=True)
+            refreshed = await self.db.get_task(task_id)
+            if refreshed is not None:
+                await self._emit_task_graph_change("task.updated", refreshed)
+        pending = cleanup.get("pending") or []
+        if pending:
+            result["note"] = (
+                f"{len(pending)} item(s) still held ({', '.join(sorted({p['reason'] for p in pending}))}); "
+                "the lifecycle sweep retries them"
+            )
+        return {"success": True, **result}
+
+    async def _cmd_task_close(self, args: dict) -> dict:
+        """Close a task with an outcome.  Backs ``aq task close``.
+
+        Validates the caller, records outcome metadata (typed
+        ``task_metadata`` keys per the work-graph contract — no new
+        columns), runs the completion pipeline, and transitions the task.
+
+        Caller validation: when the request carries a ``session_id`` (the
+        CLI forwards ``AQ_SESSION_ID``) it must be the session that owns
+        this task.  A session closing someone else's task is refused —
+        that is either a bug or an agent that wandered, and both should be
+        loud rather than silently accepted.
+        """
+        if args.get("obsolete"):
+            return await self._close_task_obsolete(args)
+        task_id = args.get("task_id") or await self._scoped_held_task_id()
+        if not task_id:
+            return {
+                "success": False,
+                "error": "no task_id and the session holds no task",
+            }
+
+        outcome = str(args.get("outcome") or "").strip().lower()
+        if outcome not in VALID_OUTCOMES:
+            return {
+                "success": False,
+                "error": f"outcome must be one of {list(VALID_OUTCOMES)}",
+            }
+        failure_class = str(args.get("failure_class") or "").strip().lower()
+        if failure_class and failure_class not in VALID_FAILURE_CLASSES:
+            return {
+                "success": False,
+                "error": f"failure_class must be one of {list(VALID_FAILURE_CLASSES)}",
+            }
+        work_outcome = str(args.get("work_outcome") or "").strip().lower()
+        if work_outcome and work_outcome not in VALID_WORK_OUTCOMES:
+            return {
+                "success": False,
+                "error": f"work_outcome must be one of {list(VALID_WORK_OUTCOMES)}",
+            }
+
+        task = await self.db.get_task(str(task_id))
+        if task is None:
+            return {"success": False, "error": f"No task '{task_id}'"}
+        # A crash may commit accepted repair bookkeeping before releasing its
+        # original claim. The completion service revalidates its durable receipt
+        # and exact held claim; this is not generic permission to re-close tasks.
+        accepted_repair_retry = (
+            task.status == TaskStatus.COMPLETED and outcome == "pass"
+            and task.created_by_kind == "integration_repair"
+            and bool((self._current_scope or {}).get("session_id"))
+        )
+        if accepted_repair_retry:
+            retry_scope = await self.db.get_repair_filing_scope(
+                task.id, session_id=self._current_scope["session_id"]
+            )
+            accepted_repair_retry = bool(
+                retry_scope is not None and retry_scope["target_kind"] == "batch"
+                and retry_scope.get("writer_kind") == "repair_delegate"
+                and not retry_scope["active"]
+            )
+        if task.status not in _CLOSEABLE and not accepted_repair_retry:
+            status = getattr(task.status, "value", task.status)
+            return {
+                "success": False,
+                "error": (
+                    f"task {task_id} is {status}, not in progress — only a running "
+                    "task can be closed"
+                ),
+            }
+
+        caller_session_id = args.get("session_id")
+        session = None
+        if caller_session_id:
+            session = await self.db.get_session(str(caller_session_id))
+            if session is None:
+                return {"success": False, "error": f"No session '{caller_session_id}'"}
+            if session.task_id and session.task_id != task_id:
+                return {
+                    "success": False,
+                    "error": (
+                        f"session {session.id} owns task {session.task_id}, not "
+                        f"{task_id} — refusing to close another task's work"
+                    ),
+                }
+        if session is None:
+            session = await self.db.get_session_for_task(str(task_id))
+
+        # --- claim fence (swarm-work-model §10) ----------------------------
+        # A session-scoped caller must hold the task under a current claim
+        # epoch: pool sessions are required to send ``claim_epoch`` (read
+        # from ``.aq/claim.json``), task sessions may omit it (legacy).
+        # Local/elevated callers (no session in scope) are not fenced.
+        claim_epoch = args.get("claim_epoch")
+        scope_session_id = (self._current_scope or {}).get("session_id")
+        fence_err = await self._assert_session_owns(
+            task_id, session_id=scope_session_id, claim_epoch=claim_epoch
+        )
+        if fence_err:
+            return fence_err
+        is_pool = bool(session and session.lifecycle == "pool")
+        # A close issued *by* a session whose row is still live can be handed
+        # fixable git-verification issues in place instead of reopening the
+        # task — see ``PipelineContext.close_session_live``.  A local /
+        # elevated close (no session in scope) has no agent to hand them to,
+        # so it keeps the reopen-to-READY behaviour.
+        session_live = bool(
+            caller_session_id
+            and session is not None
+            and session.state in LIVE_SESSION_STATES
+        )
+
+        # --- close-with-summary enforcement (Dv2 Phase 2 §7) --------------
+        # Tasks executed by workspace-needing profiles must carry a
+        # summary at close time.  This is what feeds the reviewer, the
+        # dashboard completion card, and the task-summary note in the
+        # vault.  Supervisor / chat-only profiles skip the requirement
+        # because they never touch a repo.  Checked *before* the
+        # container-close block below: a refused close must never abandon
+        # a single descendant (spec §7).
+        summary = str(args.get("summary") or "").strip()
+        profile = None
+        if task.profile_id:
+            profile = await self.db.get_profile(task.profile_id)
+        needs_ws = profile.needs_workspace if profile else False
+        if needs_ws and not summary:
+            return {
+                "success": False,
+                "error": (
+                    "summary is required for tasks whose profile has "
+                    "needs_workspace: true (Dv2 Phase 2 §7 close contract)"
+                ),
+            }
+
+        # Busy sessions cannot receive terminal nudges. Give queued feedback
+        # a final delivery opportunity before close drains this worker. Do not
+        # consume it here: the worker must retrieve the body and reconsider
+        # its result, then retry with the same claim. Operator closes and
+        # disabled messaging retain their existing behavior.
+        if (
+            session is not None
+            and (scope_session_id or caller_session_id) == session.id
+            and session.state in LIVE_SESSION_STATES
+            and session.task_id == task_id
+            and self.config.messages.enabled
+        ):
+            import shlex
+
+            inbox_commands = []
+            for kind, recipient in (("task", task_id), ("session", session.id)):
+                if await self.db.get_pending_messages(kind, recipient, limit=1):
+                    mailbox = shlex.quote(f"{kind}:{recipient}")
+                    inbox_commands.append(
+                        f"aq message inbox --to {mailbox} --inject --limit 50 --json"
+                    )
+            if inbox_commands:
+                return {
+                    "success": False,
+                    "code": "messages.pending_before_close",
+                    "error": (
+                        "Pending feedback arrived while you were working. Your task and "
+                        "claim remain open. Read and handle the messages before closing: "
+                        + "; ".join(inbox_commands)
+                        + ". Recheck any affected evidence, then retry close with the "
+                        "same claim and an updated summary. If an earlier "
+                        "`--inject` consumed a body you never got to read, "
+                        "`--include-consumed` on the same mailbox returns it."
+                    ),
+                }
+
+        # Deliverables are a worker contract, not a best-effort review hint.
+        # Refuse before any metadata, hierarchy, or pipeline side effect so
+        # the same claim can add evidence or make a visible exception and
+        # retry the close.
+        # A research or design task's document is a ``review`` item even
+        # when nobody declared one (``effective_deliverables``).
+        from src.deliverables import (
+            evaluate_deliverables,
+            parse_unmet_reasons,
+            resolve_task_deliverables,
+            review_submit_guidance,
+        )
+
+        def _string_list(value) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [value] if value.strip() else []
+            return [str(item) for item in value if str(item).strip()]
+
+        deliverables = await resolve_task_deliverables(self.db, task)
+        waivers, waiver_error = parse_unmet_reasons(args.get("deliverable_unmet"), deliverables)
+        if waiver_error:
+            return {"success": False, "code": "deliverables.invalid_waiver", "error": waiver_error}
+        work_dir = getattr(session, "work_dir", None) if session is not None else None
+        submitted_reviews = (
+            await self.db.list_reviews_submitted_by_task(task.id)
+            if any(item["kind"] == "review" for item in deliverables)
+            else []
+        )
+        deliverable_results = evaluate_deliverables(
+            deliverables,
+            root=Path(work_dir) if work_dir else Path.cwd(),
+            tests=_string_list(args.get("tests")),
+            commands=_string_list(args.get("commands")),
+            reviews=submitted_reviews,
+        )
+        unmet = [item for item in deliverable_results if not item["met"]]
+        for item in unmet:
+            item["reason"] = waivers.get(str(item["id"]), "")
+        unwaived = [item for item in unmet if not item["reason"]]
+        if outcome == "pass" and unwaived:
+            listed = ", ".join(
+                f"{item['id']} ({item['kind']}: {item['target']})" for item in unwaived
+            )
+            error = (
+                f"close refused: declared deliverables are unmet: {listed}. "
+                "Ship them, or pass --deliverable-unmet 'id: reason' for each intentional gap."
+            )
+            if guidance := review_submit_guidance(task.id, unwaived):
+                error = f"{error} {guidance}"
+            return {
+                "success": False,
+                "code": "deliverables.unmet",
+                "unmet_deliverables": unwaived,
+                "error": error,
+            }
+
+        # A worker's own subtasks are a checklist contract, not the deliverables
+        # gate: refuse before any side effect (same reasoning as the deliverables
+        # check above) so the same claim can settle them and retry. Only outcomes
+        # that complete the task (``pass``) are gated — a failing close must never
+        # be blocked on housekeeping.
+        #
+        # The *refusal* belongs here, before any side effect. The *flip* the
+        # override performs does not: it is a write, and several refusals
+        # still lie between here and the close (open children, live or
+        # manually paused descendants, review evidence, a stale claim, git
+        # verification). Committing it here left a refused close with every
+        # row ``skipped`` and its note overwritten, so the retry had nothing
+        # to settle. Only the decision is taken here; the write happens after
+        # the last refusal point (see ``skip_open_subtasks_at_close`` below).
+        skip_open_subtasks_at_close = False
+        if outcome == "pass":
+            subtasks = await self.db.list_task_subtasks(task_id)
+            open_subtasks = [item for item in subtasks if item["status"] in OPEN_SUBTASK_STATUSES]
+            if open_subtasks:
+                if args.get("skip_open_subtasks"):
+                    skip_open_subtasks_at_close = True
+                else:
+                    listed = ", ".join(str(item["ordinal"]) for item in open_subtasks)
+                    return {
+                        "success": False,
+                        "code": "subtasks.open",
+                        "error": (
+                            f"{len(open_subtasks)} subtask(s) are still open: {listed}. "
+                            "Mark each with `aq task subtask-done N` / "
+                            "`aq task subtask-skip N --note …`, or close with "
+                            "--skip-open-subtasks."
+                        ),
+                        "open_subtasks": [item["ordinal"] for item in open_subtasks],
+                    }
+
+        # Capture the verification subject before any close side effect, including
+        # an authorised descendant abandonment. The pending draft below must keep
+        # it even if the daemon dies after accepting the terminal transition.
+        failed_subject_head = None
+        if outcome == "fail" and task.repo_id and task.branch_name:
+            operation = await self.db.get_integration_verifier_operation(task_id)
+            if operation is not None:
+                from src.integration.verifier_subject import verifier_subject_on
+
+                checkpoint = await self.db.get_integration_checkpoint(operation["parent_task_id"])
+                try:
+                    if checkpoint is None:
+                        raise ValueError("aggregate verifier has no parent checkpoint")
+                    if (task.repo_id, task.branch_name) != (
+                        checkpoint["repository_id"], checkpoint["branch"],
+                    ):
+                        raise ValueError("aggregate verifier branch identity differs from its subject")
+                    async with self.db._engine.connect() as conn:
+                        subject = await verifier_subject_on(
+                            conn, verifier_id=task_id, project_id=task.project_id,
+                            operation=operation, checkpoint=checkpoint,
+                        )
+                    if subject is None:
+                        raise ValueError("aggregate verifier has no immutable verification subject")
+                    failed_subject_head = subject["subject"]["head_sha"]
+                    if args.get("commit") and str(args["commit"]).strip() != failed_subject_head:
+                        raise ValueError("failure commit differs from the immutable verification head")
+                except ValueError as exc:
+                    return {"success": False, "result": "verification_failed", "error": str(exc)}
+
+        # Container-close semantics (swarm-work-model §7).
+        open_children = await self.db.open_children(task_id)
+        project = await self.db.get_project(task.project_id)
+        managed_parent_close = bool(
+            outcome == "pass"
+            and getattr(project, "hierarchical_integration_mode", "disabled")
+            in {"hierarchy", "train"}
+            and await self.db.get_children(task_id, limit=1)
+        )
+        abandoned: list[str] = []
+        if open_children and not managed_parent_close:
+            if not args.get("abandon_children"):
+                return {
+                    "success": False,
+                    "code": "hierarchy.open_children",
+                    "error": (
+                        f"task {task_id} has {len(open_children)} open child(ren); close them "
+                        "first, move findings you filed aside with `aq task reparent` "
+                        "(--parent-id <container> or --root), or pass abandon_children=true"
+                    ),
+                    "open_children": open_children,
+                }
+            # The refusal is decided INSIDE the transaction (so no session can
+            # start between the check and the abandon) but returned OUTSIDE it
+            # — returning from within ``async with`` would commit the
+            # transaction rather than leave it untouched.
+            live: list = []
+            paused: list[str] = []
+            abandon_result = None
+            async with self.db.immediate() as conn:
+                # ``exclude_root``: the closing task's own session — the
+                # worker calling ``task_close``, or the container-root
+                # session driving it — is live by definition.  Counting it
+                # made every ``--abandon-children`` close refuse, even with
+                # nothing but a PAUSED unassigned child underneath.
+                live = await self.db.live_descendant_sessions(
+                    task_id, conn=conn, exclude_root=True
+                )
+                if not live:
+                    # A hand-paused descendant cannot be transitioned
+                    # (``ManualPauseActive``).  Detect it here so the caller
+                    # gets a structured refusal naming the ids rather than an
+                    # exception escaping from inside the transaction.
+                    paused = await self.db.manually_paused_descendants(task_id, conn=conn)
+                if not live and not paused:
+                    abandon_result = await self.db.abandon_subtree(task_id, conn=conn)
+            if live:
+                held = sorted({t for _, t in live})
+                return {
+                    "success": False,
+                    "code": "hierarchy.live_descendants",
+                    "error": (
+                        "descendants are held by live sessions: "
+                        + ", ".join(held)
+                        + "; stop them first (aq task stop <id> / aq session kill <name>)"
+                    ),
+                    "sessions": [{"session_id": s, "task_id": t} for s, t in live],
+                    "live_descendants": held,
+                }
+            if paused:
+                return {
+                    "success": False,
+                    "code": "hierarchy.manually_paused_descendants",
+                    "error": (
+                        "descendants are manually paused: "
+                        + ", ".join(paused)
+                        + "; resume them first (aq task resume --task-id <id>)"
+                    ),
+                    "manually_paused_descendants": paused,
+                }
+            # Post-commit: audit rows and settlement notification, same
+            # sequencing as ``transition_task`` (never inside the write
+            # transaction — a listener failure must not roll back the abandon).
+            await self.db.log_blocked_flips(abandon_result.flipped)
+            await self.db._notify_settled(abandon_result.settled)
+            await self.db._notify_ready(abandon_result.ready)
+            abandoned = abandon_result.abandoned
+
+        # Outcome metadata is written first: it must survive even if the
+        # pipeline explodes, because it is the record of what the agent
+        # claimed happened.
+        await self.db.set_task_meta(task_id, "outcome", outcome)
+        if failure_class:
+            await self.db.set_task_meta(task_id, "failure_class", failure_class)
+        if work_outcome:
+            await self.db.set_task_meta(task_id, "work_outcome", work_outcome)
+        if args.get("commit"):
+            await self.db.set_task_meta(task_id, "work_commit", str(args["commit"]))
+        if args.get("branch"):
+            # WG-5: work-graph §5 lists ``work_branch`` in the outcome-meta
+            # contract; the older close surface only stored ``work_commit``.
+            await self.db.set_task_meta(task_id, "work_branch", str(args["branch"]))
+        if args.get("notes"):
+            await self.db.set_task_meta(task_id, "close_notes", str(args["notes"]))
+        if args.get("verification"):
+            await self.db.set_task_meta(task_id, "verification", str(args["verification"]))
+        if session is not None:
+            await self.db.set_task_meta(task_id, "close_session_id", session.id)
+        if summary:
+            await self.db.set_task_meta(task_id, "summary", summary)
+
+        # aq-surface Phase S2: revoke any session-scoped API bearer tokens
+        # tied to the closed session.  Single choke point for terminal
+        # state; the 60s cascade sweep is the safety net if this line ever
+        # regresses.  Runs in ``finally`` so a pipeline exception (or a
+        # failing subsystem inside ``complete_session_task``) does not
+        # leave a live token in circulation.  We only reach this block
+        # after caller-validation passed — early rejects (wrong session
+        # owning another task, unknown session, ...) exit above and do
+        # not revoke.
+        stale = False
+        retry_in_session = False
+        claim_release_declined = False
+        review_evidence_snapshot = None
+        if outcome == "pass" and task.profile_id in {"reviewer", "final-reviewer"}:
+            from src.database.queries.hierarchy_queries import HierarchyError
+            from src.integration.review_evidence import ReviewEvidenceProducer
+
+            try:
+                review_evidence_snapshot = await ReviewEvidenceProducer(
+                    self.db, self._integration_repository_git()
+                ).snapshot(
+                    task,
+                    session,
+                    verdict="approved",
+                    summary=summary,
+                )
+            except HierarchyError as exc:
+                return {
+                    "success": False,
+                    "result": exc.code,
+                    "error": f"integration review evidence refused: {exc}",
+                }
+        completion_id = str(uuid.uuid4())
+        expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
+        # The terminal transition commits inside ``complete_session_task`` and
+        # the completion record is saved only after it returns.  Draft the
+        # agent's account first so a restart in that window cannot lose it
+        # (fair-ridge-26), bound to this attempt's identity.  The transition
+        # that accepts this close records the same identity in its own
+        # transaction (``accepted_close``); ``recover_pending_completions``
+        # saves the draft at daemon start only on that exact proof, never
+        # from the task's status (smart-cascade).  Fields computed after the
+        # transition (auto-captured commit, unmerged-work note) are absent
+        # from a recovered record rather than guessed.
+        accepted_close = close_identity(
+            completion_id,
+            session_id=session.id if session is not None else None,
+            claim_epoch=(
+                expect_claim_epoch if expect_claim_epoch is not None else task.claim_epoch
+            ),
+        )
+        explicit_commit = str(args.get("commit") or "").strip()
+        await self.db.set_task_meta(
+            task_id,
+            PENDING_COMPLETION_KEY,
+            completion_draft(
+                TaskCompletion(
+                    id=completion_id,
+                    task_id=task_id,
+                    outcome=outcome,
+                    work_outcome=work_outcome or None,
+                    failure_class=failure_class or None,
+                    changes=str(args.get("changes") or summary).strip(),
+                    verification=str(args.get("verification") or "").strip(),
+                    tests=_string_list(args.get("tests")),
+                    commands=_string_list(args.get("commands")),
+                    branch=task.branch_name,
+                    commits=[failed_subject_head or explicit_commit]
+                    if failed_subject_head or explicit_commit else [],
+                    pr_url=task.pr_url,
+                    summary=summary,
+                    notes=str(args.get("notes") or "").strip(),
+                    deliverables=deliverable_results,
+                    completed_at=time.time(),
+                ),
+                accepted_close,
+            ),
+        )
+        try:
+            result = await self.orchestrator.complete_session_task(
+                task,
+                outcome=outcome,
+                work_outcome=work_outcome,
+                failure_class=failure_class,
+                commit=str(args.get("commit") or ""),
+                completion_id=completion_id,
+                notes=str(args.get("notes") or ""),
+                expect_claim_epoch=expect_claim_epoch,
+                pool=is_pool,
+                session_live=session_live,
+                session_id=session.id if session is not None else None,
+                review_evidence_snapshot=review_evidence_snapshot,
+                skip_open_subtasks=skip_open_subtasks_at_close,
+                accepted_close=accepted_close,
+            )
+            retry_in_session = bool(result.get("verification_retry"))
+        except SubtasksOpenError as exc:
+            await self.db.discard_pending_completion(task_id, completion_id)
+            return {
+                "success": False,
+                "code": "subtasks.open",
+                "error": (
+                    f"{len(exc.ordinals)} subtask(s) are still open: "
+                    f"{', '.join(map(str, exc.ordinals))}. Mark each with "
+                    "`aq task subtask-done N` / `aq task subtask-skip N --note …`, "
+                    "or close with --skip-open-subtasks."
+                ),
+                "open_subtasks": exc.ordinals,
+            }
+        except StaleClaim as exc:
+            # The up-front fence (``_assert_session_owns``) makes this a
+            # narrow race — only a concurrent claim between that check and
+            # this call reaches it. The session is still live and holds
+            # nothing to clean up, so it keeps its token.
+            stale = True
+            await self.db.discard_pending_completion(task_id, completion_id)
+            return {"success": False, "result": "stale_claim", "error": str(exc)}
+        except Exception:
+            # Whether the transition committed is unknown here; only its own
+            # recorded identity can say.  A rejected attempt's draft goes, an
+            # accepted one stays for recovery -- its record is what was lost.
+            try:
+                await self.db.discard_pending_completion(task_id, completion_id)
+            except Exception:
+                logger.warning(
+                    "Could not discard the completion draft of %s", task_id, exc_info=True
+                )
+            raise
+        finally:
+            # Pool sessions keep their instance token — the workflow keeps
+            # going (``claim_next``) so revoking here would kill it mid-loop.
+            # A close refused for verification keeps its token too: the same
+            # session is about to fix the git state and close again.
+            if not is_pool and not stale and not retry_in_session:
+                token_store = getattr(self.orchestrator, "token_store", None)
+                if token_store is not None and session is not None:
+                    try:
+                        await token_store.revoke_session(session.id)
+                    except Exception:
+                        # Revoke is best-effort — expiry is the safety net.
+                        pass
+
+        if retry_in_session:
+            await self.db.discard_pending_completion(task_id, completion_id)
+            # Not a close: the task is still IN_PROGRESS under this session's
+            # claim, and the agent has to fix the listed git issues and call
+            # ``aq task close`` again.  No completion record, no claim
+            # release, no token revoke — nothing about the run ended.
+            issues = result.get("issues") or []
+            escalated = bool(result.get("escalated"))
+            retired = result.get("retired")
+            bullets = "\n".join(f"- {msg}" for msg in issues)
+            if result.get("close_deferred"):
+                lead = "close deferred: the workspace is still in use by a managed job"
+                tail = (
+                    "Your task, claim and repair reservation remain open. Wait for the job "
+                    "to settle, then retry close with the same claim."
+                )
+            elif retired:
+                # The integration operation no longer needs this delegate:
+                # nothing in this workspace can make the close acceptable,
+                # and "fix these and close again" is what kept a worker
+                # retrying (bold-impact-53).
+                lead = "close refused: this integration delegate is retired"
+                tail = (
+                    "Do not retry the close and do not close --outcome fail. Run "
+                    "`aq session drain-ack`: the session reconciler stops this "
+                    "session, and owner recovery preserves its checkout before "
+                    "releasing the branch."
+                )
+            elif escalated:
+                # A precondition no agent command can satisfy.  Saying "you
+                # can still fix this from this workspace" here is what sends
+                # a worker into a retry loop or into closing --outcome fail
+                # over passing work.
+                lead = (
+                    "close refused: delivery is blocked on daemon state this "
+                    "workspace cannot change"
+                )
+                tail = (
+                    "The task is still yours (IN_PROGRESS, same claim) and has been "
+                    "flagged for an operator. Do not retry blindly and do not close "
+                    "--outcome fail to escape it: report the blocker with "
+                    "`aq message send --to user:dashboard`."
+                )
+            else:
+                lead = (
+                    "close refused: this workspace holds commits no remote branch has"
+                    if result.get("unmerged")
+                    else "close refused: git verification found issues you can still "
+                    "fix from this workspace"
+                )
+                tail = (
+                    "The task is still yours (IN_PROGRESS, same claim). Fix these, "
+                    "then run `aq task close` again."
+                )
+            return {
+                "success": False,
+                "result": result.get("close_deferred") or "verification_failed",
+                "task_id": task_id,
+                "status": result.get("status"),
+                "escalated": escalated,
+                "issues": issues,
+                "feedback": result.get("feedback") or "",
+                "unmerged": result.get("unmerged"),
+                **({"retired": retired, "next_step": "aq session drain-ack"} if retired else {}),
+                "error": f"{lead}:\n{bullets}\n{tail}",
+            }
+
+        final_task = await self.db.get_task(task_id)
+        # The terminal transition performed an authorised checklist skip in
+        # its own transaction.  Emit its refresh event only after that commit;
+        # this is deliberately not a second checklist write.
+        if (
+            skip_open_subtasks_at_close
+            and final_task is not None
+            and final_task.status == TaskStatus.COMPLETED
+        ):
+            counts = await self.db.count_task_subtasks([task_id])
+            total, settled = counts.get(task_id, (0, 0))
+            await self._emit_task_subtasks_updated(task, total, settled)
+        # Capture the final branch tip after verification/integration. The
+        # pipeline may auto-commit dirty work, so a pre-pipeline SHA describes
+        # the input state rather than the commit that actually closed the task.
+        if (
+            "completion_source" not in result and needs_ws and not args.get("commit")
+            and final_task and final_task.branch_name
+        ):
+            checkout = await self.db.get_project_workspace_path(task.project_id)
+            if checkout:
+                sha = await self.orchestrator.git.arev_parse(
+                    checkout, final_task.branch_name
+                )
+                if sha:
+                    await self.db.set_task_meta(task_id, "work_commit_auto", sha)
+        # Work that could not go anywhere else must at least be *findable*.
+        # The branch name goes in the completion summary, not only in task
+        # metadata, because the summary is what a human, the reviewer and the
+        # next agent actually read (stranded_work.py).
+        unmerged_branch = result.get("unmerged_branch")
+        if unmerged_branch:
+            unmerged = result.get("unmerged") or {}
+            where = (
+                f"origin/{unmerged_branch}"
+                if unmerged.get("status") == "pushed"
+                else f"local branch {unmerged_branch} (this repo has no remote)"
+            )
+            note = (
+                f"Unmerged work: {unmerged.get('count', 0)} commit(s) preserved on "
+                f"{where} at {(unmerged.get('commit') or '')[:12]}."
+            )
+            summary = f"{summary}\n\n{note}" if summary else note
+            await self.db.set_task_meta(task_id, "summary", summary)
+
+        auto_commit = await self.db.get_task_meta(task_id, "work_commit_auto")
+        commit = explicit_commit or str(auto_commit or "").strip()
+        if "completion_source" in result:
+            commit = result["completion_source"] or ""
+        if failed_subject_head is not None:
+            commit = failed_subject_head
+
+        # Accepted repair retries reuse the reservation's durable close identity.
+        # A crash after the task transition but before claim release must not
+        # append a second completion record or rewrite terminal transition timing.
+        completion_record_id = result.get("completion_record_id")
+        if completion_record_id:
+            completion_id = completion_record_id
+        # Append only: a reopened task may be closed again, and both accounts
+        # remain available while task detail shows the latest one.
+        await self.db.save_task_completion(
+            TaskCompletion(
+                id=completion_id,
+                task_id=task_id,
+                outcome=outcome,
+                work_outcome=work_outcome or None,
+                failure_class=failure_class or None,
+                changes=str(args.get("changes") or summary).strip(),
+                verification=str(args.get("verification") or "").strip(),
+                tests=_string_list(args.get("tests")),
+                commands=_string_list(args.get("commands")),
+                branch=(final_task.branch_name if final_task else task.branch_name),
+                commits=result.get("completion_commits", [commit] if commit else []),
+                pr_url=(
+                    (final_task.pr_url if final_task else None)
+                    or result.get("pr_url")
+                    or task.pr_url
+                ),
+                summary=summary,
+                notes=str(args.get("notes") or "").strip(),
+                deliverables=deliverable_results,
+                completed_at=time.time(),
+            ),
+            **({"idempotent": True} if completion_record_id else {}),
+        )
+        await self.db.discard_pending_completion(
+            task_id, accepted_close["completion_id"], keep_accepted=False
+        )
+
+        await self.db.record_task_session_outcome(
+            task_id, outcome, session_id=session.id if session is not None else None,
+        )
+
+        if is_pool and result.get("retain_claim"):
+            # ``complete_session_task`` could not prove this session let go of
+            # its integration branch (amber-delta).  Releasing the claim now
+            # would erase ``sessions.task_id`` and the workspace's task-hold,
+            # which are the only evidence a later handoff proof can read, and
+            # would free the slot to a second writer on nothing but a database
+            # unlock.  The task is terminal and ``needs_attention`` is set, so
+            # the stall is visible; the session keeps holding it until an
+            # operator (or a reconciler pass) resolves the handoff.
+            logger.error(
+                "Pool session %s retains its claim on %s: integration handoff "
+                "could not be proven",
+                session.id if session is not None else "?",
+                task_id,
+            )
+        elif is_pool:
+            # Pool sessions acquire a slot before they know which task they
+            # will claim, so they cannot use dispatch-time branch affinity.
+            # Return a clean, pushed branch to detached HEAD before dropping
+            # the task lock; unpushed work intentionally remains pinned for
+            # the forensic retry path (worktree-execution §3.4).
+            #
+            # A failing close has already been restored, by the failing-writer
+            # release inside ``complete_session_task`` -- that release needs a
+            # clean tree to prove its handoff, so it cannot wait for this call.
+            if not result.get("slot_restored"):
+                slot = await self.orchestrator._slot_workspace_at(session.work_dir)
+                if slot is not None:
+                    try:
+                        await self.orchestrator._worktree_slots().restore_slot_after_task(
+                            slot, task_id=task_id
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not restore pool slot for %s", task_id, exc_info=True
+                        )
+            # The workspace agent-lock is retained (``terminate_pool_session``
+            # is the only path that drops it); only the task-hold is released.
+            release = await self.db.release_claim(
+                session.id,
+                task_status=TaskStatus(result["status"]),
+                context="session_close",
+                now=time.time(),
+                expected_task_id=task_id,
+                expected_claim_epoch=expect_claim_epoch,
+                drain_after_release=self.config.swarm.fresh_context_per_task,
+                **({"preserve_terminal_task": True} if result.get("preserve_terminal_task") else {}),
+            )
+            if release.released:
+                remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)
+            else:
+                # ``_release_claim_on`` declines silently in two very
+                # different situations, and only one of them is a problem.
+                #
+                # Benign: a pool reconciler already released the hold and the
+                # session claimed again, so the guarded write skipped an old
+                # close -- exactly what it is there for.  The session no
+                # longer holds this task; say nothing.
+                #
+                # Stuck: an integration owner is still attached to this
+                # session, so the protected-owner guard returned before
+                # clearing anything.  Reporting ``success: true`` over that
+                # left ``sessions.task_id`` and ``claim_phase='active'`` set
+                # on a task already back on the frontier, with the claim file
+                # deleted and no surface saying so (brisk-delta).  Keep the
+                # claim file -- the session really does still hold the task --
+                # and make the stall visible instead.
+                current = await self.db.get_session(session.id)
+                if current is not None and current.task_id == task_id:
+                    claim_release_declined = True
+                    logger.error(
+                        "Pool session %s closed %s but its claim was not released; "
+                        "the session still holds the task",
+                        session.id,
+                        task_id,
+                    )
+                    await self.db.set_task_meta(
+                        task_id, "needs_attention", "claim_release_declined"
+                    )
+                else:
+                    remove_claim_file_if_matches(
+                        session.work_dir, task_id, expect_claim_epoch
+                    )
+        elif session is not None and session.lifecycle == "task" and session.work_dir:
+            # Push launches join the claim fence too (execution.py) and
+            # write the same claim file — clean it up on a task-session
+            # close just like the pool-release path does.
+            remove_claim_file(session.work_dir)
+
+        response = {
+            "success": True,
+            "task_id": task_id,
+            "outcome": outcome,
+            "work_outcome": work_outcome or None,
+            "abandoned": abandoned,
+            "next_step": "run `aq session drain-ack` to release this session",
+            **result,
+        }
+        if claim_release_declined:
+            response["claim_released"] = False
+            response["needs_attention"] = "claim_release_declined"
+        if args.get("claim_next"):
+            response["next"] = await self._cmd_task_claim(
+                {"next": True, "wait": int(args.get("wait") or 0)}
+            )
+        return response
+
+    async def _cmd_task_heartbeat(self, args: dict) -> dict:
+        """Refresh this task's agent lease.  Backs ``aq task heartbeat``.
+
+        Two cheap writes: ``sessions.last_activity`` (the liveness signal
+        every surface reads -- see :mod:`src.agents.liveness`) and the
+        task-scoped ``agents.last_heartbeat`` lease fence.  Returns the new
+        lease expiry so an agent about to run something long can see how
+        much runway it has.
+        """
+        task_id = args.get("task_id")
+        session = None
+        if not task_id and args.get("session_id"):
+            session = await self.db.get_session(str(args["session_id"]))
+            if session is not None:
+                task_id = session.task_id
+        if not task_id:
+            task_id = await self._scoped_held_task_id()
+        if not task_id:
+            return {"success": False, "error": "no task_id and the session holds no task"}
+
+        err = await self._assert_session_owns(
+            task_id,
+            session_id=(self._current_scope or {}).get("session_id"),
+            claim_epoch=args.get("claim_epoch"),
+        )
+        if err:
+            return err
+
+        task = await self.db.get_task(str(task_id))
+        if task is None:
+            return {"error": f"No task '{task_id}'"}
+
+        now = time.time()
+        if session is None:
+            session = await self.db.get_session_for_task(str(task_id))
+        if session is not None:
+            await self.db.touch_session_activity(session.id, now)
+        if task.assigned_agent_id:
+            try:
+                await self.db.update_agent(task.assigned_agent_id, last_heartbeat=now)
+            except Exception:
+                logger.debug("heartbeat: agent update failed", exc_info=True)
+
+        ttl = self.config.sessions.lease_ttl_seconds
+        return {
+            "success": True,
+            "task_id": task_id,
+            "session_id": session.id if session else None,
+            "heartbeat_at": now,
+            "lease_expires_at": now + ttl if ttl > 0 else None,
+        }

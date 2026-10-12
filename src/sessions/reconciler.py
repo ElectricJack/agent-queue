@@ -2810,3 +2810,520 @@ class SessionReconciler:
           regardless of activity or outstanding work. Otherwise a running
           session past its profile's ``idle_timeout`` is drained to
           ``sleeping``, and its *intent* becomes ``sleeping``
+          at the same moment.  That second half is what stops the flap: a
+          drained session stops being wanted, so the up-branch does not
+          immediately undo the down-branch.
+        * **up** — a non-live row still marked ``desired_state="running"``
+          is started.  Waking is always an explicit act (an inbound message
+          via the lens, or ``aq session wake``), never an inference.
+
+        Starting is delegated to :attr:`starter`, not reimplemented here:
+        the lens owns token minting, the global-supervisor special cases
+        and work_dir resolution, and two copies of that would drift.
+        """
+        await self._converge_named_up(now)
+        named_rows = [r for r in live if r.lifecycle == "named"]
+        if not named_rows:
+            return
+        for observed in named_rows:
+            if self._is_deferred(observed.name):
+                continue
+            row = await self._still_live(observed)
+            if (row is None or row.instance_token != observed.instance_token
+                    or row.lifecycle != "named" or row.state not in {"starting", "running"}):
+                continue
+            if row.desired_state == "sleeping":
+                provider = self._provider_for(row)
+                if provider is None:
+                    continue
+                try:
+                    await provider.stop(self._handle(row), grace=2.0)
+                except Exception:
+                    logger.warning("Sleeping session %s failed; retrying next tick", row.id,
+                                   exc_info=True)
+                    continue
+                # Preserve a wake arriving during stop: the process is asleep,
+                # but running intent must launch its successor on the next tick.
+                changed = await self.db.update_session_instance(
+                    row.id, row.instance_token, state="sleeping",
+                    sleep_reason="desired_sleeping", end_reason="desired_sleeping",
+                )
+                if changed:
+                    await self._emit(
+                        "session.sleeping", session_id=row.id, name=row.name,
+                        project_id=row.project_id, reason="desired_sleeping",
+                    )
+                continue
+            if row.state != "running" or row.desired_state != "running":
+                continue
+            # Named supervisors have no task stall ladder. Recover an owned
+            # notification even if its message was consumed through the inbox
+            # and therefore no longer produces another delivery attempt.
+            resubmit = getattr(provider, "resubmit_pending", None)
+            if callable(resubmit):
+                try:
+                    if await resubmit(self._handle(row)):
+                        # Submission starts fresh work even if the previous
+                        # activity sample had already crossed the idle limit.
+                        await self.db.touch_session_activity(row.id, now)
+                        continue
+                except Exception:
+                    logger.debug("pending supervisor submit remains recoverable", exc_info=True)
+            profile = await self._profile_for(row)
+            idle_timeout = int(getattr(profile, "idle_timeout", 0) or 0)
+            if idle_timeout <= 0:
+                continue
+            last = row.last_activity or row.started_at
+            if now - last <= idle_timeout:
+                continue
+            if row.profile_id == "supervisor" or self._named_address(row) is not None:
+                try:
+                    if await self.db.has_supervision_work(project_id=row.project_id):
+                        continue
+                except Exception:
+                    # Uncertain fleet state is not evidence that supervision
+                    # is finished. Keep the session and retry on the next tick.
+                    logger.warning("deferring supervisor idle sleep for %s", row.name,
+                                   exc_info=True)
+                    continue
+            provider = self._provider_for(row)
+            if provider is None:
+                continue
+            await self._stop_session(
+                provider, row, reason="idle_timeout", state="sleeping"
+            )
+            await self._emit(
+                "session.sleeping",
+                session_id=row.id,
+                name=row.name,
+                project_id=row.project_id,
+                reason="idle_timeout",
+            )
+
+    async def _converge_named_up(self, now: float) -> None:
+        """Start named rows that are wanted but not live.
+
+        Never destructive, and never the *first* attempt at a start — the
+        lens starts a supervisor synchronously when a message arrives.  This
+        is the safety net for the case where that start failed, or the
+        process died later without anything noticing: the intent survives in
+        the row, so the next tick tries again.
+
+        Failures spend the stall ladder's budget (``max_restarts``,
+        ``restart_backoff_seconds``) rather than retrying every 5 s forever;
+        a permanently misconfigured supervisor reaches ``quarantined`` and
+        stops costing an attempt per tick.
+        """
+        if self.starter is None:
+            logger.debug("no session starter wired; named up-convergence disabled")
+            return
+        try:
+            wanted = await self.db.list_sessions(
+                lifecycle="named", desired_state="running"
+            )
+        except Exception:
+            logger.debug("listing wanted named sessions failed", exc_info=True)
+            return
+        for row in wanted:
+            # Generic agent terminals are explicitly started by the operator.
+            # They have no supervisor address and must not spend its retry
+            # budget (or be quarantined without any launch being attempted).
+            address = self._named_address(row)
+            if address is None or row.state in _LIVE_STATES:
+                continue
+            if self._is_deferred(row.name):
+                continue
+            last = row.last_activity or row.started_at or 0.0
+            backoff = self.sessions_config.restart_backoff_seconds * max(row.restarts, 1)
+            if now - last < backoff:
+                continue
+            count = await self.db.bump_session_restarts(row.id)
+            if count >= self.sessions_config.max_restarts:
+                await self._quarantine(row, None, reason="start_failed", now=now)
+                continue
+            # ``last_activity`` doubles as the backoff clock for a row that
+            # is not running: without stamping it, every tick would compute
+            # the same elapsed time and retry immediately.
+            await self.db.update_session(row.id, last_activity=now)
+            try:
+                started = await self.starter.ensure_started(
+                    kind="session", target_id=address, project_id=row.project_id
+                )
+            except Exception:
+                logger.warning("starting named session %s failed", row.name, exc_info=True)
+                continue
+            if not started:
+                logger.debug("starter declined to start %s", row.name)
+                continue
+            # The intent has been satisfied -- by a *new* row, since the
+            # lens inserts one per cold start.  Retire this row's intent so
+            # the next tick does not start a second session for the same
+            # want.  Guarded on the row still being non-live: if the start
+            # was a no-op because the process was alive all along, the row
+            # is the live one and its intent must stand.
+            fresh = await self.db.get_session(row.id)
+            if fresh is not None and fresh.state not in _LIVE_STATES:
+                await self.db.update_session(row.id, desired_state="stopped")
+            await self._emit(
+                "session.started",
+                session_id=row.id,
+                name=row.name,
+                project_id=row.project_id,
+                reason="desired_running",
+            )
+
+    @staticmethod
+    def _named_address(row: SessionRecord) -> str | None:
+        """Runtime session name -> messaging address.
+
+        The inverse of the lens's ``_resolve_runtime_session_name``:
+        ``n-supervisor--<pid>`` addresses as ``supervisor-<pid>``.  Only
+        supervisor-named sessions are wake-on-demand today; anything else
+        returns None rather than guessing an address the lens would reject.
+        """
+        name = row.name or ""
+        if not name.startswith("n-supervisor--"):
+            return None
+        return "supervisor-" + name[len("n-supervisor--") :]
+
+    def _is_deferred(self, name: str) -> bool:
+        """True when this tick could not enumerate *name*'s provider."""
+        return any(name.startswith(prefix) for prefix in self._deferred_prefixes)
+
+    async def _profile_for(self, row: SessionRecord):
+        try:
+            return await self.db.get_profile(row.profile_id)
+        except Exception:  # noqa: BLE001 -- missing profile is handled as unknown
+            return None
+
+    # -- step 6: backstop --------------------------------------------------
+
+    async def _step_backstop(self, live: list[SessionRecord], now: float) -> None:
+        """The final net above the ladder — not the primary defense.
+
+        ``agents.stuck_timeout_seconds`` used to be an ``asyncio.wait_for``
+        that killed work outright.  Here it only fires after the ladder has
+        had its full run, and it force-kills rather than silently dropping.
+
+        An idle pool session (``task_id is None``) is never stale here — it
+        is not holding anyone's work, so there is nothing this backstop is
+        protecting against.  A pool session holding a task is keyed on
+        *inactivity* (``last_activity``, falling back to ``started_at`` only
+        when there is no activity signal yet), not on how long the session
+        has existed — a healthy long-lived pool session must not be
+        force-killed just for being old.
+        """
+        limit = float(getattr(self.config.agents_config, "stuck_timeout_seconds", 0) or 0)
+        if limit <= 0:
+            return
+        for row in live:
+            if row.lifecycle not in ("task", "pool") or not row.task_id:
+                continue
+            if await self._waiting_for_question(row, now):
+                continue
+            waiting, resumed = await self._wait_lease(row, now)
+            if waiting:
+                continue
+            if resumed and now - resumed <= float(self.sessions_config.lease_ttl_seconds):
+                continue  # one full lease interval to consume the result
+            if row.lifecycle == "pool":
+                last = row.last_activity if row.last_activity is not None else row.started_at
+                last = max(last or 0.0, resumed)
+                elapsed = now - (last or now)
+            else:
+                baseline = row.started_at
+                questions = getattr(self.orchestrator, "agent_questions", None)
+                if questions is not None:
+                    resumed_at = await questions.backstop_activity_at(row)
+                    if resumed_at is not None:
+                        baseline = resumed_at
+                baseline = max(baseline or 0.0, resumed)
+                elapsed = now - (baseline or now)
+            if elapsed <= limit:
+                continue
+            fresh = await self._still_live(row)
+            if fresh is None:
+                continue  # already stopped/slept/quarantined this tick
+            row = fresh
+            if row.lifecycle == "pool":
+                if self.orchestrator is None:
+                    logger.warning(
+                        "Pool session %s exceeded stuck_timeout_seconds but no "
+                        "orchestrator is wired — skipping", row.id,
+                    )
+                    continue
+                task = await self.db.get_task(row.task_id)
+                logger.warning(
+                    "Pool session %s exceeded stuck_timeout_seconds (%ss) — terminating",
+                    row.id,
+                    limit,
+                )
+                if task is not None:
+                    record = await self._record_worker_failure(row, task, "stuck_timeout", now)
+                    if record is None:
+                        continue
+                    if record["count"] >= 2:
+                        await self._recover_guarded_failure(
+                            self._provider_for(row), row, task, record, now
+                        )
+                        continue
+                    await self.db.set_task_meta(task.id, "needs_attention", "exited_holding_task")
+                await self.orchestrator._terminate_pool_session(row, reason="stuck_timeout")
+                continue
+            provider = self._provider_for(row)
+            if provider is None:
+                continue
+            task = await self.db.get_task(row.task_id)
+            if task is not None and task.status is TaskStatus.IN_PROGRESS:
+                record = await self._record_worker_failure(row, task, "stuck_timeout", now)
+                if record is None:
+                    continue
+            logger.warning(
+                "Session %s exceeded stuck_timeout_seconds (%ss) — force-killing",
+                row.id,
+                limit,
+            )
+            await self._stop_session(provider, row, reason="stuck_timeout")
+            if task is not None and task.status is TaskStatus.IN_PROGRESS:
+                await self.db.set_task_meta(task.id, "needs_attention", "stuck_timeout")
+                await self.db.transition_task(
+                    task.id,
+                    TaskStatus.BLOCKED,
+                    context="stuck_timeout",
+                    assigned_agent_id=None,
+                )
+                await self._release_task(task, row, reason="stuck_timeout")
+                await self._emit(
+                    "task.quarantined",
+                    task_id=task.id,
+                    project_id=task.project_id,
+                    title=task.title,
+                    session_id=row.id,
+                    reason="stuck_timeout",
+                )
+                await self._emit(
+                    "task.failed",
+                    task_id=task.id,
+                    project_id=task.project_id,
+                    title=task.title,
+                    status=TaskStatus.BLOCKED.value,
+                    context="stuck_timeout",
+                    error=(
+                        f"session {row.id} exceeded stuck_timeout_seconds "
+                        f"({limit:g}s)"
+                    ),
+                )
+
+    # -- shared actions ----------------------------------------------------
+
+    async def _still_live(self, row: SessionRecord) -> SessionRecord | None:
+        """Re-read *row*, returning it only if it is still in a live state.
+
+        ``live`` is snapshotted once per tick by ``_step_observe``, but the
+        steps that follow mutate it.  A later step acting on the snapshot
+        would undo an earlier one — the exit classifier sleeps a session
+        with ``sleep_reason="rate_limit"``, and then the orphan step, still
+        holding the pre-tick row, sees a PAUSED task and stops it.  Every
+        step that *writes* re-reads first.
+        """
+        try:
+            fresh = await self.db.get_session(row.id)
+        except Exception:
+            logger.debug("could not re-read session %s", row.id, exc_info=True)
+            return None
+        if fresh is None or fresh.state not in _LIVE_STATES:
+            return None
+        return fresh
+
+    async def _release_task(self, task, session: SessionRecord | None = None, *,
+                             reason: str = "released") -> None:
+        """Free the agent and the workspace lock a terminal task was holding.
+
+        Every non-DRAINED verdict owes this.  The legacy runtime always did
+        it (``execution.py``'s timeout / error / failure branches all call
+        ``update_agent(..., IDLE)`` and ``_release_workspaces_for_task``);
+        the first cut of this module transitioned the task and stopped,
+        which is a regression, not parity.
+
+        It matters because ``AgentReconciler``'s orphan sweep only resets a
+        BUSY agent whose *task row is missing* -- a PAUSED or BLOCKED task
+        still has one, so the agent stayed BUSY and the workspace stayed
+        locked until the daemon restarted.  With N crash-looping tasks that
+        is N agents and N workspaces burned, and the re-queued task cannot
+        acquire a workspace because its own dead predecessor still holds
+        the lock.
+
+        A pool session is never the generic release path: it goes through
+        ``_terminate_pool_session`` so its process is confirmed stopped before
+        the durable worker becomes available for another session.
+        """
+        if task is None or self.orchestrator is None:
+            return
+        if session is not None and session.lifecycle == "pool":
+            await self.orchestrator._terminate_pool_session(session, reason=reason)
+            return
+        release_integration = getattr(
+            self.orchestrator, "arelease_integration_writer_for_retry", None
+        )
+        if release_integration is not None:
+            released = await release_integration(task, reason=reason)
+            if released is False:
+                # Unknown termination/detach is not release evidence.  Keep
+                # the workspace locked so no successor can write concurrently.
+                return
+        release = getattr(self.orchestrator, "release_session_task_resources", None)
+        if release is None:
+            return
+        try:
+            await release(task.id, agent_id=task.assigned_agent_id, expect_claim_epoch=task.claim_epoch)
+        except Exception:
+            logger.exception(
+                "Session reconciler: releasing resources for task %s failed",
+                task.id,
+            )
+
+    async def _carry_resume_key(self, row: SessionRecord, task) -> None:
+        """Hand this session's conversation id to the task that outlives it.
+
+        ``--session-id`` pinned the harness's own id to ours at launch, so
+        ``sessions.session_key`` *is* the ``--resume`` argument.  Writing it
+        into task metadata is the whole of "relaunch with ``--resume`` so
+        conversation context survives" -- ``_launch_session_for_task``
+        already reads ``session_resume_key`` back on the next start, and
+        before this nothing ever wrote it.
+        """
+        if task is None or not row.session_key:
+            return
+        if row.harness == "codex" and row.session_key == row.id:
+            return  # Legacy AQ UUID placeholders are not Codex resume identities.
+        try:
+            await self.db.set_task_meta(task.id, "session_resume_key", row.session_key)
+        except Exception:
+            logger.debug("could not persist resume key for task %s", task.id, exc_info=True)
+
+    async def _try_nudge(self, provider, row: SessionRecord, text: str) -> _NudgeOutcome:
+        """Deliver *text* to *row*, and say which of the three things happened."""
+        if not provider.supports(Cap.NUDGE):
+            return _NudgeOutcome(False)
+        try:
+            await provider.nudge(self._handle(row), text)
+            return _NudgeOutcome(True)
+        except NudgeDeferred as exc:
+            logger.debug(
+                "Nudge to session %s deferred (%s); terminal input untouched", row.id, exc
+            )
+            return _NudgeOutcome(None, deferral=exc)
+        except NotSubmitted as exc:
+            # WARNING, not info: text left in a composer blocks every later
+            # nudge on the empty-composer guard, so "will retry" can mean
+            # "never" — the operator has to be able to see it in the log.
+            dirty = bool(getattr(exc, "composer_dirty", False))
+            logger.warning(
+                "Nudge to session %s (%s) on task %s pasted but not submitted: %s%s",
+                row.id,
+                row.name,
+                row.task_id,
+                exc,
+                " — text is stuck in the composer" if dirty else " — will retry",
+            )
+            await self._emit(
+                "session.nudge_unsubmitted",
+                session_id=row.id,
+                name=row.name,
+                task_id=row.task_id,
+                project_id=row.project_id,
+                composer_dirty=dirty,
+                reason=str(exc),
+            )
+            return _NudgeOutcome(False)
+        except CapabilityUnsupported:
+            return _NudgeOutcome(False)
+        except Exception:
+            logger.debug("nudge failed for %s", row.id, exc_info=True)
+            return _NudgeOutcome(False)
+
+    async def _stop_session(
+        self,
+        provider,
+        row: SessionRecord,
+        *,
+        reason: str,
+        state: str = "stopped",
+    ) -> None:
+        try:
+            await provider.stop(self._handle(row), grace=2.0)
+        except Exception:
+            logger.warning("Stopping session %s failed", row.id, exc_info=True)
+        # ``sleep_reason`` is forensics: why this session is not running.
+        # Only *write* it when this call is the reason.  Re-sending the
+        # stale in-memory value let a backstop kill on a RATE_LIMIT-slept
+        # session overwrite ``"rate_limit"`` with ``None`` -- destroying the
+        # one field that explained what happened.
+        fields = {"state": state, "desired_state": state, "end_reason": reason}
+        if state == "sleeping":
+            fields["sleep_reason"] = reason
+        await self.db.update_session(row.id, **fields)
+
+    async def _quarantine(self, row: SessionRecord, task, *, reason: str, now: float) -> None:
+        """Terminal by default — nothing auto-releases a quarantine."""
+        provider = self._provider_for(row)
+        if provider is not None:
+            try:
+                await provider.stop(self._handle(row), grace=2.0)
+            except Exception:
+                logger.debug("stop during quarantine failed for %s", row.id, exc_info=True)
+        await self.db.update_session(
+            row.id,
+            # Stopped is terminal in the session state machine. Failed named
+            # cold starts still need their restart intent retired and their
+            # quarantine evidence recorded without an illegal state change.
+            state="stopped" if row.state == "stopped" else "quarantined",
+            desired_state="stopped",
+            quarantined_at=now,
+            ended_at=now,
+            end_reason=reason,
+            sleep_reason=reason,
+        )
+        await self._emit(
+            "session.quarantined",
+            session_id=row.id,
+            name=row.name,
+            task_id=row.task_id,
+            project_id=row.project_id,
+            reason=reason,
+        )
+        if row.lifecycle == "pool":
+            await self._emit(
+                "pool.session_quarantined",
+                project_id=row.project_id,
+                profile_id=row.profile_id,
+                session_id=row.id,
+                name=row.name,
+                reason=reason,
+            )
+        if task is not None:
+            await self.db.set_task_meta(task.id, "needs_attention", f"session_{reason}")
+            await self.db.transition_task(
+                task.id,
+                TaskStatus.BLOCKED,
+                context=f"session_{reason}",
+                assigned_agent_id=None,
+            )
+            await self._release_task(task, row, reason=reason)
+            await self._emit(
+                "task.quarantined",
+                task_id=task.id,
+                project_id=task.project_id,
+                title=task.title,
+                session_id=row.id,
+                reason=reason,
+            )
+            await self._emit(
+                "task.failed",
+                task_id=task.id,
+                project_id=task.project_id,
+                title=task.title,
+                status=TaskStatus.BLOCKED.value,
+                context=f"session_{reason}",
+                error=f"session {row.id} quarantined: {reason}",
+            )
