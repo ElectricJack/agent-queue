@@ -1116,9 +1116,13 @@ async def _hosted_listing(client, path, *, key):
 class AuthenticatedGitHubObserver:
     """Build canonical evidence exclusively from authenticated GitHub API reads."""
 
-    def __init__(self, client: Any, *, expected_event: str | None = None):
+    def __init__(
+        self, client: Any, *, expected_event: str | None = None,
+        ignore_cancelled_batches: bool = False,
+    ):
         self.client = client
         self.expected_event = expected_event
+        self.ignore_cancelled_batches = ignore_cancelled_batches
 
     async def observe(
         self, trust: IntegrationTrustManifest | IntegrationCITrust, head_sha: str
@@ -1130,6 +1134,28 @@ class AuthenticatedGitHubObserver:
             f"/repos/{owner}/{repository}/actions/runs?head_sha={head_sha}&per_page=100",
             key="workflow_runs",
         )
+        cancelled_batch_suites: set[int] = set()
+        if self.ignore_cancelled_batches:
+            suites: dict[int, list[dict[str, Any]]] = {}
+            for record in workflow_records:
+                suite_id = _strict_int(record.get("check_suite_id"))
+                if suite_id is not None and suite_id > 0:
+                    suites.setdefault(suite_id, []).append(record)
+            for suite_id, runs in suites.items():
+                # A successful, pending or malformed rerun of the same suite
+                # must still be observed through the normal latest-attempt gate.
+                if all(
+                    run.get("head_sha") == head_sha
+                    and run.get("event") == "push"
+                    and isinstance(run.get("head_branch"), str)
+                    and run["head_branch"].startswith("aq/batches/")
+                    and run.get("status") == "completed"
+                    and run.get("conclusion") in {"cancelled", "skipped"}
+                    and all((_strict_int(run.get(key)) or 0) > 0
+                            for key in ("id", "workflow_id", "run_attempt"))
+                    for run in runs
+                ):
+                    cancelled_batch_suites.add(suite_id)
         allowed_suites = (
             {
                 _strict_int(record.get("check_suite_id"))
@@ -1179,6 +1205,24 @@ class AuthenticatedGitHubObserver:
             if not candidates:
                 missing.append(name)
                 continue
+            # Source admission can retain evidence on an already tested SHA
+            # when another batch using it was cancelled, including jobs that
+            # finished before cancellation. Preserve failure/pending candidates
+            # and cancellation without alternative evidence for the check name.
+            if cancelled_batch_suites:
+                alternatives = [
+                    item for item in candidates
+                    if not (
+                        item[1].get("head_sha") == head_sha
+                        and item[1].get("status") == "completed"
+                        and item[1].get("conclusion") in {"success", "cancelled", "skipped"}
+                        and isinstance(item[1].get("check_suite"), dict)
+                        and _strict_int(item[1]["check_suite"].get("id"))
+                        in cancelled_batch_suites
+                    )
+                ]
+                if alternatives:
+                    candidates = alternatives
             _, newest = max(candidates, key=lambda item: item[0])
             selected_app = newest.get("app")
             selected_app_id = (

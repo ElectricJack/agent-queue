@@ -308,23 +308,6 @@ class ResolvedTask:
         return self.status in TERMINAL_STATUSES
 
 
-@dataclass(frozen=True)
-class MergeOutcome:
-    """What merging one source into the candidate produced.
-
-    ``conflicting_files`` names the conflicts a person has to resolve; generated
-    files are never among them under a ``regenerate`` policy.  ``regenerated``
-    names the generated files rebuilt after the merge, and ``regeneration`` is
-    the evidence of a rebuild that failed.
-    """
-
-    ok: bool
-    detail: str = ""
-    conflicting_files: tuple[str, ...] = ()
-    regenerated: tuple[str, ...] = ()
-    regeneration: dict | None = None
-
-
 class DevelopmentPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
     validation: str = "focused"
