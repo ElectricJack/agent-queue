@@ -1254,6 +1254,7 @@
         "tests/test_lifecycle_cleanup.py",
         "tests/test_models.py",
         "tests/test_reopen_with_feedback.py",
+        "tests/test_stall_watch.py",
         "tests/test_state_machine.py",
         "tests/test_task_close_completion_recovery.py",
         "tests/test_task_close_summary_enforcement.py",
@@ -16204,6 +16205,33 @@
         "parametrize"
       ],
       "summary": "Ratchet: SQLite stays removed."
+    },
+    "tests/test_stall_watch.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "digest": "sha256:22ce75c1d88d6b3db131e288f8044d889df830f9c9e5c6a918ded30e15cd8a1c",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.commands.system_commands",
+        "src.database",
+        "src.database.queries.stall_watch_queries",
+        "src.database.tables",
+        "src.models",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.profiles.capabilities",
+        "src.stall_watch"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Stuck-task observations and the repeated, notification-only system timer."
     },
     "tests/test_startup_profile_migration.py": {
       "areas": [

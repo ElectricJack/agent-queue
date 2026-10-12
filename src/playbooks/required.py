@@ -31,7 +31,7 @@ REQUIRED_SYSTEM_PLAYBOOK_IDS = (
 )
 # Activated only by the first-install receipt, never on an existing installation.
 # These defaults are not readiness requirements.
-DEFAULT_SYSTEM_PLAYBOOK_IDS = ("supervisor-failure-triage", "default-pipeline")
+DEFAULT_SYSTEM_PLAYBOOK_IDS = ("supervisor-failure-triage", "default-pipeline", "stuck-task-watch")
 # Explicit installation inventory. Morning reporting still requires operator
 # activation and reports.morning.enabled. Project defaults are code-owned
 # creation/graft settings in this release, not a separate shipped playbook.

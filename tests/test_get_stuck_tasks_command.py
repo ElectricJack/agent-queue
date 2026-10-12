@@ -181,8 +181,8 @@ async def test_threshold_overrides_respected(handler, db):
 
 
 @pytest.mark.asyncio
-async def test_non_active_statuses_ignored(handler, db):
-    """READY/DEFINED/COMPLETED tasks never appear, regardless of age."""
+async def test_non_active_statuses_ignored_except_ready_without_route(handler, db):
+    """Only READY can join active statuses, when its route is not claimable."""
     await db.create_task(_task("t-def", status=TaskStatus.DEFINED))
     await db.create_task(_task("t-ready", status=TaskStatus.READY))
     await db.create_task(_task("t-done", status=TaskStatus.COMPLETED))
@@ -191,7 +191,9 @@ async def test_non_active_statuses_ignored(handler, db):
     # Even hours in the future.
     future_now = time.time() + 24 * 3600
     result = await handler.execute("get_stuck_tasks", {"now": future_now})
-    assert result["stuck"] == []
+    assert [row["id"] for row in result["stuck"]] == ["t-ready"]
+    assert result["stuck"][0]["kind"] == "STUCK READY"
+    assert "frontier_route_not_claimable" in result["stuck"][0]["reason"]
 
 
 @pytest.mark.asyncio
