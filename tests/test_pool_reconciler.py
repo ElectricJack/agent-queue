@@ -901,8 +901,9 @@ class TestReconcilePools:
         assert not os.path.exists(claim_path)
 
     @pytest.mark.parametrize("stop_confirmed", [False, True])
+    @pytest.mark.parametrize("refusal_drain", [False, True])
     async def test_terminate_pool_session_retains_attached_integration_owner(
-        self, orch, db, monkeypatch, stop_confirmed
+        self, orch, db, monkeypatch, stop_confirmed, refusal_drain
     ):
         await ready(db, "t1")
         await orch._reconcile_pools()
@@ -925,13 +926,27 @@ class TestReconcilePools:
                 )
             )
 
+        if refusal_drain:
+            await db.update_session(
+                session.id, claim_phase="preparing", last_claim_epoch=0,
+                claim_failure_count=2, claim_failure_reason="index.lock",
+            )
+            session = await db.record_pool_claim_failure(
+                session.id, instance_token=session.instance_token,
+                claim_epoch=0, reason="index.lock", now=time.time(),
+            )
+            assert session.desired_state == "stopped"
+            assert not (await db.get_workspace(workspace.id)).enabled
+
         if not stop_confirmed:
             # The fake confirms a stop from its registry; a provider that
             # cannot prove the exit must leave the session unstopped.
             provider = orch.session_providers.create(session.provider, orch.config)
             monkeypatch.setattr(provider, "confirm_stopped", AsyncMock(return_value=False))
 
-        await orch._terminate_pool_session(session, reason="integration_owner")
+        await orch._terminate_pool_session(
+            session, reason="claim_refusals" if refusal_drain else "integration_owner",
+        )
 
         updated = await db.get_session(session.id)
         agent = await db.get_agent(session.agent_id)
@@ -941,6 +956,7 @@ class TestReconcilePools:
         assert updated.task_id == "t1"
         assert agent.state is not AgentState.IDLE
         assert (await db.get_workspace(workspace.id)).locked_by_agent_id == session.agent_id
+        assert (await db.get_workspace(workspace.id)).enabled is not refusal_drain
         assert os.path.exists(claim_path)
 
     async def test_startup_warns_when_pool_profiles_but_swarm_disabled(self, orch, caplog):

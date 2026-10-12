@@ -962,9 +962,32 @@ class ClaimCommandsMixin:
                         return self._simple(
                             ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap
                         )
-                    return await self._prepare_and_activate_locked(
+                    outcome = await self._prepare_and_activate_locked(
                         session, row, task, cap, slot=slot, project=project, admission=admission
                     )
+                    if outcome["result"] == ClaimResult.PREPARE_FAILED.value:
+                        failed = await self.db.record_pool_claim_failure(
+                            session.id, instance_token=session.instance_token,
+                            claim_epoch=task.claim_epoch, reason=outcome.get("reason") or "",
+                            now=time.time(),
+                        )
+                        if failed is not None:
+                            outcome["claim_failure_count"] = failed.claim_failure_count
+                            if failed.desired_state == "stopped":
+                                logger.error(
+                                    "Pool session %s: %s identical claim refusals (%s); "
+                                    "draining and quarantining workspace %s",
+                                    failed.id, failed.claim_failure_count,
+                                    failed.claim_failure_reason, failed.work_dir,
+                                )
+                                return self._simple(
+                                    ClaimResult.DRAIN_REQUESTED,
+                                    f"{failed.claim_failure_count} identical claim refusals: "
+                                    f"{failed.claim_failure_reason}; workspace quarantined. "
+                                    "Run `aq session drain-ack` and exit 0.",
+                                    failed, cap,
+                                )
+                    return outcome
                 except Exception as exc:
                     if not _retryable_preparation_error(exc):
                         raise

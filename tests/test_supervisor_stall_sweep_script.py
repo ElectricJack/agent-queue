@@ -502,3 +502,25 @@ def test_global_sweep_runs_development_checks_only_for_active_agent_queue(
 def test_script_is_executable_and_parses():
     assert os.access(SCRIPT, os.X_OK)
     compile(SCRIPT.read_text(), str(SCRIPT), "exec")
+
+
+@pytest.mark.parametrize("claims,phase,failures,ready,expected", [
+    (0, None, 2, False, True), (0, None, 0, True, True),
+    (0, None, 0, False, False), (1, None, 2, True, False),
+    (0, "preparing", 0, True, False), (0, "preparing", 2, False, True),
+    (0, "active", 2, True, False), (0, "claiming", 2, True, False),
+])
+def test_never_claimed_pool_is_reported_despite_fresh_activity(
+    tmp_path, claims, phase, failures, ready, expected
+):
+    responses = _scoped_responses([_task("ready", "READY", age_s=30)] if ready else [])
+    responses["aq"]["session list"] = [
+        _session("retrying", "rom", None) | {
+            "lifecycle": "pool", "stalled": False, "idle_seconds": 0,
+            "claims": claims, "claim_phase": phase, "claim_failure_count": failures,
+            "claim_failure_reason": "own branch handoff is unproven",
+        },
+    ]
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert ("POOL-NO-CLAIM retrying" in proc.stdout) is expected

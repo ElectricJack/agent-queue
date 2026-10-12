@@ -1122,6 +1122,9 @@ class ClaimQueryMixin:
                     claims=sessions.c.claims + 1,
                     last_claim_epoch=epoch,
                     last_claim_result="claimed",
+                    claim_failure_count=0,
+                    claim_failure_reason=None,
+                    claim_failure_at=None,
                 )
             )
             if supports_returning(c):

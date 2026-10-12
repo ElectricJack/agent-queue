@@ -603,3 +603,29 @@ async def test_completed_undelivered_line_names_only_branches_nothing_will_move(
     monkeypatch.setattr(integration_checks, "completed_undelivered", slow)
     monkeypatch.setattr(module, "_COMPLETED_UNDELIVERED_BUDGET_SECONDS", 0.01)
     assert await module._completed_undelivered_findings(context, {"one"}, NOW) == []
+
+
+@pytest.mark.parametrize("claims,phase,failures,ready,expected", [
+    (0, None, 2, False, True), (0, None, 0, True, True),
+    (0, None, 0, False, False), (1, None, 2, True, False),
+    (0, "preparing", 0, True, False), (0, "preparing", 2, False, True),
+    (0, "active", 2, True, False), (0, "claiming", 2, True, False),
+])
+async def test_pool_without_claim_uses_progress_not_activity(
+    context, claims, phase, failures, ready, expected
+):
+    row = session("retrying")
+    row.claims, row.claim_phase, row.claim_failure_count = claims, phase, failures
+    row.claim_failure_reason = "own branch handoff is unproven"
+    row.last_activity = NOW
+    context.db.sessions = [row]
+    findings = await module._session_findings(context, {"one"}, [task("ready")] if ready else [], NOW)
+    assert [f["kind"] for f in findings] == (["pool_without_claim"] if expected else [])
+
+
+async def test_never_claimed_worker_requires_own_projects_ready_work(context):
+    row = session("standby")
+    row.claims = 0
+    row.last_activity = NOW
+    context.db.sessions = [row]
+    assert await module._session_findings(context, {"one", "two"}, [task("other", project="two")], NOW) == []
