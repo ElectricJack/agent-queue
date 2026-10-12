@@ -153,7 +153,7 @@ async def test_reroute_leaves_read_history_enabled_projects_and_global_addresses
 
 
 async def test_migration_backfills_false_is_idempotent_and_defaults_new_rows(db):
-    revision = import_module("migrations.versions.a00000000091_project_supervisor_opt_in")
+    revision = import_module("migrations.versions.a00000000092_project_supervisor_opt_in")
 
     def migrate_and_check(conn):
         with Operations.context(MigrationContext.configure(conn)):
