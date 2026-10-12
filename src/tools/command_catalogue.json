@@ -296,7 +296,7 @@
     },
     {
       "name": "edit_project",
-      "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
+      "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, supervisor_enabled (default false), assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -307,6 +307,10 @@
           "name": {
             "type": "string",
             "description": "New project name (optional)"
+          },
+          "supervisor_enabled": {
+            "type": "boolean",
+            "description": "Enable a project supervisor on the next message. Default false: the global supervisor handles this project. Disabling drains the running project supervisor after its current turn."
           },
           "credit_weight": {
             "type": "number",

@@ -61,6 +61,7 @@ projects = Table(
     # Read-side rebinding of immutable pre-cutover root origins, not provenance.
     Column("default_branch_cutover", JSONB(none_as_null=True), nullable=True),
     Column("preferred_provider", Text, nullable=True),
+    Column("supervisor_enabled", Boolean, nullable=False, server_default=false()),
     # The router binding (mandatory-routing spec §8, revision a00000000043):
     # every project names the routing playbook that routes its tasks.  There
     # is no project default profile; ``default_profile_id`` was dropped.

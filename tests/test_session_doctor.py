@@ -31,6 +31,21 @@ CHECK = "sessions.stuck_composer"
 NUDGE = "No progress for 8 min on task t1. Close or continue: ..."
 
 
+async def test_doctor_flags_running_disabled_project_supervisor(db):
+    row = SessionRecord(
+        id="disabled-sup", project_id=PROJECT_ID, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--proj", lifecycle="named", work_dir="/tmp",
+        epoch="e", instance_token="token", started_at=1, state="running",
+    )
+    await db.create_session(row)
+    result = await session_checks.run_check(db, None, "sessions.disabled_project_supervisors")
+    assert result.severity is Severity.WARN
+    assert result.data["sessions"][0]["session_id"] == row.id
+    await db.update_project(PROJECT_ID, supervisor_enabled=True)
+    result = await session_checks.run_check(db, None, "sessions.disabled_project_supervisors")
+    assert result.severity is Severity.OK
+
+
 @pytest.fixture
 async def db(tmp_path):
     from src.database import Database

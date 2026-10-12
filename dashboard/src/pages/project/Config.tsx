@@ -16,6 +16,7 @@ import {
 import DeleteProjectModal from "../../components/DeleteProjectModal";
 import PolicyProfiles from "./PolicyProfiles";
 import GitIdentitySection from "./GitIdentitySection";
+import ProjectSupervisorToggle from "./ProjectSupervisorToggle";
 import {
   GIT_IDENTITY_SECTION_HINT,
   type GitIdentityFieldErrors,
@@ -34,6 +35,7 @@ export interface FormState extends GitIdentityFormFields {
   max_concurrent_agents: string;
   credit_weight: string;
   budget_limit: string;
+  supervisor_enabled: boolean;
 }
 
 const EMPTY_FORM: FormState = {
@@ -42,6 +44,7 @@ const EMPTY_FORM: FormState = {
   max_concurrent_agents: "",
   credit_weight: "",
   budget_limit: "",
+  supervisor_enabled: false,
   git_identity_override: false,
   git_identity_name: "",
   git_identity_email: "",
@@ -110,6 +113,7 @@ export default function ProjectConfig() {
         max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
         credit_weight: parseOptionalFloat(form.credit_weight),
         budget_limit: parseOptionalFloat(form.budget_limit),
+        supervisor_enabled: form.supervisor_enabled,
         ...identity,
       };
       await editProject.mutateAsync(body);
@@ -245,6 +249,16 @@ export default function ProjectConfig() {
           )}
         </Row>
       </div>
+
+      <ProjectSupervisorToggle
+        enabled={form.supervisor_enabled}
+        onChange={(enabled) => {
+          if (!editing) {
+            setForm({ ...projectToForm(project), supervisor_enabled: enabled });
+            setEditing(true);
+          } else setForm({ ...form, supervisor_enabled: enabled });
+        }}
+      />
 
       <section
         aria-labelledby="project-git-identity-heading"
@@ -396,6 +410,7 @@ export interface ProjectData extends GitIdentityProjectData {
   max_concurrent_agents?: number | null;
   credit_weight?: number | null;
   budget_limit?: number | null;
+  supervisor_enabled?: boolean | null;
 }
 
 export function projectToForm(p: ProjectData): FormState {
@@ -406,6 +421,7 @@ export function projectToForm(p: ProjectData): FormState {
       p.max_concurrent_agents != null ? String(p.max_concurrent_agents) : "",
     credit_weight: p.credit_weight != null ? String(p.credit_weight) : "",
     budget_limit: p.budget_limit != null ? String(p.budget_limit) : "",
+    supervisor_enabled: p.supervisor_enabled ?? false,
     ...gitIdentityFormFields(p),
   };
 }

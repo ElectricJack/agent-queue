@@ -640,8 +640,8 @@ def test_s5_claim_wait_is_bounded_and_reports_fixture_and_last_claim(s5_surfaces
         assert detail in str(error.value)
 
 
-@pytest.fixture
-def s18_surfaces(monkeypatch):
+@pytest.fixture(params=[False, True], ids=["global-supervisor", "project-supervisor"])
+def s18_surfaces(monkeypatch, request):
     smoke = _load_smoke()
     worker = smoke.Worker(session_id="triage-worker", token="triage-token")
     responses = [{"result": "claimed", "task": {"id": "triage-task"}, "claim_epoch": 7}]
@@ -654,6 +654,9 @@ def s18_surfaces(monkeypatch):
         return {"success": True}
 
     def fake_api(command, args):
+        if command == "get_project":
+            assert args == {"project_id": smoke.PROJECT}
+            return {"supervisor_enabled": request.param}
         if command == "list_playbook_runs":
             return {"runs": [{"run_id": "triage-run"}]}
         if command == "inspect_playbook_run":
@@ -662,8 +665,11 @@ def s18_surfaces(monkeypatch):
                 "lifecycle": "completed",
             }}
         if command == "message_list":
-            assert args["to_id"] == f"supervisor-{smoke.PROJECT}"
-            return {"messages": [{"id": "triage-notice", "body": "Failed triage-task"}]}
+            recipient = f"supervisor-{smoke.PROJECT}" if request.param else "supervisor-global"
+            assert args["to_id"] == recipient
+            return {"messages": [{
+                "id": "triage-notice", "body": "Failed triage-task", "project_id": smoke.PROJECT,
+            }]}
         raise AssertionError(command)
 
     monkeypatch.setattr(smoke, "aq", fake_aq)

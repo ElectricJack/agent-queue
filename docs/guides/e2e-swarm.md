@@ -507,8 +507,10 @@ command-bearing system playbooks; it still starts no model process or
 supervisor session. The scenario gives a disposable pool worker one explicit
 assignment, closes it with a hard failure, then verifies the resulting
 `task.failed` event completed the reviewed `supervisor-failure-triage` run for
-that task and created exactly one durable notice for `supervisor-e2e`. It
-deletes the terminal fixture afterward. *Regression it catches: a reviewed
+that task and created a durable notice retaining project `e2e`. The recipient
+is `supervisor-global` by default, or `supervisor-e2e` when that project has
+opted in to a project supervisor. It deletes the terminal fixture afterward.
+*Regression it catches: a reviewed
 failure-triage bundle that is not activated, does not receive terminal worker
 events, calls the wrong command, or fails to persist its supervisor incident.*
 
