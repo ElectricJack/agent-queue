@@ -101,24 +101,26 @@ async def test_creates_one_agent_for_one_ready_task(db):
     ("existing", "expected_name"),
     [
         ([], "Review Spec Ingest"),
-        ([("spec-ingest", "Review Spec Ingest", True)], "Review Spec Ingest 2"),
+        ([("named-worker", "Review Spec Ingest", True)], "Review Spec Ingest 2"),
         (
             [
-                ("spec-ingest", "Review Spec Ingest", True),
-                ("spec-ingest", "Review Spec Ingest 2", True),
+                ("named-worker", "Review Spec Ingest", True),
+                ("named-worker", "Review Spec Ingest 2", True),
             ],
             "Review Spec Ingest 3",
         ),
-        ([("spec-ingest", "Review Spec Ingest 2", True)], "Review Spec Ingest"),
-        ([("spec-ingest", "Review Spec Ingest", False)], "Review Spec Ingest"),
+        ([("named-worker", "Review Spec Ingest 2", True)], "Review Spec Ingest"),
+        ([("named-worker", "Review Spec Ingest", False)], "Review Spec Ingest"),
         ([("other-profile", "Review Spec Ingest", True)], "Review Spec Ingest"),
-        ([("spec-ingest", "Operator Name", True)], "Review Spec Ingest"),
+        ([("named-worker", "Operator Name", True)], "Review Spec Ingest"),
     ],
 )
 async def test_new_agent_uses_display_name_with_only_needed_suffix(db, existing, expected_name):
-    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest")
-    await db.update_profile("spec-ingest", name="Review Spec Ingest")
-    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="spec-ingest")
+    # Ordinary profiles can create a replacement identity; persistent roles
+    # instead wait for their saved agent, regardless of its availability.
+    await _seed_project_with_profile(db, project_id="p", profile_id="named-worker")
+    await db.update_profile("named-worker", name="Review Spec Ingest")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="named-worker")
     # These unavailable identities do not serve demand, but enabled agents of
     # the same profile still reserve their names. Other roster entries do not.
     for index, (profile_id, name, enabled) in enumerate(existing):
@@ -132,7 +134,7 @@ async def test_new_agent_uses_display_name_with_only_needed_suffix(db, existing,
     agents = await db.list_agents()
     created = [agent for agent in agents if not agent.id.startswith("existing-")]
 
-    assert report.created == [("p", "spec-ingest")]
+    assert report.created == [("p", "named-worker")]
     assert len(created) == 1
     assert created[0].name == expected_name
     assert (await reconciler.reconcile()).created == []

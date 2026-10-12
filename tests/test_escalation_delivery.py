@@ -179,7 +179,9 @@ async def test_reply_at_root_write_boundary_suppresses_the_pending_human_notific
 async def test_reply_at_later_write_boundaries_suppresses_the_old_question(db, boundary):
     await make_incident(db)
     sink = SinkTransport()
-    clock = Clock()
+    # Begin before the reminder deadline so the later tick produces the
+    # state edit where the reply is injected, rather than an earlier tick.
+    clock = Clock(now=10.0)
     config = make_config()
     config.escalations.stateful = True
     config.escalation.reminder_minutes = 5
