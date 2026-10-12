@@ -612,6 +612,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Layered prompt assembly."),
     ("src/prompt_manager.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Prompt template storage."),
+    ("src/task_templates.py", "vault", "docs/guides/generated-task-templates.md",
+     PRODUCTION, "Context-scoped vault templates for generated worker instructions."),
     ("src/override_handler.py", "vault", "docs/concepts/configuration-and-vault.md",
      PRODUCTION, "Per-scope prompt overrides."),
     ("src/readme_handler.py", "vault", "docs/concepts/configuration-and-vault.md",

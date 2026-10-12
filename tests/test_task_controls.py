@@ -1090,10 +1090,13 @@ async def test_repeated_checkpoint_failure_converges_and_salvages_dirty_work(
 
 
 async def test_pause_cleanup_cascade_backs_off_then_stops_retrying(env, tmp_path, monkeypatch):
-    from src.orchestrator import task_checkpoint
+    from src.orchestrator import core, task_checkpoint
 
     repo, _ = make_git_repo(tmp_path, "cascade")
     await running_session(env, repo)
+    # Stop and database I/O can outlast the two-second retry window on CI.
+    # Pin only the checkpoint clock so backoff assertions do not depend on host speed.
+    monkeypatch.setattr(core, "time", SimpleNamespace(time=lambda: 1_800_000_000.0))
     calls = []
 
     async def unusable(*_args, **_kwargs):

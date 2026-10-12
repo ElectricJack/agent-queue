@@ -637,6 +637,7 @@ class TestDesiredStateCommands:
         self, handler, db, provider, providers, config
     ):
         await _make_task(db)
+        await db.update_project("p1", supervisor_enabled=True)
         row = await _make_session(
             db, provider, sid="n1", task_id=None, name="n-supervisor--p1", lifecycle="named",
         )

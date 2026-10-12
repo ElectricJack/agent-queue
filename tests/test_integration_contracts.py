@@ -770,10 +770,11 @@ def test_every_hierarchy_adapter_call_site_passes_exactly_five_positional_argume
 
 
 @pytest.mark.asyncio
-async def test_root_promotion_command_is_registered_and_strictly_typed():
+async def test_root_promotion_command_is_registered_and_strictly_typed(tmp_path):
     handler = object.__new__(CommandHandler)
     handler.orchestrator = SimpleNamespace(plugin_registry=None)
     handler.config = SimpleNamespace(
+        data_dir=str(tmp_path),
         playbooks=SimpleNamespace(enabled=True),
         memory=SimpleNamespace(enabled=True),
         security=SimpleNamespace(capability_enforcement="off"),

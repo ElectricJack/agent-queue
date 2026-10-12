@@ -17027,7 +17027,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:2598041118c9af96e83a279f1209c09bbc7b3a8f103fbd48bd72aab1f12c8f91",
+      "digest": "sha256:abd94aedb9ee4466fcf027497aafdd09d228ed7c0e73cf8d968db0d09d71e3ab",
       "imports": [
         "src.api.auth",
         "src.api.codegen",
@@ -17039,6 +17039,7 @@
         "src.git.manager",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.core",
         "src.orchestrator.task_checkpoint",
         "src.scheduler",
         "src.sessions.fake",
