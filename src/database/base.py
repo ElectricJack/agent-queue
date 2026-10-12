@@ -725,6 +725,9 @@ class DatabaseBackend(Protocol):
         offset: int = 0,
     ) -> list[SessionRecord]: ...
     async def update_session(self, session_id: str, *, conn=None, **fields) -> int: ...
+    async def record_claim_refusal(
+        self, session_id: str, *, result: str, reason: str, now: float,
+    ) -> SessionRecord | None: ...
     async def update_session_instance(
         self,
         session_id: str,

@@ -1473,6 +1473,8 @@ class SessionRecord:
     claim_phase_at: float | None = None
     last_claim_epoch: int | None = None
     last_claim_result: str | None = None  # claimed | prepare_failed | released
+    #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
+    claim_refusal: dict | None = None
 
     llm_provider: str | None = None
     model: str | None = None

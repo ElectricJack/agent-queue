@@ -36,6 +36,9 @@ class TaskClaimResponse:
                 ``task_claim`` reply.
             reason (None | str | Unset):
             error (None | str | Unset):
+            retry_after (int | None | Unset):
+            refusal_count (int | None | Unset):
+            instructions (None | str | Unset):
     """
 
     success: bool
@@ -45,6 +48,9 @@ class TaskClaimResponse:
     session: ClaimSessionSummary | Unset = UNSET
     reason: None | str | Unset = UNSET
     error: None | str | Unset = UNSET
+    retry_after: int | None | Unset = UNSET
+    refusal_count: int | None | Unset = UNSET
+    instructions: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -84,6 +90,24 @@ class TaskClaimResponse:
         else:
             error = self.error
 
+        retry_after: int | None | Unset
+        if isinstance(self.retry_after, Unset):
+            retry_after = UNSET
+        else:
+            retry_after = self.retry_after
+
+        refusal_count: int | None | Unset
+        if isinstance(self.refusal_count, Unset):
+            refusal_count = UNSET
+        else:
+            refusal_count = self.refusal_count
+
+        instructions: None | str | Unset
+        if isinstance(self.instructions, Unset):
+            instructions = UNSET
+        else:
+            instructions = self.instructions
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -102,6 +126,12 @@ class TaskClaimResponse:
             field_dict["reason"] = reason
         if error is not UNSET:
             field_dict["error"] = error
+        if retry_after is not UNSET:
+            field_dict["retry_after"] = retry_after
+        if refusal_count is not UNSET:
+            field_dict["refusal_count"] = refusal_count
+        if instructions is not UNSET:
+            field_dict["instructions"] = instructions
 
         return field_dict
 
@@ -166,6 +196,33 @@ class TaskClaimResponse:
 
         error = _parse_error(d.pop("error", UNSET))
 
+        def _parse_retry_after(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        retry_after = _parse_retry_after(d.pop("retry_after", UNSET))
+
+        def _parse_refusal_count(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        refusal_count = _parse_refusal_count(d.pop("refusal_count", UNSET))
+
+        def _parse_instructions(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        instructions = _parse_instructions(d.pop("instructions", UNSET))
+
         task_claim_response = cls(
             success=success,
             result=result,
@@ -174,6 +231,9 @@ class TaskClaimResponse:
             session=session,
             reason=reason,
             error=error,
+            retry_after=retry_after,
+            refusal_count=refusal_count,
+            instructions=instructions,
         )
 
         task_claim_response.additional_properties = d

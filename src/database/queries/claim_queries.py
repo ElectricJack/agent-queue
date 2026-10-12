@@ -649,6 +649,7 @@ class ClaimQueryMixin:
             sessions.c.task_id.is_(None),
             sessions.c.claim_phase.is_(None),
             sessions.c.desired_state == "running",
+            func.coalesce(sessions.c.claim_refusal["retry_at"].as_float(), 0) <= now,
         ]
         if cap is not None:
             cond.append(sessions.c.claims < cap)
@@ -672,6 +673,9 @@ class ClaimQueryMixin:
         record = _row_to_session(row)
         if took:
             return "slot", record
+        if (record.claim_phase != "active" and record.claim_refusal
+                and record.claim_refusal["retry_at"] > now):
+            return "claim_refusal", record
         if record.claim_phase in ("active", "preparing", "claiming"):
             return record.claim_phase, record
         if record.desired_state != "running":
@@ -1122,6 +1126,7 @@ class ClaimQueryMixin:
                     claims=sessions.c.claims + 1,
                     last_claim_epoch=epoch,
                     last_claim_result="claimed",
+                    claim_refusal=None,
                 )
             )
             if supports_returning(c):

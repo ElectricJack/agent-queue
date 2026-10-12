@@ -1330,7 +1330,7 @@ async def test_compact_protocol_preserves_shared_rules_and_role_specific_close(l
         "held-1", lifecycle=lifecycle, development=development,
     ).body
     assert body.count("aq task close held-1") == 1
-    assert ("aq session drain-ack" in body) == (lifecycle == "task")
+    assert "aq session drain-ack" in body
     assert "aq task heartbeat held-1" in body
     assert "aq task comment held-1" in body
     assert "--expected-description" in body
@@ -1338,7 +1338,8 @@ async def test_compact_protocol_preserves_shared_rules_and_role_specific_close(l
         assert rule in body
     if lifecycle == "pool":
         for rule in ("--claim-next", ".aq/claim.json", "stale_claim", "daemon_unreachable",
-                     "ambiguous close", "drain_requested/session_exhausted"):
+                     "ambiguous close", "drain_requested/session_exhausted", "retry_after",
+                     "report the blocker ONCE", "If preparation is retained, preserve it"):
             assert rule in body
     guidance = build_tool_guidance_section().body
     for rule in ("AGENTS.md/CLAUDE.md", "directory instructions", "SKILL.md", "catalogue",
