@@ -9352,7 +9352,7 @@
       "reason": "Integration workspace preparation merges a proven parent head under the managed child writer fence; preserves local and published child history."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_task": {
-      "reason": "Confirmed operator removal coordinates subtree holds, session cleanup and integration-locked removal while preserving branches and audit history."
+      "reason": "Deprecated alias delegates to the unified deletion preview and execution contract."
     },
     "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on": {
       "reason": "Transaction-local subtree archive enforces integration ownership and delivery guards, retires branch origins and preserves audit identity before deleting active rows."
@@ -9653,6 +9653,15 @@
     },
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_repository_probes": {
       "reason": "Operator preflight's read-only GitHub prerequisites for integration setup: the project integration repository, promotion-flow branches, online runner labels and trust-manifest App identities. Reports blockers only; no integration storage, lifecycle or ref writes."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_delete_task": {
+      "reason": "Unified operator deletion coordinates read-only previews, confirmed claim/session fencing, cancellation of live integration authority and preservation of immutable history."
+    },
+    "src/discord/task_delete.py::DeleteTaskView.confirm": {
+      "reason": "Discord confirmation supplies the server-owned human actor to unified task deletion and displays the audit identity and cleanup warnings."
+    },
+    "src/discord/task_delete.py::import from src.integration.task_deletion import deletion_actor": {
+      "reason": "Imports the server-only audit actor context for Discord task deletion; no caller-provided actor enters the command contract."
     }
   },
   "shared_state": {

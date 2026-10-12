@@ -3849,10 +3849,6 @@ class CandidateService:
             previous = commit
         return None
 
-    async def _blob(self, store: Path, commit: str, path: str) -> str | None:
-        result = await self.git.arun_git_result(["rev-parse", f"{commit}:{path}"], cwd=str(store))
-        return result.stdout.strip() if result.returncode == 0 else None
-
     async def _commit_exists(self, store: Path, oid: str) -> bool:
         result = await self.git.arun_git_result(
             ["cat-file", "-e", f"{oid}^{{commit}}"], cwd=str(store)

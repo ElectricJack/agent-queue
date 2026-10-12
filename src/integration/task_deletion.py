@@ -29,8 +29,30 @@ def warning(code, message):
     return {"code": code, "message": message}
 
 
-async def _rows(conn, table, condition):
-    return [dict(row) for row in (await conn.execute(select(table).where(condition))).mappings()]
+async def _rows(conn, table, *conditions):
+    return [dict(row) for row in (await conn.execute(select(table).where(*conditions))).mappings()]
+
+
+async def _related(conn, table, ids, *columns):
+    return await _rows(conn, table, or_(*(table.c[key].in_(ids) for key in columns or ("id",))))
+
+
+async def _column(conn, column, *conditions):
+    return list((await conn.execute(select(column).where(*conditions))).scalars())
+
+
+async def _update_ids(conn, table, ids, *conditions, key="id", **values):
+    await conn.execute(update(table).where(table.c[key].in_(ids), *conditions).values(**values))
+
+
+async def _audit(db, conn, event, root, **payload):
+    return await db.log_event(
+        event,
+        project_id=root["project_id"],
+        task_id=root["id"],
+        payload=json.dumps(payload),
+        conn=conn,
+    )
 
 
 async def deletion_plan(
@@ -40,16 +62,14 @@ async def deletion_plan(
     async with db._engine.connect() as conn:
         root = (await _rows(conn, t.tasks, t.tasks.c.id == task_id))[0]
         ids = await db.subtree_ids(task_id, conn=conn) if recursive else [task_id]
-        snapshots = await _rows(conn, t.tasks, t.tasks.c.id.in_(ids))
-        sessions = await _rows(conn, t.sessions, t.sessions.c.task_id.in_(ids))
+        snapshots = await _related(conn, t.tasks, ids)
+        sessions = await _related(conn, t.sessions, ids, "task_id")
         workspaces = await _rows(
             conn, t.workspaces, t.workspaces.c.project_id == root["project_id"]
         )
         repositories = await _rows(conn, t.repos, t.repos.c.project_id == root["project_id"])
-        origins = await _rows(conn, t.task_branch_origins, t.task_branch_origins.c.task_id.in_(ids))
-        checkpoints = await _rows(
-            conn, t.task_integration_checkpoints, t.task_integration_checkpoints.c.task_id.in_(ids)
-        )
+        origins = await _related(conn, t.task_branch_origins, ids, "task_id")
+        checkpoints = await _related(conn, t.task_integration_checkpoints, ids, "task_id")
         owners = await _rows(
             conn,
             t.integration_branch_owners,
@@ -64,24 +84,9 @@ async def deletion_plan(
         children = await _rows(
             conn, t.tasks, t.tasks.c.parent_task_id.in_(ids) & t.tasks.c.id.not_in(ids)
         )
-        edges = await _rows(
-            conn,
-            t.task_dependencies,
-            or_(
-                t.task_dependencies.c.task_id.in_(ids),
-                t.task_dependencies.c.depends_on_task_id.in_(ids),
-            ),
-        )
-        gate_ids = list(
-            (
-                await conn.execute(
-                    select(t.task_gates.c.gate_id).where(
-                        t.task_gates.c.task_id.in_(ids),
-                    )
-                )
-            ).scalars()
-        )
-        reviews = await _rows(conn, t.doc_reviews, t.doc_reviews.c.author_task_id.in_(ids))
+        edges = await _related(conn, t.task_dependencies, ids, "task_id", "depends_on_task_id")
+        gate_ids = await _column(conn, t.task_gates.c.gate_id, t.task_gates.c.task_id.in_(ids))
+        reviews = await _related(conn, t.doc_reviews, ids, "author_task_id")
         gate_ids += [row["gate_id"] for row in reviews if row["gate_id"]]
         gates = await _rows(
             conn,
@@ -91,7 +96,7 @@ async def deletion_plan(
                 (t.gates.c.gate_type == "task") & t.gates.c.await_id.in_(ids),
             ),
         )
-        escalations = await _rows(conn, t.escalations, t.escalations.c.task_id.in_(ids))
+        escalations = await _related(conn, t.escalations, ids, "task_id")
         scope = set(ids)
         ancestor = root["parent_task_id"]
         while ancestor and ancestor not in scope:
@@ -99,31 +104,23 @@ async def deletion_plan(
             ancestor = await conn.scalar(
                 select(t.tasks.c.parent_task_id).where(t.tasks.c.id == ancestor)
             )
-        batch_ids = list(
-            (
-                await conn.execute(
-                    select(t.integration_batch_members.c.batch_id).where(
-                        t.integration_batch_members.c.task_id.in_(scope),
-                    )
-                )
-            ).scalars()
-        )
-        batches = await _rows(
-            conn, t.integration_batches, t.integration_batches.c.id.in_(batch_ids)
-        )
+        members = t.integration_batch_members
+        batch_ids = await _column(conn, members.c.batch_id, members.c.task_id.in_(scope))
+        batches = await _related(conn, t.integration_batches, batch_ids)
+        operation = t.integration_repair_operations
         operations = await _rows(
             conn,
-            t.integration_repair_operations,
+            operation,
             or_(
-                t.integration_repair_operations.c.parent_task_id.in_(ids),
-                t.integration_repair_operations.c.verifier_task_id.in_(ids),
-                t.integration_repair_operations.c.batch_id.in_(batch_ids),
-                t.integration_repair_operations.c.id.in_(
+                operation.c.parent_task_id.in_(ids),
+                operation.c.verifier_task_id.in_(ids),
+                operation.c.batch_id.in_(batch_ids),
+                operation.c.id.in_(
                     select(t.integration_repair_stages.c.operation_id).where(
                         t.integration_repair_stages.c.repair_task_id.in_(ids)
                     )
                 ),
-                t.integration_repair_operations.c.id.in_(
+                operation.c.id.in_(
                     select(t.integration_candidate_resolutions.c.operation_id).where(
                         t.integration_candidate_resolutions.c.repair_task_id.in_(ids)
                     )
@@ -139,13 +136,8 @@ async def deletion_plan(
                 t.integration_subjects.c.batch_id.in_(batch_ids),
             ),
         )
-        receipts = await _rows(
-            conn,
-            t.task_delivery_receipts,
-            or_(
-                t.task_delivery_receipts.c.source_task_id.in_(ids),
-                t.task_delivery_receipts.c.target_task_id.in_(ids),
-            ),
+        receipts = await _related(
+            conn, t.task_delivery_receipts, ids, "source_task_id", "target_task_id"
         )
         history = await find_integration_task_references(conn, ids)
         pause_metadata = await _rows(
@@ -439,38 +431,33 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
         )
         captured["sessions"] = await _rows(conn, t.sessions, t.sessions.c.task_id.in_(ids))
         # These holds are internal to the confirmed delete and prevent fresh claims.
-        await conn.execute(
-            update(t.tasks)
-            .where(t.tasks.c.id.in_(ids))
-            .values(
-                status="PAUSED",
-                resume_after=None,
-                claim_epoch=t.tasks.c.claim_epoch + 1,
-                updated_at=now,
-            )
+        await _update_ids(
+            conn,
+            t.tasks,
+            ids,
+            status="PAUSED",
+            resume_after=None,
+            claim_epoch=t.tasks.c.claim_epoch + 1,
+            updated_at=now,
         )
-        await conn.execute(
-            update(t.sessions)
-            .where(t.sessions.c.task_id.in_(ids))
-            .values(
-                desired_state="stopped",
-                end_reason="task deleted by operator",
-            )
+        await _update_ids(
+            conn,
+            t.sessions,
+            ids,
+            key="task_id",
+            desired_state="stopped",
+            end_reason="task deleted by operator",
         )
         await _cancel_authority(db, conn, plan, captured, actor, reason, now)
-        audit_id = await db.log_event(
+        audit_id = await _audit(
+            db,
+            conn,
             "task.delete_requested",
-            project_id=root["project_id"],
-            task_id=root["id"],
-            payload=json.dumps(
-                {
-                    "actor": actor,
-                    "reason": reason,
-                    "preview": plan,
-                    "task_snapshots": captured["tasks"],
-                }
-            ),
-            conn=conn,
+            root,
+            actor=actor,
+            reason=reason,
+            preview=plan,
+            task_snapshots=captured["tasks"],
         )
 
     results = []
@@ -571,13 +558,8 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
                     warning("scope_changed", f"New child {child['id']} was retained.")
                 )
             affected.add(child["id"])
-        await conn.execute(
-            update(t.agents)
-            .where(t.agents.c.current_task_id.in_(ids))
-            .values(
-                current_task_id=None,
-                state="idle",
-            )
+        await _update_ids(
+            conn, t.agents, ids, key="current_task_id", current_task_id=None, state="idle"
         )
         removed_worktrees = [
             row["resource"].removeprefix("worktree:")
@@ -587,35 +569,24 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
             and not Path(row["resource"].removeprefix("worktree:")).exists()
         ]
         if removed_worktrees:
-            await conn.execute(
-                update(t.workspaces)
-                .where(
-                    t.workspaces.c.workspace_path.in_(removed_worktrees),
-                )
-                .values(enabled=False)
+            await _update_ids(
+                conn, t.workspaces, removed_worktrees, key="workspace_path", enabled=False
             )
-        await conn.execute(
-            update(t.sessions)
-            .where(t.sessions.c.task_id.in_(ids))
-            .values(
-                task_id=None,
-                state="stopped",
-                desired_state="stopped",
-                claim_phase=None,
-                claim_phase_at=None,
-                ended_at=time.time(),
-                last_claim_result="task_deleted",
-            )
+        await _update_ids(
+            conn,
+            t.sessions,
+            ids,
+            key="task_id",
+            task_id=None,
+            state="stopped",
+            desired_state="stopped",
+            claim_phase=None,
+            claim_phase_at=None,
+            ended_at=time.time(),
+            last_claim_result="task_deleted",
         )
         if failed_sessions:
-            await conn.execute(
-                update(t.sessions)
-                .where(t.sessions.c.id.in_(failed_sessions))
-                .values(
-                    state="draining",
-                    ended_at=None,
-                )
-            )
+            await _update_ids(conn, t.sessions, failed_sessions, state="draining", ended_at=None)
         await db.mark_layout_dirty(
             root["project_id"], [*ids, *affected, *layout_parents], "task.deleted", conn=conn
         )
@@ -653,12 +624,8 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
             cleanup_results=results,
             reason=reason,
         )
-        captured["deletion_event_id"] = await db.log_event(
-            "task.deleted",
-            project_id=root["project_id"],
-            task_id=root["id"],
-            payload=json.dumps({**plan, "actor": actor}),
-            conn=conn,
+        captured["deletion_event_id"] = await _audit(
+            db, conn, "task.deleted", root, **plan, actor=actor
         )
     for label, action in (
         ("blocked notifications", lambda: db.log_blocked_flips(flipped)),
@@ -668,12 +635,7 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
         await cleanup(label, action)
     await cleanup(
         "cleanup audit",
-        lambda: db.log_event(
-            "task.delete_cleanup",
-            project_id=root["project_id"],
-            task_id=root["id"],
-            payload=json.dumps({**plan, "actor": actor}),
-        ),
+        lambda: _audit(db, None, "task.delete_cleanup", root, **plan, actor=actor),
     )
     return plan
 
@@ -699,98 +661,92 @@ async def _cancel_authority(db, conn, plan, captured, actor, reason, now):
             updated_at=now,
         )
     )
-    await conn.execute(
-        update(t.task_branch_origins)
-        .where(t.task_branch_origins.c.task_id.in_(ids))
-        .values(retired_at=now, discard_state=None, discard_next_attempt_at=None)
+    await _update_ids(
+        conn,
+        t.task_branch_origins,
+        ids,
+        key="task_id",
+        retired_at=now,
+        discard_state=None,
+        discard_next_attempt_at=None,
     )
-    await conn.execute(
-        update(t.integration_batches)
-        .where(
-            t.integration_batches.c.id.in_(plan["batch_ids"]),
-            t.integration_batches.c.lifecycle.not_in(["promoted", "empty"]),
-        )
-        .values(
-            intent="aborted",
-            lifecycle="aborted",
-            human_abort_reason=reason or "task deleted",
-            cleanup_state="pending",
-            updated_at=now,
-        )
+    await _update_ids(
+        conn,
+        t.integration_batches,
+        plan["batch_ids"],
+        t.integration_batches.c.lifecycle.not_in(["promoted", "empty"]),
+        intent="aborted",
+        lifecycle="aborted",
+        human_abort_reason=reason or "task deleted",
+        cleanup_state="pending",
+        updated_at=now,
     )
-    await conn.execute(
-        update(t.integration_repair_operations)
-        .where(
-            t.integration_repair_operations.c.id.in_(plan["operation_ids"]),
-            t.integration_repair_operations.c.state.in_(["active", "escalated", "human_required"]),
-        )
-        .values(state="cancelled", updated_at=now)
+    await _update_ids(
+        conn,
+        t.integration_repair_operations,
+        plan["operation_ids"],
+        t.integration_repair_operations.c.state.in_(["active", "escalated", "human_required"]),
+        state="cancelled",
+        updated_at=now,
     )
-    await conn.execute(
-        update(t.integration_subjects)
-        .where(
-            t.integration_subjects.c.id.in_([s["id"] for s in captured["subjects"]]),
-        )
-        .values(
-            phase="done",
-            next_due_at=None,
-            gate_id=None,
-            closed_reason=reason or "task deleted",
-            writer_task_id=None,
-            writer_session_id=None,
-            writer_fence_token=None,
-            writer_status="none",
-            wait_reason=None,
-            version=t.integration_subjects.c.version + 1,
-            updated_at=now,
-        )
+    await _update_ids(
+        conn,
+        t.integration_subjects,
+        [s["id"] for s in captured["subjects"]],
+        phase="done",
+        next_due_at=None,
+        gate_id=None,
+        closed_reason=reason or "task deleted",
+        writer_task_id=None,
+        writer_session_id=None,
+        writer_fence_token=None,
+        writer_status="none",
+        wait_reason=None,
+        version=t.integration_subjects.c.version + 1,
+        updated_at=now,
     )
-    await conn.execute(
-        update(t.doc_reviews)
-        .where(
-            t.doc_reviews.c.id.in_(plan["review_ids"]),
-            t.doc_reviews.c.state.in_(["in_review", "changes_requested"]),
-        )
-        .values(
-            state="withdrawn",
-            withdrawn_by=actor,
-            withdrawn_at=now,
-            withdrawn_via="task_delete",
-            withdrawal_reason=reason,
-            updated_at=now,
-        )
+    await _update_ids(
+        conn,
+        t.doc_reviews,
+        plan["review_ids"],
+        t.doc_reviews.c.state.in_(["in_review", "changes_requested"]),
+        state="withdrawn",
+        withdrawn_by=actor,
+        withdrawn_at=now,
+        withdrawn_via="task_delete",
+        withdrawal_reason=reason,
+        updated_at=now,
     )
-    await conn.execute(
-        update(t.gates)
-        .where(t.gates.c.id.in_(plan["gate_ids"]), t.gates.c.status == "open")
-        .values(
-            status="cancelled",
-            resolved_by=actor,
-            resolution=reason or "task deleted",
-        )
+    await _update_ids(
+        conn,
+        t.gates,
+        plan["gate_ids"],
+        t.gates.c.status == "open",
+        status="cancelled",
+        resolved_by=actor,
+        resolution=reason or "task deleted",
     )
-    await conn.execute(
-        update(t.escalations)
-        .where(
-            t.escalations.c.id.in_(plan["escalation_ids"]),
-            t.escalations.c.state.in_(["needs_human", "reply_received", "resolving"]),
-        )
-        .values(
-            state="cancelled",
-            terminal_at=now,
-            terminal_outcome=reason or "Task deleted",
-            outcome="human",
-            updated_at=now,
-            revision=t.escalations.c.revision + 1,
-        )
+    await _update_ids(
+        conn,
+        t.escalations,
+        plan["escalation_ids"],
+        t.escalations.c.state.in_(["needs_human", "reply_received", "resolving"]),
+        state="cancelled",
+        terminal_at=now,
+        terminal_outcome=reason or "Task deleted",
+        outcome="human",
+        updated_at=now,
+        revision=t.escalations.c.revision + 1,
     )
-    await conn.execute(
-        update(t.agent_questions)
-        .where(
-            t.agent_questions.c.task_id.in_(ids),
-            t.agent_questions.c.state.in_(["supervisor", "human", "answered"]),
-        )
-        .values(state="stale", reason="task deleted", updated_at=now)
+    await _update_ids(
+        conn,
+        t.agent_questions,
+        ids,
+        t.agent_questions.c.state.in_(["supervisor", "human", "answered"]),
+        key="task_id",
+        state="stale",
+        reason="task deleted",
+        updated_at=now,
     )
     from src.integration.development import revise_operation_on
 

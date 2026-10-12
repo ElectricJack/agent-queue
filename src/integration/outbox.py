@@ -41,20 +41,6 @@ DEFAULT_MAX_WAIT_SECONDS = DEFAULT_INTEGRATION_MAX_WAIT_SECONDS
 RETRY_EXHAUSTED_PREFIX = "retry_budget_exhausted: "
 
 
-def settled_at(row: Any) -> float | None:
-    """When an outbox row stopped being a pending delivery, or ``None`` while it is.
-
-    Quarantine leaves ``delivered_at`` unset and the deadline in ``available_at``.
-    It is a settled failed delivery, retained for inspection and replay.
-    Continuations must treat it as settled or they stall until manual replay.
-    """
-    if row["delivered_at"] is not None:
-        return float(row["delivered_at"])
-    if (row["last_error"] or "").startswith(RETRY_EXHAUSTED_PREFIX):
-        return float(row["available_at"])
-    return None
-
-
 @dataclass(frozen=True, slots=True)
 class AcceptanceState:
     manifest: tuple[dict[str, str], ...] | None

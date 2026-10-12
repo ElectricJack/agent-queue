@@ -16,7 +16,10 @@ vi.mock("../../api/hooks", () => ({
         remote_sha: "abc123", local_refs: [{ path: "/checkout", sha: "abc123" }],
         worktrees: [{ path: "/worker-slot" }] }],
       sessions: [{ session_id: "running-session", task_id: "parent" }],
-      warnings: [{ code: "integration_owned", message: "Live integration authority will be cancelled." }],
+      warnings: [
+        { code: "integration_owned", message: "Live integration authority will be cancelled." },
+        { code: "integration_history_retained", message: "Integration history will remain with the deletion audit." },
+      ],
     } };
   },
 }));
@@ -27,6 +30,18 @@ beforeEach(() => {
 const task = { id: "parent", title: "Parent", status: "IN_PROGRESS" } as never;
 
 describe("DeleteTaskModal", () => {
+  it("treats integration history as a consequence and keeps children and branches by default", async () => {
+    render(<DeleteTaskModal task={task} onClose={vi.fn()} />);
+    expect(screen.getByText("Integration history will remain with the deletion audit.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Deletion scope")).toHaveValue("task");
+    expect(screen.getByLabelText("Branch cleanup")).toHaveValue("keep");
+    expect(mocks.deletion).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Delete selected tasks" }));
+    expect(mocks.deletion).toHaveBeenCalledOnce();
+    expect(mocks.deletion).toHaveBeenCalledWith({ task_id: "parent", recursive: false,
+      branches: "keep", stop_running: true, confirmed: true, reason: "" });
+  });
+
   it("previews resources and confirms recursive branch deletion once with optional reason", async () => {
     const close = vi.fn(); const deleted = vi.fn();
     render(<DeleteTaskModal task={task} onClose={close} onDeleted={deleted} />);

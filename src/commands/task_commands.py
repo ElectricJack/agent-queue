@@ -4760,12 +4760,7 @@ class TaskCommandsMixin:
 
     @staticmethod
     def _hierarchy_failure(exc: HierarchyError) -> dict:
-        """Render a HierarchyError, carrying any structured context it holds.
-
-        ``branch_discard_required`` is the one refusal a surface is expected to
-        act on rather than just report, so its branch list has to survive the
-        trip out.
-        """
+        """Render a hierarchy refusal with its structured context."""
         failure = {
             "success": False,
             "error": f"hierarchy.{exc.code}: {exc.detail}",
@@ -4773,44 +4768,6 @@ class TaskCommandsMixin:
         }
         failure.update(getattr(exc, "context", {}) or {})
         return failure
-
-    async def _materialized_branches_under(self, task_id: str) -> list[dict]:
-        """The branches a discard is about to queue, read before the rows go.
-
-        Snapshotted for the response only: the delete transaction is what
-        actually marks them, and it re-reads under its own lock.
-        """
-        from sqlalchemy import select
-
-        from src.database.tables import task_branch_origins
-
-        async with self.db._engine.connect() as conn:
-            ids = await self.db.subtree_ids(task_id, conn=conn)
-            if not ids:
-                return []
-            rows = (
-                (
-                    await conn.execute(
-                        select(task_branch_origins)
-                        .where(
-                            task_branch_origins.c.task_id.in_(ids),
-                            task_branch_origins.c.retired_at.is_(None),
-                            task_branch_origins.c.materialized.is_(True),
-                        )
-                        .order_by(task_branch_origins.c.task_id)
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        return [
-            {
-                "task_id": row["task_id"],
-                "branch": row["branch_name"],
-                "base_sha": row["base_sha"],
-            }
-            for row in rows
-        ]
 
     # -- Archive commands -----------------------------------------------------
     # Archive moves completed tasks out of the active view into the

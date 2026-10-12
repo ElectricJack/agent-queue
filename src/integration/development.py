@@ -21,7 +21,6 @@ from sqlalchemy import insert, select, text
 from src.database.tables import (
     events,
     task_metadata,
-    tasks,
 )
 from src.git.manager import GitError, GitManager
 from src.integration.delivery_branches import (
@@ -71,9 +70,6 @@ BRANCH_CLEANUP_RETRY_SECONDS = 300.0
 BRANCH_CLEANUP_RETRY_MAX_SECONDS = 6 * 3600.0
 #: Journal rows cleaned per project per tick; a backlog drains over ticks.
 BRANCH_CLEANUP_ROWS_PER_TICK = 10
-#: Runs whose full evidence a deferral streak row keeps (the count is kept
-#: for every run; older runs' output is dropped).
-DEFERRAL_RUNS_KEPT = 5
 #: Task metadata key holding what a repair's parked batch recorded.
 REPAIR_EVIDENCE_KEY = "development_repair_evidence"
 #: Chained repairs of one parked batch before the rest is left to an operator.
@@ -103,28 +99,9 @@ GENERATED_MERGE_CONFIG = (
 REGENERATION_OUTPUT_TAIL_CHARS = 4000
 
 
-def armed_for_branch_cleanup(evidence):
-    """*evidence* with branch cleanup armed, for a row that just landed on main."""
-    return {**evidence, BRANCH_CLEANUP_KEY: {"state": "pending", "attempts": 0}}
-
-
 #: Operation states whose action is still in flight and owns its manifest.
 #: ``finished`` and ``cancelled`` actions are over; neither answers delivery.
 OPEN_OPERATION_STATES = ("prepared", "publishing", "parked")
-
-#: A held dependency's skip reason, as its dependent's warning names it.  A
-#: dependent repeats any of these reasons, so its stall carries the dependency's
-#: own recovery advice; every other reason is an ``undelivered_dependency``.
-_DEPENDENCY_SKIP_DETAIL = {
-    "dependency_cycle": "dependency cycle with",
-    "missing_ref": "missing ref for dependency",
-    "missing_provenance": "missing git provenance for dependency",
-    "invalid_parent_completion": "invalid parent completion for dependency",
-    "parent_provenance_mismatch": "parent provenance mismatch for dependency",
-    "parent_adoption_provenance_mismatch": "parent adoption provenance mismatch for dependency",
-    "missing_or_ambiguous_source": "unresolvable source for dependency",
-    "undelivered_dependency": "undelivered dependency",
-}
 
 
 async def operation_rows_on(conn, project_ids=None, *, states=None):
@@ -178,41 +155,6 @@ async def revise_operation_on(conn, identity, revise):
 
 def _manifest_members(manifest):
     return [m for m in manifest or [] if isinstance(m, dict) and m.get("task_id")]
-
-
-def _dependency_cycles(dependencies, task_ids):
-    """Return strongly connected components that actually contain a cycle."""
-    index = 0
-    indices, lowlinks, stack, on_stack, cycles = {}, {}, [], set(), []
-
-    def visit(task_id):
-        nonlocal index
-        indices[task_id] = lowlinks[task_id] = index
-        index += 1
-        stack.append(task_id)
-        on_stack.add(task_id)
-        for dependency_id in sorted(dependencies.get(task_id, set()) & task_ids):
-            if dependency_id not in indices:
-                visit(dependency_id)
-                lowlinks[task_id] = min(lowlinks[task_id], lowlinks[dependency_id])
-            elif dependency_id in on_stack:
-                lowlinks[task_id] = min(lowlinks[task_id], indices[dependency_id])
-        if lowlinks[task_id] != indices[task_id]:
-            return
-        component = set()
-        while True:
-            member = stack.pop()
-            on_stack.remove(member)
-            component.add(member)
-            if member == task_id:
-                break
-        if len(component) > 1 or task_id in dependencies.get(task_id, set()):
-            cycles.append(component)
-
-    for task_id in sorted(task_ids):
-        if task_id not in indices:
-            visit(task_id)
-    return cycles
 
 
 def _carried_sources(repair_id, contracts):
@@ -340,28 +282,6 @@ def repair_chain(manifest, history, statuses, *, repository_id, target_ref, iden
     return follow(
         row_repair_identity(row, identity) if row is not None else identity(manifest), [],
     )
-
-
-def describe_repair_chain(result):
-    """One line naming each repair in *result*'s chain and its status."""
-    return " -> ".join(
-        f"{link['task_id']} ({link['status'] or 'not filed'})" for link in result["chain"]
-    )
-
-
-async def repair_statuses(conn, project_ids):
-    """Every development repair's status in *project_ids*, live table over archive."""
-    from src.database.tables import archived_tasks
-
-    statuses = {}
-    for table in (archived_tasks, tasks):
-        statuses.update((await conn.execute(
-            select(table.c.id, table.c.status).where(
-                table.c.id.like("development-repair-%"),
-                table.c.project_id.in_(list(project_ids)),
-            )
-        )).all())
-    return statuses
 
 
 @dataclass(frozen=True)
