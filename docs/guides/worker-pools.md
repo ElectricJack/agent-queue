@@ -321,11 +321,12 @@ sizing stops relaunching into the limit (provider-failover D13).
 ### Repeated claim preparation refusals
 
 The session cooldown guard (§4) drains idle workers on their second identical
-blocker. Retained preparations have a separate limit: three identical
-failures in one session return `drain_requested`. The count is persisted across
+blocker and leaves their workspace enabled. This path does not reach the
+three-failure workspace quarantine. Retained preparations have a separate limit:
+three identical failures in one session return `drain_requested`. The count is persisted across
 daemon restarts; empty-frontier polls do not clear it, and activation does.
-The worker runs `aq session drain-ack` and exits. The daemon also enforces the
-stop if the worker continues retrying, and disables the affected workspace to
+The worker runs `aq session drain-ack` and exits. For retained preparations, the
+daemon also enforces the stop if the worker continues retrying and disables the workspace to
 keep replacement workers off it. Its checkout and any attached branch bindings
 are retained for recovery. Repair the workspace and prove its work safe before
 re-enabling it; do not delete Git locks or discard a retained branch.

@@ -260,7 +260,9 @@ the [supervisor-agent](supervisor-agent.md) routing story settled first.
 
 Idle sessions stop on their second identical preparation/admission blocker under the
 session cooldown guard (worker-pools §4); retained preparations preserve their
-ownership and use the separate quarantine budget below.
+ownership and use the separate quarantine budget below. An idle session drains
+at two failures and leaves its workspace enabled; it never reaches the third
+failure needed for workspace quarantine.
 
 Pool claim preparation has a separate persisted refusal budget. Three consecutive
 preparation failures with the same reason, in the same session, request a drain and

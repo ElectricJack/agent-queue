@@ -2194,6 +2194,7 @@ class TestClaimRefusalBackoff:
         )
         assert not (wd / ".aq" / "claim.json").exists()
         assert (await db.get_task("t1")).status is TaskStatus.READY
+        assert (await db.get_workspace("ws-agent-1")).enabled
         assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == (
             "drain_requested"
         )

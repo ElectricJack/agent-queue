@@ -500,6 +500,7 @@ async def test_supervisor_pane_filters_before_limit_and_shows_reply_and_failed_d
     from src.models import SessionRecord
 
     now = time.time()
+    await handler.db.update_project("agent-queue", supervisor_enabled=True)
     await handler.db.create_session(SessionRecord(
         id="project-supervisor", name="n-supervisor--agent-queue", project_id="agent-queue",
         profile_id="supervisor", lifecycle="named", state="running", harness="codex",
@@ -536,7 +537,10 @@ async def test_supervisor_pane_filters_before_limit_and_shows_reply_and_failed_d
                                 nudge=AsyncMock(return_value=True))
     engine = MessageDeliveryEngine(handler.db, transport, handler.config.messages)
     await engine.run_delivery_pass()
-    assert (await handler.db.get_message(queued.id)).delivered_at is not None
+    notified = await handler.db.get_message(queued.id)
+    assert notified.delivered_at is None
+    assert notified.notification_attempts == 1
+    assert notified.last_notified_at is not None
     assert any(call.kwargs["target_id"] == "supervisor-agent-queue"
                and call.kwargs["project_id"] == "agent-queue"
                and queued.id in call.kwargs["text"]

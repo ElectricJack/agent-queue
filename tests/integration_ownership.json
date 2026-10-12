@@ -13796,19 +13796,19 @@
       "line": 1235,
       "owner": "DevelopmentPrimitives.ensure_repair",
       "call": "set_task_meta",
-      "owner_fingerprint": "36970af54eebdf296de07acc7dcce5b2e6129fd61ad5561c41a19a372efa8bd0",
+      "owner_fingerprint": "94f52ae501c33861533fd7bf2a9b00314ec7fb9be932a02bf1442d173f4b715d",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority."
     },
     "src/integration/development.py::DevelopmentPrimitives.ensure_repair::c2eb96bffbc976f357270cc999eaf773d7a948e8c925a9626e33b21f72eefd70": {
       "line": 1233,
       "owner": "DevelopmentPrimitives.ensure_repair",
       "call": "set_task_meta",
-      "owner_fingerprint": "36970af54eebdf296de07acc7dcce5b2e6129fd61ad5561c41a19a372efa8bd0",
+      "owner_fingerprint": "94f52ae501c33861533fd7bf2a9b00314ec7fb9be932a02bf1442d173f4b715d",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority."
     },
     "src/integration/development.py::DevelopmentPrimitives.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
       "line": 1028,
@@ -14912,10 +14912,10 @@
       "line": 1229,
       "owner": "StackedBranches._file_repair",
       "call": "insert",
-      "owner_fingerprint": "52e54f49b09d659b699d98648c0fc2bf8c95052560ba4e770900d89e3eee2057",
+      "owner_fingerprint": "346120aaac647a1f815fe778e50f800d3ccae981395e087b0c883b8a537c9e2d",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Associates an isolated conflict repair with its preserved dependent for adoption. Claim-time diagnostic metadata mirrors the origin preparation hold and names exact inputs and paths; it cannot authorize publication or replay refs. Git ancestry, completion identity and current branch fences remain authoritative."
+      "reason": "Associates an isolated conflict repair with its preserved dependent for adoption. Claim-time diagnostic metadata mirrors the origin preparation hold and names exact inputs and paths; it cannot authorize publication or replay refs. Git ancestry, completion identity and current branch fences remain authoritative. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority."
     },
     "src/integration/batches.py::BatchStore.eject::02dbb6e454b19e80a1f07be2b10de35299d826ab592437d231735f74ef0f522a": {
       "line": 388,
@@ -15038,10 +15038,10 @@
       "line": 444,
       "owner": "PromoteCommandsMixin._cmd_promote_prepare",
       "call": "insert",
-      "owner_fingerprint": "8cfde176c4ccdf6283bbc2c9ec7eb9d7ce9c53d35b7699d2eadeab7891619e7a",
+      "owner_fingerprint": "e6297392dc6707d9939e13174fb9d1b6703e0573d1d7187c4662ec964c1c90bc",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Immutable worker preparation inputs and release-notes source facts for one ordinary task. The draft/source SHA is an authoring input; task completion and promotion always require independently retained Git identity, live ancestry and PR/CI evidence."
+      "reason": "Immutable worker preparation inputs and release-notes source facts for one ordinary task. The draft/source SHA is an authoring input; task completion and promotion always require independently retained Git identity, live ancestry and PR/CI evidence. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority."
     },
     "src/integration/delivered_close.py::DeliveredClose.record::1d2b10658739ab0587d184ca964bbeca56c51b0b984a7acb06655c1484bcb7e6": {
       "line": 343,
@@ -16079,7 +16079,10 @@
     "src/doctor/escalation_checks.py::undelivered_escalations": "Generic read-only notification-transport health query across human incidents and root receipts. No code-delivery state, branch ownership or integration policy; the stall sweep adapter is charged separately.",
     "src/doctor/session_checks.py::session_authentication_findings": "Generic read-only session credential diagnostics for every named supervisor and harness session; no code-delivery state, branch ownership or integration authority. The stall sweep adapter remains charged separately.",
     "src/policy_profiles/service.py::contained": "Generic filesystem containment check shared by every portable policy family; no integration state, ref or authority.",
-    "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently."
+    "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently.",
+    "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
+    "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
+    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

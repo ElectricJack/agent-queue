@@ -126,11 +126,15 @@ async def test_internal_event_insert_redirects_before_delivery(db, kind, address
     sessions.nudge = AsyncMock(return_value=True)
     sessions.ensure_started = AsyncMock()
     result = await MessageDeliveryEngine(db, sessions, AppConfig()).run_delivery_pass()
-    assert result["delivered"] == 1
+    # A terminal nudge notifies; only recipient inbox injection consumes mail.
+    assert result["delivered"] == 0
     assert sessions.nudge.await_args.kwargs["target_id"] == "supervisor-global"
     sessions.ensure_started.assert_not_awaited()
     msg = await db.get_message("internal-notice")
     assert (msg.to_kind, msg.to_id, msg.project_id) == ("session", "supervisor-global", "p1")
+    assert msg.notification_attempts == 1
+    assert msg.last_notified_at is not None
+    assert msg.delivered_at is None
 
 
 async def test_reroute_leaves_read_history_enabled_projects_and_global_addresses(db):
