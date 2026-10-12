@@ -18,7 +18,7 @@ import pytest
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.event_bus import EventBus
-from src.models import Agent, AgentState, Project, Task, TaskStatus
+from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
 
@@ -199,3 +199,33 @@ async def test_notification_failure_does_not_undo_the_transition(orch):
     assert result["status"] == TaskStatus.COMPLETED.value
     refreshed = await orch.db.get_task("t-boom")
     assert refreshed.status == TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("verification_failed,infrastructure_failure", [
+    (False, False), (True, False), (True, True),
+])
+async def test_pipeline_stop_records_only_work_verification_failures(
+    orch, verification_failed, infrastructure_failure,
+):
+    task = await _seed(orch, task_id="verify")
+    await orch.db.create_profile(AgentProfile(id="claude", name="Claude", harness="claude"))
+    await orch.db.update_task(task.id, profile_id="claude", route_source="router",
+                              intelligence_class="standard-high")
+    task = await orch.db.get_task(task.id)
+
+    async def pipeline(ctx):
+        if verification_failed:
+            ctx.verification_issues = ["Work failed verification"]
+        ctx.verification_infrastructure_failure = infrastructure_failure
+        return None, False
+
+    orch._run_completion_pipeline = pipeline
+    await orch.complete_session_task(task, outcome="pass", notes="Verifying work")
+    assert (await orch.db.get_task(task.id)).status is TaskStatus.BLOCKED
+    failures = await orch.db.get_task_meta(task.id, "routing_failed_attempts")
+    if verification_failed and not infrastructure_failure:
+        assert len(failures) == 1
+        assert failures[0]["reason"] == "verification_failed"
+        assert failures[0]["intelligence_class"] == "standard-high"
+    else:
+        assert failures is None

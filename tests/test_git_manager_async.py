@@ -2364,3 +2364,26 @@ class TestAuthorizedPushDestination:
         assert destination == ("https://github.com/acme/widgets.git", "app-token")
         assert access.bound == ["https://github.com/acme/widgets"]
         assert access.token_requests == [GitHubRepositoryBinding(303, "acme/widgets")]
+
+
+@pytest.mark.parametrize("counts,ref_error,infrastructure", [
+    ([None], None, True),
+    ([0], "Delivery branch probe unavailable", True),
+    ([0, None], None, True),
+    ([1, 1], None, False),
+])
+async def test_delivery_resolution_distinguishes_unknown_probes_from_ambiguous_work(
+    counts, ref_error, infrastructure,
+):
+    ops = GitOpsMixin()
+    ops._commits_ahead_of_default = AsyncMock(side_effect=counts)
+    ops._resolve_assigned_ref = AsyncMock(return_value=("refs/heads/task/work", ref_error))
+    ctx = SimpleNamespace(
+        workspace_path="/unused", default_branch="main", delivery_branch=None,
+        task=SimpleNamespace(branch_name="task/work"),
+    )
+
+    resolution = await ops._resolve_task_delivery(ctx, current_branch="main", has_remote=True)
+
+    assert resolution.error
+    assert resolution.infrastructure_failure is infrastructure

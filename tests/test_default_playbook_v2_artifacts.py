@@ -546,18 +546,20 @@ def _routing_policy_block(source: str) -> str:
 #: risk-aware revision approved as rev-azure-flare revision 1, with no
 #: priority gate on any lane, as decided in review rev-wise-impact, plus the
 #: ``operator`` kind that routes setup work only to scoped operator rungs
-#: (docs/guides/operator-workers.md).
+#: (docs/guides/operator-workers.md), and standard-first bugfix escalation
+#: (docs/specs/design/routing-live-context.md).
 SHIPPED_ROUTING_POLICY_SHA256 = (
-    "sha256:66ba5e4acd3f5a900139067d9bc182dd47c1683a26c162ac8e8840c16ceff421"
+    "sha256:4133b64ec754ff8cd88f1bf0eaa3badff1f34b4d594005705842d4d71edea9bf"
 )
 
 ROUTING_BUNDLES = (
     FIXTURE_ROOT / "default-assignment-routing",
     DAEMON_REVIEWED_BUNDLES / "default-assignment-routing",
+    REPO_ROOT / "docs/playbooks/shared-fleet/default-assignment-routing",
 )
 
 
-@pytest.mark.parametrize("bundle", ROUTING_BUNDLES, ids=("fixture", "shipped"))
+@pytest.mark.parametrize("bundle", ROUTING_BUNDLES, ids=("fixture", "shipped", "shared-fleet"))
 def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None:
     """Mandatory routing §6.3: the reviewed prose and the executed policy cannot drift.
 
@@ -585,8 +587,8 @@ def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None
     for step_id, step in plans.items():
         policy = _inputs(step)["policy"]
         assert policy == {"type": "literal", "value": block}, step_id
-    # The block is a valid policy: the approved risk-aware revision
-    # (rev-azure-flare revision 1), pinned so a policy edit is a reviewed change.
+    # The block is the standard-first bugfix policy (agile-delta-86), pinned
+    # so a policy edit remains an explicit change.
     policy, digest = parse_policy(block)
     assert digest == SHIPPED_ROUTING_POLICY_SHA256
     assert set(policy.risk) == {"medium", "high", "very_high"}

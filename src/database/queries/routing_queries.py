@@ -21,7 +21,10 @@ from typing import Any
 
 from sqlalchemy import Text, and_, case, cast, exists, func, literal, or_, select, update
 
-from src.database.tables import agent_profiles, agents, playbook_v2_runs, sessions, tasks
+from src.database.tables import (
+    agent_profiles, agents, playbook_v2_runs, sessions, task_metadata,
+    task_session_attempts, tasks,
+)
 from src.models import Task, TaskStatus
 from src.routing.sources import LEGACY, OVERRIDE, ROLE, ROUTER, UNROUTED
 
@@ -50,6 +53,15 @@ ROUTING_LOCK_NAMESPACE = 0x524F5554
 ROUTING_LOCK_KEY = 1
 #: How long an apply waits for the routing lock before giving up.
 ROUTING_LOCK_BUDGET_SECONDS = 30.0
+
+# Explicit work verdicts only. Session loss, launch/close errors and provider
+# outages are deliberately absent: they say nothing about the worker's ability.
+ROUTING_FAILURE_CONTEXTS = frozenset({
+    "retry", "max_retries", "session_close_hard_failure", "verification_reopen",
+    "verification_failed", "reopen_with_feedback",
+})
+ROUTING_RETRY_CONTEXTS = ROUTING_FAILURE_CONTEXTS | {"restart_task", "supervisor_recovery"}
+ROUTING_FAILURES_KEY = "routing_failed_attempts"
 
 
 class RoutingBusyError(RuntimeError):
@@ -104,6 +116,85 @@ def _routed_backlog_statement(ready_project_ids: Collection[str]):
 
 
 class RoutingQueryMixin:
+    async def record_routing_retry_on(
+        self, conn, task_id: str, *, context: str, previous_status: TaskStatus,
+        new_status: TaskStatus,
+    ) -> bool:
+        """Journal a work failure and invalidate a retry route in its transaction.
+
+        Called only after the transition's claim/status guards matched. A
+        router-owned route is re-planned on retry; role routes and audited
+        overrides retain their authority. Infrastructure incidents create no
+        work-failure evidence, even when an operator subsequently restarts them.
+        """
+        if context not in ROUTING_RETRY_CONTEXTS:
+            return False
+        row = (await conn.execute(
+            select(tasks).where(tasks.c.id == task_id).with_for_update()
+        )).mappings().one()
+        if row["route_source"] not in {ROUTER, LEGACY}:
+            return False
+        substantive = (
+            context in ROUTING_FAILURE_CONTEXTS
+            and previous_status in {
+                TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.COMPLETED,
+                TaskStatus.FAILED, TaskStatus.BLOCKED,
+            }
+        )
+        if substantive and context in {"retry", "max_retries"}:
+            failure_class = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == "failure_class",
+            ))).scalar_one_or_none()
+            substantive = failure_class != json.dumps("transient")
+        if substantive:
+            attempt = (await conn.execute(
+                select(task_session_attempts)
+                .where(
+                    task_session_attempts.c.task_id == task_id,
+                    task_session_attempts.c.started_at >= row["created_at"],
+                )
+                .order_by(task_session_attempts.c.started_at.desc(), task_session_attempts.c.id.desc())
+                .limit(1)
+            )).mappings().first()
+            raw = (await conn.execute(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == ROUTING_FAILURES_KEY,
+            ))).scalar_one_or_none()
+            failures = json.loads(raw) if raw else []
+            identity = attempt["id"] if attempt else f"claim:{row['claim_epoch']}"
+            if not any(failure["attempt_id"] == identity for failure in failures):
+                failures.append({
+                    "attempt_id": identity,
+                    "session_id": attempt["session_id"] if attempt else None,
+                    "claim_epoch": row["claim_epoch"],
+                    "intelligence_class": (
+                        attempt["intelligence_class"] if attempt else row["intelligence_class"]
+                    ),
+                    "profile_id": attempt["profile_id"] if attempt else row["profile_id"],
+                    "reason": context,
+                    "previous_status": previous_status.value, "status": new_status.value,
+                    "failed_at": row["updated_at"],
+                })
+                await self._upsert_meta(task_id, ROUTING_FAILURES_KEY, failures, conn=conn)
+        if new_status != TaskStatus.READY:
+            return False
+        # Preserve constraints and provenance, but remove the previous class:
+        # it is a routing result, not the filer's class_hint.
+        route = {
+            key: value for key, value in (row["route"] or {}).items()
+            if key in {"constraints", "legacy"}
+        }
+        if row["route_source"] == LEGACY:
+            route.setdefault("legacy", {
+                "profile_id": row["profile_id"],
+                "intelligence_class": row["intelligence_class"],
+                "provider_intent": row["provider_intent"],
+            })
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+            profile_id=None, intelligence_class=None, provider_intent="class_only",
+            route_source=UNROUTED, route=route or None,
+        ))
+        return True
+
     async def routing_supply(self, *, now: float, stall_seconds: float, conn=None) -> dict:
         """Grouped worker observations, without task titles, terminals or session tokens.
 

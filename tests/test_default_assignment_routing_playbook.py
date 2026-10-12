@@ -191,7 +191,7 @@ async def test_a_task_whose_kind_and_hint_decide_the_route_needs_no_llm(
     floor, with every candidate already on Claude or Codex: no risk answer
     could change the route.
     """
-    task = await _create(handler, "hinted", task_type=TaskType.BUGFIX, class_hint="deep-high")
+    task = await _create(handler, "hinted", task_type=TaskType.RESEARCH, class_hint="deep-high")
     llm = _ScriptedLlm(NARROW_DESIGN)
 
     result, runs = await _dispatch(handler, task, llm, monkeypatch)
@@ -207,7 +207,7 @@ async def test_a_task_whose_kind_and_hint_decide_the_route_needs_no_llm(
     assert routed.route_source == ROUTER
     # ``reserved`` keeps deep-high Claude for design, so Codex takes it.
     assert (routed.profile_id, routed.intelligence_class) == ("deep-high-codex", "deep-high")
-    assert routed.route["rule"] == "kinds.bugfix"
+    assert routed.route["rule"] == "kinds.research"
     assert routed.route["classification"] is None
 
 
@@ -294,9 +294,9 @@ async def test_a_hinted_task_below_the_top_risk_floor_is_classified_for_its_risk
             id=f"deep-low-{harness}", name="", lifecycle="pool", harness=harness,
             default_class="deep-low", max_active=1,
         ))
-    task = await _create(handler, "risky", task_type=TaskType.BUGFIX, class_hint="standard-high")
+    task = await _create(handler, "risky", task_type=TaskType.FEATURE, class_hint="standard-high")
     llm = _ScriptedLlm({
-        **NARROW_DESIGN, "task_type": "bugfix", "intelligence_class": "standard-high",
+        **NARROW_DESIGN, "task_type": "feature", "intelligence_class": "standard-high",
         "risk_reason": "deletes branches on origin", **answer,
     })
 
@@ -370,9 +370,10 @@ async def test_shipped_router_keeps_bugfix_repairs_off_local_and_hosted_opencode
     assert routed.route["rule"] == f"kinds.bugfix+origins.{effective_origin}"
     assert {c["harness"] for c in routed.route["candidates"]} == {"codex", "claude"}
     assert routed.profile_id in {"standard-high-codex", "standard-high-claude"}
-    # A risk floor could raise the hint, so the router asks for the risk.
-    assert len(llm.prompts) == 1
-    assert routed.route["classification"]["risk"] == "low"
+    # Standard-first bugfix policy fixes the class and already admits only
+    # hosted frontier harnesses, so no classification could change this route.
+    assert llm.prompts == []
+    assert routed.route["classification"] is None
     assert routed.created_by_kind == task.created_by_kind
 
 
@@ -520,3 +521,21 @@ async def test_a_project_bound_to_another_router_is_left_to_it(handler, monkeypa
     assert result.rules_selected == ()
     assert not runs.snapshots
     assert (await handler.db.get_task("elsewhere")).route_source == UNROUTED
+
+
+@pytest.mark.parametrize("hint", [None, "deep-high"])
+async def test_shipped_bugfix_policy_tries_standard_before_deep(handler, monkeypatch, hint):
+    task = await _create(handler, "standard-first", task_type=TaskType.BUGFIX, class_hint=hint)
+    llm = _ScriptedLlm({
+        **NARROW_DESIGN, "task_type": "bugfix", "intelligence_class": "deep-high",
+        "risk": "very_high", "risk_reason": "scheduler failure can strand work",
+    })
+    _result, runs = await _dispatch(handler, task, llm, monkeypatch)
+    (run,) = runs.snapshots.values()
+    assert run.lifecycle.value == "completed", run.error
+    routed = await handler.db.get_task(task.id)
+    assert routed.intelligence_class == "standard-high"
+    # The fixed attempt class and hosted harnesses need no risk/class answer.
+    assert llm.prompts == []
+    assert not routed.route.get("escalated_after_failure")
+    assert {c["harness"] for c in routed.route["candidates"]} <= {"claude", "codex"}

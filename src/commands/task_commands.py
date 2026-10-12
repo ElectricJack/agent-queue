@@ -4593,6 +4593,11 @@ class TaskCommandsMixin:
                 force=True,
                 retry_count=previous[1],
                 assigned_agent_id=previous[2],
+                profile_id=task.profile_id,
+                intelligence_class=task.intelligence_class,
+                provider_intent=task.provider_intent,
+                route_source=task.route_source,
+                route=task.route,
             )
         except StaleClaim as exc:
             logger.warning(
