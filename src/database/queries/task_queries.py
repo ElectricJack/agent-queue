@@ -1310,6 +1310,7 @@ class TaskQueryMixin:
         _operator_adoption_token=None,
         _integration_wake_token=None,
         accepted_close: dict | None = None,
+        integration_delivery=None,
         **kwargs,
     ) -> TransitionResult:
         """Validate and update status on a caller-owned connection (work-graph §4.1).
@@ -1427,9 +1428,13 @@ class TaskQueryMixin:
             current_status.value in self._TERMINAL_TASK_STATUSES
             and new_status.value not in self._TERMINAL_TASK_STATUSES
         ):
-            await self.guard_integration_mutation(task_id, "reopen", conn=conn)
+            await self.guard_integration_mutation(
+                task_id, "reopen", conn=conn, delivery=integration_delivery,
+            )
         if context == "abandoned_by_container":
-            await self.guard_integration_mutation(task_id, "disposition", conn=conn)
+            await self.guard_integration_mutation(
+                task_id, "disposition", conn=conn, delivery=integration_delivery,
+            )
         stable = (
             projection_stable
             and current_status in _PROJECTION_NEUTRAL_STATUSES
@@ -1846,6 +1851,7 @@ class TaskQueryMixin:
         force: bool = False,
         expect_claim_epoch: int | None = None,
         skip_open_subtasks: bool = False,
+        integration_delivery=None,
         **kwargs,
     ) -> set[str]:
         """Public status write: one transaction, then post-commit emission.
@@ -1858,6 +1864,20 @@ class TaskQueryMixin:
         # stale snapshot across a concurrent integration seal. PostgreSQL's
         # immediate() remains an ordinary transaction; the project advisory
         # lock in guard_integration_mutation supplies its scoped exclusion.
+        from src.integration.delivery_observer import prerequisite_observer
+
+        if (integration_delivery is None and prerequisite_observer(self) is not None
+                and (new_status.value not in self._TERMINAL_TASK_STATUSES
+                     or context == "abandoned_by_container")):
+            task = await self.get_task(task_id)
+            if task is not None and (
+                task.status.value in self._TERMINAL_TASK_STATUSES
+                and new_status.value not in self._TERMINAL_TASK_STATUSES
+                or context == "abandoned_by_container"
+            ):
+                integration_delivery = await self.observe_removal_delivery(
+                    [task_id], for_mutation=True,
+                )
         async with self.immediate() as conn:
             result = await self._apply_transition(
                 conn,
@@ -1868,6 +1888,7 @@ class TaskQueryMixin:
                 force=force,
                 expect_claim_epoch=expect_claim_epoch,
                 skip_open_subtasks=skip_open_subtasks,
+                integration_delivery=integration_delivery,
                 **kwargs,
             )
         await self.log_blocked_flips(result.flipped)
@@ -2003,6 +2024,7 @@ class TaskQueryMixin:
         cascade: bool = False,
         conn=None,
         branch_policy: str | None = None,
+        delivery=None,
     ) -> TransitionResult:
         """Delete a task; with *cascade*, its whole subtree (spec §7).
 
@@ -2027,12 +2049,16 @@ class TaskQueryMixin:
         """
         if conn is not None:
             return await self._delete_task_body(
-                task_id, cascade=cascade, conn=conn, branch_policy=branch_policy
+                task_id, cascade=cascade, conn=conn, branch_policy=branch_policy, delivery=delivery,
             )
 
+        from src.integration.delivery_observer import prerequisite_observer
+
+        if delivery is None and prerequisite_observer(self) is not None:
+            delivery = await self.observe_removal_delivery([task_id], for_mutation=True)
         async with self._engine.begin() as c:
             result = await self._delete_task_body(
-                task_id, cascade=cascade, conn=c, branch_policy=branch_policy
+                task_id, cascade=cascade, conn=c, branch_policy=branch_policy, delivery=delivery,
             )
         await self.log_blocked_flips(result.flipped)
         await self._notify_settled(result.settled)
@@ -2040,13 +2066,14 @@ class TaskQueryMixin:
         return result
 
     async def _delete_task_body(
-        self, task_id: str, *, cascade: bool, conn, branch_policy: str | None = None
+        self, task_id: str, *, cascade: bool, conn, branch_policy: str | None = None, delivery=None,
     ) -> TransitionResult:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
         await self.guard_integration_mutation(
-            task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy
+            task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy,
+            delivery=delivery,
         )
         parent = (
             await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))

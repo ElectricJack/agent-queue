@@ -502,7 +502,16 @@ async def test_reopen_releases_frozen_source_ci_repair_batch_for_the_corrected_s
     checks.green.add(testing.candidate_sha)
     before = git(world.origin.url, "rev-parse", "main")
 
-    await world.db.transition_task("source", TaskStatus.READY, context="reopen_with_feedback")
+    # Reproduce a persisted reopen from the older writer. Current Git-first
+    # mutation guards correctly refuse reopening this already delivered source.
+    from src.integration.source_repairs import retire_reopened_source_repairs_on
+
+    async with world.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "source").values(
+            status=TaskStatus.READY.value))
+        await retire_reopened_source_repairs_on(
+            world.db, conn, "source", context="reopen_with_feedback",
+        )
     released = await train.visit(MAIN)
     assert released.state == "blocked", released
     blocker = next(b for b in released.detail["blockers"] if b.get("task_id") == "repair")
@@ -589,7 +598,7 @@ async def test_admission_withholds_a_failed_source_ci_repair_and_releases_its_ba
 
 
 async def test_paused_batch_is_not_released_for_a_superseded_repair(world):
-    source = await completed(world, "source", land=True)
+    source = await completed(world, "source")
     repair = await completed_source_ci_repair(world, source)
     await source_ci_binding(world, "source", "repair", source)
     store = BatchStore(world.db)
@@ -3911,7 +3920,10 @@ async def test_epic_completion_preserves_readiness_constraints(collected_epic, b
     head = await collect_epic(case)
     await review_epic(case)
     if blocker == "open_child":
-        await case.db.transition_task("child-b", TaskStatus.READY)
+        # Model persisted legacy/raced state; active Git-first correctly fences
+        # ordinary reopen once this child is contained in the epic.
+        async with case.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "child-b").values(status="READY"))
     elif blocker == "checks":
         del case.github.runs[head]
     elif blocker == "rejection":
@@ -4502,7 +4514,10 @@ async def test_closed_epic_sync_after_abort_hands_code_conflicts_to_worker(colle
                 task_branch_origins.c.task_id.in_(("child-a", "child-b")),
             ).values(retired_at=time.time()))
         for tid in ("child-a", "child-b"):
-            await case.db.archive_task(tid)
+            # Exercise already archived legacy inputs without authorizing a new
+            # archive of work that has only reached the epic, not main.
+            await case.db.archive_task(tid, abandon_undelivered=True,
+                                      abandon_reason="legacy archive fixture", disposition="retire")
     prior = Batch("aborted-epic-work", "p", "r", case.target.target_ref)
     store = BatchStore(case.db)
     members = [BatchMember(tid, source, case.base, order)

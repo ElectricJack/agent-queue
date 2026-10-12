@@ -3394,6 +3394,13 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
     await db.save_task_completion(TaskCompletion(
         id="close-second", task_id="second-prerequisite", outcome="pass", commits=[second],
     ))
+    if conflict_kind == "incarnation":
+        from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+        await GitProvenance(handler.orchestrator.git, str(env.source),
+                            repository_url=str(env.remote)).write_completion(CompletedSource(
+            CompletionIdentity(PROJECT_ID, "repo", "second-prerequisite", "close-second"), second,
+        ))
     for tid in ("dependent", "prerequisite", "second-prerequisite"):
         await db.add_dependency(tid, "epic", "parent-child")
     await db.add_dependency("dependent", "second-prerequisite")
@@ -3566,6 +3573,13 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
             id="repair-close", task_id=repair.id, outcome="pass",
             commits=[] if repair_result == "no-commit" else [resolved],
         ))
+        if repair_result == "pass":
+            from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+            await GitProvenance(handler.orchestrator.git, str(env.source),
+                                repository_url=str(env.remote)).write_completion(CompletedSource(
+                CompletionIdentity(PROJECT_ID, "repo", repair.id, "repair-close"), resolved,
+            ))
         await db.transition_task(repair.id, TaskStatus.COMPLETED, force=True)
         if repair_result == "moved":
             (env.source / "unreviewed").write_text("moved after close")
@@ -3897,6 +3911,12 @@ async def test_existing_child_parent_conflict_recovers_exact_inputs(
     git(env.source, "push", "origin", repair.branch_name)
     await db.save_task_completion(TaskCompletion(
         id="child-repair-pass", task_id=repair.id, outcome="pass", commits=[resolved],
+    ))
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    await GitProvenance(handler.orchestrator.git, str(env.source),
+                        repository_url=str(env.remote)).write_completion(CompletedSource(
+        CompletionIdentity(PROJECT_ID, "repo", repair.id, "child-repair-pass"), resolved,
     ))
     await db.transition_task(repair.id, TaskStatus.COMPLETED, force=True)
     await db.set_task_meta("dependent", "claim_prepare_backoff_until", time.time() - 1)

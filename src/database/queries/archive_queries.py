@@ -133,28 +133,38 @@ class ArchiveQueryMixin:
         """Register the :class:`~src.integration.delivery_observer.DeliveryObserver`."""
         self._delivery_observer = observer
 
-    async def observe_removal_delivery(self, root_ids):
+    async def observe_removal_delivery(self, root_ids, *, for_mutation=False):
         """Git evidence for the subtrees of *root_ids*, taken before any transaction.
 
-        Only the development work that needs proof is fetched and evaluated,
-        once per repository however many roots a sweep archives.  A target
+        Development work and active Git-first hierarchy work are fetched and
+        evaluated once per repository however many roots a sweep archives. A target
         that keeps moving yields no view: the guard then holds that work as
         unknown rather than trusting a stale answer.
-        """
-        from src.integration.delivery_observer import delivery_sensitive_ids
 
-        observer = self._delivery_observer
+        Removal proves the default target, including for children; mutation
+        proves each task's current parent/default target before its identity changes.
+        """
+        from src.integration.delivery_observer import (
+            delivery_sensitive_ids, delivery_targets, prerequisite_observer,
+        )
+
+        truthful = prerequisite_observer(self)
+        observer = truthful or self._delivery_observer
         if observer is None:
             return None
         sensitive: set[str] = set()
         async with self._engine.connect() as conn:
             for root_id in dict.fromkeys(root_ids):
                 sensitive |= await delivery_sensitive_ids(
-                    conn, await self.subtree_ids(root_id, conn=conn)
+                    conn, await self.subtree_ids(root_id, conn=conn),
+                    hierarchical=truthful is not None,
                 )
         if not sensitive:
             return None
-        view = await observer.observe(sensitive)
+        view = await observer.observe(
+            sensitive, **({"target_loader": delivery_targets} if truthful is not None
+                          and not for_mutation else {}),
+        )
         return view if await view.fresh() else None
 
     async def archive_task(
@@ -227,9 +237,12 @@ class ArchiveQueryMixin:
         if row is None:
             return "default branch", []
         project_id, mode = row
+        from src.integration.delivery_observer import prerequisite_observer
+
         return await undelivered_removal_holders(
             conn, root_id=task_id, ids=await self.subtree_ids(task_id, conn=conn),
             project_id=project_id, mode=mode, delivery=delivery,
+            git_first=prerequisite_observer(self) is not None,
         )
 
     async def _archive_task_on(

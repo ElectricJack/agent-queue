@@ -5,13 +5,14 @@ from __future__ import annotations
 import time
 
 import pytest
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, insert, select, update
 
 from src.config import AppConfig
 from src.database.tables import (
     branch_retirements,
     integration_legacy_deliveries,
     task_branch_origins,
+    tasks,
 )
 from src.doctor.integration_checks import _BY_ID, completed_undelivered
 from src.doctor.models import DoctorContext, Severity
@@ -166,7 +167,10 @@ async def test_backfill_skips_reopened_generation(world):
     await legacy(world, "merged", land=True)
     await backfill_legacy_deliveries(db, "p", dry_run=False, operator_id="op", reason="r")
     # A new completion generation owes new work; the old row no longer answers it.
-    await db.transition_task("merged", TaskStatus.IN_PROGRESS)
+    # Simulate a generation reopened by a pre-Git-first writer. Current
+    # mutation guards require provenance, which this legacy fixture lacks.
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "merged").values(status="IN_PROGRESS"))
     await db.save_task_completion(TaskCompletion(
         id="close-merged-2", task_id="merged", outcome="pass", commits=[],
         completed_at=time.time() + 5,
