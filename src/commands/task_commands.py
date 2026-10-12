@@ -1012,7 +1012,7 @@ class TaskCommandsMixin:
     # -- shared helpers ------------------------------------------------------
 
     async def _emit_task_graph_change(
-        self, event_type: str, task: Task, *, project_id: str | None = None
+        self, event_type: str, task: Task, *, project_id: str | None = None, **details
     ) -> None:
         """Publish a committed graph edit; subscriber failures cannot undo it.
 
@@ -1029,7 +1029,9 @@ class TaskCommandsMixin:
                 "Could not persist graph change %s for %s", event_type, task.id, exc_info=True
             )
         try:
-            await self.orchestrator._emit_task_event(event_type, task, project_id=pid, seq=seq)
+            await self.orchestrator._emit_task_event(
+                event_type, task, project_id=pid, seq=seq, **details,
+            )
         except Exception:
             logger.warning(
                 "Could not publish graph change %s for %s", event_type, task.id, exc_info=True
@@ -4296,6 +4298,63 @@ class TaskCommandsMixin:
         if error:
             return {"error": error}
         return {"stopped": args["task_id"]}
+
+    async def recover_missing_session_task(self, task_id: str, *, now: float) -> dict:
+        """Internal orphan-sweep command; never use operator restart's budget reset.
+
+        The task lock excludes preparation/close/pause while Git is checkpointed.
+        Database revalidation then fences every observed assignment and resource.
+        """
+        from src.git.manager import commit_identity
+        from src.orchestrator.task_checkpoint import capture_checkpoint
+        from src.sessions.provider import SessionHandle
+
+        orch = self.orchestrator
+        if task_id in orch._running_tasks or orch._task_control_held(task_id):
+            return {"success": True, "outcome": "launch_in_flight"}
+        grace = max(120.0, float(self.config.sessions.lease_ttl_seconds))
+        async with orch._task_control_lock(task_id):
+            observed = await self.db.missing_session_recovery_candidate(
+                task_id, now=now, grace=grace,
+            )
+            if observed is None:
+                return {"success": True, "outcome": "not_orphaned"}
+            task = await self.db.get_task(task_id)
+            if task.assigned_agent_id in orch._adapters:
+                return {"success": True, "outcome": "adapter_present"}
+            previous = observed["session"]
+            if previous:
+                provider = orch.session_providers.create(previous["provider"], self.config)
+                stopped = await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
+                    previous["name"], previous["provider"], previous["instance_token"],
+                )), timeout=10)
+                if stopped is not True:
+                    return {"success": False, "outcome": "writer_unproven"}
+            workspace = observed["workspace"]
+            if workspace:
+                path = workspace["workspace_path"]
+                if await orch.git.avalidate_checkout(path):
+                    branch = await orch.git.aget_current_branch(path, strict=True)
+                    if not task.branch_name or branch != task.branch_name.removeprefix("refs/heads/"):
+                        return {"success": False, "outcome": "workspace_branch_changed"}
+                project = await self.db.get_project(task.project_id)
+                with commit_identity(orch.git.resolve_commit_identity(project)):
+                    await capture_checkpoint(self.db, orch.git, task_id, path)
+            status = await self.db.recover_missing_session_task(observed, now=now, grace=grace)
+            if status is None:
+                return {"success": True, "outcome": "changed"}
+            orch._task_exec_start.pop(task_id, None)
+            orch._task_pre_exec_sha.pop(task_id, None)
+            orch._task_attachments.pop(task_id, None)
+            current = await self.db.get_task(task_id)
+            await self._emit_task_graph_change(
+                "task.restarted" if status is TaskStatus.READY else "task.failed", current,
+                **({"reason": "session_missing"} if status is TaskStatus.READY
+                   else {"context": "session_missing"}),
+            )
+            if status is TaskStatus.FAILED:
+                await self.db.notify_task_recovery(task_id, project_id=task.project_id)
+            return {"success": True, "outcome": "recovered", "status": status.value}
 
     async def _confirm_recovery_worker_stopped(self, incident: dict) -> dict:
         from src.sessions.provider import SessionHandle

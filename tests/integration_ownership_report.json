@@ -9662,6 +9662,20 @@
     },
     "src/discord/task_delete.py::import from src.integration.task_deletion import deletion_actor": {
       "reason": "Imports the server-only audit actor context for Discord task deletion; no caller-provided actor enters the command contract."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._missing_session_candidate": {
+      "reason": "Missing-session recovery excludes integration-owned tasks, episode checkpoints and attached branch writers before releasing an orphan assignment.",
+      "landing_span": [
+        187,
+        295
+      ]
+    },
+    "src/database/queries/task_recovery_queries.py::_recovery_row": {
+      "reason": "Shared recovery query-result helper preserves integration owner, checkpoint, audit and session row predicates, locking and cardinality.",
+      "landing_span": [
+        71,
+        76
+      ]
     }
   },
   "shared_state": {

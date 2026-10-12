@@ -3361,15 +3361,31 @@ class TestOrphanStep:
         await releasing_reconciler.tick(now=NOW)
         assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
 
-    async def test_a_task_that_never_had_a_session_is_not_touched(
+    async def test_missing_session_without_command_handler_is_not_touched(
         self, db, provider, releasing_reconciler, tmp_path
     ):
-        """Legacy-runtime tasks are not the session reconciler's business."""
+        """Embedded reconcilers must not mutate outside CommandHandler."""
         await _task(db)
         await _busy_agent_and_workspace(db, tmp_path)
         await releasing_reconciler.tick(now=NOW)
         assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
         assert (await db.get_agent("a1")).state is AgentState.BUSY
+
+    async def test_missing_session_delegates_to_fenced_recovery(
+        self, db, releasing_reconciler, tmp_path
+    ):
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        recover = AsyncMock(return_value={"success": True, "outcome": "not_orphaned"})
+        releasing_reconciler.test_orch._command_handler = SimpleNamespace(
+            recover_missing_session_task=recover,
+        )
+        await releasing_reconciler.tick(now=NOW)
+        recover.assert_awaited_once_with("t1", now=NOW)
+        recover.reset_mock()
+        releasing_reconciler.test_orch._running_tasks["t1"] = object()
+        await releasing_reconciler.tick(now=NOW)
+        recover.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

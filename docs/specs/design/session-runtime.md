@@ -249,6 +249,27 @@ the [supervisor-agent](supervisor-agent.md) routing story settled first.
 
 ### 4.3 Heartbeats, leases, and the stall ladder
 
+The orphan sweep also checks assigned `IN_PROGRESS` tasks with **no session row**.
+After both the task revision and its assigned agent's task heartbeat are older
+than `sessions.lease_ttl_seconds` (at least 120 seconds for launch grace), a task
+with no launch in flight and no live session for that agent is recoverable.
+An agent's IDLE state alone is never proof that its process stopped. If an old
+attempt still identifies a session, the provider must confirm that exact instance
+stopped. Unknown liveness, operator holds, containers, daemon-authored work,
+job-pinned workspaces and integration-owned recovery are excluded.
+
+Recovery runs through `CommandHandler`, under the task control lock. It preserves
+any retained checkout with the existing Git checkpoint/restore path before an
+atomic, revalidated release of its workspace and assignment. The task keeps its
+branch, route and workspace preference, spends one worker retry and returns to
+READY. An exhausted budget becomes FAILED for the existing deduplicated supervisor
+incident path. A changed task, heartbeat, session or workspace cancels the write;
+an unproven integration attachment or checkpoint failure retains all resources.
+Repeated sweeps cannot recover the same task revision twice. The supervisor's
+`scripts/operator-checks/stall-sweep.py` independently reports `ORPHANED` for stale
+assigned tasks absent from a successful, complete live-session listing; a failed
+listing is an incomplete check, never evidence that sessions are absent.
+
 `agents.last_heartbeat` is fed from two sources: transcript `in-turn` activity (§4.5) and
 explicit `aq task heartbeat` calls (the prompt instructs agents to call it before long
 commands). A lease TTL of ~8 minutes without either marks the task **stalled** — not dead.
