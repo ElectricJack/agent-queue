@@ -16049,7 +16049,8 @@
     "src/commands/operator_authority.py::bind_operator_dispatch": "Generic per-dispatch operator scoping: narrows the grant to the exact audited command and arguments and refuses unwrapped operator setup commands; integration handlers are charged independently.",
     "src/models.py::DAEMON_AUTHORED_TASK_TYPES": "Generic daemon task-kind classification used by startup recovery and routing; missing-session recovery only uses it to exclude daemon-authored work, and integration-specific guards remain independently charged.",
     "src/dashboard_paths.py::escalation_path": "Generic dashboard route escaping for every human incident. No code integration, ref identity, lifecycle state or delivery authority; integration callers remain charged separately.",
-    "src/doctor/escalation_checks.py::undelivered_escalations": "Generic read-only notification-transport health query across human incidents and root receipts. No code-delivery state, branch ownership or integration policy; the stall sweep adapter is charged separately."
+    "src/doctor/escalation_checks.py::undelivered_escalations": "Generic read-only notification-transport health query across human incidents and root receipts. No code-delivery state, branch ownership or integration policy; the stall sweep adapter is charged separately.",
+    "src/doctor/session_checks.py::session_authentication_findings": "Generic read-only session credential diagnostics for every named supervisor and harness session; no code-delivery state, branch ownership or integration authority. The stall sweep adapter remains charged separately."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

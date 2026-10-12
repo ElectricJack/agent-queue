@@ -505,22 +505,24 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     from src.integration.delivery_engine import project_delivery_issues
 
     delivery_engines = [
-        _finding("delivery_engine_unavailable", issue["project_id"], issue["detail"],
-                 severity="error", **{key: value for key, value in issue.items()
-                                      if key not in {"project_id", "detail"}})
+        _finding("delivery_engine_unavailable", severity="error", **issue)
         for issue in await project_delivery_issues(
             ctx.db, projects, ctx.config,
             orchestrator=getattr(ctx.handler, "orchestrator", None),
         )
     ]
-    from src.doctor.session_checks import _check_flock
+    from src.doctor.session_checks import _check_flock, session_authentication_findings
 
-    flock = await _check_flock(ctx)
     flock_findings = [
         _finding("flock_untracked", entry.get("project_id"), entry["detail"],
                  evidence=entry, severity="error")
-        for entry in flock.data.get("findings", [])
+        for entry in (await _check_flock(ctx)).data.get("findings", [])
     ]
+    flock_findings.extend(
+        _finding("session_authentication", item["project_id"], item["detail"],
+                 severity="error", evidence=item, session_id=item["session_id"])
+        for item in await session_authentication_findings(ctx, now=now)
+    )
     # An unowned conversation input is a stall whether or not a project is
     # active, so this line is read before the empty-install return.
     conversation = await _conversation_findings(ctx, now)
@@ -554,10 +556,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _continuous_promotion_findings(ctx, active, now),
         _escalation_delivery_findings(ctx, active, now),
     )
-    findings = (
-        [item for group in groups for item in group]
-        + _route_findings(tasks) + flock_findings + conversation + delivery_engines
-    )
+    findings = [item for group in groups for item in group]
+    findings.extend(_route_findings(tasks) + flock_findings + conversation + delivery_engines)
     return _sweep_result(ctx, findings, len(active))
 
 

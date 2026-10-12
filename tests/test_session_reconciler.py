@@ -4279,10 +4279,29 @@ async def test_short_timer_cascade_wakes_current_pool_holder_once(
         provider.sessions[row.name].activity = NOW - 10000
         orch._last_delivery_pass = 0
         await orch._deliver_messages()
+        if delivery == "not_submitted":
+            # Failed submission reserves an attempt too; retry after its backoff.
+            assert provider.sent_nudges == []
+            message = await db.get_message(result["result_message_id"])
+            assert message.last_notified_at == clock and message.notification_attempts == 1
+            clock += 60
+            orch._last_delivery_pass = 0
+            await orch._deliver_messages()
     assert provider.sent_nudges == [
         (row.name, f"Handle `aq wait show {wait['id']} --consume --json`."),
     ]
-    assert (await db.get_message(result["result_message_id"])).delivered_at == clock
+    message = await db.get_message(result["result_message_id"])
+    assert message.delivered_at is None and message.read_at is None
+    assert message.last_notified_at == clock
+    assert message.notification_attempts == (2 if delivery == "not_submitted" else 1)
+    consumed = await orch._command_handler.execute("wait_get", dict(
+        wait_id=wait["id"], consume=True, session_id=row.id, project_id="p1",
+        claim_epoch=row.last_claim_epoch,
+    ))
+    assert consumed["success"], consumed
+    assert consumed["wait"] == result
+    message = await db.get_message(result["result_message_id"])
+    assert message.delivered_at == clock and message.via == "wait_consume"
     await orch._reconcile_sessions()
     orch._last_delivery_pass = 0
     await orch._deliver_messages()
@@ -4539,7 +4558,15 @@ async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_pat
         assert received.read_text() == expected
         result = await db.get_agent_wait(wait["id"])
         assert result["state"] == "satisfied" and result["result_ref"] == f"timer:{due}"
-        assert (await db.get_message(result["result_message_id"])).delivered_at is not None
+        message = await db.get_message(result["result_message_id"])
+        assert message.delivered_at is None and message.last_notified_at is not None
+        consumed = await orch._command_handler.execute("wait_get", dict(
+            wait_id=wait["id"], consume=True, session_id=row.id, project_id="p1",
+            claim_epoch=task.claim_epoch,
+        ))
+        assert consumed["success"], consumed
+        message = await db.get_message(result["result_message_id"])
+        assert message.delivered_at is not None and message.via == "wait_consume"
         await orch._reconcile_sessions()
         orch._last_delivery_pass = 0
         await orch._deliver_messages()

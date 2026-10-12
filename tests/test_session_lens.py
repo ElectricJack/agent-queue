@@ -1350,14 +1350,16 @@ class TestSupervisorAddressValidation:
 
         results = [await engine.run_delivery_pass() for _ in range(3)]
 
-        assert [r["delivered"] for r in results] == [1, 0, 0]
+        assert [r["delivered"] for r in results] == [0, 0, 0]
         assert fake.sent_nudges == [
             (handle.name, f"Handle `aq message status {legacy.id} --json`.")
         ]
-        delivered = await db.get_message(legacy.id)
-        assert delivered.delivered_at is not None and delivered.via == "nudge"
-        assert delivered.to_id == "supervisor-aq"  # the row itself is untouched
-        assert delivered.body == "original body, preserved"
+        notified = await db.get_message(legacy.id)
+        assert notified.delivered_at is None and notified.read_at is None
+        assert notified.via == "nudge" and notified.notification_attempts == 1
+        assert notified.last_notified_at is not None
+        assert notified.to_id == "supervisor-aq"  # the row itself is untouched
+        assert notified.body == "original body, preserved"
         # The undeliverable row never launched anything and stays pending.
         assert len(fake.starts) == 1  # only the seed
         pending = await db.get_message(orphan.id)

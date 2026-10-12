@@ -275,7 +275,9 @@ async def test_delivery_busy_then_idle_paused_sleeping_and_no_tail_reply(env, bo
         await conn.execute(update(tasks).where(tasks.c.id == "two").values(status="IN_PROGRESS"))
     await engine.run_delivery_pass()
     assert lens.nudges[-1][-1] == "Handle `aq collaboration show collab-delivery --json`."
-    assert (await env.db.get_message(msg.id)).delivered_at is not None
+    notified = await env.db.get_message(msg.id)
+    assert notified.delivered_at is None and notified.notification_attempts == 1
+    assert [item.id for item in await env.db.get_pending_messages("task", "two")] == [msg.id]
     async with env.db._engine.begin() as conn:
         from src.database.tables import messages
 
@@ -287,6 +289,29 @@ async def test_delivery_busy_then_idle_paused_sleeping_and_no_tail_reply(env, bo
     assert await engine.check_reply_timeouts() == 0
     lens.tail_assistant_turn.assert_not_called()
     assert _render_nudge([msg]) == lens.nudges[-1][-1]
+
+
+async def test_member_read_acknowledges_only_own_returned_fanout_copies(env):
+    thread = await joined(env, ("one", "two", "four"))
+    first = await send(env, thread, client_key="first")
+    second = await send(env, thread, client_key="second")
+    observed = await run(env, "collaboration_get", {"thread_id": thread["id"]}, SUPERVISOR)
+    assert len(observed["messages"]) == 2
+    for key in first["message_ids"] + second["message_ids"]:
+        assert (await env.db.get_message(key)).read_at is None
+    shown = await run(env, "collaboration_get",
+                      {"thread_id": thread["id"], "after_seq": 1}, worker("two"))
+    assert [item["seq"] for item in shown["messages"]] == [2]
+    for sent in (first, second):
+        for key in sent["message_ids"]:
+            message = await env.db.get_message(key)
+            expected = sent is second and message.to_id == "two"
+            assert (message.read_at is not None) == expected
+            assert (message.delivered_at is not None) == expected
+    # The invitation's instructions are returned in the thread metadata.
+    own_pending = await env.db.get_pending_messages("task", "two")
+    assert all(item.body_kind == "collaboration" for item in own_pending)
+    assert len(own_pending) == 1
 
 
 async def test_prime_lists_active_threads_and_rollover_accept_hint(env):

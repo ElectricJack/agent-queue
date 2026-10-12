@@ -229,7 +229,7 @@ async def test_delivery_wakes_idle_and_consumes_only_its_notification(setup):
         setup.env.db, lens, setup.config, cron_service=AgentCronService(setup.handler)
     )
     result = await engine.run_delivery_pass()
-    assert result["delivered"] == 1
+    assert result["delivered"] == 0
     assert lens.nudges == [
         ("session", "s", "p", f"Handle `aq cron show {row['id']} --consume --json`.")
     ]
@@ -238,15 +238,15 @@ async def test_delivery_wakes_idle_and_consumes_only_its_notification(setup):
     shown = await call(setup, "cron_get", {"schedule_id": row["id"]})
     assert shown["schedule"]["prompt"] == "Run the authorized patrol."
     assert shown["schedule"]["delivery_receipt"]["via"] == "nudge"
-    # The daemon clears its pending pointer before the agent may consume it.
+    # Notification alone keeps the pointer pending until the agent consumes it.
     await advance(setup, setup.clock[0] + 1)
-    assert (await setup.env.db.get_agent_cron(row["id"]))["pending_message_id"] is None
+    assert (await setup.env.db.get_agent_cron(row["id"]))["pending_message_id"] is not None
     consumed = await call(
         setup, "cron_get", dict(schedule_id=row["id"], consume=True, claim_epoch=1)
     )
     assert consumed["success"], consumed
     assert consumed["schedule"]["delivery_receipt"]["read_at"] == setup.clock[0]
-    assert consumed["schedule"]["delivery_receipt"]["via"] == "nudge"
+    assert consumed["schedule"]["delivery_receipt"]["via"] == "cron_consume"
     assert consumed["schedule"]["last_delivery_status"] == "consumed"
     assert (await setup.env.db.get_message(other.id)).delivered_at is None
 
@@ -375,7 +375,7 @@ async def test_global_unset_project_registration_reconnect_wake_and_no_extra_aut
     engine = MessageDeliveryEngine(
         setup.env.db, lens, setup.config, cron_service=AgentCronService(setup.handler)
     )
-    assert (await engine.run_delivery_pass())["delivered"] == 1
+    assert (await engine.run_delivery_pass())["delivered"] == 0
     assert lens.nudges[0][:3] == ("session", "global-owner", None)
     shown = await call(setup, "cron_get", dict(schedule_id=row["id"], consume=True), identity)
     assert shown["success"] and shown["schedule"]["prompt"] == row["prompt"]
