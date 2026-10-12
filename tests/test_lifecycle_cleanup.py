@@ -561,6 +561,34 @@ async def test_ready_frontier_attention_preserves_other_incidents_and_paused_pro
     assert await orch.reevaluate_frontier_rejections(now=now + 10800) == []
 
 
+@pytest.mark.parametrize("before,after,attention,expected", [
+    (TaskStatus.READY, TaskStatus.IN_PROGRESS, "stale_open", None),
+    (TaskStatus.READY, TaskStatus.IN_PROGRESS, "operator_required", None),
+    (TaskStatus.READY, TaskStatus.FAILED, "stale_open", None),
+    (TaskStatus.READY, TaskStatus.FAILED, "operator_required", "operator_required"),
+    (TaskStatus.BLOCKED, TaskStatus.READY, "operator_required", "operator_required"),
+    (TaskStatus.PAUSED, TaskStatus.READY, "stale_open", None),
+])
+async def test_leaving_stale_episode_preserves_unresolved_incidents(
+    db, before, after, attention, expected,
+):
+    await mktask(db, "episode", status=before)
+    await db.set_task_meta("episode", "needs_attention", attention)
+    await db.set_task_meta("episode", "stale_open_detail", {"status": before.value})
+    await db.set_task_meta("episode", "frontier_rejection_since", time.time())
+    await db.set_task_meta("episode", "work_dir", "/retained/workspace")
+
+    if before == TaskStatus.PAUSED:
+        await db.resume_task("episode")
+    else:
+        await db.transition_task("episode", after)
+
+    assert await db.get_task_meta("episode", "needs_attention") == expected
+    assert await db.get_task_meta("episode", "stale_open_detail") is None
+    assert await db.get_task_meta("episode", "frontier_rejection_since") is None
+    assert await db.get_task_meta("episode", "work_dir") == "/retained/workspace"
+
+
 class TestStaleOpenReevaluation:
     async def test_satisfied_blocker_with_a_stale_projection_is_unblocked(self, db, orch):
         await blocked_on(db)

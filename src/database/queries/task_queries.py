@@ -1733,29 +1733,26 @@ class TaskQueryMixin:
                     )
                 )
 
-            # A ``stale_open`` flag describes one stopped or frontier-rejected
-            # episode; leaving the status by any path ends it.
-            if current_status in (TaskStatus.BLOCKED, TaskStatus.PAUSED, TaskStatus.READY):
-                await conn.execute(
-                    delete(task_metadata).where(
-                        task_metadata.c.task_id == task_id,
-                        (task_metadata.c.key.in_((STALE_OPEN_DETAIL_KEY, FRONTIER_REJECTION_KEY)))
-                        | (
-                            (task_metadata.c.key == "needs_attention")
-                            & (task_metadata.c.value == json.dumps(STALE_OPEN_ATTENTION))
-                        ),
+            # Leaving a stopped or frontier-rejected episode clears its stale
+            # advisory. In flight/completed work also resolves any other
+            # operational incident. Use one delete for both so claiming READY
+            # work does not pay an extra round trip for the episode cleanup.
+            stale_episode_ended = current_status in (
+                TaskStatus.BLOCKED, TaskStatus.PAUSED, TaskStatus.READY,
+            )
+            attention_resolved = new_status in (TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED)
+            if stale_episode_ended or attention_resolved:
+                attention = task_metadata.c.key == "needs_attention"
+                if not attention_resolved:
+                    attention &= task_metadata.c.value == json.dumps(STALE_OPEN_ATTENTION)
+                if stale_episode_ended:
+                    attention |= task_metadata.c.key.in_(
+                        (STALE_OPEN_DETAIL_KEY, FRONTIER_REJECTION_KEY)
                     )
-                )
-
-            # A task in flight or terminally completed has resolved the
-            # previous operational incident.  Centralising this covers both
-            # push and pull execution paths, including callers outside the
-            # pool claim protocol.
-            if new_status in (TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED):
                 await conn.execute(
                     delete(task_metadata).where(
                         task_metadata.c.task_id == task_id,
-                        task_metadata.c.key == "needs_attention",
+                        attention,
                     )
                 )
 
