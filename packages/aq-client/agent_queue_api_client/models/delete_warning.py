@@ -6,38 +6,32 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="DeletedBranch")
+T = TypeVar("T", bound="DeleteWarning")
 
 
 @_attrs_define
-class DeletedBranch:
-    """One branch a ``branch_discard_required`` refusal is asking about.
-
+class DeleteWarning:
+    """
     Attributes:
-        task_id (str):
-        branch (str):
-        base_sha (str):
+        code (str):
+        message (str):
     """
 
-    task_id: str
-    branch: str
-    base_sha: str
+    code: str
+    message: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        task_id = self.task_id
+        code = self.code
 
-        branch = self.branch
-
-        base_sha = self.base_sha
+        message = self.message
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "task_id": task_id,
-                "branch": branch,
-                "base_sha": base_sha,
+                "code": code,
+                "message": message,
             }
         )
 
@@ -46,20 +40,17 @@ class DeletedBranch:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        task_id = d.pop("task_id")
+        code = d.pop("code")
 
-        branch = d.pop("branch")
+        message = d.pop("message")
 
-        base_sha = d.pop("base_sha")
-
-        deleted_branch = cls(
-            task_id=task_id,
-            branch=branch,
-            base_sha=base_sha,
+        delete_warning = cls(
+            code=code,
+            message=message,
         )
 
-        deleted_branch.additional_properties = d
-        return deleted_branch
+        delete_warning.additional_properties = d
+        return delete_warning
 
     @property
     def additional_keys(self) -> list[str]:

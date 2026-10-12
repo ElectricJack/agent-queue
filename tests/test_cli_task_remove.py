@@ -1,4 +1,4 @@
-"""The operator removes a subtree with one explicit confirmation."""
+"""Delete and its deprecated alias share choices, preview and one confirmation."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -19,43 +19,71 @@ def client():
     mock = AsyncMock()
     mock.__aenter__.return_value = mock
     mock.execute.return_value = {
-        "success": True, "removed": "epic", "disposition": "archived", "branches": "keep",
+        "success": True, "deleted": "epic", "disposition": "deleted", "branches": "keep",
+        "task_ids": ["epic"], "tasks": [{"id": "epic", "title": "Epic", "status": "READY"}],
+        "branch_details": [], "warnings": [], "audit_id": 123,
     }
     return mock
 
 
-def test_remove_confirms_once_and_sends_reason():
+@pytest.mark.parametrize("name", ["delete", "remove"])
+def test_confirm_once_after_preview_with_explicit_options(name):
     mock = client()
     with patch("src.cli.tasks._get_client", return_value=mock):
-        result = CliRunner().invoke(cli, ["task", "remove", "epic", "--reason", "Superseded"],
+        result = CliRunner().invoke(cli, ["task", name, "epic", "--recursive", "--branches",
+                                          "delete", "--reason", "Superseded", "--stop-running"],
                                     input="y\n")
     assert result.exit_code == 0, result.output
     assert result.output.count("[y/N]") == 1
-    assert "branches" in result.output.lower()
-    mock.execute.assert_awaited_once_with("remove_task", {
-        "task_id": "epic", "confirmed": True, "reason": "Superseded",
+    assert mock.execute.await_count == 2
+    assert mock.execute.await_args_list[0].args == ("delete_task", {
+        "task_id": "epic", "recursive": True, "branches": "delete", "stop_running": True,
+        "reason": "Superseded", "confirmed": False,
     })
+    assert mock.execute.await_args.args[1]["confirmed"] is True
 
 
-def test_remove_cancel_and_blank_reason_never_mutate():
+def test_cancel_reads_preview_without_mutation():
     mock = client()
     with patch("src.cli.tasks._get_client", return_value=mock):
-        cancelled = CliRunner().invoke(cli, ["task", "remove", "epic", "--reason", "Dead"],
-                                       input="n\n")
-        blank = CliRunner().invoke(cli, ["task", "remove", "epic", "--reason", "  ", "--yes"])
+        cancelled = CliRunner().invoke(cli, ["task", "delete", "epic", "--task-only",
+                                             "--branches", "keep", "--reason", ""], input="n\n")
     assert cancelled.exit_code != 0
-    assert blank.exit_code != 0
-    mock.execute.assert_not_awaited()
+    assert mock.execute.await_count == 1
+    assert mock.execute.await_args.args[1]["confirmed"] is False
 
 
-def test_remove_yes_is_explicit_noninteractive_confirmation():
+def test_interactive_scope_branch_and_optional_reason():
+    mock = client()
+    with patch("src.cli.tasks._get_client", return_value=mock):
+        result = CliRunner().invoke(cli, ["task", "delete", "epic"],
+                                    input="recursive\ndelete\n\ny\n")
+    assert result.exit_code == 0, result.output
+    assert mock.execute.await_args.args[1]["recursive"] is True
+    assert mock.execute.await_args.args[1]["branches"] == "delete"
+    assert mock.execute.await_args.args[1]["reason"] == ""
+    assert result.output.count("[y/N]") == 1
+
+
+@pytest.mark.parametrize("name", ["delete", "remove"])
+def test_yes_defaults_to_single_task_keep_without_reason(name):
     mock = client()
     with patch("src.cli.tasks._get_client", return_value=mock) as get_client:
-        result = CliRunner().invoke(cli, [
-            "--api-url", "http://localhost:9876", "--json", "task", "remove", "epic",
-            "--reason", "Dead", "--yes",
-        ])
+        result = CliRunner().invoke(cli, ["--api-url", "http://localhost:9876", "--json",
+                                         "task", name, "epic", "--yes"])
     assert result.exit_code == 0, result.output
     assert "[y/N]" not in result.output
-    assert mock.execute.await_args.args[1]["confirmed"] is True
+    assert mock.execute.await_args.args[1] == {
+        "task_id": "epic", "recursive": False, "branches": "keep", "stop_running": False,
+        "reason": "", "confirmed": True,
+    }
     get_client.assert_called_once_with("http://localhost:9876")
+
+
+def test_preview_never_prompts_or_confirms():
+    mock = client()
+    with patch("src.cli.tasks._get_client", return_value=mock):
+        result = CliRunner().invoke(cli, ["task", "delete", "epic", "--recursive", "--preview"])
+    assert result.exit_code == 0, result.output
+    assert mock.execute.await_count == 1
+    assert mock.execute.await_args.args[1]["confirmed"] is False

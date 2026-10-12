@@ -4708,120 +4708,55 @@ class TaskCommandsMixin:
         }
 
     async def _cmd_remove_task(self, args: dict) -> dict:
-        """One confirmed operator decision removes an entire stopped subtree."""
+        """Deprecated alias for the unified delete action."""
+        result = await self._cmd_delete_task(args)
+        return {**result, "deprecated_alias": "remove_task", "removed": result.get("deleted")}
+
+    async def _cmd_delete_task(self, args: dict) -> dict:
         from src.commands.supervisor_authority import operator_or_supervisor
-        from src.integration.task_removal import prepare_removal, remove_subtree
+        from src.integration.task_deletion import deletion_actor, deletion_plan, execute_deletion
 
         task_id = args["task_id"]
         task = await self.db.get_task(task_id)
         if task is None:
             return {"success": False, "error": f"Task '{task_id}' not found"}
-        actor, refusal = await operator_or_supervisor(self.db, task.project_id, subject="task removal")
-        if refusal:
-            return {"success": False, "code": "removal.forbidden", "error": refusal}
-        async with self.db._engine.connect() as conn:
-            ids = await self.db.subtree_ids(task_id, conn=conn)
-        if not args.get("confirmed"):
-            return {"success": True, "removed": None, "task_ids": ids, "branches": "keep",
-                    "disposition": "preview", "title": task.title}
-        reason = args.get("reason")
-        if not isinstance(reason, str) or not reason.strip():
-            return {"success": False, "code": "removal.reason_required",
-                    "error": "Remove requires a reason."}
-        try:
-            snapshots = await prepare_removal(self.db, task_id)
-            for tid, snapshot in snapshots.items():
-                await self.orchestrator._finish_manual_pause(tid, snapshot)
-            result = await remove_subtree(
-                self.db, task_id, expected_ids=snapshots, reason=reason.strip(), actor=actor,
-                legacy_engine_gone=getattr(self.orchestrator, "integration_train", None) is not None,
-            )
-        except HierarchyError as exc:
-            return self._hierarchy_failure(exc)
-        except ValueError as exc:
-            return {"success": False, "code": "removal.cleanup_pending",
-                    "error": str(exc).replace("Retry Resume.", "Retry Remove.")}
-        await self._emit_task_graph_change(
-            "task.archived" if result["disposition"] == "archived" else "task.deleted", task,
+        actor, refusal = await operator_or_supervisor(
+            self.db, task.project_id, subject="task deletion"
         )
-        return {"success": True, "title": task.title, **result}
-
-    async def _cmd_delete_task(self, args: dict) -> dict:
-        task_id = args["task_id"]
-        task = await self.db.get_task(task_id)
-        if not task:
-            return {"error": f"Task '{task_id}' not found"}
-        if task.status == TaskStatus.IN_PROGRESS:
-            error = await self.orchestrator.stop_task(
-                task_id, reason="stopped before deletion"
-            )
-            if error:
-                return {"error": f"Could not stop task before deleting: {error}"}
-        cascade = bool(args.get("cascade", False))
-        branch_policy = args.get("branches")
-        if branch_policy not in (None, "keep", "delete"):
+        if refusal:
+            return {"success": False, "code": "deletion.forbidden", "error": refusal}
+        branches = args.get("branches") or "keep"
+        if branches not in {"keep", "delete"}:
             return {
                 "success": False,
                 "code": "invalid_branches",
                 "error": "branches must be 'keep' or 'delete'",
             }
-        # The wire word is "delete" — it reads correctly next to the task being
-        # deleted.  The guard's vocabulary is "discard", because it is naming
-        # what happens to the origin rather than to the task.
-        guard_policy = {"keep": "keep", "delete": "discard"}.get(branch_policy)
-        discarded: list[dict] = []
-        if guard_policy == "discard":
-            discarded = await self._materialized_branches_under(task_id)
-
-        if cascade:
-            # A cascade delete removes the whole subtree; refuse rather than
-            # pull a live session out from under a grandchild (spec §7).
-            # Check and delete in the same transaction so no session can
-            # start holding a descendant between the check and the delete.
-            # Both the refusal and the HierarchyError are handled OUTSIDE the
-            # transaction: returning from inside ``async with`` would commit
-            # it, and swallowing the error inside would commit a half-done
-            # cascade instead of rolling it back.
-            live: list = []
-            result = None
-            try:
-                async with self.db.immediate() as conn:
-                    live = await self.db.live_descendant_sessions(task_id, conn=conn)
-                    if not live:
-                        result = await self.db.delete_task(
-                            task_id, cascade=True, conn=conn, branch_policy=guard_policy
-                        )
-            except HierarchyError as exc:
-                return self._hierarchy_failure(exc)
-            if live:
-                return {
-                    "success": False,
-                    "code": "hierarchy.live_descendants",
-                    "error": (
-                        f"Cannot delete task '{task_id}': "
-                        f"{len(live)} live descendant session(s) must stop first"
-                    ),
-                    "sessions": [{"session_id": s, "task_id": t} for s, t in live],
-                }
-            # Post-commit, same sequencing as delete_task's own single-
-            # transaction path — a listener failure must not roll back the
-            # delete.
-            await self.db.log_blocked_flips(result.flipped)
-            await self.db._notify_settled(result.settled)
-            await self.db._notify_ready(result.ready)
-        else:
-            try:
-                await self.db.delete_task(
-                    task_id, cascade=False, branch_policy=guard_policy
-                )
-            except HierarchyError as exc:
-                return self._hierarchy_failure(exc)
-        await self._emit_task_graph_change("task.deleted", task)
-        return {
-            "deleted": task_id,
-            "title": task.title,
-            "discarded_branches": discarded,
-        }
+        plan, captured = await deletion_plan(
+            self.db,
+            self.orchestrator,
+            task_id,
+            recursive=bool(args.get("recursive") or args.get("cascade")),
+            branches=branches,
+            stop_running=bool(args.get("stop_running", False)),
+        )
+        if not args.get("confirmed", False):
+            return plan
+        result = await execute_deletion(
+            self.db,
+            self.orchestrator,
+            plan,
+            captured,
+            actor=deletion_actor.get() or actor,
+            reason=args.get("reason"),
+        )
+        try:
+            await self.orchestrator._emit_task_event(
+                "task.deleted", task, seq=captured["deletion_event_id"]
+            )
+        except Exception as exc:
+            result["warnings"].append({"code": "notification_failed", "message": str(exc)})
+        return result
 
     @staticmethod
     def _hierarchy_failure(exc: HierarchyError) -> dict:

@@ -15,10 +15,11 @@ A future table with a RESTRICT foreign key onto ``tasks`` breaks that test
 instead of silently breaking the sweep again.
 
 Integration audit rows are durable history, not live foreign-key ownership.
-They retain a task id after archive, but still refuse a hard delete so the
-history never resolves to nothing. ``src.integration.removal_guard`` owns
-that policy; this module remains the compact registry and reader shared by
-the guard, doctor checks, and tests.
+They retain a task id after archive or an audited operator delete. Low-level
+system deletion still uses ``src.integration.removal_guard`` to refuse removal
+without that audit. ``src.integration.task_deletion`` preserves the task snapshots
+and history while cancelling live authority. This module remains the compact
+registry and reader shared by those services, doctor checks, and tests.
 """
 
 from __future__ import annotations
@@ -43,8 +44,8 @@ from src.database.tables import (
 #: * ``"released"`` — ``_delete_one`` clears the whole resource claim.
 #: * ``"db_cascade"`` — the foreign key is ``ON DELETE CASCADE``.
 #: * ``"subtree"``  — the hierarchy edge itself; the subtree goes deepest-first.
-#: * ``"history"``  — durable integration audit; archive retains it and a
-#:   hard delete is refused by ``src.integration.removal_guard``.
+#: * ``"history"``  — durable integration audit retained by archive and audited
+#:   operator deletion; unaudited system deletion is refused by the removal guard.
 TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
     ("agents", "current_task_id"): "nulled",
     ("integration_candidate_resolutions", "repair_task_id"): "history",

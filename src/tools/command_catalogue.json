@@ -1931,21 +1931,39 @@
     },
     {
       "name": "remove_task",
-      "description": "Remove a task or epic subtree. Operator/live supervisor only. With confirmed=false, preview without changing anything. One confirmed decision stops sessions, aborts open batches, cancels ownerless legacy operations and archives when audit history exists. Branches are kept. Requires a reason when confirmed.",
+      "description": "Deprecated alias for delete_task; use delete instead.",
       "input_schema": {
         "type": "object",
         "properties": {
           "task_id": {
+            "type": "string"
+          },
+          "recursive": {
+            "type": "boolean",
+            "default": false
+          },
+          "cascade": {
+            "type": "boolean",
+            "description": "Deprecated alias for recursive"
+          },
+          "branches": {
             "type": "string",
-            "description": "Task or epic to remove"
+            "enum": [
+              "keep",
+              "delete"
+            ],
+            "default": "keep"
+          },
+          "stop_running": {
+            "type": "boolean",
+            "default": false
           },
           "confirmed": {
             "type": "boolean",
             "default": false
           },
           "reason": {
-            "type": "string",
-            "description": "Reason for removing this work"
+            "type": "string"
           }
         },
         "required": [
@@ -1955,7 +1973,7 @@
     },
     {
       "name": "delete_task",
-      "description": "Delete a task. Cannot delete a task that is currently in progress.",
+      "description": "Preview or confirm task deletion. Operator/live supervisor only. Choose this task or recursive scope and keep/delete branches. Selected running work always stops. State holds become warnings; history survives in the audit. Cleanup failures are reported individually. Reasons are optional.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -1963,9 +1981,13 @@
             "type": "string",
             "description": "Task ID to delete"
           },
-          "cascade": {
+          "recursive": {
             "type": "boolean",
             "default": false
+          },
+          "cascade": {
+            "type": "boolean",
+            "description": "Deprecated alias for recursive"
           },
           "branches": {
             "type": "string",
@@ -1973,7 +1995,22 @@
               "keep",
               "delete"
             ],
-            "description": "What to do with any branch the subtree already put on the remote. Omitted, a subtree that has one is refused with hierarchy.branch_discard_required rather than guessed at."
+            "default": "keep",
+            "description": "Keep branches or delete their local/remote refs and worktrees"
+          },
+          "stop_running": {
+            "type": "boolean",
+            "default": false,
+            "description": "Acknowledge stopping running work; selected writers always stop"
+          },
+          "confirmed": {
+            "type": "boolean",
+            "default": false,
+            "description": "False previews; true executes the deletion"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Optional audit reason"
           }
         },
         "required": [

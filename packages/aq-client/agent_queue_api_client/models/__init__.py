@@ -236,10 +236,15 @@ from .delegation_policy_dto import DelegationPolicyDTO
 from .delete_agent_request import DeleteAgentRequest
 from .delete_agent_response import DeleteAgentResponse
 from .delete_agent_response_422 import DeleteAgentResponse422
+from .delete_branch_detail import DeleteBranchDetail
+from .delete_branch_detail_action import DeleteBranchDetailAction
+from .delete_cleanup_result import DeleteCleanupResult
+from .delete_cleanup_result_outcome import DeleteCleanupResultOutcome
 from .delete_intelligence_class_conflict_response import DeleteIntelligenceClassConflictResponse
 from .delete_intelligence_class_request import DeleteIntelligenceClassRequest
 from .delete_intelligence_class_response import DeleteIntelligenceClassResponse
 from .delete_intelligence_class_response_422 import DeleteIntelligenceClassResponse422
+from .delete_local_ref import DeleteLocalRef
 from .delete_mcp_server_request import DeleteMcpServerRequest
 from .delete_mcp_server_response import DeleteMcpServerResponse
 from .delete_mcp_server_response_422 import DeleteMcpServerResponse422
@@ -251,9 +256,14 @@ from .delete_profile_response import DeleteProfileResponse
 from .delete_profile_response_422 import DeleteProfileResponse422
 from .delete_project_request import DeleteProjectRequest
 from .delete_project_response import DeleteProjectResponse
+from .delete_session import DeleteSession
 from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
-from .deleted_branch import DeletedBranch
+from .delete_task_response_branches import DeleteTaskResponseBranches
+from .delete_task_response_disposition import DeleteTaskResponseDisposition
+from .delete_task_summary import DeleteTaskSummary
+from .delete_warning import DeleteWarning
+from .delete_worktree import DeleteWorktree
 from .diff_item import DiffItem
 from .diff_item_original_scope import DiffItemOriginalScope
 from .diff_item_scope import DiffItemScope
@@ -1402,6 +1412,7 @@ from .remove_dependency_response import RemoveDependencyResponse
 from .remove_dependency_response_422 import RemoveDependencyResponse422
 from .remove_task_request import RemoveTaskRequest
 from .remove_task_response import RemoveTaskResponse
+from .remove_task_response_branches import RemoveTaskResponseBranches
 from .remove_task_response_disposition import RemoveTaskResponseDisposition
 from .remove_workspace_request import RemoveWorkspaceRequest
 from .remove_workspace_response import RemoveWorkspaceResponse
@@ -2146,11 +2157,15 @@ __all__ = (
     "DeleteAgentRequest",
     "DeleteAgentResponse",
     "DeleteAgentResponse422",
-    "DeletedBranch",
+    "DeleteBranchDetail",
+    "DeleteBranchDetailAction",
+    "DeleteCleanupResult",
+    "DeleteCleanupResultOutcome",
     "DeleteIntelligenceClassConflictResponse",
     "DeleteIntelligenceClassRequest",
     "DeleteIntelligenceClassResponse",
     "DeleteIntelligenceClassResponse422",
+    "DeleteLocalRef",
     "DeleteMcpServerRequest",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponse422",
@@ -2162,8 +2177,14 @@ __all__ = (
     "DeleteProfileResponse422",
     "DeleteProjectRequest",
     "DeleteProjectResponse",
+    "DeleteSession",
     "DeleteTaskRequest",
     "DeleteTaskResponse",
+    "DeleteTaskResponseBranches",
+    "DeleteTaskResponseDisposition",
+    "DeleteTaskSummary",
+    "DeleteWarning",
+    "DeleteWorktree",
     "DiffItem",
     "DiffItemOriginalScope",
     "DiffItemScope",
@@ -3300,6 +3321,7 @@ __all__ = (
     "RemoveDependencyResponse422",
     "RemoveTaskRequest",
     "RemoveTaskResponse",
+    "RemoveTaskResponseBranches",
     "RemoveTaskResponseDisposition",
     "RemoveWorkspaceRequest",
     "RemoveWorkspaceResponse",

@@ -17790,33 +17790,35 @@
     },
     {
       "path": "aq task delete",
-      "registration": "generated",
+      "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "delete_task",
-      "callback": "src.cli.auto_commands.callback",
+      "backend_command": null,
+      "callback": "src.cli.tasks.delete_task",
       "support": "supported",
       "alias_for": null,
       "deprecation": null,
       "unsupported_reason": null,
-      "evidence_level": "dispatch",
+      "evidence_level": "registration",
       "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
+        "click-registration"
       ],
       "acceptance_status": "working",
       "acceptance_evidence": [
         "disposable-daemon:S3/S9"
       ],
       "parameters": {
-        "required": [
-          "--task-id"
-        ],
+        "required": [],
         "optional": [
+          "task_id",
+          "--task-id",
+          "--recursive",
           "--cascade",
           "--branches",
+          "--stop-running",
+          "--reason",
+          "--yes",
+          "--preview",
           "--json",
           "--brief",
           "--save-output",
@@ -18984,7 +18986,7 @@
       "registration": "handwritten",
       "owner_kind": "core",
       "owner": "agent-queue",
-      "backend_command": "remove_task",
+      "backend_command": null,
       "callback": "src.cli.tasks.remove_task",
       "support": "supported",
       "alias_for": null,
@@ -18992,18 +18994,22 @@
       "unsupported_reason": null,
       "evidence_level": "registration",
       "evidence": [
-        "click-registration",
-        "core-handler"
+        "click-registration"
       ],
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [
-          "task_id",
-          "--reason"
-        ],
+        "required": [],
         "optional": [
+          "task_id",
+          "--task-id",
+          "--recursive",
+          "--cascade",
+          "--branches",
+          "--stop-running",
+          "--reason",
           "--yes",
+          "--preview",
           "--json",
           "--brief",
           "--save-output",

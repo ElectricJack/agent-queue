@@ -15,18 +15,38 @@ T = TypeVar("T", bound="RemoveTaskRequest")
 class RemoveTaskRequest:
     """
     Attributes:
-        task_id (str): Task or epic to remove
+        task_id (str):
+        recursive (bool | Unset):  Default: False.
+        cascade (bool | None | Unset): Deprecated alias for recursive
+        branches (str | Unset):  Default: 'keep'.
+        stop_running (bool | Unset):  Default: False.
         confirmed (bool | Unset):  Default: False.
-        reason (None | str | Unset): Reason for removing this work
+        reason (None | str | Unset):
     """
 
     task_id: str
+    recursive: bool | Unset = False
+    cascade: bool | None | Unset = UNSET
+    branches: str | Unset = "keep"
+    stop_running: bool | Unset = False
     confirmed: bool | Unset = False
     reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         task_id = self.task_id
+
+        recursive = self.recursive
+
+        cascade: bool | None | Unset
+        if isinstance(self.cascade, Unset):
+            cascade = UNSET
+        else:
+            cascade = self.cascade
+
+        branches = self.branches
+
+        stop_running = self.stop_running
 
         confirmed = self.confirmed
 
@@ -43,6 +63,14 @@ class RemoveTaskRequest:
                 "task_id": task_id,
             }
         )
+        if recursive is not UNSET:
+            field_dict["recursive"] = recursive
+        if cascade is not UNSET:
+            field_dict["cascade"] = cascade
+        if branches is not UNSET:
+            field_dict["branches"] = branches
+        if stop_running is not UNSET:
+            field_dict["stop_running"] = stop_running
         if confirmed is not UNSET:
             field_dict["confirmed"] = confirmed
         if reason is not UNSET:
@@ -54,6 +82,21 @@ class RemoveTaskRequest:
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
         task_id = d.pop("task_id")
+
+        recursive = d.pop("recursive", UNSET)
+
+        def _parse_cascade(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        cascade = _parse_cascade(d.pop("cascade", UNSET))
+
+        branches = d.pop("branches", UNSET)
+
+        stop_running = d.pop("stop_running", UNSET)
 
         confirmed = d.pop("confirmed", UNSET)
 
@@ -68,6 +111,10 @@ class RemoveTaskRequest:
 
         remove_task_request = cls(
             task_id=task_id,
+            recursive=recursive,
+            cascade=cascade,
+            branches=branches,
+            stop_running=stop_running,
             confirmed=confirmed,
             reason=reason,
         )
