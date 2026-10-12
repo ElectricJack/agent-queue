@@ -2838,12 +2838,12 @@ class SessionReconciler:
                 # but running intent must launch its successor on the next tick.
                 changed = await self.db.update_session_instance(
                     row.id, row.instance_token, state="sleeping",
-                    sleep_reason="desired_sleeping", end_reason="desired_sleeping",
+                    sleep_reason="sleep_requested", end_reason="sleep_requested",
                 )
                 if changed:
                     await self._emit(
                         "session.sleeping", session_id=row.id, name=row.name,
-                        project_id=row.project_id, reason="desired_sleeping",
+                        project_id=row.project_id, reason="sleep_requested",
                     )
                 continue
             if row.state != "running" or row.desired_state != "running":

@@ -293,15 +293,15 @@ async def test_task_claim_turnover_expires_schedule(setup):
     assert await pending_count(setup.env) == []
 
 
-async def global_owner(setup):
+async def global_owner(setup, project=None):
     await setup.env.db.create_session(
         SessionRecord(
             id="global-owner",
-            project_id=None,
+            project_id=project,
             profile_id="supervisor",
             harness="codex",
             provider="fake",
-            name="n-supervisor--global",
+            name=f"n-supervisor--{project or 'global'}",
             lifecycle="named",
             work_dir="/tmp/global-cron",
             epoch="boot",
@@ -310,7 +310,49 @@ async def global_owner(setup):
             state="running",
         )
     )
-    return scope("global-owner", "global-token", None, elevated=True)
+    return scope("global-owner", "global-token", project, elevated=True)
+
+
+@pytest.mark.parametrize("owner_kind", ["worker", "project_supervisor", "global_supervisor"])
+async def test_sleep_cancels_owner_schedules_and_pending_wakes_immediately(
+    setup, owner_kind
+):
+    supervisor = await global_owner(setup, project="p" if owner_kind == "project_supervisor" else None)
+    identity, other = (scope(), supervisor) if owner_kind == "worker" else (supervisor, scope())
+    first = (await register(setup, identity=identity))["schedule"]
+    second = (await register(setup, key="later", identity=identity))["schedule"]
+    foreign = (await register(setup, identity=other))["schedule"]
+    await advance(setup, first["next_fire_at"])
+
+    result = await setup.handler.execute("session_sleep", {"session_id": identity["session_id"]})
+
+    assert result["success"], result
+    for schedule in (first, second):
+        current = await setup.env.db.get_agent_cron(schedule["id"])
+        assert current["state"] == "cancelled"
+        assert current["stopped_at"] is not None
+    assert (await setup.env.db.get_agent_cron(foreign["id"]))["state"] == "active"
+    assert await pending_count(setup.env) == [f"cron:{foreign['id']}:1"]
+
+    # Repeating sleep is harmless; waking the same instance cannot revive its patrols.
+    await setup.handler.execute("session_sleep", {"session_id": identity["session_id"]})
+    await setup.env.db.update_session(identity["session_id"], desired_state="running")
+    assert (await register(setup, identity=identity))["schedule"]["state"] == "cancelled"
+    await advance(setup, first["next_fire_at"] + 3600)
+    assert (await setup.env.db.get_agent_cron(first["id"]))["state"] == "cancelled"
+
+
+async def test_sleep_and_schedule_cancellation_roll_back_together(setup, monkeypatch):
+    first = (await register(setup))["schedule"]
+    await advance(setup, first["next_fire_at"])
+    monkeypatch.setattr(setup.env.db, "_cron_stop", AsyncMock(side_effect=RuntimeError("db error")))
+
+    result = await setup.handler.execute("session_sleep", {"session_id": "s"})
+
+    assert "db error" in result["error"], result
+    assert (await setup.env.db.get_session("s")).desired_state == "running"
+    assert (await setup.env.db.get_agent_cron(first["id"]))["state"] == "active"
+    assert await pending_count(setup.env) == [f"cron:{first['id']}:1"]
 
 
 @pytest.mark.parametrize("project", [None, "p"])

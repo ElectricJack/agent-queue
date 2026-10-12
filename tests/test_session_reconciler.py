@@ -2828,6 +2828,71 @@ class TestDesiredState:
 
         monkeypatch.setattr(db, "get_profile", _get_profile)
 
+    @pytest.mark.parametrize("state", ["starting", "running"])
+    @pytest.mark.parametrize("alive", [False, True])
+    async def test_explicit_sleep_stops_busy_named_session_without_idle_timeout(
+        self, db, provider, reconciler, bus, monkeypatch, state, alive
+    ):
+        session = await self._named(db, provider, state=state, desired_state="sleeping")
+        provider.sessions[session.name].process_alive = alive
+        await self._idle_profile(db, monkeypatch, timeout=0)
+        provider.resubmit_pending = AsyncMock(return_value=True)
+        db.has_supervision_work = AsyncMock(return_value=True)
+
+        await reconciler.tick(now=NOW)
+
+        row = await db.get_session("n1")
+        assert (row.state, row.desired_state, row.sleep_reason) == (
+            "sleeping", "sleeping", "sleep_requested"
+        )
+        assert await provider.list_running("n-") == []
+        provider.resubmit_pending.assert_not_awaited()
+        db.has_supervision_work.assert_not_awaited()
+        assert bus.payload("session.sleeping")["reason"] == "sleep_requested"
+
+        await reconciler.tick(now=NOW + 1)
+        assert (await db.get_session("n1")).state == "sleeping"
+        assert bus.types().count("session.sleeping") == 1
+
+    async def test_explicit_sleep_retries_failed_provider_stop(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        await self._named(db, provider, desired_state="sleeping")
+        await self._idle_profile(db, monkeypatch, timeout=0)
+        stop = provider.stop
+        monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("unavailable")))
+
+        await reconciler.tick(now=NOW)
+        row = await db.get_session("n1")
+        assert (row.state, row.desired_state) == ("running", "sleeping")
+        assert [handle.name for handle in await provider.list_running("n-")] == [row.name]
+
+        monkeypatch.setattr(provider, "stop", stop)
+        await reconciler.tick(now=NOW + 1)
+        assert (await db.get_session("n1")).state == "sleeping"
+        assert await provider.list_running("n-") == []
+
+    async def test_explicit_sleep_reads_intent_again_before_stopping(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        await self._named(db, provider, desired_state="sleeping")
+        await self._idle_profile(db, monkeypatch, timeout=0)
+        stop = AsyncMock(wraps=provider.stop)
+        monkeypatch.setattr(provider, "stop", stop)
+        original = reconciler._step_observe
+
+        async def wake_after_snapshot(now):
+            live = await original(now)
+            await db.update_session("n1", desired_state="running")
+            return live
+
+        monkeypatch.setattr(reconciler, "_step_observe", wake_after_snapshot)
+        await reconciler.tick(now=NOW)
+
+        stop.assert_not_awaited()
+        row = await db.get_session("n1")
+        assert (row.state, row.desired_state) == ("running", "running")
+
     async def test_named_session_recovers_owned_submit_without_a_task(
         self, db, provider, reconciler, monkeypatch
     ):
@@ -2871,10 +2936,10 @@ class TestDesiredState:
         await reconciler._step_named(live, NOW)
         current = await db.get_session(row.id)
         assert (current.state, current.desired_state) == ("sleeping", "sleeping")
-        assert current.sleep_reason == "desired_sleeping"
+        assert current.sleep_reason == "sleep_requested"
         assert not await provider.is_running(reconciler._handle(row))
         provider.resubmit_pending.assert_not_awaited()
-        assert bus.payload("session.sleeping")["reason"] == "desired_sleeping"
+        assert bus.payload("session.sleeping")["reason"] == "sleep_requested"
         await reconciler.tick(now=NOW + 1)
         assert starter.calls == []
         assert bus.types().count("session.sleeping") == 1

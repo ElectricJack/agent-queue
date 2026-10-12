@@ -239,7 +239,8 @@ running. **Waking is always explicit**; nothing infers it from activity.
 
 An explicit `desired_state=sleeping` on a starting or running named session stops its
 process on the next reconciler tick, independently of idle timeout, outstanding work,
-or pending input submission. A failed stop leaves the runtime state live for retry.
+or pending input submission. Only a successful fenced provider stop records
+`sleep_reason=sleep_requested`; a failed stop leaves the runtime state live for retry.
 Recording sleep intent or transitioning to sleeping cancels that session instance's
 active cron schedules and archives undelivered scheduled prompts in the same transaction.
 An explicit wake received during the stop remains wanted and can start a successor.

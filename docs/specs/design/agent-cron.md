@@ -33,7 +33,8 @@ or termination expires the record and archives its pending wake. New owner
 instances must register again. No schedule cold-starts a replacement owner.
 Recording session sleep intent or transitioning to sleeping cancels the current
 instance's active registrations and archives undelivered scheduled prompts atomically
-with the session update. Waking does not restore cancelled registrations.
+with the session update. Waking does not restore cancelled registrations;
+cancelled idempotency keys remain cancelled.
 
 Missed ticks coalesce into one prompt. A schedule retains at most one pending
 message, with a stable message ID per emitted tick. Cron coalescing counts are a
