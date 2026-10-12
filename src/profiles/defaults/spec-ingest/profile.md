@@ -90,12 +90,15 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
   "aq_commands": [
     "get_downstream_tasks",
     "get_schema",
+    "knowledge_show",
     "list_tasks",
     "message_inbox",
     "message_reply",
     "message_send",
     "message_status",
     "prime",
+    "record_capabilities",
+    "record_search",
     "session_drain_ack",
     "task_batch_propose",
     "task_batch_commit",
@@ -124,6 +127,7 @@ The role reads its project's graph and proposes and commits a complete batch.
 The server derives this exception from a live role assignment and an approved
 spec path, not caller-provided source text. There is no `create_task` or
 `add_dependency` grant: piecemeal graph publication is forbidden.
+Knowledge read grants support prime's project context and scoped record discovery.
 
 ## MCP Servers
 
@@ -142,6 +146,8 @@ spec path, not caller-provided source text. There is no `create_task` or
 - Shipped profiles are write-if-absent. Existing installs need the operator to
   reconcile this Role and grant `task_batch_commit`, preserving local harness
   choices (`aq doctor --check profiles.system_drift` and profile reseeding).
+  Add missing knowledge read grants with
+  `aq agent profile-reseed --profile-id spec-ingest --grants-only`.
 
 ## Reflection
 

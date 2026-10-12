@@ -163,6 +163,85 @@ async def test_pool_profile_demand_creates_no_task_agent(db):
     assert await db.list_agents() == []
 
 
+@pytest.mark.parametrize("availability", [
+    "idle", "busy", "disabled", "live_session", "suppressed", "incompatible",
+])
+async def test_existing_role_definition_is_reused_or_waited_for_without_duplication(db, availability):
+    from src.models import SessionRecord
+
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest")
+    await db.create_profile(AgentProfile(
+        id="pool", name="Pool", harness="codex", default_class="deep-high", lifecycle="pool",
+    ))
+    await _seed_ready_task(db, task_id="ingest", project_id="p", profile_id="spec-ingest")
+    await db.update_task("ingest", intelligence_class="deep-high")
+    role = Agent(
+        id="role-agent", name="Review Spec Ingest", profile_id="spec-ingest",
+        intelligence_class="deep-high", harness="codex",
+    )
+    if availability == "busy":
+        await db.create_task(Task(
+            id="other", project_id="p", title="Other ingestion", description="",
+            status=TaskStatus.IN_PROGRESS, profile_id="spec-ingest", route_source="role",
+        ))
+        role.state, role.current_task_id, role.last_heartbeat = AgentState.BUSY, "other", _time.time()
+    elif availability == "disabled":
+        role.enabled = False
+    elif availability == "incompatible":
+        role.intelligence_class = "fast-low"
+    await db.create_agent(role)
+    await db.create_agent(Agent(id="pool-agent", name="Deep Codex", profile_id="pool"))
+    if availability == "live_session":
+        await db.create_session(SessionRecord(
+            id="role-session", agent_id=role.id, project_id="p", profile_id="spec-ingest",
+            harness="codex", provider="fake", name="role-session", lifecycle="task",
+            state="running", work_dir="/tmp", epoch="e", instance_token="test", started_at=1,
+        ))
+    before = await db.get_agent(role.id)
+    report = await AgentReconciler(db).reconcile(
+        suppressed_agent_ids=frozenset({role.id}) if availability == "suppressed" else frozenset(),
+    )
+    assert report.created == [] and report.reassigned == []
+    assert {agent.id for agent in await db.list_agents()} == {role.id, "pool-agent"}
+    assert await db.get_agent(role.id) == before
+
+
+async def test_role_bootstraps_one_global_definition_for_cross_project_demand(db):
+    await _seed_project_with_profile(db, project_id="p", profile_id="spec-ingest")
+    await _seed_bare_project(db, project_id="q")
+    for project_id in ("p", "q"):
+        await _seed_ready_task(
+            db, task_id=f"ingest-{project_id}", project_id=project_id, profile_id="spec-ingest",
+        )
+    # Different demand cannot mint a second copy of the same role identity.
+    await db.update_task("ingest-p", intelligence_class="deep-high")
+    await db.update_task("ingest-q", intelligence_class="standard-high")
+    report = await AgentReconciler(db).reconcile()
+    assert report.created == [("p", "spec-ingest")]
+    agents = await db.list_agents()
+    assert len(agents) == 1 and agents[0].profile_id == "spec-ingest"
+    assert (await AgentReconciler(db).reconcile()).created == []
+
+
+async def test_idle_role_definition_does_not_supply_ordinary_implementation_work(db):
+    await _seed_project_with_profile(db, project_id="p", profile_id="worker")
+    await db.update_profile("worker", default_class="deep-high")
+    await db.create_profile(AgentProfile(
+        id="spec-ingest", name="Ingest", harness="claude", default_class="deep-high",
+    ))
+    await db.create_agent(Agent(
+        id="role-agent", name="Review Spec Ingest", profile_id="spec-ingest",
+        harness="codex", intelligence_class="deep-high",
+    ))
+    await _seed_ready_task(db, task_id="implementation", project_id="p", profile_id="worker")
+    await db.update_task("implementation", intelligence_class="deep-high")
+    before = await db.get_agent("role-agent")
+    report = await AgentReconciler(db).reconcile()
+    assert report.created == [("p", "worker")]
+    assert len(await db.list_agents()) == 2
+    assert await db.get_agent("role-agent") == before
+
+
 async def _seed_bare_project(db, *, project_id="p", max_agents=1):
     """A project with a workspace and no profiles."""
     await db.create_project(Project(

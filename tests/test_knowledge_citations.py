@@ -117,7 +117,7 @@ async def test_tracking_grants_are_enforced_by_core_with_transport_gate_off(cont
 
     bundle = await prepare(service, worker)
     reader = replace(worker, policy=CapabilityPolicy.from_namespaces(
-        aq_commands=["knowledge_show", "knowledge_search"],
+        aq_commands=["knowledge_show", "record_search"],
     ))
     with pytest.raises(RecordError, match="record.forbidden"):
         await deliver(service, reader, bundle)

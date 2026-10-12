@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 
 from src.intelligence_classes import resolve_class
+from src.routing.sources import ROLE, ROLE_PROFILE_IDS
 from src.sessions.spec import _infer_provider_from_harness, _is_codex_cli
 
 
@@ -128,6 +129,18 @@ def task_agent_mismatch(
     an explicit empty snapshot instead reports missing requested classes.
     """
     from src.commands.operator_authority import OPERATOR_CLASSES, OPERATOR_HARNESSES, is_operator_profile
+
+    # Role routes name a durable role definition, not just a capability bundle.
+    # Apply the same identity rule in scheduler matching and fresh admission.
+    if _value(task, "route_source") == ROLE and _value(agent, "profile_id") != _value(
+        task, "profile_id"
+    ):
+        return (
+            f"requires role agent with profile '{task.profile_id}'; "
+            f"worker '{agent.id}' uses '{agent.profile_id}'"
+        )
+    if _value(agent, "profile_id") in ROLE_PROFILE_IDS and _value(task, "route_source") != ROLE:
+        return f"worker '{agent.id}' is reserved for role profile '{agent.profile_id}'"
 
     task_kind = getattr(getattr(task, "task_type", None), "value", getattr(task, "task_type", None))
     operator = task_kind == "operator"
