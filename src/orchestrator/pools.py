@@ -45,6 +45,7 @@ from src.models import (
     SessionRecord,
     Task,
     TaskStatus,
+    TaskType,
 )
 from src.git.identity import resolve_git_identity
 from src.orchestrator.base_workspace import base_checkout_refusal
@@ -872,6 +873,7 @@ class PoolsMixin:
 
         from src.agents.configuration import apply_agent_overrides, resolve_launch_settings
         from src.agents.routing import resolve_agent_profile, task_agent_mismatch
+        from src.commands.operator_authority import is_operator_profile
 
         # Don't manufacture a durable definition when no execution workspace
         # could be acquired. Worktree slots still count as lazy capacity.
@@ -913,6 +915,7 @@ class PoolsMixin:
         requirement = Task(
             id="", project_id=project.id, title="", description="", profile_id=profile.id,
             intelligence_class=profile.default_class,
+            task_type=TaskType.OPERATOR if is_operator_profile(profile) else None,
         )
         classes = self.session_spec_builder._intelligence_classes
         candidates = await self.db.list_agents(state=AgentState.IDLE)

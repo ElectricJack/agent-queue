@@ -5136,7 +5136,7 @@
         "task-routing"
       ],
       "default_arm": true,
-      "digest": "sha256:7f52dd0e656ea1da499a6662575af6df2ae71be1dc3dfa6e09274278af0cac9e",
+      "digest": "sha256:f90bc41b3d932b1145dcfc5f08431200dabf7b46a1775ccadb8175ac6f693fc5",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -5156,6 +5156,7 @@
         "src.playbooks.executors.llm",
         "src.profiles.capabilities",
         "src.routing.sources",
+        "src.scheduler",
         "src.sessions.harness_parser"
       ],
       "markers": [
@@ -13042,7 +13043,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:e45ca7bde6dda7609e675d9f3dd1fc343870cacc4f135b2aab151382ee871bfb",
+      "digest": "sha256:ad88dcdbb332c6dcb0b3ad043fba9d8bb9492d0481f2628b29d3af37c424a456",
       "imports": [
         "src.config",
         "src.database",
@@ -13051,7 +13052,9 @@
         "src.orchestrator",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Pool startup uses the same execution constraints as push assignment."
     },
     "tests/test_pool_api_postgres.py": {
