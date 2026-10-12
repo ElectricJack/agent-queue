@@ -111,6 +111,10 @@ DEVELOPMENT_COMPLETION_ID_KEY = "development_completion_id"
 # completion record is recovered after a restart only when this names it
 # exactly; a task's status alone never proves a close was accepted.
 ACCEPTED_CLOSE_KEY = "accepted_close"
+# No-attempt failures need an incarnation clock independent of ordinary task
+# edits. Written atomically on entry into FAILED, removed on exit, and kept by
+# same-status reconciliation. Older rows are seeded by the recovery reader.
+RECOVERY_FAILURE_AT_KEY = "supervisor_recovery_failure_at"
 
 
 def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
@@ -364,6 +368,10 @@ class TaskQueryMixin:
                 updated_at=now,
             )
         )
+        if task.status == TaskStatus.FAILED:
+            await self._record_recovery_failure_generation_on(
+                conn, task.id, None, task.status, now,
+            )
         await self.mark_layout_dirty(task.project_id, [task.id], "task.created", conn=conn)
 
     async def get_task(self, task_id: str) -> Task | None:
@@ -721,6 +729,11 @@ class TaskQueryMixin:
             if lifecycle & kwargs.keys():
                 stmt = stmt.where(_not_manually_paused())
             result = await conn.execute(stmt.values(**values))
+            if result.rowcount == 1 and previous_status is not None:
+                await self._record_recovery_failure_generation_on(
+                    conn, task_id, TaskStatus(previous_status), TaskStatus(values["status"]),
+                    values["updated_at"],
+                )
             if (
                 result.rowcount == 1
                 and previous_status == TaskStatus.COMPLETED.value
@@ -1259,6 +1272,20 @@ class TaskQueryMixin:
             )
         return [r[0] for r in rows]
 
+    async def _record_recovery_failure_generation_on(
+        self, conn, task_id, old_status, new_status, failed_at,
+    ):
+        """A no-attempt incident belongs to one FAILED incarnation, never an edit."""
+        if old_status == new_status:
+            return
+        if new_status == TaskStatus.FAILED:
+            await self._upsert_meta(task_id, RECOVERY_FAILURE_AT_KEY, failed_at, conn=conn)
+        elif old_status == TaskStatus.FAILED:
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == RECOVERY_FAILURE_AT_KEY,
+            ))
+
     async def _apply_transition(
         self,
         conn,
@@ -1377,11 +1404,11 @@ class TaskQueryMixin:
             current_status, pre_blocked = assume_pre_state
         else:
             pre_state = select(tasks.c.status, tasks.c.is_blocked).where(tasks.c.id == task_id)
-            # A terminal transition must serialize against checklist appends
-            # before it reads the state that determines whether the transition
-            # is legal.  Appenders take the same parent-row lock before
-            # allocating their ordinal.
-            if new_status == TaskStatus.COMPLETED:
+            # Completion serializes against checklist appends before reading
+            # the state that determines whether the transition is legal.
+            # Failure entry also locks before reading its status, so concurrent
+            # same-status reconciliation cannot rotate the failure generation.
+            if new_status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
                 pre_state = pre_state.with_for_update()
             row = (
                 await conn.execute(pre_state)
@@ -1635,6 +1662,9 @@ class TaskQueryMixin:
                 # claim fence).  Nothing was written, so there is nothing to
                 # project or announce.
                 return result
+            await self._record_recovery_failure_generation_on(
+                conn, task_id, current_status, new_status, values["updated_at"],
+            )
             if accepted_close is not None:
                 await self._upsert_meta(task_id, ACCEPTED_CLOSE_KEY, accepted_close, conn=conn)
 

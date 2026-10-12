@@ -1124,11 +1124,17 @@ class PromoteCommandsMixin:
                     intent="aborted", lifecycle="aborted", cleanup_state="pending",
                     human_abort_reason=f"Cancelled by {_requester_identity(principal)}",
                     updated_at=now))
-                await conn.execute(
+                failed = await conn.execute(
                     update(tasks)
                     .where(tasks.c.id == members[0].task_id, tasks.c.status == "IN_PROGRESS")
                     .values(status="FAILED", updated_at=now)
                 )
+                if failed.rowcount:
+                    from src.models import TaskStatus
+
+                    await self.db._record_recovery_failure_generation_on(
+                        conn, members[0].task_id, TaskStatus.IN_PROGRESS, TaskStatus.FAILED, now,
+                    )
             return self._woken({
                 "success": True, "outcome": "cancelled", "project_id": project.id,
                 "request_id": request.request_id, "batch_id": row["id"], "pr_url": meta["pr_url"],
@@ -1173,6 +1179,12 @@ class PromoteCommandsMixin:
                 await conn.execute(update(tasks).where(tasks.c.id == task["id"]).values(
                     status="IN_PROGRESS", profile_id=None, route_source=UNROUTED, route=None,
                     updated_at=time.time()))
+                if task["status"] == "FAILED":
+                    from src.models import TaskStatus
+
+                    await self.db._record_recovery_failure_generation_on(
+                        conn, task["id"], TaskStatus.FAILED, TaskStatus.IN_PROGRESS, time.time(),
+                    )
             return self._woken(result | {"outcome": "repaired", "backup_path": str(backup),
                                          "previous": {key: task[key] for key in (
                                              "status", "profile_id", "route_source", "route")}},
