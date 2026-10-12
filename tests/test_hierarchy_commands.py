@@ -466,6 +466,7 @@ class TestHierarchyCommands:
         res = await handler._cmd_get_schema({})
         assert "container_closed" in res["enums"]["hierarchy_error"]
         assert "live_parent" in res["enums"]["hierarchy_error"]
+        assert "dependency_on_container" in res["enums"]["hierarchy_error"]
 
     async def test_agent_scope_includes_reads(self):
         from src.api.scope import AGENT_COMMAND_SET

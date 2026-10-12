@@ -506,6 +506,7 @@ class DatabaseBackend(Protocol):
         dep_type: str = "blocks",
         *,
         description: str | None = None,
+        reject_container_target: bool = False,
         conn=None,
     ) -> set[str] | None: ...
     async def get_dependencies(

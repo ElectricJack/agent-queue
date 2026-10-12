@@ -513,6 +513,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     # additionally capped at eight to keep the complete sweep under a minute.
     groups = await asyncio.gather(
         _work_findings(ctx, tasks, now, explains),
+        _container_dependency_findings(ctx, active),
         _branch_findings(ctx, active, explains),
         _session_findings(ctx, active, tasks, now),
         _delivery_findings(ctx, active, tasks, now),
@@ -536,6 +537,27 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         + _route_findings(tasks) + flock_findings + conversation + delivery_engines
     )
     return _sweep_result(ctx, findings, len(active))
+
+
+async def _container_dependency_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    from src.doctor.task_checks import container_dependency_report
+
+    report = await container_dependency_report(ctx, project_ids=active)
+    findings = [
+        _finding(
+            "container_dependency", edge["project_id"],
+            f"{edge['task_id']} [{edge['status']}] has a {edge['dep_type']} edge to container "
+            f"{edge['depends_on']}; retarget to the prerequisite leaf or confirm operator fan-in",
+            **{key: value for key, value in edge.items() if key != "project_id"},
+        )
+        for edge in report["edges"]
+    ]
+    if report["truncated"]:
+        findings.append(_finding(
+            "container_dependencies_truncated", None,
+            "container dependency report capped at 50 edges; resolve findings and rerun",
+        ))
+    return findings
 
 
 async def _escalation_delivery_findings(ctx, active, now):

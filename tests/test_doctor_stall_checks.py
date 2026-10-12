@@ -63,6 +63,23 @@ async def test_worker_relaunch_streak_is_visible_to_stall_sweep():
     assert findings[0]["count"] == 2 and findings[0]["cause"] == "context_thrash"
 
 
+async def test_container_dependencies_sweep_reports_cap_and_retargeting(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    read = AsyncMock(return_value={"edges": [{
+        "task_id": "ready", "project_id": "one", "status": "READY",
+        "depends_on": "epic", "dependency_project_id": "two", "dep_type": "waits-for",
+    }], "truncated": True})
+    monkeypatch.setattr(import_module("src.doctor.task_checks"), "container_dependency_report", read)
+    result = await module._container_dependency_findings(context, {"one"})
+    read.assert_awaited_once_with(context, project_ids={"one"})
+    assert [f["kind"] for f in result] == [
+        "container_dependency", "container_dependencies_truncated",
+    ]
+    assert result[0]["depends_on"] == "epic" and result[0]["dep_type"] == "waits-for"
+    assert "retarget" in result[0]["detail"]
+
+
 async def test_undelivered_human_escalations_reach_stall_sweep(context, monkeypatch):
     from unittest.mock import AsyncMock
 
