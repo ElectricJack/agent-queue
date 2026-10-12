@@ -1940,14 +1940,8 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             True,
         ),
         (
-            "get_stuck_tasks",
-            GetStuckTasksArgs,
-            GetStuckTasksValue,
-            _outcomes("read"),
-            SideEffectClass.READ,
-            (),
-            IdempotencySpec(mode="natural"),
-            True,
+            "get_stuck_tasks", GetStuckTasksArgs, GetStuckTasksValue, _outcomes("read"),
+            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
         (
             "provider_reroute",

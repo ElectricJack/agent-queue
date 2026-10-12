@@ -9651,6 +9651,9 @@
     "src/playbooks/services.py::import from src.integration.outbox import PROMOTION_EVENT_TYPES as PROMOTION_POLICY_EVENTS": {
       "reason": "Shared promotion policy event vocabulary used to filter active-train outbox dispatch and project-scoped playbook routes. No new storage or writer."
     },
+    "src/database/queries/stall_watch_queries.py::_META_KEYS['integration_retirement']": {
+      "reason": "Read-only stall-watch selector for the existing integration retirement hold. Suppresses notifications for intentionally retiring work; adds no storage, lifecycle transition or publication authority."
+    },
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_repository_probes": {
       "reason": "Operator preflight's read-only GitHub prerequisites for integration setup: the project integration repository, promotion-flow branches, online runner labels and trust-manifest App identities. Reports blockers only; no integration storage, lifecycle or ref writes."
     }
