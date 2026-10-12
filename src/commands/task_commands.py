@@ -3910,8 +3910,11 @@ class TaskCommandsMixin:
                 }
 
         try:
+            scope = self._current_scope or {}
+            worker = scope.get("kind") == "session" and not scope.get("elevated")
             await self.db.add_dependency(
-                task_id, depends_on, dep_type, description=reason
+                task_id, depends_on, dep_type, description=reason,
+                reject_container_target=worker,
             )
         except HierarchyError as exc:
             return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}

@@ -3,10 +3,72 @@
 import pytest
 
 from src.database import Database
-from src.doctor.models import Severity
-from src.doctor.task_checks import run_check
+from src.doctor.models import DoctorContext, Severity
+from src.doctor.task_checks import container_dependency_report, run_check
 from src.models import Project, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
+
+
+async def test_container_dependencies_report_ready_leaf_edges_and_preserve_graph():
+    from src.doctor.stall_checks import _container_dependency_findings
+
+    db = Database(lease_dsn("doctor-container-deps.db"))
+    await db.initialize()
+    try:
+        for project_id in ("p", "other"):
+            await db.create_project(Project(id=project_id, name=project_id))
+        for tid in ("container", "unflagged", "empty", "leaf", "child", "other-epic",
+                    "ready", "blocked", "done", "failed", "provenance", "membership"):
+            await db.create_task(Task(id=tid, project_id="p", title=tid, description=""))
+        await db.create_task(Task(id="cross", project_id="other", title="cross", description=""))
+        await db.add_dependency("leaf", "container", "parent-child")
+        await db.add_dependency("child", "unflagged", "parent-child")
+        await db.delete_task_meta("unflagged", "container")
+        async with db._engine.begin() as conn:
+            await db.declare_container("empty", conn=conn)
+            await db.declare_container("other-epic", conn=conn)
+        for tid, target, dep_type in (
+            ("ready", "container", "waits-for"), ("blocked", "unflagged", "blocks"),
+            ("blocked", "empty", "conditional-blocks"), ("cross", "container", "blocks"),
+            ("done", "container", "blocks"), ("failed", "container", "blocks"),
+            ("other-epic", "container", "blocks"), ("provenance", "container", "related"),
+            ("membership", "container", "parent-child"), ("ready", "leaf", "blocks"),
+        ):
+            await db.add_dependency(tid, target, dep_type)
+        for tid, status in (("ready", TaskStatus.READY), ("blocked", TaskStatus.BLOCKED),
+                            ("done", TaskStatus.COMPLETED), ("failed", TaskStatus.FAILED)):
+            await db.update_task(tid, status=status)
+        before = await db.get_typed_dependencies("ready")
+
+        result = await run_check(db, "tasks.container_dependencies")
+        assert result.severity is Severity.WARN and not result.fixable
+        assert result.data["truncated"] is False
+        assert {(e["task_id"], e["depends_on"], e["dep_type"]) for e in result.data["edges"]} == {
+            ("ready", "container", "waits-for"), ("blocked", "unflagged", "blocks"),
+            ("blocked", "empty", "conditional-blocks"), ("cross", "container", "blocks"),
+        }
+        ctx = DoctorContext(config=None, db=db)
+        findings = await _container_dependency_findings(ctx, {"p"})
+        assert len(findings) == 3
+        assert all(f["kind"] == "container_dependency" and f["project_id"] == "p" for f in findings)
+        assert any("ready [READY]" in f["detail"] and "container" in f["detail"] for f in findings)
+        assert await container_dependency_report(ctx, project_ids=set()) == {
+            "edges": [], "truncated": False,
+        }
+        assert await db.get_typed_dependencies("ready") == before
+        assert (await db.get_task("ready")).status is TaskStatus.READY
+    finally:
+        await db.close()
+
+
+async def test_container_dependencies_empty_and_unavailable_database():
+    assert (await run_check(None, "tasks.container_dependencies")).severity is Severity.INFO
+    db = Database(lease_dsn("doctor-container-empty.db"))
+    await db.initialize()
+    try:
+        assert (await run_check(db, "tasks.container_dependencies")).severity is Severity.OK
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio

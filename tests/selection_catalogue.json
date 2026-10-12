@@ -5338,12 +5338,15 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:8f7d7fb3c4e5654cf4df60960308f5883e7cad26ec4c84b1cfa3d892ba89b15d",
+      "digest": "sha256:297cd80305b78c539165705b43cef3d9f0d990ccdeb3a254161bf2cc66f67ef8",
       "imports": [
         "src.database",
+        "src.database.queries.hierarchy_queries",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Dependency query mixin: idempotent ``add_dependency`` (follow-up to"
     },
     "tests/test_development_integration.py": {
@@ -17013,13 +17016,14 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:0a9f6477d77249a4f0b866ab438ee991ddbc3b37289d10feefc08f4d49c514bb",
+      "digest": "sha256:c3a9453f805b68d18c86bd9e5b008c15148a4bbdf2424c857dc07c099527e04c",
       "imports": [
         "src.config",
         "src.database",
         "src.database.queries.archive_queries",
         "src.database.tables",
         "src.doctor.models",
+        "src.doctor.stall_checks",
         "src.doctor.task_checks",
         "src.models"
       ],
