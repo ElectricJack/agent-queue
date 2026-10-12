@@ -1390,21 +1390,16 @@ class Orchestrator(
         candidates = await recovery.candidates(quiet_seconds=600, limit=50)
         await recovery.recover_many([candidate["id"] for candidate in candidates], principal="sweep")
 
-    async def stop_task(
-        self, task_id: str, *, reason: str = "stopped by aq task stop"
-    ) -> str | None:
-        """Forcibly stop an in-progress task and release its agent.
+    async def stop_task(self, task_id: str, *, reason: str = "stopped by aq task stop") -> str | None:
+        """Stop under the same exclusion as preparation, close and pause."""
+        async with self._task_control_lock(task_id):
+            return await self._stop_task_locked(task_id, reason=reason)
 
-        Sends a stop signal to the running adapter, transitions the task to
-        BLOCKED, resets the agent to IDLE, and checks whether stopping this
-        task orphans any downstream dependency chain (notifying if so).
+    async def _stop_task_locked(self, task_id: str, *, reason: str) -> str | None:
+        """Stop after preserving managed WIP and proving writer release.
 
-        In a managed project the writer's unsaved work is committed and
-        fast-forwarded onto the task branch as ``WIP saved by AQ: <reason>``
-        -- a worker stuck in a usage-limit retry wait can never push it
-        itself, and refusing the stop over it stranded the task.
-
-        Returns None on success, or an error string if the task cannot be stopped.
+        Failed preparations return READY; active tasks become BLOCKED. Return None
+        on success or a refusal retaining resources and naming recovery commands.
         """
         task = await self.db.get_task(task_id)
         if not task:
@@ -1412,7 +1407,6 @@ class Orchestrator(
         if task.status != TaskStatus.IN_PROGRESS:
             return f"Task is not in progress (status: {task.status.value})"
 
-        # Find and stop the adapter
         agent_id = task.assigned_agent_id
         if agent_id and agent_id in self._adapters:
             adapter = self._adapters[agent_id]
@@ -1421,51 +1415,78 @@ class Orchestrator(
             except Exception as e:
                 logger.error("Error stopping adapter for agent %s: %s", agent_id, e)
 
-        # Cancel the background asyncio Task so the finally block in
-        # _resilient_query fires even if the transport close didn't
-        # immediately take effect.  We must await the task after cancelling
-        # so that any in-flight DB transaction rollback completes before we
-        # issue our own DB queries — otherwise the StaticPool's single
-        # aiosqlite connection can be left in a closed/corrupt state.
+        # Cancellation runs _resilient_query cleanup even if transport close is delayed.
+        # Await transaction rollback before issuing more database queries.
         bg_task = self._running_tasks.get(task_id)
         if bg_task and not bg_task.done():
             bg_task.cancel()
-            # Wait for the task's cleanup (transaction rollback, etc.) to finish
-            # before we issue our own DB queries.
             await asyncio.wait({bg_task}, timeout=5.0)
 
         project = await self.db.get_project(task.project_id)
+        failed_preparation = False
+        preparation_claim_released = False
         if (
             project is not None
             and project.hierarchical_integration_mode in {"hierarchy", "train"}
             and project.integration_repository_id == task.repo_id
             and task.branch_name
         ):
-            # The handoff proof needs the session/task binding and workspace
-            # lock. Do it before ordinary stop tears either one down. This is
-            # an external stop, so it must use the provider-backed proof even
-            # when the writer belongs to a pool session.
+            # Prove provider-backed handoff before tearing down session/task bindings
+            # or workspace locks, including when the writer belongs to a pool session.
             from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
 
+            session = await self.db.get_session_for_task(task_id)
+            failed_preparation = bool(
+                session is not None and session.lifecycle == "pool"
+                and session.claim_phase == "preparing"
+                and session.last_claim_epoch == task.claim_epoch
+                and session.agent_id == task.assigned_agent_id
+            )
             released = await self.arelease_integration_writer_for_retry(
-                task,
-                reason="stop_task",
-                roles=REQUEUE_INTEGRATION_OWNER_ROLES,
-                save_wip_reason=reason,
+                task, reason="stop_task",
+                roles=REQUEUE_INTEGRATION_OWNER_ROLES, save_wip_reason=reason,
             )
             if released is not True:
-                return "Integration branch handoff is unproven; task resources were retained"
+                await self.db.set_task_meta(
+                    task_id, "needs_attention", "integration_handoff_unproven"
+                )
+                session_stop = (
+                    f"Stop its exact writer with `aq session kill {session.id}`, "
+                    "then wait for confirmed termination. "
+                    if session is not None else ""
+                )
+                return (
+                    "Integration branch handoff is unproven; task resources were retained. "
+                    + session_stop
+                    + f"Preview `aq integration release-owner --task-id {task_id} --dry-run`, "
+                    "then apply without --dry-run to preserve work and release the attachment. "
+                    f"Retry `aq task stop {task_id}` if still in progress, "
+                    f"then `aq task restart {task_id}`. No recovery incident is required."
+                )
+            if failed_preparation:
+                current_session = await self.db.get_session(session.id)
+                preparation_claim_released = bool(
+                    current_session is not None and current_session.task_id is None
+                )
 
-        # Clean up sentinel and release workspace lock (worktree-aware)
-        ws = await self.db.get_workspace_for_task(task_id)
-        if ws:
-            self._remove_sentinel(ws.workspace_path)
-        await self._release_workspaces_for_task(task_id)
-        await self.db.transition_task(
-            task_id, TaskStatus.BLOCKED, context="stop_task", assigned_agent_id=None
-        )
+        # Preparation handoff atomically releases to READY. A successor can claim
+        # before its preparation takes our control lock; never clear that claim.
+        if not preparation_claim_released:
+            ws = await self.db.get_workspace_for_task(task_id)
+            if ws:
+                self._remove_sentinel(ws.workspace_path)
+            await self._release_workspaces_for_task(task_id)
+            await self.db.transition_task(
+                task_id, TaskStatus.READY if failed_preparation else TaskStatus.BLOCKED,
+                context="stop_task", assigned_agent_id=None,
+            )
+            if agent_id:
+                await self.db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
+        else:
+            self._task_attachments.pop(task_id, None)
+        if failed_preparation:
+            await self.db.delete_task_meta(task_id, "needs_attention")
         if agent_id:
-            await self.db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
             self._adapters.pop(agent_id, None)
 
         profile = await self._resolve_profile(task)
@@ -1483,7 +1504,6 @@ class Orchestrator(
                 project_id=task.project_id,
             ),
         )
-        # Delete the task-added and task-started messages to reduce chat clutter
         added_msg = self._task_added_messages.pop(task_id, None)
         if added_msg is not None:
             try:
@@ -1496,7 +1516,6 @@ class Orchestrator(
                 await started_msg.delete()
             except Exception as e:
                 logger.debug("Could not delete task-started message for %s: %s", task_id, e)
-        # Close thread and update root message
         await self._emit_notify(
             "notify.task_thread_close",
             TaskThreadCloseEvent(
@@ -1506,7 +1525,6 @@ class Orchestrator(
                 project_id=task.project_id,
             ),
         )
-        # Check if stopping this task blocks a dependency chain
         await self._notify_stuck_chain(task)
         return None
 

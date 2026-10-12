@@ -7414,6 +7414,9 @@
         673
       ]
     },
+    "src/orchestrator/core.py::Orchestrator._stop_task_locked": {
+      "reason": "Task-stop implementation proves managed writer handoff, retains unproven attachments and protects successor preparation claims under the task control lock."
+    },
     "src/orchestrator/core.py::Orchestrator._branch_materialization_hierarchy": {
       "reason": "Integration import, registered surface, schema, policy or adapter.",
       "landing_span": [
