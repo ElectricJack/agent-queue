@@ -141,6 +141,24 @@ afterEach(() => {
 
 describe("Agent flock sidebar", () => {
 
+  it("lists every running session the rows above do not already show", async () => {
+    const base: FlockSession = { session_id: "s", name: "s", role: "supervisor", scope: "project-one",
+      project_id: "project-one", agent_id: null, provider: "openai", harness: "codex", model: "gpt-6-astra",
+      intelligence_class: "deep-low", profile_id: "supervisor", task_id: null,
+      state: "running", desired_state: "running", started_at: 1, last_activity: 2,
+      uptime_seconds: 90, lifecycle: "named" };
+    const sessions: FlockSession[] = [
+      { ...base, session_id: "proj-sup", name: "n-supervisor--project-one" },
+      { ...base, session_id: "asleep", name: "n-supervisor--sleepy", state: "sleeping", desired_state: "sleeping" },
+    ];
+    api.listAgents.mockImplementation(async () => ({ data: { agents: roster, count: roster.length, sessions } }));
+    renderFlock("/");
+    const group = await screen.findByRole("group", { name: "Other running sessions" });
+    expect(within(group).getByRole("link", { name: /n-supervisor--project-one/ })).toHaveAttribute("href", "/sessions/proj-sup");
+    expect(within(group).getByText("codex · gpt-6-astra · deep-low")).toBeInTheDocument();
+    expect(within(group).queryByText("n-supervisor--sleepy")).not.toBeInTheDocument();
+  });
+
   it("shows unlinked supervisors and every session, with history on demand", async () => {
     const sessions: FlockSession[] = [
       { session_id: "global", name: "Global supervisor", role: "supervisor", scope: "global",

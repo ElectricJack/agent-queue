@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, PlusIcon } from "@heroicons/react/24/outline";
-import { useAgentFlock, useEditAgent, useFlockSubagents, type FlockAgent } from "../api/agents";
+import { useAgentFlock, useEditAgent, useFlockSessions, useFlockSubagents, type FlockAgent } from "../api/agents";
 import { usePoolSetEnabled } from "../api/hooks";
 import EnableToggle from "../pages/agents/EnableToggle";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
@@ -21,6 +21,17 @@ export default function AgentFlock() {
   // agent on a pool profile running a task-lifecycle session is not a member,
   // but it is filtered here too: its pool entry lists it as an outside row.
   const agents = roster.filter((agent) => !isPoolAgent(agent, poolIds));
+  // Every running execution spends usage, so every one is listed. Sessions an
+  // agent row or a busy pool entry already shows are not repeated; the rest
+  // (project supervisors, named and ad-hoc sessions, idle pool workers) are.
+  const { data: sessions = [] } = useFlockSessions();
+  const shownSessionIds = new Set(agents.map((agent) => agent.session_id).filter(Boolean));
+  const busyPoolIds = new Set(pools.map((entry) => entry.profileId));
+  const otherSessions = sessions
+    .filter((session) => ["starting", "running", "draining"].includes(session.state))
+    .filter((session) => !shownSessionIds.has(session.session_id))
+    .filter((session) => !(session.lifecycle === "pool" && busyPoolIds.has(session.profile_id ?? "")))
+    .sort((a, b) => (a.project_id ?? "").localeCompare(b.project_id ?? "") || a.name.localeCompare(b.name));
   // The user's roaming preference on the daemon, not this browser's.
   const { prefs, update: updatePreferences } = useShellPreferences();
   const collapsed = prefs.agent_flock_collapsed;
@@ -55,7 +66,7 @@ export default function AgentFlock() {
           <span>Agent flock</span>
           <span className="ml-auto flex items-center gap-1.5">
             <FlockSubagents rollup={subagents} />
-            <span className="font-mono text-[10px] text-gray-500">{agents.length + pools.length}</span>
+            <span className="font-mono text-[10px] text-gray-500">{agents.length + pools.length + otherSessions.length}</span>
           </span>
         </button>
         <button type="button" data-listnav="1" aria-label="Create agent or pool"
@@ -189,6 +200,28 @@ export default function AgentFlock() {
               </div>
             );
           })}
+          {otherSessions.length > 0 && (
+            <div aria-label="Other running sessions" role="group" className="space-y-1">
+              <p className="px-3 pt-1 text-[10px] uppercase tracking-wide text-gray-500">Running sessions</p>
+              {otherSessions.map((session) => (
+                <Link key={session.session_id} to={"/sessions/" + session.session_id} data-listnav="1"
+                  className="block rounded-lg border border-transparent px-3 py-1.5 hover:border-gray-700 hover:bg-gray-800/70">
+                  <span className="mb-0.5 flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-medium text-gray-200">{session.name}</span>
+                    <span className={"shrink-0 text-[10px] " + (session.task_id ? "text-emerald-400" : "text-gray-500")}>{session.state}</span>
+                  </span>
+                  <span className="block space-y-0.5 text-[10px] leading-tight text-gray-500">
+                    <span className="block truncate text-gray-400">
+                      {[session.harness || session.provider, session.model, session.intelligence_class].map((value) => value || "unknown").join(" · ")}
+                    </span>
+                    <span className="block truncate">
+                      {(session.project_id || "all projects") + " · " + (session.task_id || (session.role === "supervisor" ? "supervisor" : "no task"))}
+                    </span>
+                  </span>
+                </Link>
+              ))}
+            </div>
+          )}
           {hiddenCount > 0 && (
             <Link to="/agents" data-listnav="1" data-primary-control className="flex items-center px-3 py-1 text-xs text-gray-500 hover:text-gray-300">
               {hiddenCount} idle {hiddenCount === 1 ? "pool" : "pools"}
