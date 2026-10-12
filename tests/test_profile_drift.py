@@ -148,6 +148,7 @@ def test_system_profile_ids_requires_a_profile_md(defaults_root):
 def test_system_profile_ids_covers_the_real_defaults_tree():
     ids = system_profile_ids()
     assert "reviewer" in ids and "final-reviewer" in ids
+    assert "worker-opencode" in ids
     assert ids == sorted(ids)
 
 
@@ -798,6 +799,36 @@ async def test_check_detail_mentions_grants_only_when_grants_are_missing(
     assert result.severity == Severity.WARN
     assert "--grants-only" in result.detail
     assert "keeps your edits" in result.detail
+
+
+async def test_check_flags_and_repairs_worker_plugin_publish_grants(data_dir, monkeypatch):
+    from src.profiles.drift import shipped_profile_path
+
+    profile_id = "worker-opencode"
+    shipped = Path(shipped_profile_path(profile_id)).read_text(encoding="utf-8")
+    stale = shipped.replace('    "git_push",\n', '').replace('    "git_create_pr",\n', '')
+    # Extra operator grants are legitimate and must survive additive repair.
+    stale = stale.replace('    "memory_save",', '    "operator_plugin_tool",\n    "memory_save",')
+    _write(_vault(data_dir, profile_id), stale)
+    result = await profile_checks_mod._check_system_profile_drift(
+        DoctorContext(config=_Config(data_dir))
+    )
+    assert result.severity == Severity.WARN
+    assert result.data["drifted"] == 1
+    assert result.data["profiles"][0]["profile_id"] == profile_id
+    assert result.data["profiles"][0]["missing_grants"] == {
+        "plugin_tools": ["git_create_pr", "git_push"]
+    }
+    assert "git_push" in result.detail
+    assert "--grants-only" in result.detail
+    assert _vault(data_dir, profile_id).read_text() == stale
+
+    repair = merge_profile_grants(data_dir, profile_id)
+    assert repair["added"] == {"plugin_tools": ["git_create_pr", "git_push"]}
+    assert Path(repair["backup_path"]).read_text() == stale
+    merged = parse_profile(_vault(data_dir, profile_id).read_text())
+    assert "operator_plugin_tool" in merged.capabilities["plugin_tools"]
+    assert diff_profile(profile_id, data_dir).status == STATUS_OK
 
 
 async def test_check_detail_truncates_a_fleet_wide_drift(data_dir, monkeypatch):

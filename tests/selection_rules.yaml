@@ -107,6 +107,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["package-lock.json"], areas: ["api-contract"] }
   - { paths: ["scripts/regenerate-api-client.sh", "scripts/regenerate-ts-client.sh", "scripts/openapi-python-client.yaml", "scripts/aq-client-boilerplate.sha256"], areas: ["api-contract"] }
   - { paths: ["scripts/regenerate-generated.sh", ".gitattributes"], areas: ["generated-artifacts"] }
+  - { paths: ["scripts/generate-worker-capabilities.py"], areas: ["profiles"] }
   - { paths: ["scripts/gen-command-docs.py", "scripts/check-docs.py"], areas: ["docs-guards"] }
   - { paths: ["scripts/generate-config-schema-inventory.py"], areas: ["config"] }
   - { paths: ["scripts/generate-promotion-flow-schema.py", "docs/reference/promotion-flow-schema.json", "src/commands/promote_commands.py", "src/commands/contracts/promote.py", "src/integration/promotion_steps.py", "src/integration/promotion_routing.py"], areas: ["integration-promotion"] }

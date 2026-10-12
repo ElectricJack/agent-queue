@@ -91,6 +91,8 @@ regenerate() {
         names+=("$name")
     }
     step selection-catalogue "$PYTHON" scripts/generate-selection-catalogue.py
+    # These profiles have authored prose/config and generated capability blocks.
+    step worker-capabilities "$PYTHON" scripts/generate-worker-capabilities.py
     # CLI inventory reads the packaged catalogue, so rebuild it first.
     if ! (cd "$root" && "$PYTHON" scripts/generate-command-catalogue.py); then
         return 1
