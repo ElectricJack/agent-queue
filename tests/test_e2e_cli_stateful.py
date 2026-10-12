@@ -126,8 +126,9 @@ class World:
                     }), "tasks")
                     for task in rows:
                         if not task.get("parent_task_id"):
-                            smoke.api("delete_task", {
-                                "task_id": task["id"], "cascade": True, "branches": "delete",
+                            smoke.api_checked("delete_task", {
+                                "task_id": task["id"], "recursive": True, "branches": "delete",
+                                "confirmed": True,
                             })
                     remaining.extend(smoke.collection_rows(smoke.api_checked("list_tasks", {
                         "project_id": project["id"], "include_completed": True,

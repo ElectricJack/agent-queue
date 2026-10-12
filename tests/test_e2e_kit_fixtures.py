@@ -1139,7 +1139,10 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
         if command == "session_kill":
             return fake_aq("session", "kill", args["session_id"])
         if command == "delete_task":
-            assert args["cascade"] is True
+            if not args.get("confirmed"):
+                return {"success": True, "disposition": "preview"}
+            assert args["recursive"] is True
+            assert args["branches"] == "delete"
             return fake_aq("task", "delete", "--task-id", args["task_id"])
         if command == "session_list":
             assert args == {"lifecycle": "pool"}
@@ -1627,7 +1630,10 @@ def test_world_reset_removes_terminal_tasks_sessions_and_restores_globals(monkey
             assert args["include_completed"]
             return list(tasks)
         if command == "delete_task":
-            assert args["cascade"]
+            if not args.get("confirmed"):
+                return {"success": True, "disposition": "preview"}
+            assert args["recursive"]
+            assert args["branches"] == "delete"
             tasks[:] = [row for row in tasks if row["id"] != args["task_id"]]
         return {"success": True}
 
@@ -1652,6 +1658,32 @@ def test_cleanup_failure_prevents_reusing_the_world(monkeypatch):
     monkeypatch.setattr(world.smoke, "wait_for", lambda *_args, **_kwargs:
                         (_ for _ in ()).throw(RuntimeError("cleanup failed")))
     with pytest.raises(RuntimeError, match="cleanup failed"):
+        world.reset()
+    assert world.poisoned
+    with pytest.raises(AssertionError, match="contaminated"):
+        world.run("S18")
+
+
+def test_world_reset_reports_deletion_refusal_before_reusing_the_world(monkeypatch):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("graphs", {})
+    smoke = world.smoke
+
+    def api(command, args):
+        if command == "session_list":
+            return {"sessions": []}
+        if command == "list_projects":
+            return [{"id": "e2e"}]
+        if command == "list_tasks":
+            return [{"id": "completed", "status": "COMPLETED"}]
+        if command == "delete_task":
+            return {"success": False, "error": "fixture deletion refused"}
+        pytest.fail(f"unexpected cleanup command: {command}")
+
+    monkeypatch.setattr(smoke, "api", api)
+    monkeypatch.setattr(smoke, "wait_for", lambda fn, **_: fn())
+    with pytest.raises(smoke.Failure, match="fixture deletion refused"):
         world.reset()
     assert world.poisoned
     with pytest.raises(AssertionError, match="contaminated"):
