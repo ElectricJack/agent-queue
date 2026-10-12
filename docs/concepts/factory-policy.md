@@ -58,6 +58,10 @@ superseded specs are evidence, not directives.
 
 - One incident per failure, one responsible owner, bounded retries with the remaining budget
   visible.
+- No-attempt failures use a durable failure-transition generation. Comments, edits and same-status
+  reconciliation preserve it; reopening then failing replaces it. Current `FAILED` incidents,
+  including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
+  status or counters. Retry requires a stopped attempt on a `BLOCKED` task and all recovery guards.
 - A known transient failure retries within the existing budget. An unknown cause, an exhausted
   budget or a human-only decision holds with a concrete reason and one durable escalation.
 - An explicitly authorized continuous integration policy may replace an exhausted repair session
