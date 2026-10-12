@@ -99,9 +99,7 @@ async def _snapshot_on(conn, task_id: str) -> dict[str, Any] | None:
         task_branch_origins.c.retired_at.is_(None),
     )
     origin = (await conn.execute(_delivery_query)).mappings().one_or_none()
-    has_children = (
-        await conn.execute(select(exists().where(tasks.c.parent_task_id == task_id)))
-    ).scalar_one()
+    has_children = await conn.scalar(select(exists().where(tasks.c.parent_task_id == task_id)))
     _delivery_query = (
         select(task_completion_records.c.id, task_completion_records.c.completed_at)
         .where(task_completion_records.c.task_id == task_id)
@@ -338,20 +336,31 @@ async def latest_evidence_on(
 
 async def _open_reviewer_on(conn, task_id: str) -> str | None:
     """An unfinished reviewer task filed about *task_id* (``discovered-from``)."""
-    return (
-        await conn.execute(
-            select(tasks.c.id)
-            .join(task_dependencies, task_dependencies.c.task_id == tasks.c.id)
-            .where(
-                task_dependencies.c.depends_on_task_id == task_id,
-                task_dependencies.c.dep_type == "discovered-from",
-                tasks.c.profile_id.in_(_REVIEW_PROFILES),
-                tasks.c.status.not_in(_FINISHED_STATUSES),
-            )
-            .order_by(tasks.c.id)
-            .limit(1)
+    return await conn.scalar(
+        select(tasks.c.id)
+        .join(task_dependencies, task_dependencies.c.task_id == tasks.c.id)
+        .where(
+            task_dependencies.c.depends_on_task_id == task_id,
+            task_dependencies.c.dep_type == "discovered-from",
+            tasks.c.profile_id.in_(_REVIEW_PROFILES),
+            tasks.c.status.not_in(_FINISHED_STATUSES),
         )
-    ).scalar_one_or_none()
+        .order_by(tasks.c.id)
+        .limit(1)
+    )
+
+
+async def _matching_receipt_on(conn, snapshot: dict[str, Any]):
+    """Newest code receipt for the child's exact head and current parent branch."""
+    query = select(task_delivery_receipts).where(
+        task_delivery_receipts.c.source_task_id == snapshot["task_id"],
+        task_delivery_receipts.c.target_task_id == snapshot["parent_task_id"],
+        task_delivery_receipts.c.repository_id == snapshot["repository_id"],
+        task_delivery_receipts.c.target_branch == snapshot["parent"]["branch_name"],
+        task_delivery_receipts.c.reviewed_head_sha == snapshot["head_sha"],
+        task_delivery_receipts.c.disposition == "code",
+    ).order_by(task_delivery_receipts.c.created_at.desc()).limit(1)
+    return (await conn.execute(query)).mappings().one_or_none()
 
 
 class ChildDelivery:
@@ -575,18 +584,7 @@ class ChildDelivery:
             if parent_refusal is not None:
                 return {**base, "outcome": "blocked", "reason": parent_refusal}, snapshot, None
             head = snapshot["head_sha"]
-            receipt = (
-                await conn.execute(
-                    select(task_delivery_receipts).where(
-                        task_delivery_receipts.c.source_task_id == task_id,
-                        task_delivery_receipts.c.target_task_id == snapshot["parent_task_id"],
-                        task_delivery_receipts.c.repository_id == snapshot["repository_id"],
-                        task_delivery_receipts.c.target_branch == base["parent_branch"],
-                        task_delivery_receipts.c.reviewed_head_sha == head,
-                        task_delivery_receipts.c.disposition == "code",
-                    ).order_by(task_delivery_receipts.c.created_at.desc()).limit(1)
-                )
-            ).mappings().one_or_none()
+            receipt = await _matching_receipt_on(conn, snapshot)
             if receipt is not None:
                 if (
                     snapshot["rework_at"] is None
@@ -808,18 +806,7 @@ class ChildDelivery:
                 or _parent_refusal(current) is not None
             ):
                 raise HierarchyError("stale_head", "the child or parent changed before redrive")
-            matching = (
-                await conn.execute(
-                    select(task_delivery_receipts).where(
-                        task_delivery_receipts.c.source_task_id == snapshot["task_id"],
-                        task_delivery_receipts.c.target_task_id == snapshot["parent_task_id"],
-                        task_delivery_receipts.c.repository_id == snapshot["repository_id"],
-                        task_delivery_receipts.c.target_branch == current["parent"]["branch_name"],
-                        task_delivery_receipts.c.reviewed_head_sha == snapshot["head_sha"],
-                        task_delivery_receipts.c.disposition == "code",
-                    ).order_by(task_delivery_receipts.c.created_at.desc()).limit(1)
-                )
-            ).mappings().one_or_none()
+            matching = await _matching_receipt_on(conn, current)
             if matching is None or current["rework_at"] is None:
                 raise HierarchyError("stale_head", "the receipt or rework marker changed before redrive")
             if matching["created_at"] >= current["rework_at"]:
