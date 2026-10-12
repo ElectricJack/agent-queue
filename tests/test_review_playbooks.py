@@ -44,7 +44,7 @@ async def env(command_handler_factory):
     db = handler.db
     handler.config.playbooks.enabled = True
     handler.orchestrator.bus = EventBus(env="dev")
-    await db.create_project(Project(id="p", name="Project P"))
+    await db.create_project(Project(id="p", name="Project P", supervisor_enabled=True))
     source = Path(handler.config.vault_root) / "system" / "playbooks" / "morning-report.md"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text((MORNING / "source.md").read_text(encoding="utf-8"), encoding="utf-8")

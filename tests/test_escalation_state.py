@@ -62,7 +62,7 @@ async def env():
     db = Database(lease_dsn("escalation_state"))
     await db.initialize()
     for project in ("p", "other"):
-        await db.create_project(Project(id=project, name=project))
+        await db.create_project(Project(id=project, name=project, supervisor_enabled=True))
     bus = SimpleNamespace(emit=AsyncMock())
     config = SimpleNamespace(discord=DiscordConfig())
     yield SimpleNamespace(db=db, bus=bus, config=config)

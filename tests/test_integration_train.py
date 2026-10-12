@@ -1562,6 +1562,7 @@ async def test_repository_budget_admits_new_work_and_keeps_inbox_reconciliation_
         assert row["timing"]["selection"]["stages"]["root_delivery"]["items"] == 1
 
         db = SimpleNamespace(
+            redirect_disabled_supervisor_messages=AsyncMock(return_value=0),
             get_pending_recipients=AsyncMock(return_value=[("user", "dashboard", "p")]),
             get_pending_messages=AsyncMock(return_value=[Message(
                 "inbox-1", "p", "system", "benchmark", "user", "dashboard", "pending")]),

@@ -64,7 +64,7 @@ def config(*, stateful: bool = True):
 async def world():
     db = Database(lease_dsn("escalation_sweep"))
     await db.initialize()
-    await db.create_project(Project(id="p", name="Active"))
+    await db.create_project(Project(id="p", name="Active", supervisor_enabled=True))
     await db.create_project(Project(id="paused", name="Paused", status=ProjectStatus.PAUSED))
     clock = Clock()
     yield SimpleNamespace(db=db, clock=clock)
