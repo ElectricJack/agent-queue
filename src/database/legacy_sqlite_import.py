@@ -205,6 +205,9 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "human_asks", "ask_source_aliases", "ask_decision_previews",
         "approved_document_snapshots", "ask_decisions",
         "review_feedback_obligations", "ask_reconciliation_cases",
+        # External ask bindings, action tokens and destination modes were
+        # introduced in PostgreSQL transport revision 93, never in SQLite.
+        "human_communication_modes", "ask_external_bindings", "ask_action_tokens",
         # Durable record/knowledge tables shipped after SQLite removal in
         # revision 55. Legacy files have no record identities, revisions,
         # informational links or outbox state; backfill/import is explicit.
@@ -277,6 +280,10 @@ _POSTGRES_ONLY_COLUMNS = {
     "conversation_inputs": frozenset({
         "ask_id", "project_id", "guild_id", "reference_message_id", "external_thread_id",
         "source_version", "retention_entry_id",
+    }),
+    "outbound_deliveries": frozenset({
+        "ask_id", "binding_id", "project_id", "decision_generation", "display_version",
+        "mode_generation", "root_generation", "send_kind", "write_started_at", "attempt_token",
     }),
 }
 

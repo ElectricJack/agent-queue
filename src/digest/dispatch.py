@@ -651,6 +651,7 @@ class DigestScheduleService:
             digest=self, conversation_adapter=self._conversation_adapter, links=self._links,
             clock=self._clock, rate_guard=self._rate_guard,
             escalation_priority=self._escalation_priority, include_outbound=self._include_outbound,
+            max_attempts=self._max_attempts,
         ).pump(schedule=schedule, report=report, limit=limit)
 
     async def _finish(

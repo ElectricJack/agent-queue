@@ -136,6 +136,7 @@ def _legacy_source_metadata():
         "ck_escalation_messages_entry_kind", "ck_escalation_actions_ask_operation",
         "ck_escalation_actions_lease_generation", "ck_escalation_actions_lease",
         "ck_conversation_inputs_routing_state",
+        "ck_outbound_deliveries_send_kind", "ck_outbound_deliveries_ask",
     }
     absent_columns = {
         name: {column.name for column in additions} for name, additions in ADDITIONS.items()
@@ -144,6 +145,7 @@ def _legacy_source_metadata():
         _POSTGRES_ONLY_COLUMNS["conversation_inputs"]
         | _POSTGRES_DEFAULT_COLUMNS["conversation_inputs"]
     )
+    absent_columns["outbound_deliveries"] = _POSTGRES_ONLY_COLUMNS["outbound_deliveries"]
     for name, absent in absent_columns.items():
         table = source_metadata.tables[name]
         for constraint in list(table.constraints):

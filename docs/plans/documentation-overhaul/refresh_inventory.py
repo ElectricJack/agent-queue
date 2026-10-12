@@ -677,6 +677,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Escalation-first, bounded dispatch across typed domain adapters."),
     ("src/delivery/message.py", "communications", "docs/concepts/messaging.md",
      PRODUCTION, "Delivers one frozen outbound message without assuming a network receipt."),
+    ("src/delivery/scheduler.py", "communications", "docs/concepts/messaging.md",
+     PRODUCTION, "Shared bounded scheduling of asks, conversations and routine reports."),
 
     ("src/doctor/**", "operations", "docs/guides/operations.md", PRODUCTION,
      "`aq doctor` check."),

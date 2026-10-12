@@ -3573,6 +3573,14 @@ what makes a delivery sent — `idx_outbound_deliveries_due`
 | `created_at` | REAL | NOT NULL | When the row was written |
 | `updated_at` | REAL | NOT NULL | Last state change |
 
+Revision 93 adds nullable ask-transport pins: `ask_id` (FK human_asks),
+`binding_id` (FK ask_external_bindings), `project_id` (FK projects),
+`decision_generation`, `display_version`, `mode_generation`, `root_generation`,
+`send_kind`, `write_started_at` and `attempt_token`. All foreign keys restrict
+deletion. `send_kind` is root, root_edit, reply, move_notice or redirect.
+`ck_outbound_deliveries_ask` requires the identity and generation pins for ask-owned
+rows; the ask, binding and mode indexes support scoped transport recovery.
+
 ### Table: `morning_reports`
 
 One row per (schedule, local date) for a durable morning/brief report
@@ -4836,3 +4844,60 @@ Revision 91 also adds `feedback_version`, `decision_generation` and the restrict
 dispositions to `doc_review_comments`; ask/input/version/entry-kind/reply references
 to `escalation_messages`; and ask decision, operation dependency, lease, retry and
 receipt fields to `escalation_actions`. Legacy incident action kinds remain valid.
+
+### Table: `human_communication_modes`
+
+Revision 93 records the communication mode and generation per project and
+destination. A migrated destination cannot return to legacy mode.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `project_id`, `destination` | TEXT | Composite PK; project FK projects.id, RESTRICT |
+| `generation` | INTEGER | NOT NULL, DEFAULT 1, > 0 |
+| `mode` | TEXT | NOT NULL, DEFAULT legacy; legacy, shadow, dashboard, transferring, channel or delivery_disabled |
+| `migrated` | BOOLEAN | NOT NULL, DEFAULT false; true requires a non-legacy mode |
+| `config_fingerprint` | TEXT | NOT NULL, destination configuration pin |
+| `compatibility_deadline` | FLOAT | Nullable end of compatibility window |
+| `inventory` | JSONB | NOT NULL, DEFAULT {}, cutover evidence |
+| `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_external_bindings`
+
+Revision 93 binds an ask to its external root and retains transport receipts and
+display generations. A partial unique index permits one active binding per ask
+and destination. Root identity is unique per transport and channel; confirmed
+roots require both an external id and receipt. The project/ask composite FK
+prevents cross-project bindings, and the mode index supports destination scans.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `id` | TEXT | PK |
+| `ask_id`, `project_id` | TEXT | NOT NULL; ask FK human_asks.id and composite FK human_asks(project_id, id), RESTRICT |
+| `destination`, `guild_id`, `channel_id` | TEXT | NOT NULL, external destination |
+| `transport` | TEXT | NOT NULL, DEFAULT discord |
+| `mode_generation`, `root_generation` | INTEGER | NOT NULL, > 0; root generation DEFAULT 1 |
+| `external_root_id`, `legacy_thread_id` | TEXT | Nullable external references |
+| `alternate_roots` | JSONB | NOT NULL, DEFAULT [] |
+| `receipt` | JSONB | Nullable, required for confirmed roots |
+| `desired_display_version`, `applied_display_version` | INTEGER | NOT NULL, DEFAULT 1 and 0; > 0 and >= 0 respectively |
+| `root_state` | TEXT | NOT NULL, DEFAULT pending; pending, confirmed, unknown, missing or retired |
+| `active` | BOOLEAN | NOT NULL, DEFAULT true |
+| `inflight_id` | TEXT | Nullable durable external-write fence |
+| `created_at`, `updated_at` | FLOAT | NOT NULL |
+
+### Table: `ask_action_tokens`
+
+Revision 93 stores opaque, expiring button capabilities pinned to an ask, binding,
+root, audience and decision/display generations. Binding/display and expiry
+indexes support revocation and cleanup; token length is 20–80 characters and
+expiry must follow creation.
+
+| Columns | Type | Constraints / purpose |
+|---|---|---|
+| `token` | TEXT | PK |
+| `ask_id`, `binding_id` | TEXT | NOT NULL, FKs human_asks.id and ask_external_bindings.id, RESTRICT |
+| `decision_generation`, `feedback_version`, `display_version`, `mode_generation`, `root_generation` | INTEGER | NOT NULL, captured version pins |
+| `source_fingerprint`, `root_message_id`, `option_key` | TEXT | NOT NULL, source and action pins |
+| `audience` | JSONB | NOT NULL, authorized audience snapshot |
+| `created_at`, `expires_at` | FLOAT | NOT NULL |
+| `revoked_at` | FLOAT | Nullable revocation time |

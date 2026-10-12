@@ -8658,6 +8658,8 @@
     }
   },
   "exclusions": {
+    "src/commands/ask_communication_commands.py::AskCommunicationCommandsMixin._cmd_ask_show": "Generic audience-scoped human request, review evidence and notification-transport display for all ask sources. delivery_status describes external messages; integration source authorization and adapters remain independently charged.",
+    "src/database/queries/ask_delivery_queries.py::AskDeliveryQueriesMixin.ask_delivery_status": "Notification root and reconciliation-case observations for every ask source; delivery_status is transport receipt state, with no Git, branch, integration gate or publication authority.",
     "src/agent_waits.py::TERMINAL_TASK_STATUSES['BLOCKED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/agent_waits.py::WAIT_STATES['active']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/agent_waits.py::WAIT_STATES['cancelled']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
@@ -15183,6 +15185,7 @@
     }
   },
   "generic_dependencies": {
+    "src/main.py::_bind_report_outbox": "Generic startup binding of human request, conversation and report notification services to their transport; no integration subject, branch, publication state or ref authority. Integration orchestration in run remains independently charged.",
     "src/agent_waits.py::AgentWaitReconciler": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/agents/configuration.py::apply_agent_overrides": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/agents/configuration.py::ensure_supervisor_agent": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -16051,7 +16054,26 @@
     "src/commands/contracts/ask.py::register_ask_contracts": "Generic command registration and result/effect schemas shared by every ask source. Delegates to CommandHandler without interpreting integration state; integration source handlers and the builtin registry remain independently charged.",
     "src/database/tables.py::human_asks": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
     "src/database/tables.py::ask_decision_previews": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
-    "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged."
+    "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/asks/authority.py::public_allowed": "Generic audience and authenticated-principal predicate shared by every ask source; integration source authorization remains independently charged.",
+    "src/asks/buttons.py::authorize_button_actor": "Generic external button actor evidence and audience checks; no integration subject or publication policy is interpreted.",
+    "src/asks/buttons.py::decide": "Generic opaque-token, root, mode and version fences for external human decisions. Source effects are delegated through the shared decision handler; IntegrationAdapter and authorize_source remain independently charged.",
+    "src/asks/delivery.py::config_fingerprint": "Generic notification-destination configuration hashing; no integration state or ref authority.",
+    "src/asks/delivery.py::destination": "Generic notification channel identity for all human asks; no integration branch or delivery lifecycle.",
+    "src/asks/intake.py::input_values": "Generic human discussion input normalization, reply binding and provenance; integration source effects remain independently charged.",
+    "src/asks/service.py::new_id": "Generic random prefixed identifier generation for human request records; no integration state or authority.",
+    "src/asks/service.py::version_of": "Generic human request decision, feedback, display and source version projection; integration gate/version interpretation remains in the charged source adapter.",
+    "src/cli/formatters.py::format_ask_detail": "Generic human request detail, document, discussion and receipt presentation shared by all ask sources; no integration authority or state transition.",
+    "src/cli/formatters.py::format_ask_list": "Generic human request list and pagination presentation shared by all ask sources; no integration authority or state transition.",
+    "src/cli/formatters.py::format_ask_preview": "Generic prepared human decision packet presentation; integration effects remain in the charged source adapter.",
+    "src/cli/formatters.py::format_ask_receipt": "Generic human request receipt presentation; no integration lifecycle or ref authority.",
+    "src/database/queries/ask_input_queries.py::text_hash": "Generic UTF-8 human input hashing; no integration state or authority.",
+    "src/database/queries/ask_queries.py::ask_audience_predicate": "Generic SQL audience filtering shared by every ask source; integration source authority remains independently charged.",
+    "src/database/tables.py::ask_external_bindings": "Generic external notification root, receipt and generation storage for every ask source; no integration branch, gate lifecycle or ref replay authority.",
+    "src/database/tables.py::ask_reconciliation_cases": "Generic source/transport evidence conflicts and explicit repair receipts for every ask source; no integration subject journal or ref replay authority.",
+    "src/database/tables.py::ask_source_aliases": "Generic human request source identity and alias reconciliation shared by every source kind; integration source interpretation remains independently charged.",
+    "src/database/tables.py::review_feedback_obligations": "Generic accepted review feedback, ownership and completion evidence; no integration branch, publication state or ref replay authority.",
+    "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",
