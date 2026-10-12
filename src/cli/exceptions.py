@@ -56,12 +56,28 @@ class ScopeDeniedError(CommandError):
 class CommandResponseError(CommandError):
     """The request has no trustworthy result; replay could duplicate a write."""
 
-    def __init__(self, command: str):
+    def __init__(
+        self,
+        command: str,
+        *,
+        failure_kind: str | None = None,
+        read_timeout_seconds: float | None = None,
+    ):
+        details: dict[str, Any] = {"outcome": "unknown", "automatic_retry": False}
+        diagnostic = ""
+        if failure_kind is not None:
+            details["failure_kind"] = failure_kind
+            diagnostic = f" ({failure_kind}"
+            if read_timeout_seconds is not None:
+                details["read_timeout_seconds"] = read_timeout_seconds
+                diagnostic += f"; no response data for {read_timeout_seconds:g}s"
+            diagnostic += ")"
         super().__init__(
             command,
-            "No complete command response was received. The command may have completed; "
+            f"No complete command response was received{diagnostic}. "
+            "The command may have completed; "
             "check its current state before retrying.",
-            details={"outcome": "unknown", "automatic_retry": False},
+            details=details,
         )
 
     def __str__(self) -> str:

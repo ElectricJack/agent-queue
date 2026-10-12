@@ -91,6 +91,11 @@ _DEFAULT_TIMEOUT = 30.0
 # Per-command read timeouts (seconds) for commands that run an LLM or other
 # long operations server-side. Anything not listed uses _DEFAULT_TIMEOUT.
 _COMMAND_TIMEOUTS: dict[str, float] = {
+    # These diagnostics measure the whole fleet, even when their output is
+    # filtered to one project/task. Each project's cached prerequisite view
+    # has its own 10s bound, so a busy fleet can outlast the default 30s read.
+    "pool_status": 120.0,
+    "explain_task": 120.0,
     "session_cleanup": 600.0,
     # Both long-poll (clamped to swarm.claim_wait_max, default well under
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
@@ -315,7 +320,11 @@ class CLIClient:
         except httpx.RequestError as exc:
             # A read/write failure can occur after the daemon committed the
             # command. Do not turn it into the daemon-start-and-retry path.
-            raise CommandResponseError(command) from exc
+            raise CommandResponseError(
+                command,
+                failure_kind=type(exc).__name__,
+                read_timeout_seconds=timeout if isinstance(exc, httpx.ReadTimeout) else None,
+            ) from exc
 
         if resp.status_code in (401, 403):
             # aq-surface §4.1 exit code 4: auth/scope denial is not a command
@@ -325,11 +334,11 @@ class CLIClient:
         try:
             data = resp.json()
         except ValueError as exc:
-            raise CommandResponseError(command) from exc
+            raise CommandResponseError(command, failure_kind="invalid_json") from exc
         if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
-            raise CommandResponseError(command)
+            raise CommandResponseError(command, failure_kind="invalid_envelope")
         if resp.status_code >= 400 and data.get("ok"):
-            raise CommandResponseError(command)
+            raise CommandResponseError(command, failure_kind="http_status_mismatch")
         if not data.get("ok"):
             raise CommandError(
                 command,
