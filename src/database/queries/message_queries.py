@@ -12,8 +12,9 @@ House rules observed here:
   ``tasks.is_plan_subtask``.
 - :meth:`MessageQueriesMixin.mark_delivered` is a compare-and-set: it only
   matches rows whose ``delivered_at IS NULL``.  That single predicate is the
-  idempotency guard against double delivery when a nudge and a
-  prompt-boundary inject race (spec §4, §13).
+  idempotency guard against duplicate delivery receipts when a recipient
+  read and an inbox/prime inject race (spec §4, §13). Notification reservation
+  has its own compare-and-set and leaves the body pending.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from __future__ import annotations
 import time
 import uuid
 
-from sqlalchemy import and_, insert, or_, select, update
+from sqlalchemy import and_, case, func, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import messages
 from src.models import Message
@@ -55,6 +57,8 @@ def _row_to_message(row) -> Message:
         body_kind=row["body_kind"],
         pane_open=row["pane_open"],
         created_seq=row["created_seq"],
+        last_notified_at=row["last_notified_at"],
+        notification_attempts=row["notification_attempts"],
     )
 
 
@@ -136,11 +140,16 @@ class MessageQueriesMixin:
         to_id: str,
         *,
         limit: int = 50,
+        notification_at: float | None = None,
+        notification_delays: tuple[float, ...] = (),
     ) -> list[Message]:
         """Undelivered, unarchived messages for one recipient.
 
         Ordered by ``priority`` ascending (lower delivers first) then
         ``created_at`` ascending — the delivery order the engine consumes.
+
+        The notification caller supplies its retry delays. Apply eligibility
+        before the limit so unread mail in backoff cannot starve newer mail.
         """
         stmt = (
             select(messages)
@@ -155,6 +164,17 @@ class MessageQueriesMixin:
             .order_by(messages.c.priority.asc(), messages.c.created_at.asc())
             .limit(limit)
         )
+        if notification_at is not None and notification_delays:
+            delay = case(
+                *((messages.c.notification_attempts <= index + 1, value)
+                  for index, value in enumerate(notification_delays[:-1])),
+                else_=notification_delays[-1],
+            )
+            stmt = stmt.where(or_(
+                messages.c.body_kind == "schedule_prompt",
+                messages.c.last_notified_at.is_(None),
+                messages.c.last_notified_at + delay <= notification_at,
+            ))
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
             return [_row_to_message(r) for r in result.mappings().fetchall()]
@@ -258,9 +278,79 @@ class MessageQueriesMixin:
                         messages.c.read_at.is_(None),
                     )
                 )
-                .values(read_at=time.time())
+                .values(
+                    read_at=time.time(),
+                    delivered_at=func.coalesce(messages.c.delivered_at, time.time()),
+                )
             )
             return result.rowcount > 0
+
+    async def claim_message_notification(
+        self, message_id: str, *, now: float, retry_delay: float,
+    ) -> bool:
+        """Reserve an attempt before touching the terminal, without consuming mail."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(update(messages).where(
+                messages.c.id == message_id,
+                messages.c.delivered_at.is_(None),
+                messages.c.read_at.is_(None),
+                messages.c.archived_at.is_(None),
+                or_(messages.c.last_notified_at.is_(None),
+                    messages.c.last_notified_at <= now - retry_delay),
+            ).values(
+                last_notified_at=now,
+                notification_attempts=messages.c.notification_attempts + 1,
+                via="nudge",
+            ))
+            return result.rowcount > 0
+
+    async def escalate_unread_message(self, message_id: str) -> Message | None:
+        """Copy an unanswered notification to global supervision exactly once.
+
+        Lock the source against a racing acknowledgment; deterministic alert IDs
+        make retries and daemon restarts idempotent. Never consume the source.
+        """
+        async with self._engine.begin() as conn:
+            source = (await conn.execute(select(messages).where(
+                messages.c.id == message_id,
+                messages.c.delivered_at.is_(None),
+                messages.c.read_at.is_(None),
+                messages.c.archived_at.is_(None),
+                messages.c.notification_attempts >= 3,
+            ).with_for_update())).mappings().first()
+            if source is None or source["body_kind"] == "delivery_alert":
+                return None
+            result = await conn.execute(pg_insert(messages).values(
+                id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, f'aq:delivery-alert:{message_id}').hex}",
+                project_id=source["project_id"],
+                from_kind="system", from_id="delivery-engine",
+                to_kind="session", to_id="supervisor-global", priority=source["priority"],
+                body_kind="delivery_alert", created_at=time.time(),
+                subject=f"Unread message: {source['subject'] or message_id}",
+                body=(f"Message {message_id} to {source['to_kind']}:{source['to_id']} "
+                      f"has not been read after {source['notification_attempts']} notification "
+                      "attempts. Inspect the recipient's authentication and delivery path. "
+                      "The original remains pending. Original body:\n\n" + source["body"]),
+            ).on_conflict_do_nothing(index_elements=[messages.c.id]).returning(messages))
+            row = result.mappings().first()
+            return _row_to_message(row) if row else None
+
+    async def get_collaboration_read_messages(
+        self, thread_id: str, *, project_id: str, task_id: str, message_ids: list[str],
+    ) -> list[Message]:
+        """Recipient copies whose bodies or thread notices were returned by a read."""
+        copies = [or_(messages.c.id == key, messages.c.id.startswith(key + ":"))
+                  for key in message_ids]
+        visible = messages.c.body_kind.in_(("collaboration_invite", "collaboration_closed"))
+        if copies:
+            visible = or_(visible, and_(messages.c.body_kind == "collaboration", or_(*copies)))
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(select(messages).where(
+                messages.c.project_id == project_id, messages.c.thread_id == thread_id,
+                messages.c.to_kind == "task", messages.c.to_id == task_id,
+                messages.c.read_at.is_(None), messages.c.archived_at.is_(None), visible,
+            ))).mappings().all()
+            return [_row_to_message(row) for row in rows]
 
     async def archive_messages(self, message_ids: list[str]) -> int:
         """Archive the given messages.  Returns the number newly archived.

@@ -29,7 +29,7 @@ async def wait(env, thread, after=0, **extra):
 
 async def test_unseen_messages_return_immediately_with_thread_cursor(env):
     thread = await joined(env)
-    await send(env, thread, "two")
+    sent = await send(env, thread, "two")
     with patch("src.event_bus.EventWaiter.wait", new_callable=AsyncMock) as blocking_wait:
         result = await wait(env, thread)
     blocking_wait.assert_not_awaited()
@@ -39,6 +39,10 @@ async def test_unseen_messages_return_immediately_with_thread_cursor(env):
     assert result["wait"]["kind"] == "message"
     assert result["wait"]["match"] == {"thread_id": thread["id"], "after_seq": 0}
     assert result["wait"]["deadline_at"] == thread["deadline_at"]
+    for key in sent["message_ids"]:
+        message = await env.db.get_message(key)
+        assert message.to_id == "one" and message.read_at is not None
+        assert message.delivered_at is not None
 
 
 @pytest.mark.perf

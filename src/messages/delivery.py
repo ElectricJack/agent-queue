@@ -48,6 +48,13 @@ PARK_AFTER_SECONDS: float = 86_400.0
 # Includes a supervisor cold start. A broken recipient cannot hold every
 # other mailbox indefinitely; cancellation leaves its messages pending.
 RECIPIENT_TIMEOUT_SECONDS: float = 120.0
+NOTIFICATION_RETRY_SECONDS: float = 60.0
+NOTIFICATION_MAX_RETRY_SECONDS: float = 300.0
+
+
+def _retry_delay(msg: Message) -> float:
+    return min(NOTIFICATION_MAX_RETRY_SECONDS,
+               NOTIFICATION_RETRY_SECONDS * 2 ** min(max(msg.notification_attempts - 1, 0), 3))
 
 COLLABORATION_BODY_KINDS = {"collaboration", "collaboration_invite", "collaboration_closed"}
 _TASK_NOTIFICATION_KINDS = {"wait_result", "job_result"} | COLLABORATION_BODY_KINDS
@@ -123,8 +130,14 @@ class MessageDeliveryEngine:
 
     async def _deliver_recipient(self, to_kind: str, to_id: str) -> dict[str, int]:
         result = {"delivered": 0, "skipped_busy": 0, "parked": 0}
+        now = time.time()
         pending = await self._db.get_pending_messages(
-            to_kind, to_id, limit=self._config.max_inject_per_prompt
+            to_kind, to_id, limit=self._config.max_inject_per_prompt,
+            notification_at=now if to_kind in {"session", "task"} else None,
+            notification_delays=tuple(
+                min(NOTIFICATION_MAX_RETRY_SECONDS, NOTIFICATION_RETRY_SECONDS * 2**index)
+                for index in range(4)
+            ),
         )
         # Offline turns stay durable until supervisor start routes them.
         # They must neither cold-start a supervisor nor park.
@@ -145,6 +158,20 @@ class MessageDeliveryEngine:
         if to_kind == "profile":
             # Profile broadcasts are consumed by inbox/prime, not by a
             # particular live session. They are never cold-started or parked.
+            return result
+
+        for msg in pending:
+            if (msg.notification_attempts >= 3 and msg.last_notified_at is not None
+                    and now >= msg.last_notified_at + _retry_delay(msg)
+                    and msg.body_kind != "delivery_alert"
+                    and msg.to_id not in {"supervisor-global", "n-supervisor--global"}):
+                alert = await self._db.escalate_unread_message(msg.id)
+                if alert is not None:
+                    await self._emit("message.sent", _message_sent_payload(alert))
+        pending = [msg for msg in pending if msg.body_kind == "schedule_prompt"
+                   or msg.last_notified_at is None
+                   or now >= msg.last_notified_at + _retry_delay(msg)]
+        if not pending:
             return result
 
         kind, target_id, resolved_project = _target_from_recipient(
@@ -191,6 +218,12 @@ class MessageDeliveryEngine:
             or not await self.cron_service.begin_delivery(msg.id)
         ):
             return result
+        if not await self._db.claim_message_notification(
+            msg.id, now=now, retry_delay=0 if scheduled else _retry_delay(msg),
+        ):
+            if scheduled:
+                await self.cron_service.finish_delivery(msg.id, delivered=False)
+            return result
         try:
             ok = await self._sessions.nudge(
                 kind=kind, target_id=target_id, project_id=resolved_project,
@@ -214,12 +247,6 @@ class MessageDeliveryEngine:
             "Message wake submitted message_id=%s recipient=%s:%s",
             msg.id, to_kind, to_id,
         )
-        if await self._db.mark_delivered(msg.id, via="nudge"):
-            result["delivered"] = 1
-            await self._emit(
-                "message.delivered",
-                {"message_id": msg.id, "project_id": msg.project_id, "method": "nudge"},
-            )
         if scheduled:
             await self.cron_service.finish_delivery(msg.id, delivered=True)
         return result

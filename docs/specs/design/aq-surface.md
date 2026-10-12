@@ -519,6 +519,9 @@ from reaching the agent. On any failure it prints nothing and exits 0.
   instance. Existing project fences still apply; a project supervisor cannot
   mint a global credential. Replace the affected session's `AQ_API_TOKEN` with
   `.data.token`; the command does not mutate a running process's environment.
+  `sessions.authentication` and `stall.sweep` report recent rejected credentials
+  associated with a running launch, and named supervisors with no valid credential
+  for their current instance. Auth diagnostics never include bearer tokens or hashes.
   A stall sweep that encounters failed authentication exits with one `SWEEP-AUTH`
   error and the recovery command. Patrol stops further checks for that tick and
   reports that single error, never interpreting failed reads as an empty queue.

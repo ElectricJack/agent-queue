@@ -165,6 +165,9 @@ class DB:
     async def list_sessions(self):
         return self.sessions
 
+    async def uncredentialed_supervisor_sessions(self, *, now):
+        return []
+
     async def list_repos(self):
         return self.repos
 
@@ -187,6 +190,23 @@ class DB:
 @pytest.fixture
 def context(tmp_path):
     return DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=DB(), handler=Handler({}))
+
+
+async def test_auth_failure_reaches_sweep_without_active_projects(context, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    checks = import_module("src.doctor.session_checks")
+    monkeypatch.setattr(context.db, "list_projects", AsyncMock(return_value=[]))
+    monkeypatch.setattr(checks, "session_authentication_findings", AsyncMock(return_value=[{
+        "session_id": "global", "project_id": None, "detail": "credential expired",
+        "recovery_command": "aq session token global --json",
+    }]))
+    result = await module._check_sweep(context)
+    assert result.severity is Severity.ERROR
+    [finding] = result.data["findings"]
+    assert finding["kind"] == "session_authentication"
+    assert finding["session_id"] == "global"
+    assert finding["evidence"]["recovery_command"] == "aq session token global --json"
 
 
 @pytest.mark.parametrize(

@@ -1545,6 +1545,8 @@ messages = Table(
     Column("created_at", Float, nullable=False),
     Column("delivered_at", Float, nullable=True),
     Column("read_at", Float, nullable=True),
+    Column("last_notified_at", Float, nullable=True),
+    Column("notification_attempts", Integer, nullable=False, server_default="0"),
     Column("archive_after_inject", Integer, nullable=False, server_default="0"),
     Column("archived_at", Float, nullable=True),
     Column("reply_to_id", Text, ForeignKey("messages.id"), nullable=True),

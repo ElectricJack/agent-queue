@@ -626,6 +626,30 @@ async def test_unwaited_job_nudges_once_and_prime_reads_create_no_messages(setup
         assert await conn.scalar(select(func.count()).select_from(messages)) == 1
 
 
+async def test_job_result_read_acknowledges_only_owner_notification(setup, tmp_path):
+    await setup.db.create_profile(AgentProfile(
+        id="worker-codex", name="Worker", aq_commands=["job_result"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    job = await setup.db.submit_job(job_values())
+    await finish(setup, job)
+    await setup.db.reconcile_job_results(now=NOW + 60, messaging_enabled=True)
+    key = f"job:{job['id']}:terminal"
+    await setup.db.claim_message_notification(key, now=NOW + 60, retry_delay=0)
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    observed = await handler.execute("job_result", {"job_id": job["id"]})
+    assert observed["success"] and observed["result"]
+    assert (await setup.db.get_message(key)).read_at is None
+    scope = dict(kind="session", session_id="s", session_instance_token="token", project_id="p")
+    read = await handler.execute("job_result", {"job_id": job["id"], "_scope": scope})
+    assert read["success"] and read["result"] == observed["result"]
+    receipt = await setup.db.get_message(key)
+    assert receipt.read_at is not None and receipt.delivered_at is not None
+    assert await setup.db.get_pending_messages("task", "owner") == []
+
+
 @pytest.mark.parametrize("boundary", ["message", "ack"])
 async def test_job_notification_failure_and_disabled_messaging_keep_durable_result(setup, boundary):
     from src.prime.sections import build_messages_section

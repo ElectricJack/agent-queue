@@ -783,6 +783,10 @@ class MessageCommandsMixin:
             or await self._inbox_mailbox_scope_error(message.to_kind, message.to_id)
         ):
             return {"error": f"Message '{message_id}' not found"}
+        # Reading a pointer as its actual recipient consumes the durable body.
+        # Operator diagnostics and another supervisor's inspection stay read-only.
+        await self._acknowledge_message_read(message)
+        message = await self.db.get_message(message.id)
         state = "acknowledged" if message.read_at is not None else (
             "delivered" if message.delivered_at is not None else "queued"
         )
@@ -794,3 +798,36 @@ class MessageCommandsMixin:
             "acknowledged_at": message.read_at,
             "message": message_to_dict(message),
         }
+
+    async def _acknowledge_message_read(self, message: Message) -> None:
+        if not await self._is_message_recipient(message):
+            return
+        delivered = await self.db.mark_delivered(message.id, via="read")
+        await self.db.mark_read(message.id)
+        if delivered:
+            await self._emit_message_event("message.delivered", {
+                "message_id": message.id, "project_id": message.project_id, "method": "read",
+            })
+
+    async def _is_message_recipient(self, message: Message) -> bool:
+        scope = self._current_scope
+        if not scope or scope.get("kind") != "session" or not scope.get("session_id"):
+            return False
+        session_id = scope["session_id"]
+        if message.to_kind == "session" and message.to_id == session_id:
+            return True
+        if message.to_kind == "task" and message.to_id == scope.get("task_id"):
+            return True
+        session = await self.db.get_session(session_id)
+        if session is None:
+            return False
+        if message.to_kind == "session" and session.lifecycle == "named":
+            addresses = {session.name}
+            if session.profile_id == "supervisor":
+                addresses.add(f"supervisor-{session.project_id or 'global'}")
+            return message.to_id in addresses
+        if message.to_kind == "task":
+            return message.to_id == (scope.get("task_id") or session.task_id)
+        if message.to_kind == "profile":
+            return message.to_id == session.profile_id
+        return False
