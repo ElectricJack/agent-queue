@@ -891,6 +891,29 @@ Set by `aq install` (wizard, `--git-name/--git-email`, or
 
 ---
 
+### deploy — installation deployment
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `tag_glob` | `str \| null` | `null` | Annotated release tag family for operator updates. |
+| `target` | `str` | `"main"` | Promotion branch containing selected release tags. |
+| `track_branch` | `str \| null` | `null` | Automatically deploy new commits from the installation's matching branch/upstream. Conflicts with tag selection. |
+| `poll_interval_seconds` | `float` | `300.0` | Background branch-check cadence; finite, at least 60 seconds. |
+
+This section is hot reloadable. Branch tracking requires a clean operator
+checkout on the configured branch with a matching upstream. It never switches
+branches, discards local commits, or runs from worker slots. Updates check the
+pinned target's single-head migration graph, keep running agent sessions, rebuild
+changed dashboard inputs, and verify daemon health/readiness and the installed
+dashboard. Failed starts restore the previous deployment unless schema migrations
+may have run; then newer code is retained and the pre-update backup is named.
+Failed automatic targets remain held until a new commit or manual operator retry.
+After migrations may have run, a persistent recovery hold blocks all targets
+until an operator restores health/readiness and the dashboard, then verifies with
+`aq update --yes --resume-after-recovery`. Automatic updates require backup.
+System Config shows the private, bounded `deploy-history.json` log.
+See [branch tracking](design/branch-tracking-deployment.md).
+
 ## 5. Loading Behavior
 
 ### 5.1 Call Sequence

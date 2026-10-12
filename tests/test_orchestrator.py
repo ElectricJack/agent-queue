@@ -3782,3 +3782,32 @@ class TestGlobalBudgetReload:
         await orch._schedule()
 
         assert orch._last_scheduler_state.global_budget is None
+
+
+async def test_branch_tracking_dispatches_in_background_once_per_interval(monkeypatch):
+    from types import SimpleNamespace
+
+    orch = object.__new__(Orchestrator)
+    orch.config = AppConfig()
+    orch._tracked_deploy_check = None
+    orch._tracked_deploy_last_check = 0
+    handler = SimpleNamespace(execute=AsyncMock(return_value={"success": True}))
+    orch._command_handler = handler
+    monkeypatch.setattr("src.orchestrator.core.time.monotonic", lambda: 500)
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is None  # default is opt-out
+    orch.config.deploy.track_branch = "dev"
+    orch._schedule_tracked_deploy_check()
+    task = orch._tracked_deploy_check
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is task
+    await task
+    handler.execute.assert_awaited_once_with("update_and_restart", {
+        "automatic": True, "reason": "Installation tracks dev",
+    })
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is task  # cadence also gates completed checks
+    orch.config.deploy.track_branch = None
+    monkeypatch.setattr("src.orchestrator.core.time.monotonic", lambda: 1000)
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is task

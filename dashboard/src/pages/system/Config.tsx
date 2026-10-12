@@ -8,6 +8,7 @@ import {
 } from "@heroicons/react/24/outline";
 
 import {
+  useDeploymentHistory,
   useReloadSystemConfig,
   useSystemConfig,
   useSystemConfigSchema,
@@ -23,6 +24,7 @@ interface Toast {
 
 export default function SystemConfig() {
   const { data: configData, isLoading: configLoading, error: configError } = useSystemConfig();
+  const { data: deploymentHistory, error: deploymentError } = useDeploymentHistory();
   const { data: schemaData } = useSystemConfigSchema();
   const reload = useReloadSystemConfig();
   const update = useUpdateSystemConfig();
@@ -105,6 +107,46 @@ export default function SystemConfig() {
           Reload from disk
         </button>
       </div>
+
+      <section aria-label="Deployment history" className="rounded-lg border border-gray-800 p-4">
+        <h2 className="font-semibold">Deployments</h2>
+        <p className="mt-1 text-sm text-gray-400">
+          Configure deploy.track_branch to follow the installed branch automatically.
+          Checks run every deploy.poll_interval_seconds (default 300 seconds).
+          Failed commits stay held until a newer commit or an operator retry.
+          Failures after migrations require operator recovery before automatic deployment resumes.
+        </p>
+        <p className="mt-2 text-sm text-gray-300">
+          {typeof configData?.config?.deploy === "object" && configData.config.deploy !== null
+            && "track_branch" in configData.config.deploy && configData.config.deploy.track_branch
+            ? `Tracking ${String(configData.config.deploy.track_branch)}` : "Automatic deployment is off"}
+        </p>
+        {deploymentError && <p className="mt-3 text-sm text-red-300">Deployment history is unavailable.</p>}
+        {!deploymentError && (deploymentHistory?.length ?? 0) === 0 ? (
+          <p className="mt-3 text-sm text-gray-500">No deployments recorded.</p>
+        ) : !deploymentError ? (
+          <div className="mt-3 max-h-72 overflow-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-gray-500">
+                <tr><th>Time</th><th>Branch</th><th>Commit</th><th>Outcome</th><th>Details</th></tr>
+              </thead>
+              <tbody>
+                {[...(deploymentHistory ?? [])].reverse().map((entry, index) => (
+                  <tr key={`${entry.timestamp}-${index}`} className="border-t border-gray-800">
+                    <td className="py-2 pr-3 whitespace-nowrap">{new Date(entry.timestamp * 1000).toLocaleString()}</td>
+                    <td className="pr-3">{entry.branch || "—"}</td>
+                    <td className="pr-3 font-mono" title={`${entry.previous} → ${entry.target}`}>
+                      {entry.target?.slice(0, 9) || "—"}
+                    </td>
+                    <td className="pr-3">{entry.outcome.replace(/_/g, " ")}</td>
+                    <td className="break-words">{entry.message || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </section>
 
       {toast && <ToastBanner toast={toast} onDismiss={() => setToast(null)} />}
 

@@ -9,9 +9,11 @@ const api = vi.hoisted(() => ({
   config: {} as Record<string, unknown>,
   update: vi.fn(),
   reload: vi.fn(),
+  history: [] as Record<string, unknown>[],
 }));
 
 vi.mock("../../../api/hooks", () => ({
+  useDeploymentHistory: () => ({ data: api.history, error: null }),
   useSystemConfig: () => ({ data: api.config, isLoading: false, error: null }),
   useSystemConfigSchema: () => ({ data: { schema: { properties: {} } }, isLoading: false }),
   useUpdateSystemConfig: () => ({ mutateAsync: api.update, isPending: false }),
@@ -20,6 +22,7 @@ vi.mock("../../../api/hooks", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.history = [];
   api.config = {
     path: "/tmp/config.yaml",
     config: {
@@ -72,4 +75,18 @@ describe("System config redaction", () => {
     fireEvent.click(screen.getByText("scheduling"));
     expect(screen.queryByText("Redacted credentials")).toBeNull();
   });
+});
+
+
+it("shows persisted deployment failures with their branch, commit and recovery details", () => {
+  api.history = [{
+    timestamp: 1791800000, outcome: "rolled_back", branch: "dev",
+    previous: "oldcommit", target: "badcommit123", message: "Start failed; previous daemon restored",
+    automatic: true,
+  }];
+  render(<SystemConfig />);
+  expect(screen.getByRole("region", { name: "Deployment history" })).toHaveTextContent("dev");
+  expect(screen.getByText("badcommit")).toBeTruthy();
+  expect(screen.getByText("rolled back")).toBeTruthy();
+  expect(screen.getByText("Start failed; previous daemon restored")).toBeTruthy();
 });

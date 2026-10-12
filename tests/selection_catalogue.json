@@ -4454,13 +4454,14 @@
         "config"
       ],
       "default_arm": true,
-      "digest": "sha256:7078580347507becf0fefec61141a64c28582bcd20f92a781a17213929a09a62",
+      "digest": "sha256:a176fd66c25d874fa6c64ccbec5f204acb8dd4493f303e5c3da0dd4439d36e09",
       "imports": [
         "src.cli.system_config",
         "src.commands.handler",
         "src.config",
         "src.config_editor",
-        "src.config_secrets"
+        "src.config_secrets",
+        "src.install.deploy_history"
       ],
       "markers": [
         "asyncio",
@@ -16745,7 +16746,7 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "digest": "sha256:da338bfefa490117677361c50bbbfd539f89fb58621942e153177cae3150125d",
+      "digest": "sha256:787cb482e1c71322f448a347f84a1d34528db8d56f163da1917cce673e3bebec",
       "imports": [
         "src.api.models.system",
         "src.commands",
@@ -16756,6 +16757,7 @@
         "src.event_bus",
         "src.git.manager",
         "src.install",
+        "src.install.deploy_history",
         "src.install.update",
         "src.orchestrator",
         "src.plugins.registry",
@@ -17939,7 +17941,7 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:197daea52292118627a60761a8cc40edc3bfc87676cce8971907f1d44492b2f7",
+      "digest": "sha256:bf5b0c9b48e84a229832d166c2225c3a99a2f9db5b2e8a339e10b2cebdd6be77",
       "imports": [
         "src.cli",
         "src.cli.app",
@@ -17951,6 +17953,7 @@
         "src.install.command",
         "src.install.dashboard",
         "src.install.deploy",
+        "src.install.deploy_history",
         "src.install.update",
         "src.install.update_finish"
       ],

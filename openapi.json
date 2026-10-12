@@ -17189,8 +17189,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when already current. With a release selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
-        "description": "Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when already current. With a release selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+        "summary": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+        "description": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
         "operationId": "update_and_restart",
         "requestBody": {
           "content": {
@@ -29733,6 +29733,49 @@
         ],
         "title": "DeleteWorktree"
       },
+      "DeploymentEvent": {
+        "properties": {
+          "timestamp": {
+            "type": "number",
+            "title": "Timestamp"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "branch": {
+            "type": "string",
+            "title": "Branch",
+            "default": ""
+          },
+          "previous": {
+            "type": "string",
+            "title": "Previous",
+            "default": ""
+          },
+          "target": {
+            "type": "string",
+            "title": "Target",
+            "default": ""
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          },
+          "automatic": {
+            "type": "boolean",
+            "title": "Automatic",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "timestamp",
+          "outcome"
+        ],
+        "title": "DeploymentEvent"
+      },
       "DiffItem": {
         "properties": {
           "id": {
@@ -36028,6 +36071,13 @@
             "type": "string",
             "title": "Secret Placeholder",
             "default": ""
+          },
+          "deployment_history": {
+            "items": {
+              "$ref": "#/components/schemas/DeploymentEvent"
+            },
+            "type": "array",
+            "title": "Deployment History"
           },
           "error": {
             "anyOf": [
@@ -76195,6 +76245,18 @@
       },
       "UpdateAndRestartRequest": {
         "properties": {
+          "automatic": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Automatic",
+            "description": "Tracked-branch background check; hold a previously failed target until an operator retries. Default: false."
+          },
           "reason": {
             "anyOf": [
               {

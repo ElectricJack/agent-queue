@@ -3903,8 +3903,8 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "update_and_restart",
         "description": (
-            "Update and restart the daemon. Without deploy.tag_glob, pull the upstream "
-            "and restart even when already current. With a release selector, run shared "
+            "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream "
+            "and restart even when already current. With a release or branch selector, run shared "
             "preflight and launch the operator updater; returns pid, log, selector and commit, "
             "or up_to_date without restarting. Read the log for the final outcome. "
             "Use wait_for_tasks=true to let running tasks finish before restarting; "
@@ -3914,6 +3914,10 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "automatic": {
+                    "type": "boolean",
+                    "description": "Tracked-branch background check; hold a previously failed target until an operator retries. Default: false.",
+                },
                 "reason": {
                     "type": "string",
                     "description": "Why the update/restart is being requested",

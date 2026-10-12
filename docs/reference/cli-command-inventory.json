@@ -20094,6 +20094,8 @@
       "parameters": {
         "required": [],
         "optional": [
+          "--automatic",
+          "--resume-after-recovery",
           "--check",
           "--yes",
           "--ref",

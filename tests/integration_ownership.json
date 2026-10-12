@@ -15717,6 +15717,7 @@
     "src/git/manager.py::repository_urls_match": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/install/command.py::CommandRunner": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/install/command.py::run_command": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/install/deploy_history.py::read_history": "Generic read-only installation deployment evidence and migration recovery hold display; no project integration state, branch ownership, ref replay or delivery authority. The shared system-config response that calls it remains charged independently.",
     "src/install/postgres.py::CONFIG_HEADER": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/install/postgres.py::backup_path_for": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/install/prerequisites.py::STEP_DATA_DIR": "Generic dependency; integration-specific definitions in this file are charged independently.",
