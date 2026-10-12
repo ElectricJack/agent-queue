@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import type { Edge, NodeChange } from "@xyflow/react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +31,7 @@ interface FlowProps {
   elevateNodesOnSelect?: boolean;
 }
 
-const flow = vi.hoisted(() => ({ current: null as FlowProps | null }));
+const flow = vi.hoisted(() => ({ current: null as FlowProps | null, real: false }));
 const fitBounds = vi.hoisted(() => vi.fn());
 const setCenter = vi.hoisted(() => vi.fn());
 const fitView = vi.hoisted(() => vi.fn());
@@ -39,29 +39,35 @@ const zoomIn = vi.hoisted(() => vi.fn());
 const zoomOut = vi.hoisted(() => vi.fn());
 const setViewport = vi.hoisted(() => vi.fn());
 const getViewport = vi.hoisted(() => vi.fn(() => ({ x: 0, y: 0, zoom: 1 })));
-vi.mock("@xyflow/react", () => ({
-  MarkerType: { ArrowClosed: "arrowclosed" },
-  Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
-  ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
-  useReactFlow: () => ({ fitBounds, fitView, setCenter, setViewport, getViewport, zoomIn, zoomOut }),
-  ReactFlow: (props: FlowProps) => {
-    flow.current = props;
-    return <div>
-      {props.nodes.map((node) => <div key={node.id} data-testid={`node-${node.id}`} />)}
-      {props.children}
-    </div>;
-  },
-  Background: () => null,
-  Handle: () => null,
-  Controls: () => null,
-  Panel: ({ children }: { children: ReactNode }) => <aside>{children}</aside>,
-  ViewportPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
-  // The avatar layer positions its badges from the nodes they dock at, so the
-  // fake store answers from whatever the canvas last handed React Flow.
-  useStore: (selector: (s: { nodeLookup: Map<string, unknown> }) => unknown) => selector({
-    nodeLookup: new Map((flow.current?.nodes ?? []).map((node) => [node.id, node])),
-  }),
-}));
+vi.mock("@xyflow/react", async (importOriginal) => {
+  const { ReactFlow: ActualReactFlow } = await importOriginal<typeof import("@xyflow/react")>();
+  return {
+    MarkerType: { ArrowClosed: "arrowclosed" },
+    Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
+    ReactFlowProvider: ({ children }: { children: ReactNode }) => children,
+    useReactFlow: () => ({ fitBounds, fitView, setCenter, setViewport, getViewport, zoomIn, zoomOut }),
+    ReactFlow: (props: FlowProps) => {
+      flow.current = props;
+      // jsdom has no viewport geometry. Render every node when a test needs
+      // React Flow's real wrappers, including their computed stacking order.
+      if (flow.real) return <ActualReactFlow {...props} onlyRenderVisibleElements={false} width={800} height={600} />;
+      return <div>
+        {props.nodes.map((node) => <div key={node.id} data-testid={`node-${node.id}`} />)}
+        {props.children}
+      </div>;
+    },
+    Background: () => null,
+    Handle: () => null,
+    Controls: () => null,
+    Panel: ({ children }: { children: ReactNode }) => <aside>{children}</aside>,
+    ViewportPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
+    // The avatar layer positions its badges from the nodes they dock at, so the
+    // fake store answers from whatever the canvas last handed React Flow.
+    useStore: (selector: (s: { nodeLookup: Map<string, unknown> }) => unknown) => selector({
+      nodeLookup: new Map((flow.current?.nodes ?? []).map((node) => [node.id, node])),
+    }),
+  };
+});
 
 const tiles = vi.hoisted(() => ({
   store: null as unknown,
@@ -208,6 +214,7 @@ const base = {
 };
 
 beforeEach(() => {
+  flow.real = false;
   delete document.documentElement.dataset.theme;
   tiles.store = mergeTiles(emptyStore(), ["0:0"], {
     nodes: [n("e", "collapsed", 0, 0), n("z", "card", 2, 0)],
@@ -243,6 +250,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   delete document.documentElement.dataset.theme;
 });
 
@@ -462,6 +470,59 @@ describe("LayoutCanvas", () => {
     const after = Object.fromEntries(flow.current!.nodes.map((node) => [node.id, node]));
     expect(after.e!.selected).toBe(true);
     expect(after.z).toBe(before.z);
+  });
+
+  it.each([false, true])("keeps children above the entered epic when it is selected and reselected (selected before entering: %s)", (selectedBeforeEntering) => {
+    flow.real = true;
+    // React Flow reads the viewport's transform while measuring new nodes;
+    // jsdom has no DOMMatrix implementation, and this test uses zoom 1.
+    vi.stubGlobal("DOMMatrixReadOnly", class { m22 = 1; });
+    const rootStore = tiles.store;
+    const enteredStore = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [
+        n("e", "container", 0, 0, { w: 4, h: 3 }),
+        n("child-a", "card", 0.2, 0.5, { container_id: "e", depth: 1, agg_children: 0 }),
+        n("child-b", "card", 2, 0.5, { container_id: "e", depth: 1, agg_children: 0 }),
+      ],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      variant_applied: "active",
+    } as unknown as TilesResponse);
+    function Harness() {
+      const [focusId, setFocusId] = useState<string | null>(null);
+      const [selectedTaskId, setSelectedTaskId] = useState<string | null>(selectedBeforeEntering ? "e" : null);
+      const setFocus = useCallback((id: string | null) => {
+        tiles.store = id ? enteredStore : rootStore;
+        setFocusId(id);
+      }, []);
+      return <MemoryRouter><LayoutCanvas {...base} focusId={focusId} setFocus={setFocus}
+        selectedTaskId={selectedTaskId} onTaskClick={setSelectedTaskId} /></MemoryRouter>;
+    }
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "Enter e" }));
+    expect(tiles.params).toMatchObject({ root: "e", expanded: [] });
+    const assertChildrenVisible = () => {
+      const frame = screen.getByTestId("rf__node-e");
+      for (const id of ["child-a", "child-b"]) {
+        const child = screen.getByTestId(`rf__node-${id}`);
+        expect(child).toBeVisible();
+        // DOM presence alone misses this regression: the opaque frame was
+        // elevated over the children, which stayed mounted underneath it.
+        expect(Number(child.style.zIndex)).toBeGreaterThan(Number(frame.style.zIndex));
+      }
+      expect(tiles.params).toMatchObject({ root: "e", expanded: [] });
+    };
+    assertChildrenVisible();
+    const openEpic = screen.getByRole("button", { name: "Open task e" });
+    fireEvent.click(openEpic);
+    expect(screen.getByTestId("rf__node-e")).toHaveClass("selected");
+    assertChildrenVisible();
+    fireEvent.click(openEpic);
+    assertChildrenVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open task child-a" }));
+    expect(screen.getByTestId("rf__node-child-a")).toHaveClass("selected");
+    assertChildrenVisible();
+    fireEvent.click(openEpic);
+    assertChildrenVisible();
   });
 
   it("only asks for tiles again when a pan changes the cells the viewport covers", () => {
