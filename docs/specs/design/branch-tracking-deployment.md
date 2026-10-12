@@ -24,10 +24,15 @@ build when build inputs changed, restart, daemon and dashboard health checks,
 and restoration of the previous code/bundle/start on failure. A database that
 may already have migrated keeps the newer code and names the backup for operator
 recovery; automated code rollback never downgrades or restores the database.
+This sets a persistent recovery hold, independent of history retention, which
+blocks every automatic target. An operator restores the installation and runs
+`aq update --yes --resume-after-recovery`; health, readiness and the installed
+dashboard must pass before releasing the hold. Automatic updates require backup.
 
 A private, bounded deployment history survives restart and is visible on System
 Config in the dashboard. It records time, branch, previous/target commit, started,
-updated, refused, failed or rolled-back outcome, and sanitized diagnostics.
+updated, refused, failed, rolled-back, recovery-required or recovered outcome,
+and sanitized diagnostics (including backup path and daemon log remediation).
 No-op checks do not flood the history. A failed automatic target remains held
 until a newer commit arrives or an operator retries `aq update --yes`.
 Disabling tracking stops new checks; it does not cancel an update already begun.

@@ -343,6 +343,17 @@ class TestUpdateAndRestart:
         assert all(response[key] == value for key, value in receipt.items())
 
 
+async def test_tracked_deployment_recovery_hold_refuses_without_fetch_or_launch(handler, monkeypatch):
+    from src.install import update
+    from src.install.deploy_history import record_deploy
+
+    handler.config.deploy.track_branch = "dev"
+    record_deploy(Path(handler.config.data_dir), "recovery_required", target="old-failed-target")
+    monkeypatch.setattr(update, "plan_update", lambda *a, **kw: pytest.fail("held check fetched"))
+    result = await handler._cmd_update_and_restart({"automatic": True})
+    assert not result["success"] and result["error"] == "migration_recovery_required"
+
+
 class TestRunCommand:
     async def test_missing_working_dir_returns_error(self, handler):
         result = await handler.execute("run_command", {"command": "echo hi"})

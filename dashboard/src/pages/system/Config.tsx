@@ -114,6 +114,7 @@ export default function SystemConfig() {
           Configure deploy.track_branch to follow the installed branch automatically.
           Checks run every deploy.poll_interval_seconds (default 300 seconds).
           Failed commits stay held until a newer commit or an operator retry.
+          Failures after migrations require operator recovery before automatic deployment resumes.
         </p>
         <p className="mt-2 text-sm text-gray-300">
           {typeof configData?.config?.deploy === "object" && configData.config.deploy !== null

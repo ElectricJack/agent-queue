@@ -173,6 +173,7 @@ class UpdateReport:
     steps: list[tuple[str, bool, str]] = field(default_factory=list)
     backup: Path | None = None
     remediation: str = ""
+    recovery_required: bool = False
 
     @property
     def exit_code(self) -> int:
@@ -927,6 +928,20 @@ def _check_dashboard_server(host: Host, checkout: Path) -> str | None:
     return dashboard.url
 
 
+def verify_operator_recovery(host: Host, checkout: Path) -> None:
+    """Verify the operator has restored the current installation before releasing its hold."""
+    base, _ = _daemon_address(host)
+    if host.probe(f"{base}/health") != 200 or host.probe(f"{base}/ready") != 200:
+        raise UpdateRefused(
+            "migration recovery is not healthy and ready",
+            "Follow the recorded backup/daemon.log remediation, then retry recovery verification.",
+        )
+    try:
+        _check_dashboard_server(host, checkout)
+    except _StepFailed as error:
+        raise UpdateRefused("migration recovery dashboard verification failed", error.message) from error
+
+
 def _recover(
     plan, host: Host, report, step, failure, was_running, started_new, base, healthy,
     *, dashboard_was_running: bool = False,
@@ -937,6 +952,7 @@ def _recover(
         # The new daemon may already have migrated the database; the old code
         # cannot be trusted against it.  Stop, and say exactly where things are.
         report.outcome = OUTCOME_FAILED
+        report.recovery_required = True
         backup = f" A backup from before the update is at {report.backup}." if report.backup else ""
         report.remediation = (
             f"The update's database migrations may already have run, so AQ was not rolled "

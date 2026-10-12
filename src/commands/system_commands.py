@@ -970,13 +970,19 @@ class SystemCommandsMixin:
         import sys
 
         from src.install.update import UpdateRefused, plan_update
-        from src.install.deploy_history import failed_target, record_deploy
+        from src.install.deploy_history import failed_target, record_deploy, recovery_pending
 
         reason = args.get("reason", "No reason provided")
         wait_for_tasks = args.get("wait_for_tasks", False)
         orch = self.orchestrator
         repo_dir = Path(__file__).resolve().parents[2]
         state_dir = Path(self.config.data_dir)
+        if await asyncio.to_thread(recovery_pending, state_dir):
+            return {
+                "success": False, "error": "migration_recovery_required",
+                "remediation": "Follow deployment history remediation, then run aq update --yes "
+                "--resume-after-recovery as operator after restoring the installation.",
+            }
         if (state_dir / "update.lock").exists():
             return {"success": True, "status": "updating", "log": str(state_dir / "update.log")}
         try:

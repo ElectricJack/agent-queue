@@ -908,6 +908,9 @@ changed dashboard inputs, and verify daemon health/readiness and the installed
 dashboard. Failed starts restore the previous deployment unless schema migrations
 may have run; then newer code is retained and the pre-update backup is named.
 Failed automatic targets remain held until a new commit or manual operator retry.
+After migrations may have run, a persistent recovery hold blocks all targets
+until an operator restores health/readiness and the dashboard, then verifies with
+`aq update --yes --resume-after-recovery`. Automatic updates require backup.
 System Config shows the private, bounded `deploy-history.json` log.
 See [branch tracking](design/branch-tracking-deployment.md).
 

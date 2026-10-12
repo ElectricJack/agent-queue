@@ -1478,3 +1478,55 @@ def test_worker_update_refuses_before_writing_install_history(monkeypatch):
     monkeypatch.setattr(update_cli, "_host", lambda: pytest.fail("worker must not open install state"))
     result = CliRunner().invoke(cli, ["update", "--yes", "--automatic"])
     assert result.exit_code == 10 and "worker slot" in result.output
+
+
+def test_migration_failure_holds_all_targets_until_verified_operator_recovery(repo, fake, monkeypatch):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+    from src.install.deploy_history import read_history, record_deploy, recovery_pending
+
+    _no_worker_scope(monkeypatch)
+    _tracked_repo(repo)
+    target = repo.push(
+        "migrations/versions/a0002.py", "revision = 'a0002'\ndown_revision = 'a0001'\n"
+    )
+    (fake.state_dir / "config.yaml").write_text("deploy:\n  track_branch: main\n")
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    monkeypatch.setattr(update_module, "backup_database", lambda path, dest, **kw: (True, str(dest)))
+    fake.start_results = [False]
+    runner = CliRunner()
+    result = runner.invoke(cli, ["update", "--yes", "--automatic"])
+    assert result.exit_code == 20, result.output
+    assert repo.head() == target and recovery_pending(fake.state_dir)
+    entry = read_history(fake.state_dir)[-1]
+    assert entry["outcome"] == "recovery_required"
+    assert "backup" in entry["message"] and "daemon.log" in entry["message"]
+    # Bounded evidence retention must never erase the safety hold.
+    for _ in range(101):
+        record_deploy(fake.state_dir, "refused", message="unrelated diagnostic")
+    newer = repo.push("README.md", "newer commit must remain held\n")
+    calls = len(fake.calls)
+    result = runner.invoke(cli, ["update", "--yes", "--automatic"])
+    assert result.exit_code == 10 and len(fake.calls) == calls and repo.head() == target
+    result = runner.invoke(cli, ["update", "--yes", "--resume-after-recovery"])
+    assert result.exit_code == 10 and recovery_pending(fake.state_dir)
+    # The operator has fixed and started the newer-schema installation.
+    fake.running = True
+    result = runner.invoke(cli, ["update", "--yes", "--resume-after-recovery"])
+    assert result.exit_code == 0, result.output
+    assert not recovery_pending(fake.state_dir) and repo.head() == newer
+    assert any(row["outcome"] == "recovered" for row in read_history(fake.state_dir))
+
+
+def test_automatic_migration_update_requires_backup(repo, fake, monkeypatch):
+    from click.testing import CliRunner
+    from src.cli import update as update_cli
+    from src.cli.app import cli
+
+    _no_worker_scope(monkeypatch)
+    monkeypatch.setattr(update_cli, "_host", fake.host)
+    monkeypatch.setattr("src.install.dashboard.source_checkout_root", lambda: repo.checkout)
+    result = CliRunner().invoke(cli, ["update", "--yes", "--automatic", "--no-backup"])
+    assert result.exit_code == 10 and fake.calls == []

@@ -13,6 +13,7 @@ from pathlib import Path
 from .redaction import redact
 
 HISTORY_FILE = "deploy-history.json"
+RECOVERY_FILE = "deploy-recovery-required"
 HISTORY_LIMIT = 100
 MAX_BYTES = 512 * 1024
 
@@ -36,6 +37,15 @@ def read_history(state_dir: Path) -> list[dict]:
         return []
     if not isinstance(entries, list):
         return []
+    try:
+        hold = json.loads((state_dir / RECOVERY_FILE).read_text())
+        if isinstance(hold, dict) and not any(
+            isinstance(row, dict) and row.get("timestamp") == hold.get("timestamp")
+            for row in entries
+        ):
+            entries = entries[-(HISTORY_LIMIT - 1):] + [hold]
+    except (OSError, ValueError):
+        pass
     # Only our public evidence fields leave the installation; unknown stored
     # keys (or a damaged row) never become part of the config response.
     result = []
@@ -62,11 +72,20 @@ def record_deploy(
     with os.fdopen(descriptor, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         entries = read_history(state_dir)
-        entries.append({
+        entry = {
             "timestamp": time.time(), "outcome": _safe_text(outcome),
             "branch": _safe_text(branch), "previous": _safe_text(previous),
             "target": _safe_text(target), "message": _safe_text(message), "automatic": automatic,
-        })
+        }
+        if outcome == "recovery_required":
+            # Keep the hold independently of bounded history, even if later
+            # diagnostics fill the history or the history write fails.
+            marker = os.open(state_dir / RECOVERY_FILE, os.O_CREAT | os.O_WRONLY, 0o600)
+            with os.fdopen(marker, "w") as handle:
+                json.dump(entry, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+        entries.append(entry)
         descriptor, name = tempfile.mkstemp(prefix=".deploy-history-", dir=state_dir)
         try:
             with os.fdopen(descriptor, "w") as handle:
@@ -74,6 +93,8 @@ def record_deploy(
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(name, state_dir / HISTORY_FILE)
+            if outcome == "recovered":
+                (state_dir / RECOVERY_FILE).unlink(missing_ok=True)
         finally:
             Path(name).unlink(missing_ok=True)
 
@@ -81,6 +102,13 @@ def record_deploy(
 def failed_target(state_dir: Path, target: str) -> bool:
     """Do not repeatedly deploy a known failing commit after restoring the daemon."""
     for entry in reversed(read_history(state_dir)):
-        if entry["target"] == target and entry["outcome"] in {"updated", "failed", "rolled_back"}:
-            return entry["outcome"] != "updated"
+        if entry["target"] == target and entry["outcome"] in {
+            "updated", "failed", "rolled_back", "recovery_required", "recovered",
+        }:
+            return entry["outcome"] not in {"updated", "recovered"}
     return False
+
+
+def recovery_pending(state_dir: Path) -> bool:
+    """A migration recovery hold blocks all automatic targets until operator recovery."""
+    return (state_dir / RECOVERY_FILE).exists()

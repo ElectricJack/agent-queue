@@ -197,6 +197,11 @@ outcomes and recovery details. History is capped at 100 events and persists acro
 restart. `~/.agent-queue/update.log` holds the detailed updater output. A failed
 commit is held to prevent restart loops; a newer commit can deploy, or the operator
 can retry the same commit with `aq update --yes` after correcting its failure.
+Failures after migrations set a persistent recovery hold that also blocks newer
+commits. Follow the recorded backup and daemon log remediation to restore the
+installation, then run `aq update --yes --resume-after-recovery` as operator.
+It verifies daemon health/readiness and the installed dashboard before releasing
+the hold. Automatic updates always require the pre-migration backup.
 Workers do not enable tracking or restart the operator installation.
 
 ## Inputs and outputs

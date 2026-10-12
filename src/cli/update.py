@@ -34,6 +34,10 @@ def _host():
 
 @cli.command("update")
 @click.option("--automatic", is_flag=True, hidden=True)
+@click.option(
+    "--resume-after-recovery", is_flag=True,
+    help="Verify operator recovery and release the automatic deployment hold (requires --yes).",
+)
 @click.option("--check", is_flag=True, help="Only report whether an update is available.")
 @click.option("--yes", "-y", "assume_yes", is_flag=True, help="Update without asking first.")
 @click.option("--ref", help="Deploy an annotated release tag or an unreleased branch.")
@@ -46,6 +50,7 @@ def _host():
 def update(
     check: bool, assume_yes: bool, no_backup: bool, ref: str | None, allow_rollback: bool,
     automatic: bool = False,
+    resume_after_recovery: bool = False,
 ) -> None:
     """Update AQ to the latest code and restart what needs restarting.
 
@@ -82,6 +87,7 @@ def update(
         dashboard_server_running,
         describe,
         plan_update,
+        verify_operator_recovery,
     )
 
     import os
@@ -100,15 +106,30 @@ def update(
         )
         raise SystemExit(EXIT_REFUSED)
 
-    from src.install.deploy_history import failed_target, record_deploy
+    from src.install.deploy_history import failed_target, record_deploy, recovery_pending
 
     host = _host()
     settings = None
     plan = None
 
+    if automatic and (no_backup or resume_after_recovery or recovery_pending(host.state_dir)):
+        _refused(UpdateRefused(
+            "automatic deployment requires backup and no migration recovery hold",
+            "Follow deployment history remediation; as operator run aq update --yes "
+            "--resume-after-recovery after restoring health and readiness.",
+        ))
+        raise SystemExit(EXIT_REFUSED)
+    if recovery_pending(host.state_dir) and not check and not resume_after_recovery:
+        _refused(UpdateRefused(
+            "migration recovery is required before further deployment",
+            "Restore the installation, then run aq update --yes --resume-after-recovery.",
+        ))
+        raise SystemExit(EXIT_REFUSED)
+
     def history(outcome: str, message: str = "") -> None:
         record_deploy(
-            host.state_dir, outcome, branch=plan.branch if plan else (settings.track_branch if settings else "") or "",
+            host.state_dir, outcome,
+            branch=plan.branch if plan else (settings.track_branch if settings else "") or "",
             previous=plan.current if plan else "", target=plan.target if plan else "",
             message=message, automatic=automatic,
         )
@@ -134,6 +155,14 @@ def update(
             promotion_target=settings.target, allow_rollback=allow_rollback,
             track_branch=settings.track_branch,
         )
+        if resume_after_recovery:
+            if not assume_yes or check:
+                raise UpdateRefused("recovery verification requires --yes and no --check", "Retry as operator.")
+            verify_operator_recovery(host, checkout)
+            record_deploy(
+                host.state_dir, "recovered", branch=plan.branch, target=plan.current,
+                message="Operator recovery verified: daemon health/readiness and installed dashboard.",
+            )
     except UpdateRefused as refused:
         if not check:
             history("refused", refused.reason)
@@ -190,7 +219,7 @@ def update(
         _refused(refused)
         raise SystemExit(EXIT_REFUSED) from None
 
-    history(report.outcome, report.remediation)
+    history("recovery_required" if report.recovery_required else report.outcome, report.remediation)
     console.print("")
     if report.outcome == OUTCOME_UP_TO_DATE:
         console.print("AQ is up to date.")
