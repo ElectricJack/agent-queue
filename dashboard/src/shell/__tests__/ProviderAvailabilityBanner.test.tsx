@@ -1,15 +1,20 @@
 /**
- * The outage banner (provider-failover D20): present exactly while the
+ * The outage banner (provider-failover D20): present on desktop while the
  * server says some provider's half is ``unavailable``, and linking to that
- * provider's card on the Metrics tab.
+ * provider's card on the Metrics tab. Hidden at mobile widths.
  */
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import ProviderAvailabilityBanner from "../ProviderAvailabilityBanner";
-import type { ProviderAvailabilityStatus, ProviderStatusResponse } from "../../api/providers";
+import {
+  PROVIDER_AVAILABILITY_KEY,
+  type ProviderAvailabilityStatus,
+  type ProviderStatusResponse,
+} from "../../api/providers";
+import { COMPACT_VIEWPORT_QUERY } from "../../hooks/useCompactViewport";
 
 const api = vi.hoisted(() => ({
   response: null as ProviderStatusResponse | null,
@@ -36,21 +41,75 @@ function status(overrides: Partial<ProviderAvailabilityStatus>): ProviderAvailab
 
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <MemoryRouter><ProviderAvailabilityBanner /></MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, client };
+}
+
+function viewport(width: number) {
+  const mediaQuery = Object.assign(new EventTarget(), {
+    matches: width < 768,
+    media: COMPACT_VIEWPORT_QUERY,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+  });
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => {
+    expect(query).toBe(COMPACT_VIEWPORT_QUERY);
+    return mediaQuery;
+  });
+  return (nextWidth: number) => {
+    mediaQuery.matches = nextWidth < 768;
+    mediaQuery.dispatchEvent(Object.assign(new Event("change"), {
+      matches: mediaQuery.matches, media: mediaQuery.media,
+    }));
+  };
 }
 
 beforeEach(() => {
+  viewport(1024);
   api.response = null;
   api.fail = null;
   api.calls = 0;
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("<ProviderAvailabilityBanner />", () => {
+  it.each([390, 767.98])("hides unavailable providers at mobile width %s px", async (width) => {
+    viewport(width);
+    api.response = { now: NOW, providers: [
+      status({ provider: "claude", state: "disabled", half: "unavailable" }),
+      status({ provider: "codex", state: "exhausted", half: "unavailable" }),
+    ] };
+    const { client } = mount();
+    await waitFor(() => expect(client.getQueryData(PROVIDER_AVAILABILITY_KEY)).toEqual(api.response));
+    expect(screen.queryByTestId("provider-availability-banner")).toBeNull();
+    expect(screen.queryByRole("link", { name: "View Codex" })).toBeNull();
+  });
+
+  it("updates when resizing across the mobile breakpoint, with desktop starting at 768 px", async () => {
+    const resize = viewport(768);
+    api.response = { now: NOW, providers: [
+      status({ provider: "codex", state: "unauthenticated", half: "unavailable" }),
+    ] };
+    mount();
+    const line = await screen.findByTestId("provider-banner-codex");
+    const text = line.textContent;
+
+    act(() => resize(767.98));
+    expect(screen.queryByTestId("provider-availability-banner")).toBeNull();
+
+    act(() => resize(768));
+    expect(screen.getByTestId("provider-banner-codex").textContent).toBe(text);
+    expect(screen.getByRole("link", { name: "View Codex" })).toHaveAttribute("href", "/metrics#provider-codex");
+  });
+
   it("stays hidden while every provider is launchable, degraded included", async () => {
     api.response = { now: NOW, providers: [
       status({ provider: "claude" }),
