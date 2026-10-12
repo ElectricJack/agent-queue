@@ -195,6 +195,9 @@ on every tick:
   agent row below the input. The guard now recognises the idle box as measured
   on OpenCode 1.18.32, reads typed text from inside the box, and never types
   into shell mode (a bare `Shell` in the agent row).
+  With the sidebar open in OpenCode 1.18.35, its worktree path can sit beside
+  the blank input rows. Composer reads stop at the right edge of the bottom
+  border so sidebar text cannot be mistaken for a draft or stale frame.
 - OpenCode runs plugins inside the TUI process, so a plugin that writes to
   stderr paints straight over the composer, and OpenCode never redraws those
   cells. When a detached OpenCode pane shows text in its box, the guard now
