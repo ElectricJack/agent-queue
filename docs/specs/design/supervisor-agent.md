@@ -268,8 +268,14 @@ Concurrent engine passes are skipped while one is in flight.
    the rest stay pending for later passes. The nudge carries no body and no reply
    instruction — the supervisor profile teaches `aq reply <msg-id>` for user messages,
    and internal notices (`task_recovery`, `agent_question`) take no reply. The nudge
-   marks the row delivered, so `message_inbox` no longer lists it and `message_status`
-   is the recipient's only way to reach the body. It is therefore on the agent
+   records a notification attempt, leaving the row pending until the recipient
+   reads its body with `message_status`, replies, or receives inbox/prime injection.
+   An operator or another supervisor inspecting status does not consume the
+   recipient's message. Notification attempts and their timestamps survive daemon
+   restarts. Retry after 60 seconds, doubling up to five minutes; after three
+   unanswered attempts queue one durable alert, including the original body, to
+   the global supervisor. The alert does not recursively escalate. The original
+   message stays pending and retryable. `message_status` is therefore on the agent
    surface (`AGENT_COMMAND_SET`) and granted to every shipped profile that reads its
    own mailbox, and a non-elevated session may read only messages addressed to its
    own mailboxes (the `message_inbox` mailbox fence). A task comment has no
@@ -309,10 +315,11 @@ Wake logs identify the message and recipient, and distinguish refused from submi
 Terminal guard refusals name the observed condition (attached client, copy mode, unknown
 prompt prefix, or cursor outside the pane), retaining the existing guard behavior. All
 provider failures, including unsupported nudges, are available in session diagnostics;
-logs retain evidence across daemon restarts. A confirmed nudge stamps `delivered_at`,
-never `read_at`. Inbox injection exposes the body, explicit acknowledgement/reply stamps
-`read_at`, and neither stamp alone proves the requested work was performed. A process
-crash after submit but before the delivery CAS can repeat a pointer on restart: this is
+logs retain evidence across daemon restarts. A confirmed nudge does not stamp
+`delivered_at` or `read_at`. Reading the body as its recipient or replying stamps both;
+inbox/prime injection stamps delivery. No stamp proves the requested work was performed.
+A process crash after notification reservation but before submit delays its retry by
+the bounded backoff; a crash after submit can repeat a pointer on restart: this is
 at-least-once transport, not an exactly-once handling guarantee.
 
 ### 6.2 Reply protocol
@@ -335,7 +342,7 @@ delivered-but-unreplied row ever written would qualify forever.
 
 ### 6.3 Events
 
-`message.sent` (row created), `message.delivered` (nudge confirmed submitted, or injected),
+`message.sent` (row created), `message.delivered` (body read by recipient, or injected),
 `message.replied` (reply row linked). All registered in the event payload registry.
 Subsystems integrate only through these events — the Discord adapter, dashboard WS stream,
 and delivery engine never call each other (principle #7).

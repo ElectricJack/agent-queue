@@ -145,18 +145,15 @@ Replied to msg-c8555439f8134d8f869bbabe7c109997 (reply
 msg-eb4b28932e244b258ccdbf0d68965760)
 ```
 
-The reply is itself a message row addressed back to the sender, so both are now
-in the mailbox. Clean up by consuming them the way the harness hook does —
-`--inject` marks each row delivered and prints it:
+Replying acknowledges the original. The reply is itself a pending message row
+addressed back to the sender. Consume it with `--inject`, which marks each row
+delivered and prints it:
 
 ```bash
 aq inbox --inject
 ```
 
 ```text
-[msg-c8555439f8134d8f869bbabe7c109997 from session:ac5bb8c6-…] Docs example
-Reply here when you see this.
-
 [msg-eb4b28932e244b258ccdbf0d68965760 from session:ac5bb8c6-…]
 Seen — closing the loop.
 ```
@@ -206,17 +203,23 @@ is this recipient doing right now?* — and acts on the answer:
 
 | Activity | Meaning | What the engine does |
 |---|---|---|
-| `idle` | Live and quiet | Renders the batch as one nudge and types it in |
-| `busy` | Live and mid-turn (output within the last 30 s) | Skips this pass; the prompt-boundary `aq inbox` hook will catch it |
+| `idle` | Live and quiet | Submits one pointer to the command that reads the body |
+| `busy` | Live and mid-turn (output within the last 30 s) | Leaves mail pending for a later pass or inbox/prime injection |
 | `sleeping` | A wake-able supervisor with no live session | Cold-starts the supervisor, then nudges |
 | `absent` | No live session, and the messenger may not spawn one | Leaves it pending; a `session` recipient is parked after 24 h |
 
-Three delivery paths therefore exist, and each stamps the row's `via` column so
-you can tell them apart afterwards: `nudge` (typed into a live terminal),
-`prime` (rendered into a starting agent's context by
-[`src/prime/sections.py`](../../src/prime/sections.py)), and `inject` (claimed
-by `aq inbox --inject` at a prompt boundary). All three compare-and-set the
-same row, so a racing nudge and a racing inject can never both deliver it.
+A nudge records a notification attempt, and leaves the message in the pending
+inbox. The recipient runs `aq message status <id> --json` to read and acknowledge
+the body; another supervisor or an operator inspecting status does not consume
+it. Unread notifications retry after 60 seconds, doubling to a five-minute cap.
+After three unanswered attempts, AQ queues one alert with the original body to
+the global supervisor. The original stays pending; alerts do not recursively
+escalate. Attempt records and alert deduplication survive daemon restarts.
+
+Delivery receipts come from recipient reads (`via="read"`), replies, `aq prime`
+(`via="prime"`) or `aq inbox --inject` (`via="inject"`). These use a compare-and-set
+so racing body reads and injection record delivery only once. A delivery receipt
+means the body was handed over; it does not prove the requested work was done.
 
 If a delivered message goes unanswered past `messages.reply_timeout` (120 s by
 default) and the recipient's transcript shows a completed assistant turn since

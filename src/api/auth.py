@@ -142,6 +142,11 @@ class SessionTokenStore:
         # cannot leak timing info about the plaintext, so no ``compare_digest``
         # is used or needed here.
         self._cache: dict[str, tuple[RequestScope, float]] = {}
+        # Diagnostic evidence only; never store the bearer or its hash here.
+        self.auth_failures: dict[str, dict] = {}
+        # Bounded tombstones identify rejected calls after credential pruning;
+        # they are never accepted as authentication or exposed in diagnostics.
+        self._rejected_tokens: dict[str, tuple[RequestScope, float, str]] = {}
         #: Called with the session id of every validated session token; the
         #: orchestrator wires it to provider availability, where a session's
         #: first authenticated call is ``launch_success`` evidence
@@ -190,10 +195,10 @@ class SessionTokenStore:
         h = _hash(token)
         now = time.time()
         # Long-lived terminal streams must observe revocation by another store/process.
+        cached = self._cache.get(h)
         if refresh:
             self._cache.pop(h, None)
-        cached = self._cache.get(h)
-        if cached is not None:
+        if cached is not None and not refresh:
             scope, expires_at = cached
             if expires_at > now:
                 self._seen(scope)
@@ -201,25 +206,32 @@ class SessionTokenStore:
             self._cache.pop(h, None)
         row = await self._db.get_api_token(h)
         if row is None:
+            if cached is not None:
+                self._failed(cached[0], "expired or removed", now)
+            elif (rejected := self._rejected_tokens.get(h)) and rejected[1] > now:
+                self._failed(rejected[0], rejected[2], now)
             return None
+        scope = RequestScope(
+            kind="session", session_id=row["session_id"],
+            session_instance_token=row.get("session_instance_token"),
+            task_id=row.get("task_id"), project_id=row.get("project_id"),
+            elevated=bool(row.get("elevated") or False),
+        )
         if row.get("revoked_at") is not None:
+            self._failed(scope, "revoked", now)
             return None
         expires_at = float(row["expires_at"])
         if expires_at <= now:
+            self._failed(scope, "expired", now)
             return None
-        scope = RequestScope(
-            kind="session",
-            session_id=row["session_id"],
-            session_instance_token=row.get("session_instance_token"),
-            task_id=row.get("task_id"),
-            project_id=row.get("project_id"),
-            elevated=bool(row.get("elevated") or False),
-        )
         self._cache[h] = (scope, expires_at)
         self._seen(scope)
         return scope
 
     def _seen(self, scope: RequestScope) -> None:
+        failure = self.auth_failures.get(scope.session_id)
+        if failure and failure["instance_token"] == scope.session_instance_token:
+            self.auth_failures.pop(scope.session_id, None)
         hook = self.on_session_seen
         if hook is None or not scope.session_id:
             return
@@ -228,11 +240,28 @@ class SessionTokenStore:
         except Exception:  # evidence must never break authentication
             logger.debug("on_session_seen hook failed", exc_info=True)
 
+    def _failed(self, scope: RequestScope, reason: str, now: float) -> None:
+        if not scope.session_id:
+            return
+        if scope.session_id not in self.auth_failures and len(self.auth_failures) >= 256:
+            self.auth_failures.pop(next(iter(self.auth_failures)))
+        self.auth_failures[scope.session_id] = {
+            "instance_token": scope.session_instance_token, "at": now, "reason": reason,
+        }
+        logger.warning("session authentication failed session_id=%s reason=%s",
+                       scope.session_id, reason)
+
+    def _remember_rejected(self, token_hash: str, scope: RequestScope, reason: str, now: float):
+        if token_hash not in self._rejected_tokens and len(self._rejected_tokens) >= 256:
+            self._rejected_tokens.pop(next(iter(self._rejected_tokens)))
+        self._rejected_tokens[token_hash] = (scope, now + 900, reason)
+
     async def revoke_session(self, session_id: str) -> int:
         now = time.time()
         n = await self._db.revoke_api_tokens_for_session(session_id, now=now)
         # Invalidate cache entries for this session.
         for h in [k for k, (s, _) in self._cache.items() if s.session_id == session_id]:
+            self._remember_rejected(h, self._cache[h][0], "revoked", now)
             self._cache.pop(h, None)
         if n:
             logger.debug("revoked %d api token(s) for session %s", n, session_id)
@@ -253,5 +282,8 @@ class SessionTokenStore:
         n = await self._db.delete_expired_api_tokens(now=now)
         # Drop cache entries whose expiry has passed.
         for h in [k for k, (_, exp) in self._cache.items() if exp <= now]:
+            self._remember_rejected(h, self._cache[h][0], "expired", now)
             self._cache.pop(h, None)
+        for h in [k for k, (_, until, _) in self._rejected_tokens.items() if until <= now]:
+            self._rejected_tokens.pop(h, None)
         return n

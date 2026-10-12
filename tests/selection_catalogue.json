@@ -15804,8 +15804,9 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:983e99e4e8c9a35ceb6017be293b9d5dd47ef9e70d29d914f6f05a8135cce980",
+      "digest": "sha256:b84de127afbaf6e41f3e099bd7a741d204a095e2eb358a4afd49d74f56c6feba",
       "imports": [
+        "src.api.auth",
         "src.database",
         "src.database.tables",
         "src.doctor",

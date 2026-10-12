@@ -491,7 +491,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
             orchestrator=getattr(ctx.handler, "orchestrator", None),
         )
     ]
-    from src.doctor.session_checks import _check_flock
+    from src.doctor.session_checks import _check_flock, session_authentication_findings
 
     flock = await _check_flock(ctx)
     flock_findings = [
@@ -499,6 +499,11 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
                  evidence=entry, severity="error")
         for entry in flock.data.get("findings", [])
     ]
+    flock_findings.extend(
+        _finding("session_authentication", item["project_id"], item["detail"],
+                 severity="error", evidence=item, session_id=item["session_id"])
+        for item in await session_authentication_findings(ctx, now=now)
+    )
     # An unowned conversation input is a stall whether or not a project is
     # active, so this line is read before the empty-install return.
     conversation = await _conversation_findings(ctx, now)
