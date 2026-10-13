@@ -12,21 +12,20 @@ from sqlalchemy import event, update
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.graph_layout import build_graph_layout_router
-from src.database import Database
 from src.database.queries.hierarchy_queries import PHASE_KEY
+from src.database.tables import gates as gates_table
+from src.database.tables import task_gates
 from src.database.tables import tasks as tasks_table
 from src.models import Agent, AgentState, Project, Task, TaskStatus
 from src.task_graph.layout.driver import LayoutDriver
-from tests.db_fixtures import lease_dsn, seed_task_session_attempt
+from tests.db_fixtures import seed_task_session_attempt
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(lease_dsn("gl.db"))
-    await d.initialize()
+async def db(reuse_database):
+    d = await reuse_database("gl.db")
     await d.create_project(Project(id="p1", name="P1"))
     yield d
-    await d.close()
 
 
 @pytest.fixture
@@ -42,25 +41,29 @@ def client_factory(db):
 async def seed(db):
     """epic e{c0,c1,pkg{g0,g1}}, root card z blocked by c0, hub with 10 dependents."""
 
-    async def mk(tid, parent=None, status=TaskStatus.DEFINED):
-        await db.create_task(
-            Task(id=tid, project_id="p1", title=f"Title {tid}", description="", status=status)
-        )
-        if parent:
-            async with db._engine.begin() as conn:
+    # Build the fixed graph in one transaction while retaining the normal
+    # task and hierarchy writers, including their layout invalidation.
+    async with db._engine.begin() as conn:
+        async def mk(tid, parent=None, status=TaskStatus.DEFINED):
+            await db.create_task(
+                Task(id=tid, project_id="p1", title=f"Title {tid}", description="", status=status),
+                conn=conn,
+            )
+            if parent:
                 await db.set_parent(tid, parent, conn=conn)
 
-    await mk("e")
-    await mk("c0", "e")
-    await mk("c1", "e", TaskStatus.COMPLETED)
-    await mk("pkg", "e")
-    await mk("g0", "pkg", TaskStatus.IN_PROGRESS)
-    await mk("g1", "pkg")
-    await mk("z")
+        await mk("e")
+        await mk("c0", "e")
+        await mk("c1", "e", TaskStatus.COMPLETED)
+        await mk("pkg", "e")
+        await mk("g0", "pkg", TaskStatus.IN_PROGRESS)
+        await mk("g1", "pkg")
+        await mk("z")
+        await mk("hub")
+        for i in range(10):
+            await mk(f"d{i}")
     await db.add_dependency("z", "c0")
-    await mk("hub")
     for i in range(10):
-        await mk(f"d{i}")
         await db.add_dependency(f"d{i}", "hub")
     await db.create_agent(Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY))
     await seed_task_session_attempt(
@@ -1463,15 +1466,28 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     open_gid, _ = await db.create_gate(
         project_id="p1", gate_type="human", title="review", waiter_task_ids=["z", "hub"]
     )
-    for i in range(300):
-        gid, _ = await db.create_gate(
-            project_id="p1",
-            gate_type="timer",
-            title=f"old{i}",
-            await_id=f"t{i}",
-            waiter_task_ids=["hub"],
+    # Gate lifecycle is covered separately; this test measures reads over the
+    # resulting history. Seed that history without 600 lifecycle transactions.
+    history = [
+        {
+            "id": f"historical-gate-{i}",
+            "project_id": "p1",
+            "gate_type": "timer",
+            "title": f"old{i}",
+            "await_id": f"t{i}",
+            "status": "resolved",
+            "resolved_by": "test",
+            "resolution": "done",
+            "created_at": time.time(),
+        }
+        for i in range(300)
+    ]
+    async with db._engine.begin() as conn:
+        await conn.execute(gates_table.insert(), history)
+        await conn.execute(
+            task_gates.insert(),
+            [{"task_id": "hub", "gate_id": gate["id"]} for gate in history],
         )
-        await db.resolve_gate(gid, resolved_by="test", resolution="done")
 
     statements: list[str] = []
 

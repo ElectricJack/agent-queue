@@ -15,13 +15,12 @@ pytestmark = pytest.mark.usefixtures("unpooled_postgres")
 
 
 class TestApiSessionTokenQueries:
-    async def _db(self, tmp_path):
-        db = Database(lease_dsn("auth.db"))
-        await db.initialize()
+    async def _db(self, reuse_database):
+        db = await reuse_database("auth.db")
         return db
 
-    async def test_insert_and_get_roundtrip(self, tmp_path):
-        db = await self._db(tmp_path)
+    async def test_insert_and_get_roundtrip(self, reuse_database):
+        db = await self._db(reuse_database)
         now = time.time()
         await db.insert_api_token(
             token_hash="h" * 64,
@@ -40,13 +39,13 @@ class TestApiSessionTokenQueries:
         assert row["expires_at"] == pytest.approx(now + 3600)
         await db.close()
 
-    async def test_get_unknown_returns_none(self, tmp_path):
-        db = await self._db(tmp_path)
+    async def test_get_unknown_returns_none(self, reuse_database):
+        db = await self._db(reuse_database)
         assert await db.get_api_token("nope") is None
         await db.close()
 
-    async def test_revoke_marks_all_for_session(self, tmp_path):
-        db = await self._db(tmp_path)
+    async def test_revoke_marks_all_for_session(self, reuse_database):
+        db = await self._db(reuse_database)
         now = time.time()
         for i in range(3):
             await db.insert_api_token(
@@ -73,8 +72,8 @@ class TestApiSessionTokenQueries:
         assert (await db.get_api_token("other" + "0" * 59))["revoked_at"] is None
         await db.close()
 
-    async def test_revoke_is_idempotent(self, tmp_path):
-        db = await self._db(tmp_path)
+    async def test_revoke_is_idempotent(self, reuse_database):
+        db = await self._db(reuse_database)
         now = time.time()
         await db.insert_api_token(
             token_hash="h" * 64,
@@ -88,8 +87,8 @@ class TestApiSessionTokenQueries:
         assert await db.revoke_api_tokens_for_session("s1", now=now + 1) == 0
         await db.close()
 
-    async def test_delete_expired_removes_only_past(self, tmp_path):
-        db = await self._db(tmp_path)
+    async def test_delete_expired_removes_only_past(self, reuse_database):
+        db = await self._db(reuse_database)
         now = time.time()
         await db.insert_api_token(
             token_hash="live" + "0" * 60,
@@ -113,8 +112,8 @@ class TestApiSessionTokenQueries:
         assert await db.get_api_token("dead" + "0" * 60) is None
         await db.close()
 
-    async def test_delete_expired_reaps_revoked_after_grace(self, tmp_path):
-        db = await self._db(tmp_path)
+    async def test_delete_expired_reaps_revoked_after_grace(self, reuse_database):
+        db = await self._db(reuse_database)
         now = time.time()
         await db.insert_api_token(
             token_hash="r" * 64,
@@ -131,13 +130,12 @@ class TestApiSessionTokenQueries:
 
 
 class TestSessionTokenStore:
-    async def _store(self, tmp_path, *, ttl_hours=72):
-        db = Database(lease_dsn("store.db"))
-        await db.initialize()
+    async def _store(self, reuse_database, *, ttl_hours=72):
+        db = await reuse_database("store.db")
         return db, SessionTokenStore(db, ttl_hours=ttl_hours)
 
-    async def test_mint_returns_prefixed_plaintext_once(self, tmp_path):
-        db, store = await self._store(tmp_path)
+    async def test_mint_returns_prefixed_plaintext_once(self, reuse_database):
+        db, store = await self._store(reuse_database)
         tok = await store.mint(
             session_id="s1",
             task_id="t1",
@@ -156,25 +154,25 @@ class TestSessionTokenStore:
         assert reloaded.session_instance_token == "instance-1"
         await db.close()
 
-    async def test_validate_happy_path(self, tmp_path):
-        db, store = await self._store(tmp_path)
+    async def test_validate_happy_path(self, reuse_database):
+        db, store = await self._store(reuse_database)
         tok = await store.mint(session_id="s1", task_id="t1", project_id="p1")
         scope = await store.validate(tok)
         assert scope == RequestScope(kind="session", session_id="s1", task_id="t1", project_id="p1")
         await db.close()
 
-    async def test_validate_missing_prefix_returns_none(self, tmp_path):
-        db, store = await self._store(tmp_path)
+    async def test_validate_missing_prefix_returns_none(self, reuse_database):
+        db, store = await self._store(reuse_database)
         assert await store.validate("bearer-without-prefix") is None
         await db.close()
 
-    async def test_validate_unknown_token_returns_none(self, tmp_path):
-        db, store = await self._store(tmp_path)
+    async def test_validate_unknown_token_returns_none(self, reuse_database):
+        db, store = await self._store(reuse_database)
         assert await store.validate(TOKEN_PREFIX + "z" * 43) is None
         await db.close()
 
-    async def test_validate_revoked_returns_none(self, tmp_path):
-        db, store = await self._store(tmp_path)
+    async def test_validate_revoked_returns_none(self, reuse_database):
+        db, store = await self._store(reuse_database)
         tok = await store.mint(session_id="s1", task_id=None, project_id=None)
         assert await store.revoke_session("s1") == 1
         assert await store.validate(tok) is None
@@ -182,7 +180,7 @@ class TestSessionTokenStore:
         await db.close()
 
     async def test_validate_refresh_observes_other_store_revocation_while_cached_validate_does_not(
-        self, tmp_path,
+        self, reuse_database,
     ):
         """API-1 pin: the revocation window is a documented single-process trade.
 
@@ -197,7 +195,7 @@ class TestSessionTokenStore:
         API-serving process on one database, this cached-validate behaviour
         becomes an authorization hole and must change.
         """
-        db, store_a = await self._store(tmp_path)
+        db, store_a = await self._store(reuse_database)
         store_b = SessionTokenStore(db, ttl_hours=72)
         tok = await store_a.mint(session_id="s1", task_id="t1", project_id="p1")
         assert (await store_a.validate(tok)) is not None  # cached in A
@@ -213,8 +211,8 @@ class TestSessionTokenStore:
         assert await store_a.validate(tok) is None
         await db.close()
 
-    async def test_validate_expired_returns_none(self, tmp_path):
-        db, store = await self._store(tmp_path)
+    async def test_validate_expired_returns_none(self, reuse_database):
+        db, store = await self._store(reuse_database)
         # Insert directly with an already-expired row keyed by the hash of a
         # plaintext we control.
         pt = TOKEN_PREFIX + "x" * 43
@@ -233,8 +231,8 @@ class TestSessionTokenStore:
         assert store.auth_health("s2")["status_code"] == 401
         await db.close()
 
-    async def test_cache_short_circuits_second_validate(self, tmp_path, monkeypatch):
-        db, store = await self._store(tmp_path)
+    async def test_cache_short_circuits_second_validate(self, reuse_database, monkeypatch):
+        db, store = await self._store(reuse_database)
         tok = await store.mint(session_id="s1", task_id=None, project_id=None)
         assert await store.validate(tok) is not None
 
@@ -245,16 +243,16 @@ class TestSessionTokenStore:
         assert await store.validate(tok) is not None
         await db.close()
 
-    async def test_revoke_session_invalidates_cache(self, tmp_path):
-        db, store = await self._store(tmp_path)
+    async def test_revoke_session_invalidates_cache(self, reuse_database):
+        db, store = await self._store(reuse_database)
         tok = await store.mint(session_id="s1", task_id=None, project_id=None)
         assert await store.validate(tok) is not None  # populates cache
         await store.revoke_session("s1")
         assert await store.validate(tok) is None
         await db.close()
 
-    async def test_revoke_expired_drops_and_reports(self, tmp_path):
-        db, store = await self._store(tmp_path)
+    async def test_revoke_expired_drops_and_reports(self, reuse_database):
+        db, store = await self._store(reuse_database)
         await db.insert_api_token(
             token_hash="dead" + "0" * 60,
             session_id="sX",
@@ -268,11 +266,11 @@ class TestSessionTokenStore:
         await db.close()
 
     @pytest.mark.parametrize("reason", ["expired", "revoked"])
-    async def test_pruned_credentials_still_identify_rejected_calls(self, tmp_path,
+    async def test_pruned_credentials_still_identify_rejected_calls(self, reuse_database,
                                                                  monkeypatch, reason):
         from types import SimpleNamespace
 
-        db, store = await self._store(tmp_path)
+        db, store = await self._store(reuse_database)
         now = [time.time()]
         monkeypatch.setattr("src.api.auth.time", SimpleNamespace(time=lambda: now[0]))
         try:
@@ -297,14 +295,14 @@ class TestSessionTokenStore:
 
     @pytest.mark.parametrize("project_id", [None, "p1"])
     async def test_supervisor_token_survives_launch_ttl_and_store_restart(
-        self, tmp_path, monkeypatch, project_id,
+        self, reuse_database, monkeypatch, project_id,
     ):
         """Housekeeping renews an idle supervisor; the same bearer still works."""
         from types import SimpleNamespace
 
         import httpx
 
-        db, store = await self._store(tmp_path, ttl_hours=1)
+        db, store = await self._store(reuse_database, ttl_hours=1)
         try:
             await _seed_session_identity(
                 db, session_ids=[("sup", None, project_id)], profile_id="supervisor",
@@ -384,11 +382,11 @@ class TestSessionTokenStore:
         "missing-instance", "wrong-project", "unelevated", "missing-session", "task-bound",
     ])
     async def test_supervisor_renewal_does_not_extend_ineligible_tokens(
-        self, tmp_path, monkeypatch, case,
+        self, reuse_database, monkeypatch, case,
     ):
         from types import SimpleNamespace
 
-        db, store = await self._store(tmp_path, ttl_hours=1)
+        db, store = await self._store(reuse_database, ttl_hours=1)
         try:
             await _seed_session_identity(
                 db, session_ids=[("sup", None, None)], profile_id="supervisor",
