@@ -36,6 +36,15 @@ def _git(args: list[str], cwd: str) -> str:
     return result.stdout.strip()
 
 
+def _disable_auto_maintenance(repo: str) -> None:
+    # Detached maintenance can remove objects/maintenance.lock during copytree.
+    # Configure each seed repository before its first commit/push; local transport
+    # does not pass command-line -c settings through to the remote receive-pack.
+    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
+    for key, value in settings:
+        _git(["config", key, value], cwd=repo)
+
+
 def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
     """Create/update a file, commit it, and return the commit SHA."""
     pathlib.Path(cwd, filename).write_text(content)
@@ -67,12 +76,14 @@ def _git_repo_seed(tmp_path_factory):
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(str(remote))
     clone = tmp_path / "clone"
     subprocess.run(
         ["git", "clone", str(remote), str(clone)],
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(str(clone))
     # Initial commit
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
