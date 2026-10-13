@@ -28,6 +28,7 @@ from tests.test_branch_retirement import (
 from tests import test_branch_retirement
 from tests.test_integration_batches import batch_env as batch_env
 from tests.test_integration_gitops import commit, git, setup as setup
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_train import Batches, Repair, ROOT, Targets, train
 from tests.test_promotion_steps import promotion as promotion
 
