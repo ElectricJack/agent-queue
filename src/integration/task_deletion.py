@@ -533,8 +533,11 @@ async def execute_deletion(db, orchestrator, plan, captured, *, actor, reason=No
             and not Path(row["resource"].removeprefix("worktree:")).exists()
         ]
         if removed_worktrees:
+            from src.workspace_disable import WORKTREE_REMOVED, disable_fields
+
             await _update_ids(
-                conn, t.workspaces, removed_worktrees, key="workspace_path", enabled=False
+                conn, t.workspaces, removed_worktrees, key="workspace_path",
+                **disable_fields(WORKTREE_REMOVED, f"deleting task {root['id']} removed it"),
             )
         await _update_ids(
             conn, t.sessions, ids, key="task_id",

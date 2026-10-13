@@ -60,6 +60,8 @@ class WorkspaceQueryMixin:
                     locked_by_task_id=workspace.locked_by_task_id,
                     locked_at=workspace.locked_at,
                     enabled=workspace.enabled,
+                    disabled_reason=workspace.disabled_reason,
+                    disabled_at=workspace.disabled_at,
                     slot_index=workspace.slot_index,
                     base_workspace_id=workspace.base_workspace_id,
                     created_at=time.time(),
@@ -733,6 +735,8 @@ class WorkspaceQueryMixin:
             locked_at=row["locked_at"],
             lock_mode=WorkspaceMode(raw_mode) if raw_mode else None,
             enabled=bool(row["enabled"]),
+            disabled_reason=row.get("disabled_reason"),
+            disabled_at=row.get("disabled_at"),
             slot_index=row["slot_index"],
             base_workspace_id=row["base_workspace_id"],
         )

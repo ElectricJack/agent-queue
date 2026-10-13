@@ -454,21 +454,16 @@ class WorktreeSlotManager:
                 break
         return [by_index[i] for i in sorted(by_index)]
 
-    async def create_slot(
-        self,
-        base_ws: Workspace,
-        kind: WorkspaceKind,
-        slot_index: int,
-    ) -> Workspace:
-        """Provision one slot worktree and register its ``workspaces`` row.
+    async def _provision_slot_dir(
+        self, base_ws: Workspace, kind: WorkspaceKind, target: Path
+    ) -> str:
+        """Put a detached worktree at *target* and run the kind's setup.
 
         exclude-block → prune → fetch → ``worktree add --detach`` →
-        ``worktree_setup`` → sentinel → DB row → ``worktree.created``.
+        ``worktree_setup``.  Shared by :meth:`create_slot` and
+        :meth:`reprovision_slot`; returns the setup hash for the sentinel.
         """
-        from src.workspace_names import generate_workspace_id
-
         base_path = base_ws.workspace_path
-        target = slot_path(base_path, slot_index)
         default_branch = await self._default_branch(base_path, project_id=base_ws.project_id)
 
         async with self._git_mutex(base_path):
@@ -495,6 +490,51 @@ class WorktreeSlotManager:
 
         setup_hash = worktree_setup_hash(kind.worktree_setup)
         await self._run_setup(target, kind.worktree_setup)
+        return setup_hash
+
+    async def reprovision_slot(self, slot_ws: Workspace, kind: WorkspaceKind) -> None:
+        """Re-create a slot's missing worktree in place, keeping its row id.
+
+        The slot reconciler's repair for a disabled slot whose directory is
+        gone (``src.orchestrator.slot_restore``).  The row, its index and its
+        id survive, so nothing that references the workspace goes stale; the
+        caller re-enables the row once this returns.
+        """
+        base_ws = await self._base_of(slot_ws)
+        if base_ws is None:
+            raise OSError(f"slot {slot_ws.id} has no base workspace")
+        target = Path(slot_ws.workspace_path)
+        setup_hash = await self._provision_slot_dir(base_ws, kind, target)
+        slot_index = slot_ws.slot_index or 0
+        self.write_sentinel(
+            target,
+            WorktreeSentinel(
+                slot=slot_name(slot_index),
+                slot_index=slot_index,
+                base_workspace_id=base_ws.id,
+                project_id=slot_ws.project_id,
+                workspace_id=slot_ws.id,
+                created_at=time.time(),
+                daemon_epoch=self.daemon_epoch,
+                setup_hash=setup_hash,
+            ),
+        )
+
+    async def create_slot(
+        self,
+        base_ws: Workspace,
+        kind: WorkspaceKind,
+        slot_index: int,
+    ) -> Workspace:
+        """Provision one slot worktree and register its ``workspaces`` row.
+
+        exclude-block → prune → fetch → ``worktree add --detach`` →
+        ``worktree_setup`` → sentinel → DB row → ``worktree.created``.
+        """
+        from src.workspace_names import generate_workspace_id
+
+        target = slot_path(base_ws.workspace_path, slot_index)
+        setup_hash = await self._provision_slot_dir(base_ws, kind, target)
 
         ws_id = await generate_workspace_id(self.db)
         slot_ws = Workspace(

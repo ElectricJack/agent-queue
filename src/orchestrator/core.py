@@ -3686,6 +3686,8 @@ class Orchestrator(
             logger.warning("_reap_worktree_slots: list_projects failed: %s", e)
             return
 
+        from src.orchestrator.slot_restore import restore_disabled_slots
+
         mgr = self._worktree_slots()
         for project in projects:
             try:
@@ -3705,6 +3707,7 @@ class Orchestrator(
                     await mgr.reap_slot(ws, reason="retired")
                 except Exception as e:
                     logger.warning("reap_slot(%s) failed: %s", ws.id, e)
+            await restore_disabled_slots(self.db, mgr, project, command_handler=self._command_handler)
 
             # Branch prune: one call per worktree-mode base for the project.
             # Non-worktree bases (LINK targets, exclusive clones) may not even

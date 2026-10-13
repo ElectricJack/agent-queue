@@ -761,12 +761,34 @@ Zero measured workspace capacity prevents placement without a backoff. If
 capacity was advertised but acquisition fails, the key backs off for 60 seconds
 so another project can use the next launch opportunity. Disabled worktree slots
 occupy their indices but provide no capacity; they never count as free slots or
-prevent growth into an unused index below the project cap. Preserved slots stay
-disabled until explicitly recovered. Inspect the inventory with:
+prevent growth into an unused index below the project cap — but the index they
+hold is a pool agent the project cannot run, so N disabled slots inside the cap
+silently hold the project N agents below `max_concurrent_agents`.
+
+Every writer that disables a slot records why in `workspaces.disabled_reason`
+(`<code>: <detail>`) and `disabled_at`: `operator` (disabled with
+`aq project edit-workspace`), `claim_failures` (three identical claim refusals), and
+`worktree_removed` (deleting a task removed the worktree). A row disabled before
+the column existed reads `unrecorded`. The worktree reaper's pass (every five
+minutes) then runs the slot reconciler (`src/orchestrator/slot_restore.py`) over
+each project's disabled, unlocked slots inside the cap:
+
+| Slot state | Reconciler action |
+|---|---|
+| `operator` reason | left alone — an operator decision is never overridden |
+| `claim_failures`, disabled < 15 min ago | left alone (cooldown) |
+| a live process uses it, or liveness is unknowable | left alone |
+| worktree directory missing or empty | re-created in place (same row id) and re-enabled; `worktree.restored` |
+| checkout clean | re-enabled; `worktree.restored` |
+| checkout dirty, or `git status` failed | kept disabled as `quarantined_dirty`; `worktree.quarantined` and one message to `supervisor-<project>` naming the paths. Re-enabled on a later pass once clean |
+
+`aq doctor --check worktrees.capacity` and the stall sweep (`slot_capacity_short`)
+report any project whose enabled in-cap slots are fewer than its cap, naming each
+disabled slot and its reason. Inspect the inventory with:
 
 ```bash
 aq project list-workspaces --project-id agent-queue   # who holds what
-aq doctor --check worktrees.orphans --check workspaces.base_sessions
+aq doctor --check worktrees.capacity --check worktrees.orphans --check workspaces.base_sessions
 ```
 
 Every failure path rolls back completely: the workspace lock is released, the

@@ -505,6 +505,22 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "path": "/repos/myrepo/.aq/worktrees/slot-3",
         "reason": "cap_shrunk",
     },
+    "worktree.restored": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-2",
+        "slot": "slot-2",
+        "path": "/repos/myrepo/.aq/worktrees/slot-2",
+        "action": "recreated",
+        "previous_reason": "worktree_removed: deleting task t-1 removed it",
+    },
+    "worktree.quarantined": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-3",
+        "slot": "slot-3",
+        "path": "/repos/myrepo/.aq/worktrees/slot-3",
+        "reason": "quarantined_dirty: 2 uncommitted path(s)",
+        "dirty_paths": ["src/a.py", "notes.txt"],
+    },
     # Playbook
     "playbook.run.completed": {
         "playbook_id": "code-quality-gate",

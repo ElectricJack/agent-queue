@@ -1020,6 +1020,11 @@ class TestClaim:
         assert current.desired_state == "stopped" and current.end_reason == "claim_refusals"
         workspace = await db.get_workspace("ws-agent-1")
         assert not workspace.enabled
+        # The quarantine says why, so a project below its cap can be explained.
+        assert workspace.disabled_reason.startswith(
+            f"claim_failures: 3 identical refusals by session {sid}"
+        )
+        assert workspace.disabled_at is not None
         assert (workspace.locked_by_agent_id, workspace.locked_by_task_id) == ("agent-1", "child")
         owner = await ownership.get_owner(fence.target)
         assert owner["handoff_state"] == "attached" and owner["session_id"] == sid

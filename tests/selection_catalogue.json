@@ -5927,11 +5927,12 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:45fe05bbf91017ade494fb2c00af23b05012d03be9695ab4d88e2544556c9ae3",
+      "digest": "sha256:3c41f9834d4a60825f5b2f14b80fa03e3efb3e826a93b346c7a0bb4f29cf49ed",
       "imports": [
         "src.config",
         "src.doctor.models",
-        "src.models"
+        "src.models",
+        "src.workspace_disable"
       ],
       "markers": [
         "parametrize"
@@ -18211,13 +18212,14 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:6aedb674622c38b187f120737a68f4807e136ed672c1cc44ab34a6292f0da985",
+      "digest": "sha256:0785d8fc53b92430feba87c229d9608748512b3b0a9614aaef9e03ebc0d145cb",
       "imports": [
         "src.database",
         "src.doctor",
         "src.doctor.models",
         "src.doctor.worktree_checks",
-        "src.models"
+        "src.models",
+        "src.workspace_disable"
       ],
       "markers": [
         "asyncio"
@@ -18285,15 +18287,17 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:d8910bc2af207842f239df2650f37fec6712624a583885d62f7fa64f934f2fb1",
+      "digest": "sha256:9a4cfa9c523c923fc9f94cf8de210b2f6b84c6b3283bfa054ee1599a2c38a4e0",
       "imports": [
         "src.config",
         "src.git.manager",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.slot_restore",
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
-        "src.sessions.proctable"
+        "src.sessions.proctable",
+        "src.workspace_disable"
       ],
       "markers": [],
       "summary": "Worktree slot reaper + boot adoption + branch pruning (P4)."

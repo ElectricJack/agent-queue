@@ -98,7 +98,7 @@ async def run(db):
 
 async def test_claims_the_reserved_id():
     ids = {c.id for c in worktree_checks.CHECKS}
-    assert ids == {"worktrees.orphans"}
+    assert ids == {"worktrees.orphans", "worktrees.capacity"}
     assert all(c.owner == "worktree-execution" for c in worktree_checks.CHECKS)
     assert RESERVED_CHECK_IDS["worktrees.orphans"] == "worktree-execution"
 
@@ -202,3 +202,67 @@ async def test_registered_at_startup_when_worktrees_are_enabled(tmp_path):
     for check in worktree_checks.worktree_checks():
         reg.register(check)
     assert reg.get("worktrees.orphans") is not None
+
+
+# ── worktrees.capacity — enabled slots < cap ─────────────────────────────
+
+
+async def _cap(db, cap: int) -> None:
+    await db.update_project(PROJECT_ID, max_concurrent_agents=cap)
+
+
+async def _disable(db, ws: Workspace, code: str, detail: str | None = None) -> None:
+    from src.workspace_disable import disable_fields
+
+    await db.update_workspace(ws.id, **disable_fields(code, detail, now=1000.0))
+
+
+async def capacity(db):
+    return await worktree_checks.run_check(db, "worktrees.capacity")
+
+
+async def test_all_slots_enabled_is_ok(db, slots_root):
+    await _cap(db, 2)
+    await _slot(db, slots_root, 0)
+    await _slot(db, slots_root, 1)
+    assert (await capacity(db)).severity is Severity.OK
+
+
+async def test_disabled_slots_inside_the_cap_warn_with_their_reasons(db, slots_root):
+    """The incident: max-agents 8, slots 0/2 disabled — the pool reports only
+    "no workspace capacity" while doctor said nothing."""
+    from src.workspace_disable import CLAIM_FAILURES, OPERATOR
+
+    await _cap(db, 4)
+    s0 = await _slot(db, slots_root, 0)
+    await _slot(db, slots_root, 1)
+    s2 = await _slot(db, slots_root, 2)
+    s3 = await _slot(db, slots_root, 3)
+    await _disable(db, s0, CLAIM_FAILURES, "3 identical refusals")
+    await _disable(db, s2, OPERATOR)
+    await db.update_workspace(s3.id, enabled=False)  # disabled before reasons existed
+
+    result = await capacity(db)
+    assert result.severity is Severity.WARN
+    assert "enabled slots < cap" in result.detail
+    (entry,) = result.data["projects"]
+    assert entry["project_id"] == PROJECT_ID
+    assert (entry["cap"], entry["enabled_in_cap"]) == (4, 1)
+    codes = {s["slot_index"]: s["reason_code"] for s in entry["disabled_slots"]}
+    assert codes == {0: "claim_failures", 2: "operator", 3: "unrecorded"}
+    assert entry["disabled_slots"][0]["reason"] == "claim_failures: 3 identical refusals"
+    assert entry["disabled_slots"][0]["disabled_at"] == 1000.0
+
+
+async def test_disabled_slots_outside_the_cap_are_not_a_shortfall(db, slots_root):
+    """Slots at index >= cap are retired inventory the reaper removes."""
+    await _cap(db, 1)
+    await _slot(db, slots_root, 0)
+    s5 = await _slot(db, slots_root, 5)
+    await db.update_workspace(s5.id, enabled=False)
+    assert (await capacity(db)).severity is Severity.OK
+
+
+async def test_capacity_with_no_database_is_info(db):
+    result = await worktree_checks.run_check(None, "worktrees.capacity")
+    assert result.severity is Severity.INFO

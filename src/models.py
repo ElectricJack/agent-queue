@@ -686,6 +686,9 @@ class Workspace:
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
     enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
+    # ``"<code>: <detail>"`` and timestamp of the last disable (src/workspace_disable.py).
+    disabled_reason: str | None = None
+    disabled_at: float | None = None
     # Worktree slots (worktree-execution spec §3.2).  ``slot_index`` is NULL
     # for clones, links and base rows; 0..N-1 for slot worktrees.
     # ``base_workspace_id`` is a soft self-reference to the base clone's row.

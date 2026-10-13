@@ -1258,6 +1258,12 @@ workspaces = Table(
     Column("locked_at", Float, nullable=True),
     Column("lock_mode", Text, nullable=True),
     Column("enabled", Boolean, nullable=False, server_default=true()),
+    # Why and when ``enabled`` last went false, as ``"<code>: <detail>"``
+    # (``src.workspace_disable``).  NULL while enabled, and on rows disabled
+    # before the column existed.  The slot reconciler reads the code to decide
+    # whether a disabled worktree slot may be restored.
+    Column("disabled_reason", Text, nullable=True),
+    Column("disabled_at", Float, nullable=True),
     # Worktree slots (worktree-execution spec §3.2).  NULL for clones,
     # links and base rows; 0..N-1 for slot worktrees.
     Column("slot_index", Integer, nullable=True),

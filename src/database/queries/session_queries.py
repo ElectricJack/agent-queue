@@ -633,6 +633,7 @@ class SessionQueryMixin:
         while leaving all branch-owner and claim bindings intact for recovery.
         """
         from src.pool_claims import CLAIM_FAILURE_DRAIN_REASON, MAX_IDENTICAL_CLAIM_FAILURES
+        from src.workspace_disable import CLAIM_FAILURES, disable_fields
 
         async with self.immediate() as conn:
             row = (await conn.execute(select(sessions).where(
@@ -659,7 +660,11 @@ class SessionQueryMixin:
                         workspaces.c.project_id == row["project_id"],
                         workspaces.c.workspace_path == row["work_dir"],
                         workspaces.c.locked_by_agent_id == row["agent_id"],
-                    ).values(enabled=False))
+                    ).values(**disable_fields(
+                        CLAIM_FAILURES,
+                        f"{count} identical refusals by session {session_id}: {reason}",
+                        now=now,
+                    )))
             result = await conn.execute(update(sessions).where(
                 sessions.c.id == session_id,
             ).values(**fields).returning(*sessions.c))
