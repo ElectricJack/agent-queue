@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `get_workflow` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:4f31c7ebcf3c5cb4f3432629d0a357c99a30586baa8ace70f3d8f43421ef30f6` |
+| Contract fingerprint | `sha256:e2d0e123eba7d6adb0458b3857f0080746f7b19c8c11e98f6d595c86d5709f3c` |
 
 ## Parameters
 
@@ -23,7 +23,7 @@
 | `workflow_id` | `string` | yes | — | The workflow to retrieve |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `fallback`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `fallback`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -45,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using workflow_id | — | always |
+| Read using workflow_id | — | always |
 
 <!-- aq:generated:end -->
 

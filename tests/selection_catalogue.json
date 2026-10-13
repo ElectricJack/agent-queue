@@ -147,6 +147,7 @@
         "tests/test_command_scope_isolation.py",
         "tests/test_command_scope_matrix.py",
         "tests/test_command_surface.py",
+        "tests/test_generated_command_contracts.py",
         "tests/test_surface_commands.py",
         "tests/test_system_commands.py",
         "tests/test_system_commands_prompt_path.py"
@@ -6779,6 +6780,39 @@
         "slow"
       ],
       "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
+    },
+    "tests/test_generated_command_contracts.py": {
+      "areas": [
+        "command-dispatch"
+      ],
+      "default_arm": true,
+      "digest": "sha256:dda3eb38b2b6debd88450df3cf3f4a43f122275bb0f85aad6ba5ca836766236b",
+      "imports": [
+        "src.api.target_scope",
+        "src.commands.command_inventory",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.generated",
+        "src.commands.contracts.registry",
+        "src.commands.descriptors",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.commands.resource_authorization",
+        "src.config",
+        "src.llm.fake",
+        "src.llm.types",
+        "src.playbooks.definition",
+        "src.playbooks.executors.command",
+        "src.playbooks.executors.llm",
+        "src.playbooks.expressions",
+        "src.playbooks.run_state",
+        "src.playbooks.validation",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Generated return protocol, resource authority and producer-audit release evidence."
     },
     "tests/test_get_downstream_tasks.py": {
       "areas": [

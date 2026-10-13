@@ -597,12 +597,34 @@ class PlaybookCommandCatalogEntryDTO(V2Model):
     summary: str
     docs_url: str
     parameters_schema: dict[str, Any] = {}
+    origin: str | None = None
+    plugin: str | None = None
+    available: bool = True
+    execution_available: bool = False
+    denied: bool = False
+    denial_reason: str | None = None
+    schema_source: str | None = None
+    schema_quality: str | None = None
+    result_mode: str | None = None
+    capability: str | None = None
+    caller_requirements: list[str] = []
+    effect_class: str | None = None
+    idempotency_mechanism: str | None = None
+    idempotency_key_field: str | None = None
+    retry_safe: bool = False
+    timeout_seconds: int | None = None
+    preview_available: bool = False
+    sensitivity: str | None = None
+    receipt_projection: list[str] = []
 
 
 class PlaybookCommandCatalogResponse(V2Model):
     success: bool = True
     commands: list[PlaybookCommandCatalogEntryDTO] = []
     count: int = 0
+    total: int = 0
+    offset: int = 0
+    next_offset: int | None = None
 
 
 # ---------------------------------------------------------------------------

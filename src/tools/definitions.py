@@ -4306,10 +4306,21 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "playbook_commands",
         "description": (
-            "List every registered Playbook V2 command with its title, summary, "
-            "documentation URL, and typed parameter JSON Schema."
+            "Inspect a bounded page of playbook command contracts, including denied and "
+            "unavailable commands, schemas, caller requirements and execution metadata."
         ),
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}, "prefix": {"type": "string"},
+                "origin": {"type": "string"}, "plugin": {"type": "string"},
+                "schema_quality": {"type": "string"}, "result_mode": {"type": "string"},
+                "available": {"type": "boolean"}, "denied": {"type": "boolean"},
+                "include_schema": {"type": "boolean", "default": True},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+            },
+        },
     },
     {
         "name": "playbook_v2_graph",

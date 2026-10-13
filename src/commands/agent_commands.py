@@ -30,15 +30,15 @@ class AgentCommandsMixin(FlockCommandsMixin):
         """
         body = args.get("body")
         if not isinstance(body, str) or not body.strip():
-            return {"error": "body is required"}
+            return {"success": False, "error": "body is required"}
         wait = args.get("wait")
         if wait is not None and (type(wait) is not int or not 0 <= wait <= 60):
-            return {"error": "wait must be an integer from 0 to 60"}
+            return {"success": False, "error": "wait must be an integer from 0 to 60"}
         reply_to = args.get("reply_to")
         if reply_to is not None and (not isinstance(reply_to, str) or not reply_to.strip()):
-            return {"error": "reply_to must be a message id"}
+            return {"success": False, "error": "reply_to must be a message id"}
         if reply_to and args.get("all_running"):
-            return {"error": "reply_to answers one worker's message; it cannot use all_running"}
+            return {"success": False, "error": "reply_to answers one worker's message; it cannot use all_running"}
 
         project_id = args.get("project_id")
         if args.get("all_running"):
@@ -50,16 +50,17 @@ class AgentCommandsMixin(FlockCommandsMixin):
             for session in sessions:
                 result = await self._queue_supervisor_message(session, body, wait)
                 rows.append({"session_id": session.id, **result})
-            return {"count": len(rows), "recipients": rows}
+            return {"success": all(row["success"] for row in rows),
+                    "count": len(rows), "recipients": rows}
 
         target = args.get("target")
         if not isinstance(target, str) or not target.strip():
-            return {"error": "target is required unless all_running=true"}
+            return {"success": False, "error": "target is required unless all_running=true"}
         session, task_id, error = await self._resolve_live_message_target(
             target.strip(), project_id=project_id
         )
         if error:
-            return {"error": error}
+            return {"success": False, "error": error}
         original = None
         if reply_to:
             # Answering on the worker's thread is what satisfies a durable
@@ -74,6 +75,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                     project_id is None or await self._message_in_project(original, project_id)
                 ):
                     return {
+                        "success": False,
                         "error": (
                             f"Message '{reply_to}' is not a message of the target's project "
                             f"'{session.project_id}': reply_to threads guidance onto that "
@@ -81,7 +83,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                             f"'{reply_to}' with `aq message reply {reply_to}`."
                         )
                     }
-                return {"error": f"Message '{reply_to}' not found"}
+                return {"success": False, "error": f"Message '{reply_to}' not found"}
         result = await self._queue_supervisor_message(session, body, wait, reply_to=original)
         if "error" not in result:
             result["target"] = {"task_id": task_id, "session_id": session.id}
@@ -172,7 +174,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         project_id = args["project_id"]
         project = await self.db.get_project(project_id)
         if not project:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
 
         source = args.get("source", "clone")
         try:
@@ -180,7 +182,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         except ValueError:
             # Same contract as the WORKTREE fall-through below: a source this
             # command cannot provision is a clean refusal, not a traceback.
-            return {"error": f"Unsupported workspace source_type '{source}'"}
+            return {"success": False, "error": f"Unsupported workspace source_type '{source}'"}
         path = args.get("path")
         name = args.get("name")
 
@@ -192,6 +194,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         resolved_kind = await self.db.resolve_workspace_kind(project_id, kind_id)
         if resolved_kind is None:
             return {
+                "success": False,
                 "error": (
                     f"Kind '{kind_id}' is not defined for project "
                     f"'{project_id}' and no system default exists. "
@@ -206,16 +209,17 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         if source_type == RepoSourceType.LINK:
             if not path:
-                return {"error": "Link workspaces require a 'path' parameter"}
+                return {"success": False, "error": "Link workspaces require a 'path' parameter"}
             # Always store as absolute path to prevent CWD-relative resolution issues
             path = os.path.realpath(path)
             if not os.path.isdir(path):
-                return {"error": f"Path '{path}' does not exist or is not a directory"}
+                return {"success": False, "error": f"Path '{path}' does not exist or is not a directory"}
             # Reject if path is already a workspace for a different project
             all_ws = await self.db.list_workspaces()
             for ws in all_ws:
                 if os.path.realpath(ws.workspace_path) == path and ws.project_id != project_id:
                     return {
+                        "success": False,
                         "error": f"Path '{path}' is already a workspace for "
                         f"project '{ws.project_id}'"
                     }
@@ -236,7 +240,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 try:
                     await self.orchestrator.git.acreate_checkout(project.repo_url, path)
                 except Exception as e:
-                    return {"error": f"Clone failed: {e}"}
+                    return {"success": False, "error": f"Clone failed: {e}"}
         elif source_type == RepoSourceType.INIT:
             if not path:
                 ws_dir_name = name or ws_id
@@ -249,9 +253,9 @@ class AgentCommandsMixin(FlockCommandsMixin):
             try:
                 await self.orchestrator.git.ainit_repo(path)
             except Exception as e:
-                return {"error": f"git init failed: {e}"}
+                return {"success": False, "error": f"git init failed: {e}"}
         else:
-            return {"error": f"Unsupported workspace source_type '{source}'"}
+            return {"success": False, "error": f"Unsupported workspace source_type '{source}'"}
         workspace = Workspace(
             id=ws_id,
             project_id=project_id,
@@ -263,7 +267,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         await self.db.create_workspace(workspace)
 
         # Auto-populate project.repo_url from git remote if not already set
-        result: dict = {
+        result: dict = {"success": True,
             "created": ws_id,
             "project_id": project_id,
             "workspace_path": path,
@@ -356,7 +360,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                     "dirty": dirty,
                 }
             )
-        return {"workspaces": rows}
+        return {"success": True, "workspaces": rows}
 
     async def _cmd_list_workspace_kinds(self, args: dict) -> dict:
         """List workspace kinds visible to a project (system + project overrides).
@@ -377,6 +381,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 if k.project_id == SYSTEM_KIND_SCOPE
             ]
         return {
+            "success": True,
             "project_id": project_id,
             "workspace_kinds": [
                 {
@@ -398,7 +403,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         """Delete a workspace by ID or name."""
         workspace_ref = args.get("workspace_id") or args.get("workspace")
         if not workspace_ref:
-            return {"error": "workspace_id or workspace is required"}
+            return {"success": False, "error": "workspace_id or workspace is required"}
 
         # Try by ID first
         ws = await self.db.get_workspace(workspace_ref)
@@ -410,14 +415,16 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 ws = await self.db.get_workspace_by_name(project_id, workspace_ref)
 
         if not ws:
-            return {"error": f"Workspace '{workspace_ref}' not found"}
+            return {"success": False, "error": f"Workspace '{workspace_ref}' not found"}
         if ws.locked_by_agent_id:
             return {
+                "success": False,
                 "error": f"Workspace '{ws.id}' is locked by agent "
                 f"'{ws.locked_by_agent_id}'. Release it first."
             }
         await self.db.delete_workspace(ws.id)
         return {
+            "success": True,
             "deleted": ws.id,
             "name": ws.name,
             "project_id": ws.project_id,
@@ -429,11 +436,12 @@ class AgentCommandsMixin(FlockCommandsMixin):
         workspace_id = args["workspace_id"]
         ws = await self.db.get_workspace(workspace_id)
         if not ws:
-            return {"error": f"Workspace '{workspace_id}' not found"}
+            return {"success": False, "error": f"Workspace '{workspace_id}' not found"}
         if not ws.locked_by_agent_id:
-            return {"workspace_id": workspace_id, "status": "already_unlocked"}
+            return {"success": True, "workspace_id": workspace_id, "status": "already_unlocked"}
         await self.db.release_workspace(workspace_id)
         return {
+            "success": True,
             "workspace_id": workspace_id,
             "released_from_agent": ws.locked_by_agent_id,
             "released_from_task": ws.locked_by_task_id,
@@ -452,11 +460,11 @@ class AgentCommandsMixin(FlockCommandsMixin):
         """
         workspace_id = args.get("workspace_id")
         if not workspace_id:
-            return {"error": "workspace_id is required"}
+            return {"success": False, "error": "workspace_id is required"}
 
         ws = await self.db.get_workspace(workspace_id)
         if not ws:
-            return {"error": f"Workspace '{workspace_id}' not found"}
+            return {"success": False, "error": f"Workspace '{workspace_id}' not found"}
 
         force = bool(args.get("force"))
         updates: dict = {}
@@ -479,7 +487,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
             try:
                 new_source_type = RepoSourceType(args["source_type"])
             except ValueError:
-                return {"error": f"Unsupported source_type '{args['source_type']}'"}
+                return {"success": False, "error": f"Unsupported source_type '{args['source_type']}'"}
             if new_source_type != ws.source_type:
                 updates["source_type"] = new_source_type.value
                 changed_fields.append("source_type")
@@ -488,9 +496,10 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if "workspace_path" in args:
             requested = args["workspace_path"]
             if not isinstance(requested, str) or not requested.strip():
-                return {"error": "workspace_path must be a non-empty string"}
+                return {"success": False, "error": "workspace_path must be a non-empty string"}
             if ws.locked_by_agent_id:
                 return {
+                    "success": False,
                     "error": (
                         f"Workspace '{ws.id}' is locked by task "
                         f"'{ws.locked_by_task_id}'. Disable the workspace and wait "
@@ -501,6 +510,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
             if candidate != ws.workspace_path:
                 if not force and not os.path.isdir(candidate):
                     return {
+                        "success": False,
                         "error": (
                             f"Path '{candidate}' does not exist. Set force=true to "
                             "edit anyway (e.g. when relocating before the directory "
@@ -515,6 +525,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                         and os.path.realpath(other.workspace_path) == candidate
                     ):
                         return {
+                            "success": False,
                             "error": (
                                 f"Path '{candidate}' is already a workspace "
                                 f"({other.id} in project '{other.project_id}')."
@@ -526,6 +537,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         if not updates:
             return {
+                "success": True,
                 "updated": ws.id,
                 "fields": [],
                 "workspace_path": new_path,
@@ -535,6 +547,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         await self.db.update_workspace(ws.id, **updates)
         return {
+            "success": True,
             "updated": ws.id,
             "fields": changed_fields,
             "workspace_path": new_path,
@@ -556,15 +569,15 @@ class AgentCommandsMixin(FlockCommandsMixin):
         """
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
 
         project = await self.db.get_project(project_id)
         if not project:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
 
         workspaces = await self.db.list_workspaces(project_id=project_id)
         if not workspaces:
-            return {"error": f"No workspaces found for project '{project_id}'"}
+            return {"success": False, "error": f"No workspaces found for project '{project_id}'"}
 
         default_branch = project.repo_default_branch or "main"
         results: list[dict] = []
@@ -747,6 +760,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 continue
 
         return {
+            "success": True,
             "project_id": project_id,
             "workspaces_scanned": len(workspaces),
             "workspaces_with_conflicts": len(results),
@@ -773,15 +787,15 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
-            return {"error": "project_id is required (no active project set)"}
+            return {"success": False, "error": "project_id is required (no active project set)"}
 
         project = await self.db.get_project(project_id)
         if not project:
-            return {"error": f"Project '{project_id}' not found"}
+            return {"success": False, "error": f"Project '{project_id}' not found"}
 
         workspaces = await self.db.list_workspaces(project_id=project_id)
         if not workspaces:
-            return {"error": f"No workspaces found for project '{project_id}'"}
+            return {"success": False, "error": f"No workspaces found for project '{project_id}'"}
 
         default_branch = project.repo_default_branch or "main"
 
@@ -801,6 +815,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if existing_sync:
             existing_ids = ", ".join(t.id for t in existing_sync)
             return {
+                "success": True,
                 "already_queued": True,
                 "existing_task_ids": [t.id for t in existing_sync],
                 "project_id": project_id,
@@ -845,6 +860,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         if not needs_sync:
             return {
+                "success": True,
                 "already_synced": True,
                 "project_id": project_id,
                 "workspace_count": len(workspaces),
@@ -883,6 +899,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         await self.db.create_task(task)
 
         return {
+            "success": True,
             "queued": task_id,
             "project_id": project_id,
             "title": task.title,

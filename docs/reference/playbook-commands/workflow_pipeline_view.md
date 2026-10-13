@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `workflow_pipeline_view` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:c80f897171dcd51f98bda0f033a0e1dc8559ad05ef306dd3a971426746d5cc6d` |
+| Contract fingerprint | `sha256:d56e097447a292d5021de6c242f5465d3938c308e873005085352da4ca4e0054` |
 
 ## Parameters
 
@@ -26,7 +26,7 @@
 | `include_affinity` | `boolean` | no | `true` | Include the agent-affinity overlay (default true) |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `fallback`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `fallback`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -48,7 +48,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using workflow_id, direction, include_task_details, include_affinity | — | always |
+| Read using workflow_id, direction, include_task_details, include_affinity | — | always |
 
 <!-- aq:generated:end -->
 
