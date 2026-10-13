@@ -1679,6 +1679,8 @@ class SessionReconciler:
 
         cause = record["cause"]
         blocked = record["count"] >= MAX_SAME_CAUSE
+        retry_queued = not blocked
+        disposition = "Retrying with a bounded continuation note. "
         if cause == THRASH_CAUSE:
             # A fresh retry must not resume the context that just thrashed.
             await self.db.delete_task_meta(task.id, "session_resume_key")
@@ -1696,6 +1698,30 @@ class SessionReconciler:
                 row, reason=cause,
                 task_status=TaskStatus.BLOCKED if blocked else TaskStatus.READY,
             )
+            if not blocked:
+                # Teardown can retain an integration owner's claim or return
+                # without confirming the stop. Its requested status is not
+                # evidence that a continuation was queued.
+                current = await self.db.get_task(task.id)
+                stopped = await self.db.get_session(row.id)
+                retry_queued = bool(
+                    current is not None and stopped is not None
+                    and current.claim_epoch == task.claim_epoch
+                    and current.status is TaskStatus.READY
+                    and current.assigned_agent_id is None
+                    and stopped.instance_token == row.instance_token
+                    and stopped.state == "stopped"
+                    and stopped.desired_state == "stopped"
+                    and stopped.task_id is None
+                )
+                status = current.status.value if current is not None else "unavailable"
+                disposition = (
+                    "Task returned to READY with a bounded continuation note; "
+                    "claim admission remains subject to recovery controls. "
+                    if retry_queued else
+                    f"Automatic continuation was not confirmed (task status {status}); "
+                    "claim or control may be retained. Supervisor investigation required. "
+                )
         else:
             await self._stop_session(provider, row, reason=cause)
             if not blocked:
@@ -1711,7 +1737,7 @@ class SessionReconciler:
             task.id,
             f"Worker {row.id}: {cause}, consecutive incident {record['count']}. "
             + ("BLOCKED; automatic relaunch stopped. Supervisor investigation required. "
-               if blocked else "Retrying with a bounded continuation note. ")
+               if blocked else disposition)
             + "Check the branch and recovery note in aq prime before repeating reads.",
             author_kind="supervisor", author_id="session-reconciler",
         )
@@ -1726,10 +1752,16 @@ class SessionReconciler:
                 title=task.title, status=TaskStatus.BLOCKED.value, context=f"session_{cause}",
                 error=f"{record['count']} consecutive {cause} incidents; automatic retries stopped",
             )
-        else:
+        elif retry_queued:
             await self._emit(
                 "task.restarted", task_id=task.id, project_id=task.project_id,
                 title=task.title, session_id=row.id, attempt=record["count"], reason=cause,
+            )
+        else:
+            await self._emit(
+                "task.needs_attention", task_id=task.id, project_id=task.project_id,
+                title=task.title, session_id=row.id,
+                reason=f"session_{cause}_continuation_unconfirmed",
             )
 
     async def _apply_rate_limit_cooldown(self, row: SessionRecord) -> None:

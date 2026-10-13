@@ -367,6 +367,64 @@ async def _claimed_pool_session(
 
 
 class TestWorkerContextRecovery:
+    @pytest.mark.parametrize("outcome", ["released", "owner_retained", "stop_unconfirmed", "paused"])
+    async def test_first_pool_stall_reports_observed_teardown_without_promising_retry(
+        self, db, provider, installed_wait_reconciler, bus, tmp_path, monkeypatch, outcome
+    ):
+        rec = installed_wait_reconciler
+        rec.bus = bus
+        row = await _claimed_pool_session(db, provider, tmp_path, last_activity=NOW - 1000)
+        task = await db.get_task("t1")
+        if outcome == "owner_retained":
+            ownership = BranchOwnership(db, clock=lambda: NOW)
+            fence = await ownership.acquire(
+                BranchKey(repository_id="repo", branch="aq/test"), "t1", "producer"
+            )
+            await ownership.attach(fence, row.id, "ws1")
+        elif outcome == "stop_unconfirmed":
+            monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("no proof")))
+        elif outcome == "paused":
+            stop = provider.stop
+
+            async def pause_during_stop(*args, **kwargs):
+                await stop(*args, **kwargs)
+                await db.transition_task("t1", TaskStatus.PAUSED, context="test_pause",
+                                         force=True, resume_after=None)
+
+            monkeypatch.setattr(provider, "stop", pause_during_stop)
+
+        record = await rec._record_worker_failure(row, task, "stalled", NOW)
+        await rec._recover_guarded_failure(provider, row, task, record, NOW)
+
+        current = await db.get_task("t1")
+        stopped = await db.get_session(row.id)
+        comments = (await db.list_task_comments("t1", limit=5))["comments"]
+        body = next(c["body"] for c in comments if c["author_id"] == "session-reconciler")
+        assert "Retrying" not in body
+        assert (await db.get_task_meta("t1", "worker_recovery_note"))["count"] == 1
+        if outcome == "released":
+            assert current.status is TaskStatus.READY and current.assigned_agent_id is None
+            assert stopped.state == "stopped" and stopped.task_id is None
+            assert "Task returned to READY" in body
+            assert "subject to recovery controls" in body
+            assert "task.restarted" in bus.types()
+        else:
+            assert "Automatic continuation was not confirmed" in body
+            assert f"task status {current.status.value}" in body
+            assert "task.restarted" not in bus.types()
+            assert bus.payload("task.needs_attention")["reason"] == (
+                "session_stalled_continuation_unconfirmed"
+            )
+            assert stopped.task_id == task.id
+            assert current.status is (TaskStatus.PAUSED if outcome == "paused"
+                                      else TaskStatus.IN_PROGRESS)
+            if outcome == "owner_retained":
+                workspace = (await db.list_workspaces("p1"))[0]
+                assert workspace.locked_by_task_id == task.id
+                assert stopped.state == "stopped"
+            elif outcome == "stop_unconfirmed":
+                assert await provider.is_running(rec._handle(row))
+
     @pytest.mark.parametrize("cause", ["context_thrash", "stalled", "stuck_timeout"])
     async def test_two_distinct_pool_claims_block_and_notify_across_reconciler_restart(
         self, db, provider, pool_reconciler, config, registry, bus, tmp_path, cause
