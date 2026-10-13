@@ -21,11 +21,11 @@ No LLM, no CLI.
 from __future__ import annotations
 
 import asyncio
-import random
 import time
 from types import SimpleNamespace
 
 import pytest
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from src.config import ProviderFailoverConfig
 from src.intelligence_classes import IntelligenceClass
@@ -192,6 +192,30 @@ def test_a_disabled_target_pool_is_not_a_target():
     }
     [d] = plan_sweep([_cand("t1")], _ctx(rungs=rungs))
     assert (d.action, d.kind) == ("hold", "no_equivalent_rung")
+
+
+@given(enabled=st.booleans(),
+       target_state=st.sampled_from([AVAILABLE, DEGRADED, DISABLED, EXHAUSTED, UNAUTHENTICATED]),
+       source_state=st.sampled_from([DISABLED, EXHAUSTED, UNAUTHENTICATED]),
+       intent=st.sampled_from([PREFERRED, CLASS_ONLY, PINNED]), force=st.booleans())
+def test_property_failover_never_moves_to_a_disabled_profile_or_provider(
+    enabled, target_state, source_state, intent, force,
+):
+    rungs = {
+        "std-high-codex": Rung("std-high-codex", "codex", "std-high", "codex", "pool", True, 2),
+        "std-high-claude": Rung(
+            "std-high-claude", "claude", "std-high", "claude", "pool", enabled, 2,
+        ),
+    }
+    context = _ctx(rungs=rungs, states={"codex": source_state, "claude": target_state})
+    [decision] = plan_sweep([_cand("t", intent=intent)], context, force=force)
+    should_move = enabled and (target_state == AVAILABLE or (force and target_state == DEGRADED))
+    should_move = should_move and (intent != PINNED or force)
+    assert (decision.action == "move") == should_move
+    if decision.action == "move":
+        assert rungs[decision.to_profile_id].enabled
+        assert decision.to_provider == "claude"
+        assert target_state in {AVAILABLE, DEGRADED}
 
 
 def test_every_provider_down_holds_everything_and_moves_nothing():
@@ -415,35 +439,37 @@ def test_batch_id_is_one_outage():
     assert batch_id_for("codex", 7) == "prb-codex-7"
 
 
-def test_property_no_sweep_sequence_exceeds_the_trickle_or_touches_a_bound():
+@given(cap=st.integers(1, 4), source_cap=st.integers(1, 4),
+       max_per_sweep=st.integers(1, 6),
+       priorities=st.lists(st.integers(1, 200), min_size=1, max_size=12),
+       claims=st.lists(st.integers(0, 4), min_size=1, max_size=12))
+def test_property_no_sweep_sequence_exceeds_the_trickle_or_touches_a_bound(
+    cap, source_cap, max_per_sweep, priorities, claims,
+):
     """After any sequence of sweeps and claims, moved-and-queued work on every
     rung stays within its trickle, and the planner never changes a rung's
     bounds (D14: failover raises no ceiling; claims are what run the work, and
     they are bounded by ``max_active`` unchanged)."""
-    rng = random.Random(20260920)
-    for _trial in range(60):
-        cap = rng.randint(1, 3)
-        rungs = {
-            "a-codex": Rung("a-codex", "codex", "a", "codex", "pool", True, rng.randint(1, 3)),
-            "a-claude": Rung("a-claude", "claude", "a", "claude", "pool", True, cap),
-        }
-        before = dict(rungs)
-        cfg = ProviderFailoverConfig()
-        cfg.reroute.max_per_sweep = rng.randint(1, 5)
-        queue = [_cand(f"t{i}", "a-codex", priority=rng.randint(1, 200)) for i in range(12)]
-        backlog = 0
-        for _sweep in range(8):
-            decisions = plan_sweep(
-                queue, _ctx(rungs=rungs, backlog={"a-claude": backlog}, config=cfg)
-            )
-            moved = [d for d in decisions if d.action == "move"]
-            assert len(moved) <= cfg.reroute.max_per_sweep
-            backlog += len(moved)
-            assert backlog <= max(1, cap)
-            moved_ids = {d.task_id for d in moved}
-            queue = [c for c in queue if c.task_id not in moved_ids]
-            # Some of the moved work is claimed (never more than max_active).
-            backlog -= rng.randint(0, min(backlog, cap))
+    rungs = {
+        "a-codex": Rung("a-codex", "codex", "a", "codex", "pool", True, source_cap),
+        "a-claude": Rung("a-claude", "claude", "a", "claude", "pool", True, cap),
+    }
+    before = dict(rungs)
+    cfg = ProviderFailoverConfig()
+    cfg.reroute.max_per_sweep = max_per_sweep
+    queue = [_cand(f"t{i}", "a-codex", priority=p) for i, p in enumerate(priorities)]
+    backlog = 0
+    for claimed in claims:
+        decisions = plan_sweep(
+            queue, _ctx(rungs=rungs, backlog={"a-claude": backlog}, config=cfg)
+        )
+        moved = [d for d in decisions if d.action == "move"]
+        assert len(moved) <= max_per_sweep
+        backlog += len(moved)
+        assert backlog <= cap
+        moved_ids = {d.task_id for d in moved}
+        queue = [c for c in queue if c.task_id not in moved_ids]
+        backlog -= min(claimed, backlog, cap)
         assert rungs == before
 
 
@@ -524,6 +550,63 @@ def _handler(orch):
     from src.commands.handler import CommandHandler
 
     return CommandHandler(orch, orch.config)
+
+
+@settings(max_examples=max(6, settings.default.max_examples // 10),
+          suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(home=st.sampled_from(["codex", "claude"]),
+       intent=st.sampled_from([PREFERRED, CLASS_ONLY, PINNED]),
+       priority=st.integers(0, 200), cycles=st.integers(1, 2), by_batch=st.booleans())
+async def test_property_reroute_undo_round_trips_route_and_intent(
+    orch, home, intent, priority, cycles, by_batch,
+):
+    """Each example owns a task and removes it, including its audit rows."""
+    away = "claude" if home == "codex" else "codex"
+    home_profile = f"standard-high-{home}"
+    away_profile = f"standard-high-{away}"
+    tid = "property-round-trip"
+    await _task(orch, tid, home_profile, intent=intent, priority=priority)
+    route = {"candidates": [
+        {"profile_id": home_profile, "intelligence_class": "standard-high"},
+        {"profile_id": away_profile, "intelligence_class": "standard-high"},
+    ]}
+    await orch.db.update_task(tid, route=route, route_source="router")
+    handler = _handler(orch)
+    try:
+        for _ in range(cycles):
+            await orch.provider_availability.set_state(
+                away, AVAILABLE, by="human:test", reason="target available",
+                until=time.time() + 3600,
+            )
+            await orch.provider_availability.set_state(
+                home, DISABLED, by="human:test", reason="source unavailable", until=None,
+            )
+            moved = await handler.execute("provider_reroute", {
+                "task_id": [tid], "to_profile": away_profile, "force": intent == PINNED,
+            })
+            assert moved["success"] and len(moved["moved"]) == 1, moved
+            task = await orch.db.get_task(tid)
+            assert (task.profile_id, task.rerouted_from) == (away_profile, home_profile)
+            assert task.provider_intent == intent
+            await orch.provider_availability.set_state(
+                home, AVAILABLE, by="human:test", reason="source recovered",
+                until=time.time() + 3600,
+            )
+            args = {"batch_id": moved["batch_ids"][0]} if by_batch else {"task_id": [tid]}
+            undone = await handler.execute("provider_reroute_undo", args)
+            assert undone["success"] and len(undone["undone"]) == 1, undone
+            restored = await orch.db.get_task(tid)
+            assert (restored.profile_id, restored.rerouted_from) == (home_profile, None)
+            assert restored.intelligence_class == "standard-high"
+            assert restored.provider_intent == intent
+            assert restored.route == route and restored.route_source == "router"
+            assert restored.status == TaskStatus.READY and restored.priority == priority
+            rows = await orch.db.list_task_reroutes(task_id=tid)
+            assert rows[0]["reason_code"] == "operator_undo"
+            assert all(row["undone_at"] is not None for row in rows
+                       if row["reason_code"] != "operator_undo")
+    finally:
+        await orch.db.delete_task(tid)
 
 
 async def test_capacity_spill_counts_as_automatic_without_blacklisting_source(orch):

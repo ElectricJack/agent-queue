@@ -392,6 +392,28 @@ and throwaway repository. Nothing it touches is shared with your daemon. The
 full guide is [e2e swarm](../guides/e2e-swarm.md); the scripts are inventoried
 in [scripts](scripts.md#supported-end-to-end-kit).
 
+## Generated routing and pool checks
+
+The Hypothesis properties live with the focused routing, claim, pool sizing,
+placement and provider reroute tests. The default `ci` profile uses 40
+derandomized examples, with no example database or timing deadline. PostgreSQL
+properties use fewer examples (8 for claims, 6 for reroute/undo) to limit CI
+database work. The target is about five seconds per property on a quiet box;
+shared-host contention and database fixture setup can take longer. Claim examples
+roll back their whole transaction; reroute examples remove their task and audit
+history before the next example.
+
+```bash
+aq test tests/test_routing_planner.py tests/test_claim_commands.py tests/test_pool_sizing.py tests/test_pool_placement.py tests/test_provider_reroute.py -k property
+HYPOTHESIS_PROFILE=deep aq test tests/test_routing_planner.py tests/test_claim_commands.py tests/test_pool_sizing.py tests/test_pool_placement.py tests/test_provider_reroute.py -k property
+```
+
+The local `deep` profile explores 500 randomized examples, scaling the
+PostgreSQL properties to 100 claim examples and 50 reroute/undo examples.
+Hypothesis shrinks a failure to a reproducible example. A confirmed product
+bug belongs in a separate bugfix task; its property keeps a strict xfail
+referencing that task until the fix lands.
+
 ## Inputs and outputs
 
 | Input | Output |

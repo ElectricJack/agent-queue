@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import asyncpg
 import pytest
+from hypothesis import HealthCheck, given, settings, strategies as st
 from sqlalchemy import select, update
 from sqlalchemy.exc import DBAPIError
 
@@ -17,6 +18,7 @@ from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import (
+    agents,
     integration_branch_owners,
     integration_repair_stages,
     projects,
@@ -49,6 +51,67 @@ from tests.assignment_routing_helpers import route_source_for
 
 PROJECT_ID = "proj"
 NOW = time.time()
+
+
+@settings(max_examples=max(8, settings.default.max_examples // 5),
+          suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(priorities=st.lists(st.integers(1, 200), min_size=1, max_size=5),
+       router_ready=st.booleans(), source=st.sampled_from(["router", "override", "role"]),
+       decoys=st.sets(st.sampled_from(["blocked", "wrong_class", "unrouted"])))
+async def test_property_ready_frontier_is_exhausted_in_claim_order(
+    db, priorities, router_ready, source, decoys,
+):
+    """An idle matching worker can claim every unblocked READY row exactly once.
+
+    All example writes share a transaction that is explicitly rolled back;
+    the function-scoped database fixture is safely reused by Hypothesis.
+    """
+    async with db._engine.connect() as conn:
+        transaction = await conn.begin()
+        try:
+            await conn.execute(agents.insert().values(
+                id="property-worker", name="worker", profile_id="worker", state="IDLE",
+                created_at=NOW,
+            ))
+            for decoy in sorted(decoys):
+                await db.create_task(Task(
+                    id=f"property-decoy-{decoy}", project_id=PROJECT_ID, title="decoy",
+                    description="", priority=0, status=TaskStatus.READY,
+                    profile_id=None if decoy == "unrouted" else "worker",
+                    route_source="unrouted" if decoy == "unrouted" else source,
+                    intelligence_class="other" if decoy == "wrong_class" else "standard-medium",
+                ), conn=conn, routing_policy=lambda task: decoy == "blocked")
+            for index, priority in enumerate(priorities):
+                await db.create_task(Task(
+                    id=f"property-task-{index}", project_id=PROJECT_ID, title="property",
+                    description="", priority=priority, status=TaskStatus.READY,
+                    profile_id="worker", route_source=source, intelligence_class="standard-medium",
+                ), conn=conn)
+                # Make the priority tie-break deterministic without reading a clock.
+                await conn.execute(update(tasks).where(tasks.c.id == f"property-task-{index}")
+                                   .values(created_at=float(index)))
+            expected = sorted(range(len(priorities)), key=lambda i: (priorities[i], i))
+            for index in expected:
+                selected = await db.select_ready_for_profile(
+                    conn, project_id=PROJECT_ID, profile_id="worker", agent_id="property-worker",
+                    router_ready=router_ready, enforce_routing=True,
+                    intelligence_class="standard-medium", operator=False,
+                )
+                assert selected == f"property-task-{index}"
+                claimed = await db.take_task(conn, selected, agent_id="property-worker", now=NOW)
+                assert claimed is not None and claimed.status == TaskStatus.IN_PROGRESS
+                assert claimed.claim_epoch == 1
+                # Finish the claim to free worker capacity for the next READY task.
+                await db._apply_transition(conn, selected, TaskStatus.COMPLETED)
+                await conn.execute(update(agents).where(agents.c.id == "property-worker")
+                                   .values(state="IDLE", current_task_id=None))
+            assert await db.select_ready_for_profile(
+                conn, project_id=PROJECT_ID, profile_id="worker", agent_id="property-worker",
+                router_ready=router_ready, enforce_routing=True,
+                intelligence_class="standard-medium", operator=False,
+            ) is None
+        finally:
+            await transaction.rollback()
 
 
 @pytest.fixture

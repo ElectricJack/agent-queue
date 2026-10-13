@@ -9,6 +9,11 @@ exactly why it is worth testing on its own, without a database.
 
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import replace
+
+from hypothesis import given, strategies as st
+
 from src.scheduler import (
     PlacementCandidate,
     PoolAction,
@@ -17,6 +22,125 @@ from src.scheduler import (
 )
 
 K = PoolKey("worker")
+
+
+@st.composite
+def placement_fleets(draw):
+    """All profiles observe the same project's total, cap and free workspaces."""
+    keys = [PoolKey(f"worker-{i}") for i in range(draw(st.integers(1, 3)))]
+    candidates = {key: [] for key in keys}
+    for index in range(draw(st.integers(1, 4))):
+        local = []
+        for key in keys:
+            idle, busy, starting = draw(st.tuples(*(st.integers(0, 3) for _ in range(3))))
+            local.append(PlacementCandidate(
+                project_id=f"project-{index}", ready=draw(st.integers(0, 8)),
+                live=idle + busy + starting, project_live_total=0, project_cap=None,
+                workspace_capacity=0, quarantined=draw(st.booleans()),
+                warm_floor=draw(st.integers(0, 4)), starting=starting,
+                idle_session_ids=tuple(f"{key.profile_id}-{index}-{i}" for i in range(idle)),
+            ))
+        total = sum(c.live for c in local)
+        cap = draw(st.one_of(st.none(), st.integers(total, total + 5)))
+        capacity = draw(st.integers(0, 6))
+        for key, candidate in zip(keys, local):
+            candidates[key].append(replace(
+                candidate, project_live_total=total, project_cap=cap,
+                workspace_capacity=capacity,
+            ))
+    return candidates
+
+
+@given(fleet=placement_fleets(), count=st.integers(1, 8))
+def test_property_placement_preserves_shared_caps_and_accounts_for_every_start(fleet, count):
+    actions = [PoolAction(key, "start", count) for key in fleet]
+    starts, drains, starved = place_pool_actions(actions=actions, candidates=fleet)
+    assert not drains
+    assert (starts, drains, starved) == place_pool_actions(actions=actions, candidates=fleet)
+    # Reordering measured projects cannot alter the choice or diagnosis.
+    assert (starts, drains, starved) == place_pool_actions(
+        actions=actions, candidates={key: list(reversed(rows)) for key, rows in fleet.items()},
+    )
+    placed = Counter()
+    for start in starts:
+        measured = next(c for c in fleet[start.key] if c.project_id == start.project_id)
+        assert not measured.quarantined
+        assert start.count > 0
+        placed[start.project_id] += start.count
+    for measured in next(iter(fleet.values())):
+        assert placed[measured.project_id] <= measured.workspace_capacity
+        if measured.project_cap is not None:
+            assert measured.project_live_total + placed[measured.project_id] <= measured.project_cap
+    for key in fleet:
+        assert sum(s.count for s in starts if s.key == key) + sum(
+            s.wanted for s in starved if s.key == key
+        ) == count
+    prior_allocations = Counter()
+    for key, rows in fleet.items():
+        allocated = Counter({c.project_id: sum(
+            s.count for s in starts if s.key == key and s.project_id == c.project_id
+        ) for c in rows})
+        unserved = {c.project_id: c.ready - len(c.idle_session_ids) - c.starting
+                    - allocated[c.project_id] for c in rows}
+        for starvation in (s for s in starved if s.key == key):
+            assert starvation.wanted > 0
+            assert set(starvation.reasons) == {c.project_id for c in rows}
+            for measured in rows:
+                pid = measured.project_id
+                used = prior_allocations[pid] + allocated[pid]
+                live = measured.live + allocated[pid]
+                if measured.quarantined:
+                    reason = "quarantined"
+                elif measured.workspace_capacity <= used:
+                    reason = "no workspace capacity"
+                elif (measured.project_cap is not None
+                      and measured.project_live_total + used >= measured.project_cap):
+                    reason = f"at project cap ({measured.project_cap})"
+                elif (live >= measured.warm_floor and measured.idle_session_ids
+                      and unserved[pid] <= 0):
+                    reason = "an idle worker is already available"
+                else:
+                    assert live >= measured.warm_floor and unserved[pid] <= 0
+                    assert any(value > 0 for value in unserved.values())
+                    reason = "no unserved demand in this project"
+                assert starvation.reasons[pid] == reason
+        prior_allocations.update(allocated)
+    # Replay each project's allocations. Results aggregate by reason, but each
+    # reason must still be justified by the evolving measured local state.
+    for key, rows in fleet.items():
+        for measured in rows:
+            live = measured.live
+            unserved = measured.ready - len(measured.idle_session_ids) - measured.starting
+            for start in starts:
+                if start.key != key or start.project_id != measured.project_id:
+                    continue
+                for _ in range(start.count):
+                    if start.reason == "warm_floor":
+                        assert live < measured.warm_floor
+                    elif start.reason == "deficit":
+                        assert live >= measured.warm_floor and unserved > 0
+                    else:
+                        assert start.reason == "spread"
+                        assert live >= measured.warm_floor and unserved <= 0
+                    live += 1
+                    unserved -= 1
+
+
+@given(fleet=placement_fleets(), count=st.integers(1, 8))
+def test_property_drains_select_unique_idle_sessions_and_preserve_warm_floors(fleet, count):
+    actions = [PoolAction(key, "drain", count) for key in fleet]
+    starts, drains, starved = place_pool_actions(actions=actions, candidates=fleet)
+    assert not starts and not starved
+    selected = []
+    for drain in drains:
+        measured = next(c for c in fleet[drain.key] if c.project_id == drain.project_id)
+        ids = drain.session_ids
+        assert ids == measured.idle_session_ids[:len(ids)]
+        assert measured.live - len(ids) >= measured.warm_floor
+        selected.extend(ids)
+    assert len(selected) == len(set(selected))
+    for key in fleet:
+        assert sum(len(d.session_ids) for d in drains if d.key == key) <= count
 
 
 def cand(project_id: str, **over) -> PlacementCandidate:
