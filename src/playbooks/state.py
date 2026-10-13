@@ -93,18 +93,26 @@ def authorized_private_namespace(owner, principal, invocation):
 
 async def resolve_namespace(handler, command: str) -> Namespace:
     """Only a live PLAYBOOK invocation can choose an ordinary state namespace."""
+    principal, invocation = current_principal(), current_invocation()
+    if principal is None or principal.kind is not PrincipalKind.PLAYBOOK or invocation is None:
+        raise StateError("unauthorized")
+    return resolve_namespace_from_store(
+        handler._v2_engine().services.artifact_store, command,
+        principal, invocation)
+
+
+def resolve_namespace_from_store(store, command, principal, invocation):
+    """Validate server pins and authority using only the immutable artifact store."""
     from src.playbooks.authoring import _parse_frontmatter
     from src.playbooks.definition import artifact_sha256, scope_from_v1
     from src.playbooks.features import execution_metadata_from_source
 
-    principal, invocation = current_principal(), current_invocation()
     if (principal is None or principal.kind is not PrincipalKind.PLAYBOOK
             or invocation is None
             or not principal.policy.allows_aq_command(command)
             or command not in invocation.aq_commands):
         raise StateError("unauthorized")
     try:
-        store = handler._v2_engine().services.artifact_store
         definition = store.load(invocation.artifact_ref.artifact_sha256)
         source = store.load_source(invocation.artifact_ref.artifact_sha256)
         frontmatter, _ = _parse_frontmatter(source)

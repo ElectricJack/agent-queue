@@ -1,9 +1,8 @@
 # Durable playbook state
 
-The D1 storage foundation provides namespace state and retained operation receipts.
-The `state_v1` feature gate remains unsupported until D2 supplies transactional
-notifications and preview behavior; these commands do not by themselves enable a
-stateful artifact for activation.
+The `state_v1` feature provides namespace state, retained operation receipts and
+transactional notifications. Stateful artifacts can be activated when all intended
+executors support this feature.
 
 Ordinary state commands require a live playbook invocation and its current command
 grant. The daemon derives the namespace from the pinned artifact and verified
@@ -18,6 +17,7 @@ require independent local or service authority.
 | `playbook_state_list` | Optional prefix, record space and snapshot paging inputs. Returns immutable pre-scan revisions and protected pages. |
 | `playbook_state_set` | KV key, JSON value, `expected_revision`, `operation_key`, optional positive integer `ttl_seconds`. |
 | `playbook_state_delete` | KV key, expected revision and operation key. Creates a retained tombstone. |
+| `playbook_state_notify` | Key, `present` or `cleared` action, `observed_at`, stable `observation_id`, and a bounded message. Optional evidence, source partition and reminder interval; clears require `expected_revision`. |
 | `playbook_state_inspect` | Explicit `namespace` object plus key or list filters. Operator only. |
 | `playbook_state_reset` | Namespace, expected **namespace** revision, operation key and nonblank reason. Operator only. |
 
@@ -49,7 +49,7 @@ with expected namespace revision zero). Reset records its reason and the warning
 that future observations may deliberately re-alert. Existing namespace state and
 journals survive recompilation, activation changes, disable/re-enable and source
 removal. Reset retains notification episodes, watermarks and message identities,
-and advances a replay floor that D2 must check before accepting observations.
+and advances a replay floor checked before accepting new observations.
 
 List snapshots use the shared observation snapshot service: a stable database
 view, bounded manifests, at most 500 entries and 192 KiB per page, a 262,144-byte
@@ -57,8 +57,39 @@ response ceiling, and a 30-minute lifetime. Continuations bind the namespace,
 filters and current authority. Exhausted snapshot budgets fail visibly rather
 than truncate a successful scan.
 
-D2 can join `locked_namespace`, `operation_row`, `entry_row(lock=True)`,
-`write_entry`, `commit_operation` and private-value batch persistence on the same
-SQL connection as message insertion. `check_observation_floor` rejects retired
-evidence. D2 owns notification transitions, recipient authorization and atomic
-message creation; D1 does not enqueue messages.
+Notifications require both `playbook_state_notify` and `message_send` in the current
+principal and pinned artifact grants. The message object accepts only `to_kind`,
+`to_id`, `body` (up to 16,384 characters) and optional `subject` (512 characters).
+Sender identity is server-derived: `system:playbook:<id>`. Message readback includes
+run, playbook, namespace and step provenance. Project playbooks can address only
+authorized project recipients. Shared submission validation checks recipients on
+every call, including suppression and replay.
+
+A first `present` observation starts an episode and enqueues a message. Later
+observations update evidence and advance the revision without sending, unless a
+positive `repeat_after_seconds` interval has elapsed since the last enqueue.
+Omitting the interval or setting it to null disables reminders. Reminders use
+database transaction time; observation timestamps order evidence. A `cleared`
+observation enqueues once for an active episode and retains an inactive tombstone.
+A later presence starts another episode. Clears require the revision saved before
+the observation scan, including for missing or already inactive keys.
+
+The notification operation identity combines namespace, key, observation ID and
+action. Identical retries return the original result; changed inputs under that
+identity conflict. Older observations are refused, and different observations at
+an equal timestamp conflict. Missing-key clears retain their watermark so delayed
+presence cannot reopen an older episode. `last_value` uses protected storage;
+`source_partition` is bounded identity metadata used to match complete scans.
+
+Message insertion, state, protected values, journal and quota accounting commit in
+one PostgreSQL transaction. Failure rolls all of them back. After commit,
+`message.sent` wakes the existing delivery service; its backlog scan recovers after
+a lost wake or restart. The guarantee is one durable enqueue per accepted operation,
+not exactly-once terminal display or human attention.
+
+Dry-run and shadow use fresh in-memory state for each run and copy it at symbolic
+branches. They share the live notification transition logic and simulate KV reads,
+CAS, expiry and immutable snapshots. They never read or write production state or
+protected values. Logical supervisor and system user recipients can be simulated;
+recipients requiring a database ownership lookup remain explicitly unresolved.
+Preview message and snapshot IDs are simulation-only and are not durable handles.

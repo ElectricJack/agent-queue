@@ -176,23 +176,23 @@ def test_generated_requirements_come_from_server_contracts(tmp_path):
     assert lookup.get("doctor").required_features == ("generated_commands_v1",)
 
 
-@pytest.mark.parametrize("name,expected", [
-    ("playbook_state_get", "state_v1"), ("playbook_script_run", "script_v1"),
+@pytest.mark.parametrize("name,expected,supported", [
+    ("playbook_state_get", "state_v1", True), ("playbook_script_run", "script_v1", False),
 ])
-def test_future_command_hooks_fail_closed_without_claiming_support(name, expected):
+def test_command_hooks_require_complete_feature_support(name, expected, supported):
     raw = twin()
     raw["steps"]["act"]["command"] = name
     artifact = PlaybookDefinition.model_validate(raw)
     assert expected in features.infer_required_features(artifact)
-    assert features.unsupported_features(artifact) == (expected,)
+    assert features.unsupported_features(artifact) == (() if supported else (expected,))
 
 
-def test_state_metadata_is_source_derived_and_requires_future_executor(tmp_path):
+def test_state_metadata_is_source_derived_and_supported(tmp_path):
     result = proposal(tmp_path, frontmatter="state_schema_version: 7\n")
     assert result.artifact.trusted_execution.state_schema_version == 7
     assert result.artifact.required_features == ("state_v1",)
-    assert not result.activatable
-    assert any(d.code == "unsupported_feature" for d in result.diagnostics)
+    assert result.activatable
+    assert not any(d.code == "unsupported_feature" for d in result.diagnostics)
     warning = next(d for d in result.diagnostics if d.code == "state_namespace_migration")
     assert "resets suppression" in warning.message
     raw = twin()

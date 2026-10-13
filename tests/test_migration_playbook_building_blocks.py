@@ -174,3 +174,39 @@ async def test_playbook_state_upgrade_prior_and_current_preserves_journals():
             assert await conn.scalar(select(t.playbook_state_operations.c.operation_key)) == "retained"
     finally:
         await db.close()
+
+
+async def test_message_provenance_upgrade_preserves_legacy_messages_and_readback():
+    from src.models import Project
+
+    revision = importlib.import_module("migrations.versions.a00000000099_message_provenance")
+    db = Database(lease_dsn("message_provenance_migration"))
+    await db.initialize()
+    try:
+        await db.create_project(Project(id="p", name="p"))
+        original = await db.create_message(project_id="p", from_kind="system", from_id="legacy",
+                                           to_kind="user", to_id="dashboard", body="retained")
+        async with db.immediate() as conn:
+            await conn.exec_driver_sql("ALTER TABLE messages DROP COLUMN provenance")
+
+            def verify(bind):
+                context = MigrationContext.configure(bind, opts={
+                    "include_object": lambda obj, name, kind, reflected, compare_to: (
+                        name == "messages" if kind == "table" else True),
+                })
+                with Operations.context(context):
+                    revision.upgrade()
+                    revision.upgrade()
+                    assert not compare_metadata(context, metadata)
+                    revision.downgrade()
+                    assert "provenance" in {c["name"] for c in inspect(bind).get_columns("messages")}
+            await conn.run_sync(verify)
+        restored = await db.get_message(original.id)
+        assert restored.provenance is None and restored.created_seq == original.created_seq
+        new = await db.create_message(project_id="p", from_kind="system", from_id="playbook:p",
+                                      to_kind="user", to_id="dashboard", body="new",
+                                      provenance={"run_id": "r", "playbook_id": "p"})
+        assert (await db.get_message(new.id)).provenance == new.provenance
+        assert new.created_seq > original.created_seq
+    finally:
+        await db.close()

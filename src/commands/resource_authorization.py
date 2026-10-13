@@ -138,7 +138,9 @@ session_list session_logs session_peek session_show show_effective_profile show_
 STATE_COMMANDS = frozenset({
     "playbook_state_get", "playbook_state_list", "playbook_state_set",
     "playbook_state_delete", "playbook_state_inspect", "playbook_state_reset",
+    "playbook_state_notify",
 })
+STATE_PREVIEW_COMMANDS = STATE_COMMANDS - {"playbook_state_inspect", "playbook_state_reset"}
 AUDITED_READS |= {"playbook_state_get", "playbook_state_list", "playbook_state_inspect"}
 
 
@@ -235,6 +237,10 @@ async def authorize_resources(
 
         if command in CONTRACTS.typed_contracts():
             return None
+    if command == "message_send" and principal.kind is PrincipalKind.PLAYBOOK:
+        # Shared submission validation resolves recipient ownership and derives
+        # sender provenance. Authored sender fields cannot become resource authority.
+        return None
     if command in STATE_COMMANDS:
         # This handler derives namespace membership from a pinned invocation;
         # no injected project argument or recursive interpretation of private values.
