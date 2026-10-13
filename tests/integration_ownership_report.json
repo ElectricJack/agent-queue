@@ -9745,6 +9745,15 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Claim workspace-lock reconciliation reads integration_branch_owners and job_workspace_pins before moving this agent's idle misplaced lock to its session checkout. Foreign claims, live peer sessions, attached/handoff-pending owners and job pins refuse repair; the session and ordered workspace locks fence the ordinary workspace update. Charge this shared integration ownership guard; no ref publication or duplicate lifecycle."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only integration_branch_owners and job_workspace_pins predicate used before reprovisioning a missing slot. Attached/handoff-pending branch owners or any job pin retain the checkout binding; this helper changes neither fences nor refs. Charge the shared integration ownership guard."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim and integration schema import now also names job_workspace_pins for workspace-lock reconciliation. Retains the branch-owner and repair-operation reads and charges the complete shared import; the job pin is additional retained-writer proof, not ref replay or new lifecycle storage."
     }
   },
   "shared_state": {
