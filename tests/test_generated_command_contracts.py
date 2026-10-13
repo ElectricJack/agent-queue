@@ -213,7 +213,13 @@ async def test_untrusted_dispatch_exceptions_keep_details_in_server_logs(kind, c
     assert result == {
         "success": False, "error_code": "command_runtime_error", "error": "Command execution failed",
     }
-    assert "private-exception-sentinel" in caplog.text
+    if kind is PrincipalKind.PLAYBOOK:
+        # Playbook calls may carry decrypted private values, so their server log
+        # keeps only the exception type (see private_call in the handler).
+        assert "err=RuntimeError" in caplog.text
+        assert "private-exception-sentinel" not in caplog.text
+    else:
+        assert "private-exception-sentinel" in caplog.text
     assert "private-exception-sentinel" not in repr(result)
 
 
