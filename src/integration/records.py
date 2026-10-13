@@ -55,6 +55,7 @@ from src.database.tables import (
     task_session_attempts,
     tasks,
 )
+from src.integration.row_query import select_row
 from src.integration.ci import ParentVerification, binding_diagnosis, required_checks
 from src.integration.drain_owners import terminal_reservation_clause
 from src.integration.models import (
@@ -548,14 +549,12 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
     ) -> dict[str, Any]:
         existing_episode = checkpoint.get("episode_id")
         if existing_episode:
-            existing = (
-                await conn.execute(
-                    select(integration_repair_operations).where(
-                        integration_repair_operations.c.parent_task_id == parent["id"],
-                        integration_repair_operations.c.episode_id == existing_episode,
-                    )
-                )
-            ).mappings().one_or_none()
+            existing = await select_row(
+                conn,
+                integration_repair_operations,
+                integration_repair_operations.c.parent_task_id == parent["id"],
+                integration_repair_operations.c.episode_id == existing_episode,
+            )
             if existing is None:
                 raise HierarchyError("invariant_error", "checkpoint episode has no operation")
             return dict(existing)
@@ -571,13 +570,11 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
         route = boundary.route
         if route is None:
             raise HierarchyError("invalid", "parent route is not configured")
-        artifact_row = (
-            await conn.execute(
-                select(playbook_artifacts).where(
-                    playbook_artifacts.c.artifact_sha256 == route.artifact.artifact_sha256
-                )
-            )
-        ).mappings().one_or_none()
+        artifact_row = await select_row(
+            conn,
+            playbook_artifacts,
+            playbook_artifacts.c.artifact_sha256 == route.artifact.artifact_sha256,
+        )
         if artifact_row is None:
             raise HierarchyError("invalid", "parent route artifact is not stored")
         if ArtifactRef.from_row(artifact_row).as_dict() != route.artifact.model_dump(mode="json"):
@@ -628,21 +625,15 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
             )
         )
         if carry_forward is not None:
-            previous = (
-                await conn.execute(
-                    select(integration_parent_verifications).where(
-                        integration_parent_verifications.c.id
-                        == carry_forward["verification_id"],
-                        integration_parent_verifications.c.operation_id
-                        == carry_forward["operation_id"],
-                        integration_parent_verifications.c.parent_task_id == parent["id"],
-                        integration_parent_verifications.c.episode_id
-                        == carry_forward["episode_id"],
-                        integration_parent_verifications.c.head_sha
-                        == carry_forward["head_sha"],
-                    )
-                )
-            ).mappings().one_or_none()
+            previous = await select_row(
+                conn,
+                integration_parent_verifications,
+                integration_parent_verifications.c.id == carry_forward["verification_id"],
+                integration_parent_verifications.c.operation_id == carry_forward["operation_id"],
+                integration_parent_verifications.c.parent_task_id == parent["id"],
+                integration_parent_verifications.c.episode_id == carry_forward["episode_id"],
+                integration_parent_verifications.c.head_sha == carry_forward["head_sha"],
+            )
             previous_operation = (
                 await conn.execute(
                     select(integration_repair_operations.c.id).where(
@@ -831,15 +822,12 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                     .values(verifier_task_id=verifier_id, updated_at=self.clock())
                 )
                 operation = dict(operation) | {"verifier_task_id": verifier_id}
-        owner = (
-            await conn.execute(
-                select(integration_branch_owners).where(
-                    integration_branch_owners.c.repository_id
-                    == checkpoint["repository_id"],
-                    integration_branch_owners.c.ref == checkpoint["branch"],
-                )
-            )
-        ).mappings().one_or_none()
+        owner = await select_row(
+            conn,
+            integration_branch_owners,
+            integration_branch_owners.c.repository_id == checkpoint["repository_id"],
+            integration_branch_owners.c.ref == checkpoint["branch"],
+        )
         if owner is None:
             raise HierarchyError(
                 "invariant_error", "integration-ready parent has no branch owner"
@@ -900,9 +888,7 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
         if not resolution_evidence or (disposition == "noop" and not verification_evidence):
             raise HierarchyError("invalid", "disposition evidence is required")
         async with self.db.immediate() as conn:
-            child = (
-                await conn.execute(select(tasks).where(tasks.c.id == child_task_id))
-            ).mappings().one_or_none()
+            child = await select_row(conn, tasks, tasks.c.id == child_task_id)
             if child is None or not child["parent_task_id"]:
                 raise HierarchyError("invalid", "disposition child has no parent")
             parent, _project, checkpoint, operation = await self._locked_context_on(
@@ -911,13 +897,9 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
             child = (
                 await conn.execute(select(tasks).where(tasks.c.id == child_task_id))
             ).mappings().one()
-            child_checkpoint = (
-                await conn.execute(
-                    select(task_integration_checkpoints).where(
-                        task_integration_checkpoints.c.task_id == child_task_id
-                    )
-                )
-            ).mappings().one_or_none()
+            child_checkpoint = await select_row(
+                conn, task_integration_checkpoints, task_integration_checkpoints.c.task_id == child_task_id
+            )
             if (
                 child["status"] not in {"COMPLETED", "FAILED"}
                 or child_checkpoint is None
@@ -946,15 +928,13 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                 ):
                     raise HierarchyError("invalid", "current child close is not a verified no-op")
                 if child["profile_id"] in {"reviewer", "final-reviewer"}:
-                    review = (
-                        await conn.execute(
-                            select(integration_review_evidence).where(
-                                integration_review_evidence.c.id == verified_review_id,
-                                integration_review_evidence.c.reviewer_task_id == child_task_id,
-                                integration_review_evidence.c.verdict == "approved",
-                            )
-                        )
-                    ).mappings().one_or_none()
+                    review = await select_row(
+                        conn,
+                        integration_review_evidence,
+                        integration_review_evidence.c.id == verified_review_id,
+                        integration_review_evidence.c.reviewer_task_id == child_task_id,
+                        integration_review_evidence.c.verdict == "approved",
+                    )
                     if review is None:
                         raise HierarchyError("invalid", "approved reviewer evidence is required")
             code_receipt = (
@@ -967,29 +947,24 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
             ).first()
             if code_receipt:
                 raise HierarchyError("delivery_target_fixed", "delivered code cannot be disposed")
-            origin = (
-                await conn.execute(
-                    select(task_branch_origins).where(
-                        task_branch_origins.c.task_id == child_task_id,
-                        task_branch_origins.c.repository_id == checkpoint["repository_id"],
-                        task_branch_origins.c.retired_at.is_(None),
-                    )
-                )
-            ).mappings().one_or_none()
+            origin = await select_row(
+                conn,
+                task_branch_origins,
+                task_branch_origins.c.task_id == child_task_id,
+                task_branch_origins.c.repository_id == checkpoint["repository_id"],
+                task_branch_origins.c.retired_at.is_(None),
+            )
             if origin is None:
                 raise HierarchyError("invalid", "disposition child has no active branch origin")
             if verified_completion_id is not None and origin["base_sha"] != reviewed_head_sha:
                 raise HierarchyError("invalid", "no-op child head differs from its reserved base")
-            current = (
-                await conn.execute(
-                    select(integration_child_dispositions)
-                    .where(
-                        integration_child_dispositions.c.parent_task_id == parent["id"],
-                        integration_child_dispositions.c.child_task_id == child_task_id,
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            current = await select_row(
+                conn,
+                integration_child_dispositions,
+                integration_child_dispositions.c.parent_task_id == parent["id"],
+                integration_child_dispositions.c.child_task_id == child_task_id,
+                lock=True,
+            )
             revision = 0 if current is None else int(current["revision"])
             completion_changed = False
             if current is not None and verified_completion_id is not None:
@@ -997,13 +972,9 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                     f"disposition:{parent['id']}:{child_task_id}:"
                     f"{current['parent_operation_id']}:{revision}"
                 )
-                prior = (
-                    await conn.execute(
-                        select(task_delivery_receipts).where(
-                            task_delivery_receipts.c.domain_key == prior_key
-                        )
-                    )
-                ).mappings().one_or_none()
+                prior = await select_row(
+                    conn, task_delivery_receipts, task_delivery_receipts.c.domain_key == prior_key
+                )
                 completion_changed = bool(
                     prior is not None
                     and (prior["resolution_evidence"] or {}).get("completion_id")
@@ -1059,13 +1030,9 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                 f"disposition:{parent['id']}:{child_task_id}:"
                 f"{operation['id']}:{revision}"
             )
-            existing = (
-                await conn.execute(
-                    select(task_delivery_receipts).where(
-                        task_delivery_receipts.c.domain_key == domain_key
-                    )
-                )
-            ).mappings().one_or_none()
+            existing = await select_row(
+                conn, task_delivery_receipts, task_delivery_receipts.c.domain_key == domain_key
+            )
             if existing is not None:
                 if existing["disposition"] != disposition:
                     raise HierarchyError("invariant_error", "disposition identity changed")
@@ -1268,15 +1235,12 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
                     ),
                 }
             expected_owner = operation["verifier_task_id"] or task_id
-            owner = (
-                await conn.execute(
-                    select(integration_branch_owners).where(
-                        integration_branch_owners.c.repository_id
-                        == checkpoint["repository_id"],
-                        integration_branch_owners.c.ref == checkpoint["branch"],
-                    )
-                )
-            ).mappings().one_or_none()
+            owner = await select_row(
+                conn,
+                integration_branch_owners,
+                integration_branch_owners.c.repository_id == checkpoint["repository_id"],
+                integration_branch_owners.c.ref == checkpoint["branch"],
+            )
             if (
                 operation["state"] not in {"active", "escalated"}
                 or owner is None
@@ -1427,11 +1391,7 @@ class PolicyActivation:
         now = self.clock()
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
-            project = (
-                await conn.execute(
-                    select(projects).where(projects.c.id == project_id).with_for_update()
-                )
-            ).mappings().one_or_none()
+            project = await select_row(conn, projects, projects.c.id == project_id, lock=True)
             if project is None:
                 return {"outcome": "not_found", "project_id": project_id}
             generation = int(project["hierarchical_integration_generation"])
@@ -1481,9 +1441,7 @@ class PolicyActivation:
             repository_row = None
             if has_repository_config:
                 repository_id = repository_config["id"]
-                repository_row = (
-                    await conn.execute(select(repos).where(repos.c.id == repository_id))
-                ).mappings().one_or_none()
+                repository_row = await select_row(conn, repos, repos.c.id == repository_id)
                 if repository_row is not None and repository_row["project_id"] != project_id:
                     return {
                         "outcome": "blocked",

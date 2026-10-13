@@ -150,6 +150,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 |---|---|---|
 | [`artifact_verify`](artifact_verify.md) | Artifact Verify | Resolve a durable artifact URI and re-hash the bytes it names. |
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
+| [`ci_completed_status`](ci_completed_status.md) | Audit completed task CI | List completed sources with failing required checks and unresolved CI evidence. |
 | [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
 | [`collaboration_accept`](collaboration_accept.md) | Collaboration Accept | Join a collaboration thread for the held task's live claim. |
 | [`collaboration_close`](collaboration_close.md) | Collaboration Close | Close a thread without changing any member task. |

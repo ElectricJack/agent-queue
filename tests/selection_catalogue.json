@@ -85,6 +85,7 @@
       "description": "The CI main sentinel and CI policy: the baseline status observation, repair keys and adoption, the shipped sentinel playbook, which GitHub workflow events run full CI and merging shard timings into the committed duration map.",
       "modules": [
         "tests/test_ci_baseline_status.py",
+        "tests/test_ci_completion.py",
         "tests/test_ci_durations.py",
         "tests/test_ci_main_sentinel.py",
         "tests/test_ci_trigger_policy.py"
@@ -3277,6 +3278,31 @@
       ],
       "markers": [],
       "summary": "``ci_baseline_status`` — the observation half of the ci-main-sentinel."
+    },
+    "tests/test_ci_completion.py": {
+      "areas": [
+        "ci-sentinel"
+      ],
+      "default_arm": true,
+      "digest": "sha256:bc10a30134c968e1cc6850f411522c08598198187bd955ee8f04143e908c65ca",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.completion_ci",
+        "src.models",
+        "src.orchestrator"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Required CI binds ordinary PR closes and audits to recorded source commits."
     },
     "tests/test_ci_durations.py": {
       "areas": [

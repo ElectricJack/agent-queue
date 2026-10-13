@@ -93,6 +93,11 @@ from .checkout_branch_response_422 import CheckoutBranchResponse422
 from .ci_baseline_status_request import CiBaselineStatusRequest
 from .ci_baseline_status_response import CiBaselineStatusResponse
 from .ci_baseline_status_response_422 import CiBaselineStatusResponse422
+from .ci_completed_status_request import CiCompletedStatusRequest
+from .ci_completed_status_response import CiCompletedStatusResponse
+from .ci_completed_status_response_422 import CiCompletedStatusResponse422
+from .ci_completed_status_response_failing_item import CiCompletedStatusResponseFailingItem
+from .ci_completed_status_response_unresolved_item import CiCompletedStatusResponseUnresolvedItem
 from .ci_policy import CIPolicy
 from .ci_policy_check_sets import CIPolicyCheckSets
 from .ci_repair_adopt_request import CiRepairAdoptRequest
@@ -2025,6 +2030,11 @@ __all__ = (
     "CiBaselineStatusRequest",
     "CiBaselineStatusResponse",
     "CiBaselineStatusResponse422",
+    "CiCompletedStatusRequest",
+    "CiCompletedStatusResponse",
+    "CiCompletedStatusResponse422",
+    "CiCompletedStatusResponseFailingItem",
+    "CiCompletedStatusResponseUnresolvedItem",
     "CIPolicy",
     "CIPolicyCheckSets",
     "CiRepairAdoptRequest",

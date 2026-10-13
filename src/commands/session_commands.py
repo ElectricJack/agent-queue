@@ -1255,6 +1255,22 @@ class SessionCommandsMixin:
             in {"hierarchy", "train"}
             and await self.db.get_children(task_id, limit=1)
         )
+        if outcome == "pass":
+            from src.integration.completion_ci import verify_completion_ci
+
+            ci = await verify_completion_ci(
+                self.db, getattr(self.orchestrator, "git", None), self.config, task, project,
+                commit=args.get("commit"),
+            )
+            if ci is not None and ci["state"] != "green":
+                return {
+                    "success": False, "result": "verification_failed",
+                    "code": "completion.required_ci", "ci": ci,
+                    "error": (
+                        f"Required CI is {ci['state']} on {ci.get('head_sha') or 'unknown head'}. "
+                        "Keep this claim, resolve the named checks or wait for CI, then retry close."
+                    ),
+                }
         abandoned: list[str] = []
         if open_children and not managed_parent_close:
             if not args.get("abandon_children"):
@@ -1552,6 +1568,8 @@ class SessionCommandsMixin:
                 "issues": issues,
                 "feedback": result.get("feedback") or "",
                 "unmerged": result.get("unmerged"),
+                **({"code": "completion.required_ci", "ci": result["ci"]}
+                   if result.get("ci") is not None else {}),
                 **({"retired": retired, "next_step": "aq session drain-ack"} if retired else {}),
                 "error": f"{lead}:\n{bullets}\n{tail}",
             }

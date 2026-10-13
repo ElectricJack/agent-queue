@@ -494,6 +494,17 @@ class TaskRouteApplyValue(CommandValue):
     resolved_gate_ids: list[str] = Field(default_factory=list)
 
 
+class CiCompletedStatusArgs(CommandArgs):
+    project_id: str
+
+
+class CiCompletedStatusValue(CommandValue):
+    project_id: str
+    checked: int = 0
+    failing: list[dict[str, Any]] = Field(default_factory=list)
+    unresolved: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class CiBaselineStatusArgs(CommandArgs):
     project_id: str
     ref: str | None = None
@@ -838,6 +849,8 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if state == "red" and raw.get("escalated"):
             return "red_escalated"
         return state if state in {"green", "red", "pending", "unknown"} else "unknown"
+    if name == "ci_completed_status":
+        return "listed"
     if name == "ci_repair_adopt":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
@@ -1289,6 +1302,15 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         result_labels={"stopped": "Stopped task"},
         subject_labels={"task_execution": "the task's execution"},
+    ),
+    "ci_completed_status": CommandPresentation(
+        title="Audit completed task CI",
+        summary="List completed sources with failing required checks and unresolved CI evidence.",
+        arg_labels={"project_id": "Project"},
+        outcome_labels={"listed": "Listed", "rejected": "Rejected"},
+        result_labels={"checked": "Sources checked", "failing": "Failing sources",
+                       "unresolved": "Unresolved sources"},
+        subject_labels={},
     ),
     "ci_baseline_status": CommandPresentation(
         title="Read the default branch's CI verdict",
@@ -1847,6 +1869,11 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             ),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "ci_completed_status", CiCompletedStatusArgs, CiCompletedStatusValue,
+            _outcomes("listed"), SideEffectClass.READ, (),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "ci_baseline_status",

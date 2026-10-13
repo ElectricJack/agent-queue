@@ -399,6 +399,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "pr_merge": "git",
     # manual delivery of a passed branch (agile-ridge) — `aq task deliver`
     "ci_baseline_status": "git",
+    "ci_completed_status": "ci",
     "ci_repair_adopt": "git",
     # provider availability — state, overrides, recheck (provider-failover D20)
     "provider_status": "provider",
@@ -6023,6 +6024,19 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     # dv2 phase 2 — review-policy commands
+    {
+        "name": "ci_completed_status",
+        "description": (
+            "Audit COMPLETED tasks' recorded source commits against the project's required CI. "
+            "List failing checks separately from pending or unavailable observations, with exact "
+            "SHAs and check links. Read-only; operator or supervisor only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "string", "description": "Project to audit."}},
+            "required": ["project_id"],
+        },
+    },
     {
         "name": "ci_baseline_status",
         "description": (
