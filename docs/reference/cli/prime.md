@@ -25,6 +25,13 @@ Inside a session no flags are needed: the task comes from `AQ_TASK_ID` and the
 daemon URL and bearer token from `AQ_API_URL` / `AQ_API_TOKEN`. Outside one,
 pass `--task-id`; `--session-id` and `--work-dir` are optional overrides.
 
+For `context.required_over_budget`, `aq prime --json` includes configured
+allowances, final required-body bytes, per-section body bytes and renderer
+source in its error details. The accounting deliberately uses UTF-8 bytes as a
+token upper bound and reserves output and wrapper space. Section counts exclude
+headings; overrides may repeat sections, so use the final body count to check
+fit. These diagnostics carry no undelivered instruction bodies.
+
 ### Two consumers, one renderer
 
 The document is built by [`src/prime/`](../../../src/prime/), and two things
@@ -162,6 +169,11 @@ Writes a `task_context(type=handoff)` row on the current task — subject,
 detail, timestamp and session id. The next `aq prime` for that task renders it
 verbatim in section 6. This is how work state survives a compaction or a
 session restart.
+
+Shortened handoff projections identify the retained context row and point to
+`aq task show TASK --field context --offset 0 --limit 4096`. Follow `next_offset`
+until it is null to read the full note before acting on shortened fields.
+Ordinary task-show output is a preview for workers and may omit note content.
 
 `--auto` is the difference that matters:
 

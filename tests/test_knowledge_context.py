@@ -389,6 +389,14 @@ async def test_prime_command_returns_prepared_bundle_and_delivery_command_record
         config.knowledge.context.input_max_tokens = 100
         refused = await handler.execute("prime", {"_scope": scope})
         assert refused["error_code"] == "context.required_over_budget"
+        accounting = refused["context_budget"]
+        assert accounting["requested"]["input_tokens"] == 100
+        assert accounting["method"] == "upper_bound_bytes"
+        assert accounting["required_tokens"] == refused["required_body_bytes"]
+        assert accounting["diagnostic"] == "context.required_over_budget"
+        assert refused["required_section_bytes"]["completion_protocol"] > 0
+        assert refused["source"] == "default"
+        assert "body" not in refused and "context_bundle" not in refused
     async with db.immediate() as conn:
         assert await conn.scalar(select(func.count()).select_from(knowledge_citations)) == 1
 

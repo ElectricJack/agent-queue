@@ -37,6 +37,15 @@ input allowance. Whole items are dropped with omission reasons. Required
 content overflow stores an empty diagnostic bundle and refuses delivery with
 `context.required_over_budget`; authoritative instructions are never cut.
 
+An over-budget prime refusal includes `context_budget` (the configured
+allowances and byte accounting), `required_body_bytes`,
+`required_section_bytes` and renderer `source`. These diagnostics expose no
+instruction bodies and do not imply delivery; section counts exclude heading
+wrappers and cannot stand in for the final override body's measured size.
+`aq prime --json` preserves these details in the error envelope. Use retained
+failure diagnostics to distinguish an oversized required section from changed
+runtime limits; a task checkout SHA is not deployed daemon provenance.
+
 `prime` returns `context_bundle` and `context_state: prepared`. A read refused
 on access grounds — `record.forbidden`, `knowledge.disabled` — degrades instead
 of failing: `prime` returns its full ordinary body with

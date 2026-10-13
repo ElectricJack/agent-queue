@@ -461,7 +461,23 @@ class SurfaceCommandsMixin:
                 doc = renderer.with_context(doc, bundle)
             except RecordError as exc:
                 if exc.code not in ACCESS_REFUSAL_CODES:
-                    return exc.result()
+                    result = exc.result()
+                    if exc.code == "context.required_over_budget":
+                        from src.knowledge.budget import ContextBudget
+
+                        # Counts and configured limits only; do not expose the
+                        # undelivered instruction bodies through diagnostics.
+                        result.update(
+                            context_budget=ContextBudget.from_config(self.config).account(
+                                doc.to_markdown(),
+                            ),
+                            required_body_bytes=len(doc.to_markdown().encode("utf-8")),
+                            required_section_bytes={
+                                s.key: len(s.body.encode("utf-8")) for s in doc.sections
+                            },
+                            source=doc.source,
+                        )
+                    return result
                 # Context is an enrichment, so a refused or unavailable scope
                 # degrades: prime still delivers its full ordinary body, with a
                 # code-only note in place of the context section. The grant
