@@ -2,20 +2,17 @@
 
 **Status: normative.** Approved 2026-09-11 (vault spec
 `projects/agent-queue/specs/software-factory-policy-simplification-2026-09-11.md`). This page is the
-one statement of how AQ admits, delivers and recovers work. Role instructions — shipped profiles
-(`src/profiles/defaults/`), AQ skills (`src/skills/`), prime templates (`src/prime/templates/`) and
-remembered project guidance — reference this page instead of restating workflow. Conflicting instructions
-are bugs. Historical reports, reviews and superseded specs are evidence, not directives.
+one statement of how AQ admits, delivers and recovers work. Shipped profiles, AQ skills, prime
+templates and remembered guidance reference it. Conflicting instructions are bugs; historical
+reports, reviews and superseded specs are evidence, not directives.
 
 ## A. Admit authorised, executable work
 
-- Preserve the project, the user's intent, an explicit route (profile, intelligence class, provider)
-  and an explicit placement. An unavailable pinned route waits visibly; it is never silently
-  substituted.
+- Preserve the project, user intent, explicit placement and route (profile, intelligence class,
+  provider). An unavailable pinned route waits visibly; it is never silently substituted.
 - Emergent work defaults to a **child of the task that exposed it**. Choosing another authorised
-  parent, or an explicit root for cross-cutting work, is a deliberate and visible choice. An open
-  child blocks its parent's successful close; resolve it rather than moving it aside to close the
-  source.
+  parent or explicit cross-cutting root is deliberate and visible. An open child blocks its parent's
+  successful close; resolve it rather than moving it aside to close the source.
 - Provenance (`discovered-from`) records where work came from; it is not a blocking dependency.
 - The supervisor coordinates and is never a queued worker. It does not run a task-scoped `aq prime`,
   which belongs to the worker that holds the task.
@@ -29,9 +26,8 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
 - A worker close records a pushed checkpoint and the checks actually run. It is not proof that
   anything reached the default branch.
 - Each repository/default branch has **one configured publisher**: the project's integration mode
-  names it. Workers, reviewers and specialist roles do not merge or push to the default branch
-  unless their task explicitly delegates publication and that configured owner is pull-request
-  based.
+  names it. Workers, reviewers and specialists may merge or push to the default branch only when
+  their task explicitly delegates publication and the configured owner is pull-request based.
 - Publication validates the exact candidate SHA; a changed candidate invalidates earlier checks. The
   project declares its required checks. A check that could not run is *unavailable*, never a pass.
 - Compatible completed sources for one delivery branch collect into one frozen candidate. A base
@@ -41,9 +37,8 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   every frozen source as an ancestor, merges all remaining members, regenerates shared artifacts
   once, and validates the complete candidate before publication. See [the conflicting-source
   contract](../specs/design/conflicting-source-batches.md).
-- There is **no automatic** per-task reviewer, final reviewer, merge sweep or review-of-review
-  chain, and no mandatory multi-pass gate chain. Review is optional and risk-based; when wanted it
-  is one explicit task or gate.
+- There is **no automatic** per-task reviewer, final reviewer, merge sweep or review-of-review chain,
+  nor a mandatory multi-pass gate chain. Review is optional, risk-based and one explicit task or gate.
 - A daemon refusal (scope check, CI policy, ownership fence, stale claim) is an answer. Report it;
   never route around it with another CLI (`gh pr merge`, a direct push), a `force` flag, or edits to
   state.
@@ -55,8 +50,7 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
 
 ## C. Recover or retire without losing evidence
 
-- One incident per failure, one responsible owner, bounded retries with the remaining budget
-  visible.
+- One incident per failure, one responsible owner, bounded retries with the remaining budget visible.
 - No-attempt failures use a durable failure-transition generation. Comments, edits and same-status
   reconciliation preserve it; reopening then failing replaces it. Current `FAILED` incidents,
   including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
