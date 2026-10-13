@@ -176,6 +176,22 @@ One consequence is deliberate: because a failed attempt is now published, `_retr
 
 **Slot affinity is the price of the forensic exception.** A slot left on an unpushed `aq/<task_id>` branch means the *next push dispatch* of that same task must land on that slot or it cannot check the branch out at all. Pool sessions acquire slots before they know the task, so preparation detects an idle unclaimed holder and detaches it; a live holder is never disturbed. Clean pushed branches are normally detached at release, avoiding the collision altogether. Push acquisition still **prefers the slot that already holds the task's branch** (`WorkspaceMixin._slot_branch_affinity` → `acquire_for_task(preferred_workspaces=...)` → the existing `prefer_workspace_id` seam).
 
+**Preparation reconciliation.** A pool session's `work_dir` is authoritative:
+preparation must never reset a different checkout found by an agent-lock fallback.
+Claiming may move an idle misplaced agent lock to the session's enabled, free
+workspace atomically, but only when neither path has another live session,
+an attached/pending integration owner, a managed job pin or a foreign task lock.
+Unproved or live ownership refuses preparation with a concrete diagnosis.
+Before Git reads the slot, recreate a missing managed checkout in place, retaining
+its workspace id and index. A stale locked Git registration for that missing path
+may be unlocked and removed only after checking claims and live sessions. Never
+replace a nonempty invalid checkout or detach an unmanaged branch holder.
+Preparation failures always carry a nonblank reason in the response, event,
+task metadata and session refusal budget; exceptions without a message include
+their type and the task/workspace context. Shared workspace faults are
+infrastructure incidents for supervisor escalation, not grounds for mass-pausing
+otherwise ready tasks. Existing bounded retries and ownership guards still apply.
+
 Three decisions make that a hint rather than a new piece of state:
 
 - **Derived, never recorded.** The holder is read per acquisition from `git worktree list --porcelain` in the base — the same state git consults when it refuses the checkout, so the hint cannot disagree with the refusal it exists to avoid. No column, no field on the task, nothing to migrate, nothing to go stale: a manual `git switch` in a slot, a restarted daemon or a reaped slot all resolve correctly on the next look.
