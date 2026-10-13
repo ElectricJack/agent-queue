@@ -9166,7 +9166,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:af4258f5703c2b447dc6ac6bee2625e699f2fdf1f9ed060c754216b9c0518ede",
+      "digest": "sha256:3c7e0c8584ef60e5818509cc62249b073d26237db4a296db7da5570404bab3ee",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
@@ -9189,6 +9189,7 @@
         "src.integration.cleanup",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
+        "src.integration.epics",
         "src.integration.git_truth",
         "src.integration.gitops",
         "src.integration.lock",
