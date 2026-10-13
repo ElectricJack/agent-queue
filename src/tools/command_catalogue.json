@@ -14879,6 +14879,286 @@
         "properties": {}
       }
     },
+    "playbook_state_delete": {
+      "name": "playbook_state_delete",
+      "description": "Create a versioned KV tombstone with replay-safe CAS.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "operation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "key",
+          "expected_revision",
+          "operation_key"
+        ]
+      }
+    },
+    "playbook_state_get": {
+      "name": "playbook_state_get",
+      "description": "Read an invocation-owned typed key, including its retained revision.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "record_space": {
+            "enum": [
+              "kv",
+              "notification"
+            ]
+          }
+        },
+        "required": [
+          "key"
+        ]
+      }
+    },
+    "playbook_state_inspect": {
+      "name": "playbook_state_inspect",
+      "description": "Inspect an explicit namespace only under independent operator authority.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope_kind",
+              "scope_owner",
+              "playbook_id",
+              "state_schema_version"
+            ],
+            "properties": {
+              "scope_kind": {
+                "enum": [
+                  "system",
+                  "project",
+                  "profile"
+                ]
+              },
+              "scope_owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "playbook_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "state_schema_version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              }
+            }
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "record_space": {
+            "enum": [
+              "kv",
+              "notification"
+            ]
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "pagination": {
+            "enum": [
+              "snapshot"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "required": [
+          "namespace"
+        ]
+      }
+    },
+    "playbook_state_list": {
+      "name": "playbook_state_list",
+      "description": "Materialize immutable pre-scan state revisions and protected pages.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "record_space": {
+            "enum": [
+              "kv",
+              "notification"
+            ]
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "pagination": {
+            "enum": [
+              "snapshot"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "required": []
+      }
+    },
+    "playbook_state_reset": {
+      "name": "playbook_state_reset",
+      "description": "Operator reset: retain revisions/journals and warn of deliberate re-alert.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope_kind",
+              "scope_owner",
+              "playbook_id",
+              "state_schema_version"
+            ],
+            "properties": {
+              "scope_kind": {
+                "enum": [
+                  "system",
+                  "project",
+                  "profile"
+                ]
+              },
+              "scope_owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "playbook_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "state_schema_version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              }
+            }
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "operation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "\\S"
+          }
+        },
+        "required": [
+          "namespace",
+          "expected_revision",
+          "operation_key",
+          "reason"
+        ]
+      }
+    },
+    "playbook_state_set": {
+      "name": "playbook_state_set",
+      "description": "Set a private KV value using CAS and a retained operation key.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "value": {},
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "operation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "expected_revision",
+          "operation_key"
+        ]
+      }
+    },
     "plugin_config": {
       "name": "plugin_config",
       "description": "Get or set plugin configuration.",

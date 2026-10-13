@@ -956,6 +956,7 @@
         "tests/test_playbook_run_overlay.py",
         "tests/test_playbook_run_repository.py",
         "tests/test_playbook_services.py",
+        "tests/test_playbook_state.py",
         "tests/test_playbook_wait_repository.py",
         "tests/test_v2_dry_run.py",
         "tests/test_v2_engine.py",
@@ -12467,6 +12468,34 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_playbook_state.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d0e582a5178922699c667484f8d7c3590b756bb4401908e1fba17b07d766bdc7",
+      "imports": [
+        "src.commands.handler",
+        "src.commands.playbook_state_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.playbook_state_queries",
+        "src.database.tables",
+        "src.observations.snapshots",
+        "src.playbooks.artifact_store",
+        "src.playbooks.definition",
+        "src.playbooks.invocation",
+        "src.playbooks.private_values",
+        "src.playbooks.state",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "D1 state boundaries and transaction races against disposable PostgreSQL."
     },
     "tests/test_playbook_v2_api_dtos.py": {
       "areas": [

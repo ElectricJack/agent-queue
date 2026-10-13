@@ -355,6 +355,12 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`playbook_pending_event_action`](playbook_pending_event_action.md) | Playbook Pending Event Action | Dispatch or discard held pending events. |
 | [`playbook_pending_events`](playbook_pending_events.md) | Playbook Pending Events | List events held because no artifact could run them. |
 | [`playbook_run_overlay`](playbook_run_overlay.md) | Playbook Run Overlay | Return one run's execution overlay, pinned to the artifact it ran. |
+| [`playbook_state_delete`](playbook_state_delete.md) | Playbook State Delete | Create a versioned KV tombstone with replay-safe CAS. |
+| [`playbook_state_get`](playbook_state_get.md) | Playbook State Get | Read an invocation-owned typed key, including its retained revision. |
+| [`playbook_state_inspect`](playbook_state_inspect.md) | Playbook State Inspect | Inspect an explicit namespace only under independent operator authority. |
+| [`playbook_state_list`](playbook_state_list.md) | Playbook State List | Materialize immutable pre-scan state revisions and protected pages. |
+| [`playbook_state_reset`](playbook_state_reset.md) | Playbook State Reset | Operator reset: retain revisions/journals and warn of deliberate re-alert. |
+| [`playbook_state_set`](playbook_state_set.md) | Playbook State Set | Set a private KV value using CAS and a retained operation key. |
 | [`playbook_v2_graph`](playbook_v2_graph.md) | Playbook V2 Graph | Return the event-grouped semantic graph of one playbook artifact. |
 | [`playbook_v2_import`](playbook_v2_import.md) | Playbook V2 Import | Persist one mechanically validated V2 artifact bundle without activation. |
 | [`playbook_v2_propose`](playbook_v2_propose.md) | Playbook V2 Propose | Execute the playbook_v2_propose command. |

@@ -7,6 +7,7 @@ These are pure data — no logic.
 from __future__ import annotations
 
 from src.commands.doctor_observation_commands import CATALOG_SCHEMA, RUN_SCHEMA
+from src.commands.playbook_state_commands import STATE_SCHEMAS
 
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
@@ -8940,3 +8941,5 @@ for _definition in _ALL_TOOL_DEFINITIONS:
         _definition["input_schema"]["properties"].update(
             _SnapshotArgs.model_json_schema()["properties"]
         )
+
+_FALLBACK_INPUT_SCHEMAS.update(STATE_SCHEMAS)

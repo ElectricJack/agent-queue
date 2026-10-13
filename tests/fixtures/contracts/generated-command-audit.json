@@ -12114,6 +12114,244 @@
     },
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
   },
+  "playbook_state_delete": {
+    "mode": "json_object",
+    "producer": "src/commands/playbook_state_commands.py:PlaybookStateCommandsMixin._cmd_playbook_state_delete",
+    "source_digest": "sha256:de689acb59620157007edbe6c0ef444f06b0653ccae502729617a1cc9e8e3b01",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "expected_revision",
+      "key",
+      "operation_key"
+    ],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "invocation_namespace_or_operator"
+    ],
+    "denial_reason": null,
+    "result_policy": "explicit boolean success, metadata or protected state readback",
+    "return_branches": [
+      {
+        "return": "StateService get/list/mutate/reset result",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "StateError, PrivateValueError, SnapshotError or SQLAlchemyError",
+        "protocol": "explicit_boolean: False; safe error_code only"
+      }
+    ],
+    "tests": [
+      "tests/test_playbook_state.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+    },
+    "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
+  },
+  "playbook_state_get": {
+    "mode": "json_object",
+    "producer": "src/commands/playbook_state_commands.py:PlaybookStateCommandsMixin._cmd_playbook_state_get",
+    "source_digest": "sha256:c96227d41ccd0a67fe50dd321627a4de31d4c101684e42cb772aaf6acb003aad",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "key",
+      "record_space"
+    ],
+    "effect": "read",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "invocation_namespace_or_operator"
+    ],
+    "denial_reason": null,
+    "result_policy": "explicit boolean success, metadata or protected state readback",
+    "return_branches": [
+      {
+        "return": "StateService get/list/mutate/reset result",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "StateError, PrivateValueError, SnapshotError or SQLAlchemyError",
+        "protocol": "explicit_boolean: False; safe error_code only"
+      }
+    ],
+    "tests": [
+      "tests/test_playbook_state.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+    },
+    "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
+  },
+  "playbook_state_inspect": {
+    "mode": "json_object",
+    "producer": "src/commands/playbook_state_commands.py:PlaybookStateCommandsMixin._cmd_playbook_state_inspect",
+    "source_digest": "sha256:686a53ad690146f4d3a0dcf094a3456e0abbecd8c8cee54bd2cbf1c5c35114ba",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "key",
+      "namespace",
+      "page_size",
+      "page_token",
+      "pagination",
+      "prefix",
+      "record_space",
+      "snapshot_id"
+    ],
+    "effect": "read",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "invocation_namespace_or_operator"
+    ],
+    "denial_reason": null,
+    "result_policy": "explicit boolean success, metadata or protected state readback",
+    "return_branches": [
+      {
+        "return": "StateService get/list/mutate/reset result",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "StateError, PrivateValueError, SnapshotError or SQLAlchemyError",
+        "protocol": "explicit_boolean: False; safe error_code only"
+      }
+    ],
+    "tests": [
+      "tests/test_playbook_state.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+    },
+    "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
+  },
+  "playbook_state_list": {
+    "mode": "json_object",
+    "producer": "src/commands/playbook_state_commands.py:PlaybookStateCommandsMixin._cmd_playbook_state_list",
+    "source_digest": "sha256:78d896d38591e19491f15688ebdda772526f732bb5d8ae3958b386a502210e74",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "page_size",
+      "page_token",
+      "pagination",
+      "prefix",
+      "record_space",
+      "snapshot_id"
+    ],
+    "effect": "read",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "invocation_namespace_or_operator"
+    ],
+    "denial_reason": null,
+    "result_policy": "explicit boolean success, metadata or protected state readback",
+    "return_branches": [
+      {
+        "return": "StateService get/list/mutate/reset result",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "StateError, PrivateValueError, SnapshotError or SQLAlchemyError",
+        "protocol": "explicit_boolean: False; safe error_code only"
+      }
+    ],
+    "tests": [
+      "tests/test_playbook_state.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+    },
+    "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
+  },
+  "playbook_state_reset": {
+    "mode": "json_object",
+    "producer": "src/commands/playbook_state_commands.py:PlaybookStateCommandsMixin._cmd_playbook_state_reset",
+    "source_digest": "sha256:1782fbdce16b75d83498048deaee7dbf9ff3a26c8fdbb994acd4d5060fd8cbeb",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "expected_revision",
+      "namespace",
+      "operation_key",
+      "reason"
+    ],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "invocation_namespace_or_operator"
+    ],
+    "denial_reason": null,
+    "result_policy": "explicit boolean success, metadata or protected state readback",
+    "return_branches": [
+      {
+        "return": "StateService get/list/mutate/reset result",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "StateError, PrivateValueError, SnapshotError or SQLAlchemyError",
+        "protocol": "explicit_boolean: False; safe error_code only"
+      }
+    ],
+    "tests": [
+      "tests/test_playbook_state.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+    },
+    "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
+  },
+  "playbook_state_set": {
+    "mode": "json_object",
+    "producer": "src/commands/playbook_state_commands.py:PlaybookStateCommandsMixin._cmd_playbook_state_set",
+    "source_digest": "sha256:baeacc7bcc2b45b609846495d274ff6f294baf2bb4baf4f54d85fee308de452e",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "expected_revision",
+      "key",
+      "operation_key",
+      "ttl_seconds",
+      "value"
+    ],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "invocation_namespace_or_operator"
+    ],
+    "denial_reason": null,
+    "result_policy": "explicit boolean success, metadata or protected state readback",
+    "return_branches": [
+      {
+        "return": "StateService get/list/mutate/reset result",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "StateError, PrivateValueError, SnapshotError or SQLAlchemyError",
+        "protocol": "explicit_boolean: False; safe error_code only"
+      }
+    ],
+    "tests": [
+      "tests/test_playbook_state.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+    },
+    "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
+  },
   "playbook_v2_graph": {
     "mode": "json_object",
     "producer": "src/commands/playbook_v2_commands.py:PlaybookV2CommandsMixin._cmd_playbook_v2_graph",
