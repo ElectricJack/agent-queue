@@ -94,6 +94,56 @@ def _row_to_message(row) -> Message:
     )
 
 
+def _same_conversation(msg: Message):
+    """Rows of *msg*'s conversation: its project, thread, sender and recipient."""
+    return and_(
+        messages.c.project_id == msg.project_id,
+        messages.c.thread_id == msg.thread_id,
+        messages.c.from_kind == msg.from_kind,
+        messages.c.from_id == msg.from_id,
+        messages.c.to_kind == msg.to_kind,
+        messages.c.to_id == msg.to_id,
+    )
+
+
+def _reply_covering(msg: Message):
+    """Select a reply to *msg*, or a transcript-tail reply to a newer delivery
+    in its conversation (see :meth:`MessageQueriesMixin.has_reply_covering_message`)."""
+    reply = messages.alias("reply")
+    covered = False
+    if msg.delivered_at is not None:
+        covered = and_(
+            reply.c.via == "transcript_tail",
+            _same_conversation(msg),
+            messages.c.delivered_at >= msg.delivered_at,
+        )
+    return select(reply.c.id).select_from(
+        messages.join(reply, reply.c.reply_to_id == messages.c.id)
+    ).where(or_(reply.c.reply_to_id == msg.id, covered)).limit(1)
+
+
+def _competing_delivery(msg: Message, window: float):
+    """Select a row from another conversation delivered to *msg*'s recipient
+    within *window* seconds either side of *msg*'s delivery.
+
+    Any sender and kind counts, notices and archived rows included: each can
+    prompt the turn a transcript tail would otherwise attribute to *msg*.
+    """
+    return select(messages.c.id).where(
+        messages.c.to_kind == msg.to_kind,
+        messages.c.to_id == msg.to_id,
+        messages.c.id != msg.id,
+        messages.c.delivered_at > msg.delivered_at - window,
+        messages.c.delivered_at < msg.delivered_at + window,
+        or_(
+            messages.c.project_id.is_distinct_from(msg.project_id),
+            messages.c.thread_id.is_distinct_from(msg.thread_id),
+            messages.c.from_kind != msg.from_kind,
+            messages.c.from_id != msg.from_id,
+        ),
+    ).limit(1)
+
+
 class MessageQueriesMixin:
     """Query mixin for ``messages``.  Expects ``self._engine``."""
 
@@ -199,6 +249,14 @@ class MessageQueriesMixin:
             pane_open=pane_open,
         )
         async with self._engine.begin() as conn:
+            if msg.reply_to_id is not None:
+                # Serialise with the transcript-tail sweep, which re-checks
+                # for a reply under the same lock before fabricating one.
+                await conn.execute(
+                    select(messages.c.id)
+                    .where(messages.c.id == msg.reply_to_id)
+                    .with_for_update()
+                )
             msg.to_kind, msg.to_id = await self._supervisor_recipient(
                 conn, msg.to_kind, msg.to_id, msg.project_id,
             )
@@ -549,24 +607,75 @@ class MessageQueriesMixin:
         rather than a per-pass cache or a truncated recent-message scan. A later
         incoming delivery remains eligible even if its answer has identical text.
         """
-        reply = messages.alias("reply")
-        covered = False
-        if msg.delivered_at is not None:
-            covered = and_(
-                reply.c.via == "transcript_tail",
-                messages.c.project_id == msg.project_id,
-                messages.c.thread_id == msg.thread_id,
-                messages.c.from_kind == msg.from_kind,
-                messages.c.from_id == msg.from_id,
-                messages.c.to_kind == msg.to_kind,
-                messages.c.to_id == msg.to_id,
-                messages.c.delivered_at >= msg.delivered_at,
-            )
-        stmt = select(reply.c.id).select_from(
-            messages.join(reply, reply.c.reply_to_id == messages.c.id)
-        ).where(or_(reply.c.reply_to_id == msg.id, covered)).limit(1)
         async with self._engine.begin() as conn:
-            return (await conn.execute(stmt)).first() is not None
+            return (await conn.execute(_reply_covering(msg))).first() is not None
+
+    async def create_transcript_tail_reply(
+        self, request: Message, *, body: str, attribution_window: float,
+    ) -> Message | None:
+        """Insert *request*'s transcript-tail reply, or ``None`` if none is owed.
+
+        One transaction locks the request row (``create_message`` takes the
+        same lock for a native reply), then re-checks, in order: the request is
+        still delivered and unarchived; no reply covers it; and no message from
+        another conversation reached the same recipient within
+        *attribution_window* of its delivery. A transcript turn carries no
+        message correlation, so with a second conversation in flight the turn
+        cannot be bound to either, and replaying it to both would invent an
+        answer for at least one (2026-10-12). The reply is inserted already
+        delivered, so no undelivered fabricated row survives a lost race.
+        """
+        reply = Message(
+            id=_new_message_id(),
+            project_id=request.project_id,
+            from_kind="session",
+            from_id=request.to_id,
+            to_kind=request.from_kind,
+            to_id=request.from_id,
+            body=body,
+            thread_id=request.thread_id,
+            created_at=time.time(),
+            reply_to_id=request.id,
+            delivered_at=time.time(),
+            via="transcript_tail",
+        )
+        async with self._engine.begin() as conn:
+            locked = (await conn.execute(
+                select(messages.c.delivered_at)
+                .where(messages.c.id == request.id, messages.c.archived_at.is_(None))
+                .with_for_update()
+            )).first()
+            if locked is None or locked.delivered_at != request.delivered_at:
+                return None
+            if (await conn.execute(_reply_covering(request))).first() is not None:
+                return None
+            if (await conn.execute(
+                _competing_delivery(request, attribution_window)
+            )).first() is not None:
+                return None
+            result = await conn.execute(
+                insert(messages).values(
+                    id=reply.id,
+                    project_id=reply.project_id,
+                    from_kind=reply.from_kind,
+                    from_id=reply.from_id,
+                    to_kind=reply.to_kind,
+                    to_id=reply.to_id,
+                    thread_id=reply.thread_id,
+                    subject=None,
+                    body=reply.body,
+                    priority=reply.priority,
+                    created_at=reply.created_at,
+                    delivered_at=reply.delivered_at,
+                    read_at=None,
+                    archive_after_inject=0,
+                    archived_at=None,
+                    reply_to_id=reply.reply_to_id,
+                    via=reply.via,
+                ).returning(messages.c.created_seq)
+            )
+            reply.created_seq = result.scalar_one()
+        return reply
 
     async def list_messages(
         self,
