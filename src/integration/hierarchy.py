@@ -88,12 +88,14 @@ async def missing_origin_tasks_on(conn, project_id: str, repository_id: str) -> 
     verifier = select(integration_repair_operations.c.id).where(
         integration_repair_operations.c.verifier_task_id == tasks.c.id,
     ).exists()
-    ordinary_repair = select(task_context.c.id).join(
+    # Keep tasks outside the join: a repair in another row/project must not
+    # suppress all candidates through an uncorrelated EXISTS.
+    ordinary_repair = select(task_context.c.id).select_from(task_context).join(
         integration_batches, integration_batches.c.id == tasks.c.created_by_id,
     ).where(
         tasks.c.created_by_kind == "system", tasks.c.dedup_key.startswith("repair:"),
         task_context.c.task_id == tasks.c.id, task_context.c.label == "Repair input",
-    ).exists()
+    ).correlate(tasks).exists()
 
     recorded_commits = select(task_completion_records.c.id).where(
         task_completion_records.c.task_id == tasks.c.id,

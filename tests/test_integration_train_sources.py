@@ -205,8 +205,46 @@ def legacy_hierarchy(world):
                                branch_materializer=materialize)
 
 
+@pytest.fixture(params=["p", "other"])
+async def origin_backfill_repair(world, request):
+    """A subject-branch delegate must exclude only itself from origin adoption."""
+    from src.database.tables import task_context
+
+    db = world.db
+    project_id = request.param
+    repository_id = "r" if project_id == "p" else "other-repo"
+    if project_id != "p":
+        await db.create_project(Project(id=project_id, name="unrelated repair project"))
+        await db.create_repo(RepoConfig(
+            id=repository_id, project_id=project_id, source_type=RepoSourceType.LINK,
+            source_path=str(world.origin.clone),
+        ))
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="origin-backfill-batch", project_id=project_id, repository_id=repository_id,
+            request_id="origin-backfill-repair", source_manifest_digest="test", lifecycle="repairing",
+            base_sha="a" * 40, integration_branch="aq/integration/origin-backfill-batch",
+            policy_snapshot={}, artifact_snapshot={}, cleanup_state="pending",
+            created_at=1.0, updated_at=1.0,
+        ))
+    await db.create_task(Task(
+        id="origin-backfill-repair", project_id=project_id, repo_id=repository_id,
+        title="repair candidate", description="ordinary repair", status=TaskStatus.READY,
+        branch_name="aq/integration/origin-backfill-batch", created_by_kind="system",
+        created_by_id="origin-backfill-batch", dedup_key="repair:origin-backfill-batch:1",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_context).values(
+            id="origin-backfill-repair-input", task_id="origin-backfill-repair", type="text",
+            label="Repair input", content="{}", created_at=1.0,
+        ))
+    return "origin-backfill-repair"
+
+
 @pytest.mark.parametrize("previous,mode", [("observe", "train"), ("disabled", "hierarchy")])
-async def test_mode_activation_backfills_legacy_frontier_and_completed_sources(world, previous, mode):
+async def test_mode_activation_backfills_legacy_frontier_and_completed_sources(
+    world, previous, mode, origin_backfill_repair,
+):
     from src.database.queries.hierarchy_queries import materialized_origin_when_hierarchical
     from src.database.tables import task_integration_checkpoints
     from src.integration.hierarchy import missing_origin_tasks_on
@@ -223,6 +261,10 @@ async def test_mode_activation_backfills_legacy_frontier_and_completed_sources(w
         if tid != "reserved":
             heads[tid] = origin.work(tid)
     await close(db, "done", [heads["done"]], origin=origin)
+    async with db._engine.connect() as conn:
+        assert await missing_origin_tasks_on(conn, "p", "r") == [
+            "done", "ready", "reserved", "working",
+        ]
     before_refs = git(origin.clone, "ls-remote", "origin")
     hierarchy = legacy_hierarchy(world)
     activation = PolicyActivation(db, hierarchy_service_factory=lambda: hierarchy)
@@ -238,7 +280,8 @@ async def test_mode_activation_backfills_legacy_frontier_and_completed_sources(w
             select(task_integration_checkpoints))).mappings()}
         assert await missing_origin_tasks_on(conn, "p", "r") == []
         admitted = set((await conn.execute(select(tasks.c.id).where(
-            materialized_origin_when_hierarchical()))).scalars())
+            tasks.c.project_id == "p", materialized_origin_when_hierarchical()))).scalars())
+    assert origin_backfill_repair not in origins
     assert admitted == {"ready", "working", "done"}
     for tid, head in heads.items():
         assert origins[tid]["materialized"] is True
@@ -373,7 +416,7 @@ async def test_origin_backfill_refuses_to_resurrect_retired_ancestor(world):
     assert (await world.db.get_task("child")).branch_name is None
 
 
-async def test_doctor_origin_backfill_repairs_through_fenced_command(world):
+async def test_doctor_origin_backfill_repairs_through_fenced_command(world, origin_backfill_repair):
     from src.doctor.integration_checks import _BY_ID
     from src.doctor.models import DoctorContext, Severity
     from src.integration.records import PolicyActivation
@@ -399,6 +442,8 @@ async def test_doctor_origin_backfill_repairs_through_fenced_command(world):
     assert calls[0][0] == "edit_project" and calls[0][1]["expected_integration_generation"] == 0
     assert (await check.fix(ctx)).severity == Severity.OK
     assert len(calls) == 1
+    async with world.db._engine.connect() as conn:
+        assert (await conn.execute(select(task_branch_origins.c.task_id))).scalars().all() == ["legacy"]
 
 
 class SealedBatches(DatabaseBatches):
