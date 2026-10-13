@@ -9,7 +9,6 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import delete, insert, select, update
 
-from src.database import Database
 from src.git.manager import GitManager
 from src.database.tables import events, projects
 from src.database.tables import task_dependencies, tasks
@@ -19,7 +18,6 @@ from src.integration.development import (
 from src.models import (
     Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus,
 )
-from tests.db_fixtures import lease_dsn
 
 
 def git(path, *args):
@@ -29,7 +27,7 @@ def git(path, *args):
 
 
 @pytest.fixture
-async def setup(tmp_path, monkeypatch):
+async def setup(tmp_path, monkeypatch, reuse_database):
     remote = tmp_path / "remote.git"
     git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
     source = tmp_path / "source"
@@ -40,8 +38,7 @@ async def setup(tmp_path, monkeypatch):
     git(source, "add", ".")
     git(source, "commit", "-m", "base")
     git(source, "push", "origin", "main")
-    db = Database(lease_dsn("development.db"))
-    await db.initialize()
+    db = await reuse_database("development.db")
     await db.create_project(Project(id="p", name="Development"))
     repo = RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE, url=str(remote))
     await db.create_repo(repo)
@@ -57,7 +54,6 @@ async def setup(tmp_path, monkeypatch):
                             hierarchical_integration_policy={"validation": "focused",
                                                              "commands": ["test -f base.txt"]})
     yield db, service, source, remote, repo
-    await db.close()
 
 
 async def _admission_blocked(setup, task_id):

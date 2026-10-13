@@ -649,14 +649,11 @@ def test_typed_green_cannot_claim_failure_cancellation_or_untrusted_evidence():
 
 
 @pytest.fixture
-async def ci_producer_db():
+async def ci_producer_db(reuse_database):
     from sqlalchemy import insert
-    from src.database import Database
     from src.database.tables import playbook_artifacts
-    from tests.db_fixtures import lease_dsn
 
-    db = Database(lease_dsn("ci-producers"))
-    await db.initialize()
+    db = await reuse_database("ci-producers")
     pin = subject().policy
     async with db._engine.begin() as conn:
         await conn.execute(
@@ -671,7 +668,6 @@ async def ci_producer_db():
             )
         )
     yield db
-    await db.close()
 
 
 async def test_real_journal_replay_is_append_only_and_never_counts_budget(ci_producer_db):

@@ -6,6 +6,7 @@ import pytest
 from src.doctor import default_registry
 from src.doctor.models import DoctorContext, Severity
 from src.models import Project
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_promotion_steps import promotion as promotion, setup as setup
 # integration.trust (App-mode integration train spec §9.6)
 # ---------------------------------------------------------------------------

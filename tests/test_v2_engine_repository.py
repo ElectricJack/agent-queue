@@ -20,7 +20,6 @@ from sqlalchemy import insert
 
 from src.commands.contracts.models import CommandResult
 from src.commands.principal import TRUSTED_LOCAL
-from src.database import Database
 from src.database.tables import playbook_artifacts
 from src.playbooks.engine import (
     EventArrived,
@@ -47,18 +46,15 @@ from tests.playbook_v2_engine_helpers import (
     event,
     load_artifact,
 )
-from tests.db_fixtures import lease_dsn
 
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 NOW = 1_000_000.0
 
 
 @pytest.fixture
-async def db(request, tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 async def seed_artifact(database, ref) -> None:

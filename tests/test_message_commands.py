@@ -17,11 +17,9 @@ from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.commands.message_commands import MESSAGES_DISABLED_ERROR, message_to_dict
 from src.config import MessagesConfig
-from src.database import Database
 from src.event_schemas import validate_payload
 from src.messages.delivery import MessageDeliveryEngine
 from src.models import Agent, AgentState, Message, Project, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 class _RecordingBus:
@@ -40,9 +38,8 @@ class _RecordingBus:
 
 
 @pytest.fixture
-async def setup(tmp_path):
-    db = Database(lease_dsn("messages.db"))
-    await db.initialize()
+async def setup(reuse_database):
+    db = await reuse_database("messages.db")
     await db.create_project(Project(id="p1", name="test", supervisor_enabled=True))
 
     bus = _RecordingBus()
@@ -57,7 +54,6 @@ async def setup(tmp_path):
     handler = CommandHandler(orch, config)
     handler._active_project_id = None
     yield handler, db, bus
-    await db.close()
 
 
 def _send_args(**overrides) -> dict:

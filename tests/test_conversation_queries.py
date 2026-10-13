@@ -20,18 +20,15 @@ from src.database.tables import (
     messages,
     supervisor_conversations,
 )
-from tests.db_fixtures import lease_dsn
 
 AUTHOR = "111111111111111111"
 CHANNEL = "222222222222222222"
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("conversation-queries"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("conversation-queries")
     yield database
-    await database.close()
 
 
 def accept_args(**overrides) -> dict:

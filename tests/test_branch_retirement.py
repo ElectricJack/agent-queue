@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import delete, insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     branch_deletion_audit, branch_retirements, integration_batches,
     integration_branch_owners, projects, tasks,
@@ -26,7 +25,6 @@ from src.integration.batches import Batch, BatchMember, BatchStore, candidate_re
 from src.integration.train_sources import RETAINED_CANDIDATE_PREFIX
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from src.sessions.obsolete import ObsoleteClose
-from tests.db_fixtures import lease_dsn
 
 BRANCH = "aq/retired"
 BINDING = GitHubRepositoryBinding(1234, "example/project")
@@ -60,7 +58,7 @@ class LocalTransport(GitManager):
 
 
 @pytest.fixture
-async def setup(tmp_path):
+async def setup(tmp_path, reuse_database):
     remote, checkout = tmp_path / "remote.git", tmp_path / "checkout"
     git = LocalTransport(remote)
     await git._arun(["init", "--bare", "--template=", str(remote)], cwd=str(tmp_path))
@@ -77,8 +75,7 @@ async def setup(tmp_path):
     await git._arun(["push", "origin", BRANCH], cwd=str(checkout))
     head = await git.arev_parse(str(checkout), BRANCH)
     await git._arun(["checkout", "main"], cwd=str(checkout))
-    db = Database(lease_dsn("branch-retirement"))
-    await db.initialize()
+    db = await reuse_database("branch-retirement")
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(RepoConfig(
         id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=str(remote),
@@ -101,7 +98,6 @@ async def setup(tmp_path):
         github_repository_binding_resolver=lambda repository: BINDING,
     )
     yield db, git, service, checkout, remote, head
-    await db.close()
 
 
 async def request(db, *, request_id="decision", reason="abandoned"):

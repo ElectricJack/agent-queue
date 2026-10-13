@@ -26,9 +26,8 @@ pytestmark = pytest.mark.usefixtures("unpooled_postgres")
 
 
 @pytest.fixture
-async def handler(tmp_path):
-    db = Database(lease_dsn("relay.db"))
-    await db.initialize()
+async def handler(reuse_database):
+    db = await reuse_database("relay.db")
     await db.create_project(Project(id="agent-queue", name="Agent Queue"))
 
     bus = MagicMock()
@@ -41,7 +40,6 @@ async def handler(tmp_path):
     config.messages = MessagesConfig(enabled=True)
 
     yield CommandHandler(orch, config)
-    await db.close()
 
 
 @pytest.fixture

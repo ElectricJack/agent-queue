@@ -24,7 +24,6 @@ from src.playbooks.definition import PlaybookDefinition
 from src.playbooks.engine import ChildTaskReconciler, PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
-from tests.db_fixtures import lease_dsn
 from tests.fixtures.contracts.engine_contracts import registry_with
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.playbook_v2_engine_helpers import StubActivations, artifact_ref_for
@@ -57,12 +56,10 @@ class ProfiledDatabase:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("child_task_reconciler"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("child_task_reconciler")
     await database.create_project(Project(id="p", name="Project"))
     yield database
-    await database.close()
 
 
 async def seed_artifact(database: Database, ref: Any) -> None:

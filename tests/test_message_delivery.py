@@ -22,13 +22,11 @@ from sqlalchemy import insert
 from sqlalchemy import update as sa_update
 
 from src.config import MessagesConfig
-from src.database import Database
 from src.database.tables import messages
 from src.event_bus import EventBus
 from src.messages.delivery import PARK_AFTER_SECONDS, MessageDeliveryEngine
 from src.messages.service import MessageDeliveryService
 from src.models import Project, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 # --------------------------------------------------------------------------
 # Fixtures / fakes
@@ -36,12 +34,10 @@ from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("delivery.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("delivery.db")
     await database.create_project(Project(id="p1", name="p1", supervisor_enabled=True))
     yield database
-    await database.close()
 
 
 @dataclass

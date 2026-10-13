@@ -22,7 +22,6 @@ from src.database.tables import (
 from src.digest import DigestWindow, build_digest
 from src.digest.facts import KIND_PROVIDER
 from src.models import Project, SessionRecord, Task, TaskCompletion
-from tests.db_fixtures import lease_dsn
 
 NOW = 2_000_000.0
 HOUR = 3600.0
@@ -30,13 +29,11 @@ WINDOW = DigestWindow(since=NOW - HOUR, until=NOW)
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("digest.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("digest.db")
     await database.create_project(Project(id="p", name="Agent Queue"))
     await database.create_project(Project(id="other", name="Other"))
     yield database
-    await database.close()
 
 
 async def make_task(db, task_id, *, project_id="p", status="COMPLETED", title=None):

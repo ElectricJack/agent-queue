@@ -106,7 +106,6 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     events,
     integration_batches,
@@ -164,8 +163,8 @@ from src.integration.train_sources import (
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from src.test_selection import catalogue as Catalogue
-from tests.db_fixtures import lease_dsn
 from tests.test_delivery_consumers import Origin, close, git
+from tests.test_delivery_consumers import origin_template as origin_template
 from tests.test_integration_gitops import LocalGit, commit, inherited_source
 from tests.test_jobs import finish, job_rows, jobs_handler, pin_development
 
@@ -245,10 +244,9 @@ def catalogue_branch(origin: Origin, tid: str, module: str) -> str:
 
 
 @pytest.fixture
-async def world(tmp_path):
-    origin = Origin(tmp_path)
-    db = Database(lease_dsn("train-sources"))
-    await db.initialize()
+async def world(tmp_path, reuse_database, origin_template):
+    origin = Origin(tmp_path, template=origin_template)
+    db = await reuse_database("train-sources")
     await db.create_project(Project(id="p", name="Train"))
     await db.create_repo(
         RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE, url=origin.url)
@@ -261,7 +259,6 @@ async def world(tmp_path):
     truth = GitTruth(GitManager())
     db.set_delivery_observer(DeliveryObserver(db, git=truth.git, data_dir=tmp_path, truth=truth))
     yield SimpleNamespace(db=db, origin=origin, truth=truth)
-    await db.close()
 
 
 async def completed(world, tid, *, parent=None, needs=(), land=False, done=True,

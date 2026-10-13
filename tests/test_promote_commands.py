@@ -37,6 +37,7 @@ from src.integration.delivery_observer import delivery_targets
 from src.integration.promotion_steps import cache_promotion_review, promotion_ref
 from src.integration.train import TrainLane
 from src.profiles.capabilities import DENY_ALL
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git
 from tests.test_integration_gitops import setup as setup
 from tests.test_promotion_steps import PromotionGitHub

@@ -1953,9 +1953,8 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:980eedc84b4d7ed8093999ccd83c8dc3f07e765e9a2af5114436c14c48d66bd2",
+      "digest": "sha256:3792bf15546e0abe9a8e1ebc73359f69d55df68dff1dbc7c262898c684601a9a",
       "imports": [
-        "src.database",
         "src.models",
         "src.playbooks.artifact_ref",
         "src.playbooks.services"
@@ -2963,9 +2962,8 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:4a8b60601c036289ac2e2f5a4b355e2b6163d4e3e2e7ba4e736817058472b090",
+      "digest": "sha256:6e5dc5af15d2cb09fea81b1550ec6eacb89b587c73b5eb9200845d2b75b56456",
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.git.github_app",
         "src.git.manager",
@@ -2996,9 +2994,8 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:5380253282498d18518588bd2b5719f60177ffcc0ace0003aec2958671dff1de",
+      "digest": "sha256:441a756dce8eef3ec79bed85bd3026b1fc89a21b469ec839282b7271bad7ca04",
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
@@ -3019,9 +3016,8 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:47ebb7d2a0ddb85ac4892797ac647dd96a9831079e70d742369aaf63149e11fa",
+      "digest": "sha256:9735d18a14c64b32ad5a47b8a28e9c175b6837ea0c9ddedab44c5dae2a1e4be8",
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.git.manager",
         "src.integration",
@@ -3054,12 +3050,11 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:2cdfe6da2e3504ae7b66b91db67b1710ee2e218f0c392527590c68f4a469bbc6",
+      "digest": "sha256:fedc61cb29afe255b42b7b01275879c125d737de3f5dad430867f3dcc38d97f0",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.task_commands",
-        "src.database",
         "src.database.tables",
         "src.integration.canonical_reservation",
         "src.models",
@@ -3206,14 +3201,13 @@
         "ci-sentinel"
       ],
       "default_arm": true,
-      "digest": "sha256:9db6b8a2c90d3ff0436d372aef2fc9d562f6cd5eed6a2f9f96ad164f4fbd928c",
+      "digest": "sha256:7f889a7670b9a140192e6903f1fe6c327e62440ced52f45f0eef2970b8d2ce2a",
       "imports": [
         "src.commands.ci_commands",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.git.github_contracts",
         "src.git.manager",
         "src.models",
@@ -3227,7 +3221,7 @@
         "ci-sentinel"
       ],
       "default_arm": true,
-      "digest": "sha256:bc10a30134c968e1cc6850f411522c08598198187bd955ee8f04143e908c65ca",
+      "digest": "sha256:518fd6fcdd9606babb3a554de1dc933dd7c68a36487db2dec75a87109dfd9370",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -3235,7 +3229,6 @@
         "src.commands.contracts.builtin",
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.completion_ci",
@@ -4014,11 +4007,10 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:75e55f2888d6b0028c17f3b3c7bd08f2b0866def8d61182d22f7759c568ddab4",
+      "digest": "sha256:95127de3cedd5a3ac6953829e67593e80595369da5045aa528cc46867c4dbab8",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.git.manager",
         "src.models",
         "src.orchestrator"
@@ -4586,14 +4578,13 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:5f8aecb3d5acf6d73905681d49800934768dc54b3a709be83d0d7ee4d48265ed",
+      "digest": "sha256:33a2eb307f81141e972f6f19bfa0efdeb8d7aa56a318b6eec9d87a3e24fc505c",
       "imports": [
         "src.commands.handler",
         "src.config",
         "src.conversations.backfill",
         "src.conversations.outbox",
         "src.conversations.preconditions",
-        "src.database",
         "src.discord.bot",
         "src.discord.escalation_intake",
         "src.discord.escalation_transport",
@@ -4645,14 +4636,13 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:3d907fd2110546e43a5e3f3974fd457871b3714f2f4c9440164dd9cbb6ba37c6",
+      "digest": "sha256:66011017404a8aac00c81de2b401bb8f40818af0ed7abe49b3c40c129b0d316d",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
         "src.conversations.maintenance",
         "src.conversations.outbox",
-        "src.database",
         "src.database.tables",
         "src.orchestrator"
       ],
@@ -5337,9 +5327,8 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:c04ba82f0703eca94aabe89b6babf86163a4a011d15a7fefa68c6916d37eb9f8",
+      "digest": "sha256:45bfe2d3f05e7ae2297435b2be355210a784fa807d0f648155443afe9ea0aaf5",
       "imports": [
-        "src.database",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.models",
@@ -5428,10 +5417,9 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:f1920ac66885883b4994e8915359f604a1b8b57abf38b4216e842414d49ece7d",
+      "digest": "sha256:1a2bdc5659f6c2a33dd1f5b5ce5aba3c087f8d064a6abfb8055da5ebaa6ce51d",
       "imports": [
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.digest",
         "src.digest.dispatch",
@@ -5468,12 +5456,11 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:52043cd94dc7b34e3daf9d77b22e0a364e9082c8f248dcaad38e0dc94b089d61",
+      "digest": "sha256:2ec246143bd456edddd859ec72d15f83e654de740a9f7b38d964bc8d01f4a2a5",
       "imports": [
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.digest",
         "src.digest.supervisor",
@@ -5523,10 +5510,9 @@
         "discord"
       ],
       "default_arm": true,
-      "digest": "sha256:af73508afbc390283180c59751265865f9a8ef2256813e57b600ea22fe59b3d6",
+      "digest": "sha256:4fb4e92c04ba2c0ecc4586ce2968006cb9cd7328561bb607aa820b752c426eff",
       "imports": [
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.discord.cutover",
         "src.models"
@@ -5557,11 +5543,10 @@
         "discord"
       ],
       "default_arm": true,
-      "digest": "sha256:35403a9b2f367489bd1e2b59de8b02c5842018c9afdbec1fc7c5e4bc121af172",
+      "digest": "sha256:e79b8addc54c54d2628d8aced86658b2394ea76be7f7947402886f23a5828a0b",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.database.queries.escalation_queries",
         "src.discord.bot",
         "src.discord.escalation_buttons",
@@ -5610,11 +5595,10 @@
         "discord"
       ],
       "default_arm": true,
-      "digest": "sha256:1c5d28684c2773eba4050b1a406655605da30010c83026559d51045dd343c382",
+      "digest": "sha256:83bbf0f7c603693bdd38a8a7c9797bc894c9422316d39cef8f64de9347a8f843",
       "imports": [
         "src.commands.principal",
         "src.config",
-        "src.database",
         "src.discord.bot",
         "src.discord.escalation_intake",
         "src.discord.inbound",
@@ -6143,9 +6127,8 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f003a9c76acac82f38685803c89c6b7a9c82f30629fd751f3f5ba8f9e5715b41",
+      "digest": "sha256:7978efbeddac5daff776ead2e25024e13cbf6f7c96ad69a5a734100fc5963108",
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.integration.epic_branch",
         "src.models"
@@ -6180,9 +6163,8 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:6c2367076c8ed3c214543c545a8f7c5bc4be387f8d81220aad379e4eddcc2078",
+      "digest": "sha256:93a62bf75776822f597ead9887195351471e324fd488aff58d99db2809e24dd9",
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.task_graph.integration_dependencies"
       ],
@@ -6194,9 +6176,8 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:15172db97e50f44f870c48a068103c179542abf9acc41b2f5ebc461e5fd30a77",
+      "digest": "sha256:3c52821af30a19a14973b1fabf1f9710f1d09d29cf606490b5ed2e17134d6ea3",
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.git.github_contracts",
         "src.integration.records",
@@ -6213,11 +6194,10 @@
         "epic-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:27ef2272757c7b2b846ebca6beeef47c03d1e6fd70f33d712bbf658aa65bd8a4",
+      "digest": "sha256:abd9ffa147e9fcdec6027118c9d46194254ef908633908eec891b89efe43199e",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.github_contracts",
@@ -6259,11 +6239,10 @@
         "escalations"
       ],
       "default_arm": true,
-      "digest": "sha256:96644c6166bcd864319c8a5d8a151aa7941792e1216fe593f86ef0b228cc65f7",
+      "digest": "sha256:f071a4d0180b1f1ed270c1ec72d8235a271aef41cc7bcb5b76f6ba6c7f045ac7",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.event_bus",
         "src.models",
         "src.orchestrator"
@@ -6342,10 +6321,9 @@
         "escalations"
       ],
       "default_arm": true,
-      "digest": "sha256:5f5e6f2743cc24c5192847cd9cccbedddc9b275c1bd0db82eaa3c6c4b5d9dfcb",
+      "digest": "sha256:2c4dbf85bf13917c5b75cde5c91c271d42d02e712e10afdc4ae7c73e2461ed6b",
       "imports": [
         "src.config",
-        "src.database",
         "src.database.queries.escalation_queries",
         "src.database.tables",
         "src.escalations",
@@ -6364,10 +6342,9 @@
         "escalations"
       ],
       "default_arm": true,
-      "digest": "sha256:c183f0014e0e47f40a4c60d1c6b7fe7aa191b1f738f03bd1a163421bdfb0df94",
+      "digest": "sha256:92ae4a0691a0cb6d38aba645d0e2ad70d5ded1db7d2c9be1c62a159de6173a7c",
       "imports": [
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.doctor.escalation_checks",
         "src.doctor.models",
@@ -8021,11 +7998,10 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:05aac5cd38237bdaa8f94b0e523928257939d27907ad510f51989c108781c0e4",
+      "digest": "sha256:a49811f6c6e7a906859ba8d0a282571c847e120e96077c17ebebffdbbd073bc6",
       "imports": [
         "src.commands.job_commands",
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
@@ -8253,9 +8229,8 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:191c23072dd433680b50ab3b33457f31ae6bcc82aaf219715a9d9df85e0cd0d2",
+      "digest": "sha256:9eb31975bc123a9ee40523a8146a847f9fc1f231ec2f9d7efc9b6cf0f19f0f06",
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
@@ -8700,9 +8675,8 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a18a7689cbe5ae206959f27af16ce65dbb2855a18133d0e7d23467ed50e0e0e4",
+      "digest": "sha256:831b628c3bca611b189d05921fec07f2dbc3b8039c86d15df63191df1c7222f7",
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.integration.gates",
         "src.integration.records",
@@ -9166,13 +9140,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:af4258f5703c2b447dc6ac6bee2625e699f2fdf1f9ed060c754216b9c0518ede",
+      "digest": "sha256:05a397f5d4305dde2903033f35ac265f646fa62ec3b07e0d9e8caf7354a8e45c",
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.surface_commands",
         "src.commands.task_commands",
-        "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
@@ -10507,7 +10480,7 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:ea310eb7f44eccac63e2197e47ae499fc3f8fc87d470bc73b522742063c2997d",
+      "digest": "sha256:ea9671ff86a69e53eb70364f1ddad344b01609d489722266464d6fed80fd464b",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -10516,7 +10489,6 @@
         "src.commands.handler",
         "src.commands.message_commands",
         "src.config",
-        "src.database",
         "src.event_schemas",
         "src.messages.delivery",
         "src.models"
@@ -10531,13 +10503,12 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:aaa08ed2adf60e74f41f0f003ae32ce4271c3ac99e0bd88537bec3f655db9d77",
+      "digest": "sha256:30feb6f97be6d98aa128daf80259bf9e241c1937f904a05ba7e0c34dee7ea553",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.commands.task_comment_commands",
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.event_bus",
         "src.messages.delivery",
@@ -11969,12 +11940,11 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:c8d7dcca097fc5df0a4962242a602d052777bd4cd8af15db46c69c1ad1bd2530",
+      "digest": "sha256:ac9179fb33f2ab548b0a46f494d468312079407b0824c4c36f70d360c9c30fd1",
       "imports": [
         "src.api.models.playbook_v2",
         "src.commands.playbook_v2_commands",
         "src.config",
-        "src.database",
         "src.database.queries.playbook_artifact_queries",
         "src.database.tables",
         "src.doctor",
@@ -12068,11 +12038,10 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:a50c7ee08470e30f4e6774c1c85cab4abdde9e9b0fdb5da7fe336ac07339ea72",
+      "digest": "sha256:eaa00c61179c0184d74276000b36d6fa665fa278c4fc88d8488431b1ba779f3c",
       "imports": [
         "src.api.auth",
         "src.api.scope",
-        "src.database",
         "src.models"
       ],
       "markers": [
@@ -12086,12 +12055,11 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:b040467add194e665b5d6aec7d95862ce510ea9cdcbe7143db2a92bf41d6f405",
+      "digest": "sha256:19a57d31a736d8034a30d9de17f7753a8dbcd918cfdc546617b3f87437a3a1d5",
       "imports": [
         "src.commands.playbook_v2_commands",
         "src.commands.principal",
         "src.config",
-        "src.database",
         "src.database.tables"
       ],
       "markers": [
@@ -12156,12 +12124,11 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:72682a82b88c2ccc44bd25d31dbbc304005998df6c50bc55ced40ce3b14c6dbc",
+      "digest": "sha256:7149b83e77a2c11fabab7fdd974dcf9938a76850c3e3bd7ae2f944b622c208dc",
       "imports": [
         "src.commands.playbook_v2_commands",
         "src.commands.principal",
         "src.config",
-        "src.database",
         "src.database.queries.playbook_run_queries",
         "src.doctor",
         "src.doctor.models",
@@ -12210,9 +12177,8 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:ad9e24b816825df7c4ec6d6a46cb21cbafd86de5f014aa1ec19528dd5b1cc5e2",
+      "digest": "sha256:380f959964fa06ed21e933848faff37ee09f5d8bfc0a69634f3fcfdbc65e20de",
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.playbooks",
         "src.playbooks.receipts",
@@ -12342,7 +12308,7 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:2917d5aa734d3283b49e22c445b64701bf492c2faee41f18d1dc2edd4225a9a4",
+      "digest": "sha256:3eed651e5f41a93fa9f5f55452e96783c4e1a6bae145e290586df1676d2c769d",
       "imports": [
         "src.api.auth",
         "src.api.models",
@@ -12353,7 +12319,6 @@
         "src.commands.handler",
         "src.commands.playbook_v2_commands",
         "src.commands.principal",
-        "src.database",
         "src.playbooks.artifact_store",
         "src.playbooks.definition",
         "src.playbooks.profiles",
@@ -13650,10 +13615,9 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:dffde19a8ad2a104d42c70a511151d59c08bcbcff125934634c45e3e6b57b04f",
+      "digest": "sha256:876b6eb2c058cfd96ac1959d21c68143c4c17be161d8f9092c11a0ce7c3d6805",
       "imports": [
         "src.api.routers.proposals",
-        "src.database",
         "src.database.queries",
         "src.database.queries.proposal_queries",
         "src.models"
@@ -14373,12 +14337,11 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:3eed1727f78dc3515eb8084bc553e772be362e56a67ee02ad3b9943928369c88",
+      "digest": "sha256:14c635c0a19d60319034a7367f52b3aef6867ae7e45185f2777bfdacd830ae3b",
       "imports": [
         "src.commands.principal",
         "src.commands.report_commands",
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.digest",
         "src.escalations.transport",
@@ -14398,12 +14361,11 @@
         "digest"
       ],
       "default_arm": true,
-      "digest": "sha256:8b618b1159718ed103fe34ab16ae5a7537283b4f5579d40107320c96866b2c43",
+      "digest": "sha256:53e0c200b81db878c624f68a677b5fe4982b1e067f65a42dd7a18162ef284306",
       "imports": [
         "src.commands.principal",
         "src.commands.report_commands",
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.digest",
         "src.digest.aggregate",
@@ -14791,9 +14753,8 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:d873d6290710eb1d1655863ee4159a1e3e174f56566ef2dc1bd02e53e9af2a24",
+      "digest": "sha256:447515fc0f74ddeb5b7572a5cf2f0900b9cbe3aacca4ee3659d3be25006b6c4e",
       "imports": [
-        "src.database",
         "src.models",
         "src.reviews.diff",
         "src.reviews.service",
@@ -14822,7 +14783,7 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:2dceeb73955a9633a295a42a1617bf5fc13e19bb351f0e4a94f49a3009db4066",
+      "digest": "sha256:213860025f3f103dda992a79a227e2f30a5d980197006c862701ebd99b909702",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -14833,7 +14794,6 @@
         "src.api.scope",
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.git.github_contracts",
         "src.git.manager",
         "src.models",
@@ -15507,11 +15467,10 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:af8da6567e00008d59dc09c71cb0ba3d9fe99368bcd45fd662b2dac7c60a9fea",
+      "digest": "sha256:9cb2211d945f4deb335929adc7347802cde00c4cd7a8b9471e012b3c11a5139e",
       "imports": [
         "src.agents.configuration",
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.intelligence_classes",
         "src.messages",
@@ -17584,11 +17543,10 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:9e8236a2efb6c8def86052012e8a19479e29238660d86452a3305c1002d2d994",
+      "digest": "sha256:16e45537ede7269667e69339bfb6d2675fa52881635e980ac19009633325920d",
       "imports": [
         "src.commands.contracts.models",
         "src.commands.principal",
-        "src.database",
         "src.database.tables",
         "src.playbooks.engine",
         "src.playbooks.executors.base",

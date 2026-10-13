@@ -13,6 +13,7 @@ surface is checked against the same fixture.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import time
 from unittest.mock import AsyncMock
@@ -40,10 +41,15 @@ def git(path, *args) -> str:
 
 
 class Origin:
-    def __init__(self, tmp_path):
+    def __init__(self, tmp_path, *, template=None):
         self.url = str(tmp_path / "origin.git")
-        git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
         self.clone = tmp_path / "clone"
+        if template is not None:
+            shutil.copytree(template.url, self.url)
+            shutil.copytree(template.clone, self.clone)
+            git(self.clone, "remote", "set-url", "origin", self.url)
+            return
+        git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
         git(tmp_path, "clone", self.url, str(self.clone))
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
@@ -88,13 +94,16 @@ async def close(db, tid: str, commits: list[str], *, close_id: str | None = None
     await db.transition_task(tid, TaskStatus.COMPLETED)
 
 
-@pytest.fixture
-async def world(tmp_path):
-    from src.database import Database
+@pytest.fixture(scope="session")
+def origin_template(tmp_path_factory):
+    """Reuse only the starting Git history; refs and working files remain private."""
+    return Origin(tmp_path_factory.mktemp("delivery-git-template"))
 
-    origin = Origin(tmp_path)
-    db = Database(lease_dsn("delivery-consumers.db"))
-    await db.initialize()
+
+@pytest.fixture
+async def world(tmp_path, reuse_database, origin_template):
+    origin = Origin(tmp_path, template=origin_template)
+    db = await reuse_database("delivery-consumers.db")
     await db.create_project(Project(id="p", name="Development"))
     await db.create_repo(
         RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE, url=origin.url)
@@ -163,7 +172,6 @@ async def world(tmp_path):
             ))
     service = DevelopmentPrimitives(db, data_dir=tmp_path / "data", git=GitManager())
     yield db, origin, observer, service
-    await db.close()
 
 
 UNDELIVERED = {

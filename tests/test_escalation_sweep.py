@@ -25,7 +25,6 @@ import pytest
 from sqlalchemy import delete, insert
 
 from src.config import DiscordConfig, DiscordEscalationsConfig
-from src.database import Database
 from src.database.tables import doc_reviews, gates
 from src.doctor.escalation_checks import CHECK_ID, escalation_checks
 from src.doctor.models import DoctorContext, Severity
@@ -37,7 +36,6 @@ from src.escalations.sweep import (
     SweepFacts,
 )
 from src.models import Project, ProjectStatus, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 NOW = 1_000_000.0
 CHANNEL = "424242424242424242"
@@ -61,14 +59,12 @@ def config(*, stateful: bool = True):
 
 
 @pytest.fixture
-async def world():
-    db = Database(lease_dsn("escalation_sweep"))
-    await db.initialize()
+async def world(reuse_database):
+    db = await reuse_database("escalation_sweep")
     await db.create_project(Project(id="p", name="Active", supervisor_enabled=True))
     await db.create_project(Project(id="paused", name="Paused", status=ProjectStatus.PAUSED))
     clock = Clock()
     yield SimpleNamespace(db=db, clock=clock)
-    await db.close()
 
 
 async def seed_pile(world) -> dict[str, list[str]]:

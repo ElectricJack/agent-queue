@@ -26,7 +26,6 @@ from src.api.middleware import TokenAuthMiddleware
 from src.api.scope import _FINAL_REVIEWER_COMMANDS, _TRIAGE_COMMANDS
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import PullRequestIdentity
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
@@ -57,9 +56,8 @@ def generated_routers():
 
 
 @pytest.fixture(params=["execute", "typed"])
-async def api(tmp_path, monkeypatch, request, generated_routers):
-    db = Database(lease_dsn("reviewer-auth.db"))
-    await db.initialize()
+async def api(tmp_path, monkeypatch, request, generated_routers, reuse_database):
+    db = await reuse_database("reviewer-auth.db")
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(
@@ -194,7 +192,6 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         yield SimpleNamespace(
             db=db, store=store, tokens=tokens, post=post, result=result, merge_pr=merge_pr,
         )
-    await db.close()
 
 
 # --- the grant ------------------------------------------------------------
