@@ -56,6 +56,7 @@ from src.database.tables import (
     integration_branch_owners,
     integration_repair_operations,
     integration_repair_stages,
+    job_workspace_pins,
     projects,
     sessions,
     task_branch_origins,
@@ -453,6 +454,7 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     PREPARE_BACKOFF_UNTIL_KEY,
     PREPARE_BACKOFF_ATTEMPTS_KEY,
     "slot_reset_failure",
+    "claim_preparation_failure",
     # The last fence that refused a preparation (``BRANCH_FENCED``). Evidence
     # for the wait, so it goes stale at exactly the same boundary as the
     # ladder it throttles.
@@ -1005,6 +1007,8 @@ class ClaimQueryMixin:
                     workspaces.c.workspace_path == work_dir,
                     workspaces.c.enabled.is_(True),
                     workspaces.c.locked_by_agent_id == agent_id,
+                    or_(workspaces.c.locked_by_task_id.is_(None),
+                        workspaces.c.locked_by_task_id == task_id),
                 )
                 .values(
                     locked_by_agent_id=agent_id,
@@ -1013,6 +1017,11 @@ class ClaimQueryMixin:
                 )
             )
             row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
+            if row is None:
+                row = await self._repair_pool_workspace_lock(
+                    conn, session_id=session_id, task_id=task_id,
+                    agent_id=agent_id, work_dir=work_dir, now=now,
+                )
             slot = self._row_to_workspace(row) if row is not None else None
         await self._upsert_meta_many(
             task_id, {CLAIMED_BY_SESSION_KEY: session_id, "work_dir": work_dir}, conn=conn
@@ -1024,6 +1033,77 @@ class ClaimQueryMixin:
             work_dir=work_dir,
         )
         return slot
+
+    async def _repair_pool_workspace_lock(
+        self, conn, *, session_id, task_id, agent_id, work_dir, now,
+    ):
+        """Move an idle misplaced agent lock to its session's actual checkout.
+
+        Never adopt a foreign lock or erase retained ownership. The session
+        row is already locked by claim; workspace rows are locked in id order.
+        Branch/checkout reconciliation follows outside this transaction.
+        """
+        project_id = await conn.scalar(
+            select(sessions.c.project_id).where(sessions.c.id == session_id)
+        )
+        rows = (await conn.execute(
+            select(workspaces).where(
+                or_(workspaces.c.workspace_path == work_dir,
+                    and_(workspaces.c.project_id == project_id,
+                         workspaces.c.locked_by_agent_id == agent_id)),
+            ).order_by(workspaces.c.id).with_for_update()
+        )).mappings().all()
+        targets = [row for row in rows if row["workspace_path"] == work_dir
+                   and row["project_id"] == project_id]
+        if len(targets) != 1:
+            return None
+        target = targets[0]
+        if not target["enabled"] or any(
+            row["locked_by_agent_id"] is not None and (
+                row["project_id"] != project_id or row["locked_by_agent_id"] != agent_id
+            ) for row in rows
+        ):
+            return None
+        if any(row["locked_by_task_id"] not in (None, task_id) for row in rows):
+            return None
+        from src.claim_file import read_claim_file
+
+        if any(read_claim_file(row["workspace_path"]) is not None for row in rows):
+            return None
+        paths = [row["workspace_path"] for row in rows]
+        ids = [row["id"] for row in rows]
+        if await conn.scalar(select(sessions.c.id).where(
+            sessions.c.id != session_id,
+            sessions.c.work_dir.in_(paths),
+            sessions.c.state.in_(("starting", "running", "draining")),
+        ).limit(1)):
+            return None
+        if await conn.scalar(select(integration_branch_owners.c.owner_id).where(
+            integration_branch_owners.c.workspace_id.in_(ids),
+            integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+        ).limit(1)):
+            return None
+        if await conn.scalar(select(job_workspace_pins.c.job_id).where(
+            job_workspace_pins.c.workspace_id.in_(ids),
+        ).limit(1)):
+            return None
+        old_rows = [row for row in rows if row["id"] != target["id"]
+                    and row["project_id"] == project_id
+                    and row["locked_by_agent_id"] == agent_id]
+        modes = {row["lock_mode"] for row in old_rows if row["lock_mode"] is not None}
+        if len(modes) > 1:
+            return None
+        lock_mode = next(iter(modes), "exclusive")
+        old_ids = [row["id"] for row in old_rows]
+        if old_ids:
+            await conn.execute(update(workspaces).where(workspaces.c.id.in_(old_ids)).values(
+                locked_by_agent_id=None, locked_by_task_id=None, locked_at=None, lock_mode=None,
+            ))
+        return (await conn.execute(update(workspaces).where(
+            workspaces.c.id == target["id"],
+        ).values(locked_by_agent_id=agent_id, locked_by_task_id=task_id, locked_at=now,
+                 lock_mode=lock_mode)
+          .returning(*workspaces.c))).mappings().one()
 
     async def lock_claim_for_activation(self, conn, session_id, task_id, *, epoch: int):
         """Lock session then task before a caller acquires managed ref exclusion.
@@ -1344,14 +1424,16 @@ class ClaimQueryMixin:
 
             await release_session_leases_on(self, conn, session_id, task_id)
         if agent_id:
-            # Clear the task lock unconditionally — even a session that held no
-            # task (e.g. released mid-``claiming``) must not leave a stale
-            # ``locked_by_task_id`` on its agent's workspace.  A task that
-            # became non-live underneath an active worker must also release
-            # the agent lock, so the slot can serve the next claim.
+            # Release only this claim's task lock (or its idle agent lock).
+            # Misplaced agent bindings must not erase another task's lock
+            # when preparation discovers and refuses that mismatch.
             await conn.execute(
                 update(workspaces)
-                .where(workspaces.c.locked_by_agent_id == agent_id)
+                .where(
+                    workspaces.c.locked_by_agent_id == agent_id,
+                    or_(workspaces.c.locked_by_task_id.is_(None),
+                        workspaces.c.locked_by_task_id == task_id),
+                )
                 .values(
                     locked_by_agent_id=None if release_workspace_lock else workspaces.c.locked_by_agent_id,
                     locked_by_task_id=None,

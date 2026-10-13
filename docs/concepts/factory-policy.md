@@ -68,6 +68,12 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   and integration ownership remain binding.
 - A known transient failure retries within the existing budget. An unknown cause, an exhausted
   budget or a human-only decision holds with a concrete reason and one durable escalation.
+- Shared preparation faults (`slot_reset_failed`, missing or mismatched worktrees,
+  repeated unproved own-branch handoffs) are infrastructure incidents. Correlate
+  the exact session, claim, workspace path, Git branch and ownership evidence;
+  preserve the daemon's bounded backoff and retained preparations. Escalate one
+  incident with that evidence and the required repair. Do not mass-pause tasks
+  to suppress a system fault or override an explicit human hold during recovery.
 - An explicitly authorized continuous integration policy may replace an exhausted repair session
   with a fresh bounded stage. It preserves previous attempts, dossiers and stopped-writer/fence
   proof; it does not reset the old session's budget. Routine CI/conflict repair continues

@@ -99,7 +99,10 @@ async def build_role_section(config: Any, profile_id: str | None) -> PrimeSectio
     # Installed profiles are write-if-absent; deliver this shared-state contract
     # from code so existing project and global supervisors receive it as well.
     if profile_id == "supervisor":
-        body = "\n\n".join(filter(None, (body, _load_template("operator_decisions.md"))))
+        body = "\n\n".join(filter(None, (
+            body, _load_template("operator_decisions.md"),
+            _load_template("infrastructure_incidents.md"),
+        )))
     return PrimeSection(key="role", title=SECTION_TITLES["role"], body=body)
 
 

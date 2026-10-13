@@ -41,6 +41,7 @@ from src.models import (
     Task,
     TaskStatus,
     Workspace,
+    WorkspaceMode,
 )
 from src.orchestrator import Orchestrator
 from src.sessions import SessionProviderRegistry
@@ -663,6 +664,102 @@ def emitted(handler):
 
 
 class TestClaim:
+    async def test_foreign_claim_in_the_session_path_survives_preparation_refusal(
+        self, handler, db, tmp_path,
+    ):
+        from src.claim_file import read_claim_file, write_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        foreign = {"task_id": "foreign", "claim_epoch": 7, "session_id": "foreign-session"}
+        write_claim_file(wd, foreign)
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "prepare_failed"
+        assert "retains a foreign claim" in result["reason"]
+        assert read_claim_file(wd) == foreign
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
+    @pytest.mark.parametrize("error", [TimeoutError(), RuntimeError(), RuntimeError("  ")])
+    async def test_empty_preparation_exception_has_one_persisted_diagnosis(
+        self, handler, db, tmp_path, error,
+    ):
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.side_effect = error
+        with patch.object(handler.orchestrator.bus, "emit", wraps=handler.orchestrator.bus.emit) as emit:
+            result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        reason = result["reason"]
+        assert type(error).__name__ in reason and "t1" in reason and str(wd) in reason
+        assert (await db.get_task_meta("t1", "slot_reset_failure"))["reason"] == reason
+        session = await db.get_session(sid)
+        assert session.claim_failure_reason == session.claim_refusal["reason"] == reason
+        payloads = [c.args[1] for c in emit.call_args_list if c.args[0] == "pool.prepare_failed"]
+        assert payloads[0]["reason"] == reason
+
+    @pytest.mark.parametrize("protection", [None, "task", "session", "claim", "other_project"])
+    async def test_claim_reconciles_only_idle_misplaced_workspace_locks(
+        self, handler, db, tmp_path, protection,
+    ):
+        from src.claim_file import read_claim_file, write_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        old_path = tmp_path / "wrong-slot"
+        old_path.mkdir()
+        if protection == "task":
+            await mktask(db, "foreign", status=TaskStatus.IN_PROGRESS)
+        await db.update_workspace("ws-agent-1", locked_by_agent_id=None)
+        await db.create_workspace(Workspace(
+            id="wrong-slot", project_id=PROJECT_ID, workspace_path=str(old_path),
+            kind_id="project-repo", source_type=RepoSourceType.LINK,
+            locked_by_agent_id="agent-1",
+            locked_by_task_id="foreign" if protection == "task" else None,
+            lock_mode=WorkspaceMode.EXCLUSIVE,
+        ))
+        if protection == "session":
+            await db.create_session(SessionRecord(
+                id="foreign-session", project_id=PROJECT_ID, profile_id="worker",
+                harness="codex", provider="fake", name="foreign", lifecycle="pool",
+                work_dir=str(old_path), epoch="e", instance_token="foreign", state="running",
+                started_at=NOW,
+            ))
+        if protection == "claim":
+            write_claim_file(old_path, {"task_id": "foreign", "claim_epoch": 1})
+        if protection == "other_project":
+            await db.create_project(Project(id="other", name="Other project"))
+            await db.create_agent(Agent(id="foreign-agent", name="Foreign", profile_id="worker"))
+            await db.create_workspace(Workspace(
+                id="foreign-workspace", project_id="other", workspace_path=str(wd),
+                source_type=RepoSourceType.LINK, locked_by_agent_id="foreign-agent",
+            ))
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        old = await db.get_workspace("wrong-slot")
+        if protection is None:
+            assert result["result"] == "claimed"
+            assert reset.await_args.args[0].workspace_path == str(wd)
+            assert old.locked_by_agent_id is None
+            assert old.lock_mode is None
+            assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "t1"
+            assert (await db.get_workspace("ws-agent-1")).lock_mode is WorkspaceMode.EXCLUSIVE
+            assert read_claim_file(wd)["task_id"] == "t1"
+        else:
+            assert result["result"] == "prepare_failed"
+            assert "workspace binding mismatch" in result["reason"]
+            reset.assert_not_awaited()
+            assert old.locked_by_agent_id == "agent-1"
+            if protection == "task":
+                assert old.locked_by_task_id == "foreign"
+            assert read_claim_file(wd) is None
+            if protection == "claim":
+                assert read_claim_file(old_path)["task_id"] == "foreign"
+            if protection == "other_project":
+                assert (await db.get_workspace("foreign-workspace")).locked_by_agent_id == (
+                    "foreign-agent"
+                )
+
     async def test_reparent_cannot_turn_a_claimed_leaf_into_a_container(
         self, handler, db, tmp_path
     ):
