@@ -5,17 +5,14 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
-from src.database import Database
 from src.database.tables import tasks
 from src.integration.epic_branch import reserve_branch_name, slugify
 from src.models import Project, RepoConfig, RepoSourceType, Task
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("epic-branch.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("epic-branch.db")
     await database.create_project(Project(id="p", name="epic branch project"))
     for repo_id in ("repo-a", "repo-b"):
         await database.create_repo(
@@ -27,7 +24,6 @@ async def db(tmp_path):
             )
         )
     yield database
-    await database.close()
 
 
 async def _create(db, conn, task_id: str, title: str, *, repo_id: str | None = None):

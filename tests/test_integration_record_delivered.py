@@ -17,6 +17,7 @@ from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
 from src.models import Task, TaskStatus
 from src.profiles.capabilities import DENY_ALL
+from tests.test_delivery_consumers import origin_template as origin_template
 from tests.test_delivery_consumers import git
 from tests.test_integration_train_sources import completed, world as fixture_world
 

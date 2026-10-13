@@ -26,7 +26,6 @@ from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionHandle
 from src.sessions.spec import SessionSpecBuilder
-from tests.db_fixtures import lease_dsn
 
 
 def _supervisor_address(project_id: str) -> str:
@@ -58,14 +57,10 @@ def _supervisor_runtime_name(project_id: str) -> str:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id="proj1", name="Proj1", supervisor_enabled=True))
     yield database
-    await database.close()
 
 
 @pytest.fixture

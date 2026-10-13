@@ -26,7 +26,6 @@ from src.api.middleware import TokenAuthMiddleware
 from src.api.scope import _FINAL_REVIEWER_COMMANDS, _TRIAGE_COMMANDS
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import PullRequestIdentity
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
@@ -71,7 +70,7 @@ def api_app():
 
 @pytest.fixture(params=["execute", "typed"])
 async def api(tmp_path, monkeypatch, request, api_app, reuse_database):
-    db: Database = await reuse_database("reviewer-auth.db")
+    db = await reuse_database("reviewer-auth.db")
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(

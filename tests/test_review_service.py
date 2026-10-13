@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 from ruamel.yaml import YAML
 
-from src.database import Database
 from src.models import Project, Task, TaskStatus
 from src.reviews.diff import block_diff
 from src.reviews.service import MAX_CONTENT_BYTES, ReviewError, ReviewHooks, ReviewService
@@ -57,7 +56,7 @@ class Clock:
 
 @pytest.fixture
 async def db(reuse_database):
-    database: Database = await reuse_database("review_service.db")
+    database = await reuse_database("review_service.db")
     await database.create_project(Project(id=PROJECT, name="p"))
     yield database
 

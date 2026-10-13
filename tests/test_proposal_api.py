@@ -9,14 +9,13 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from src.api.routers.proposals import build_proposals_router
-from src.database import Database
 from src.database.queries import proposal_queries
 from src.models import Project
 
 
 @pytest.fixture
 async def db(reuse_database):
-    database: Database = await reuse_database("prop.db")
+    database = await reuse_database("prop.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
 

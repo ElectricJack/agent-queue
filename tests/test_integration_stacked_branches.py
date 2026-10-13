@@ -35,6 +35,7 @@ from src.integration.train import TrainTarget
 from src.integration.train_controls import TrainControls
 from src.integration.train_sources import DatabaseBatches, _never_trusted
 from src.models import Project, Task, TaskCompletion, TaskStatus
+from tests.test_delivery_consumers import origin_template as origin_template
 from tests.test_delivery_consumers import close, git
 from tests.test_integration_gitops import LocalGit
 from tests.test_integration_train_sources import completed, lane, snapshot, world  # noqa: F401

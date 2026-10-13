@@ -47,7 +47,6 @@ from src.config import (
     ReportQuietHoursConfig,
     ReportsConfig,
 )
-from src.database import Database
 from src.database.tables import doc_reviews, escalations, messages, tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.digest.supervisor import (
@@ -67,7 +66,6 @@ from src.escalations.transport import SinkTransport
 from src.event_bus import EventBus
 from src.models import Project, Task, TaskCompletion
 from src.orchestrator import Orchestrator
-from tests.db_fixtures import lease_dsn
 
 CHANNEL = "424242424242424242"
 CADENCE = 120.0 * 60.0
@@ -141,13 +139,11 @@ class Clock:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("digest-supervisor"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("digest-supervisor")
     await database.create_project(Project(id="p", name="Agent Queue"))
     await database.create_project(Project(id="other", name="Other"))
     yield database
-    await database.close()
 
 
 @pytest.fixture

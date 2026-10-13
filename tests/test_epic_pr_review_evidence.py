@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import delete, insert, select, update
 
-from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     integration_parent_episodes,
@@ -1275,8 +1275,10 @@ def _git(*args: str, cwd=None) -> str:
     ).stdout.strip()
 
 
-@pytest.fixture
-async def case(tmp_path):
+@pytest.fixture(scope="session")
+def review_git_template(tmp_path_factory):
+    """Build the immutable starting history once; every case gets private copies."""
+    tmp_path = tmp_path_factory.mktemp("review-git-template")
     remote = tmp_path / "origin.git"
     work = tmp_path / "work"
     _git("init", "--bare", "--initial-branch=main", str(remote))
@@ -1298,8 +1300,19 @@ async def case(tmp_path):
     _git("commit", "-am", "second epic head", cwd=work)
     second = _git("rev-parse", "HEAD", cwd=work)
 
-    db = Database(lease_dsn("epic-pr-review-evidence.db"))
-    await db.initialize()
+    return remote, work, base, first, tree, second
+
+
+@pytest.fixture
+async def case(tmp_path, reuse_database, review_git_template):
+    source_remote, source_work, base, first, tree, second = review_git_template
+    remote = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    shutil.copytree(source_remote, remote)
+    shutil.copytree(source_work, work)
+    _git("remote", "set-url", "origin", str(remote), cwd=work)
+
+    db = await reuse_database("epic-pr-review-evidence.db")
     await db.create_project(Project(id="p", name="PR review project"))
     await db.create_repo(
         RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=str(remote))
@@ -1427,7 +1440,6 @@ async def case(tmp_path):
         "tree": tree,
         "base": base,
     }
-    await db.close()
 
 
 async def _rows(db):

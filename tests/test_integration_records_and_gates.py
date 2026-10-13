@@ -7,7 +7,6 @@ import asyncio
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     gates,
     integration_subject_journal,
@@ -37,14 +36,12 @@ from src.integration.runtime_contracts import (
     WriterLease,
     WriterStatus,
 )
-from tests.db_fixtures import lease_dsn
 from tests.test_integration_subjects import ARTIFACT, HEAD, NOW, OTHER, PIN, _subject
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("subject-records"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("subject-records")
     async with database._engine.begin() as conn:
         await conn.execute(
             insert(playbook_artifacts).values(
@@ -70,7 +67,6 @@ async def db():
                 )
             )
     yield database
-    await database.close()
 
 
 async def seed(db, **overrides):

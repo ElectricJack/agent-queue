@@ -39,6 +39,7 @@ from src.integration.train import (
 )
 from tests import test_integration_gitops
 from tests.test_integration_gitops import commit, git
+from tests.test_integration_gitops import git_history_template as git_history_template
 
 #: The real Git/PostgreSQL repository substrate, re-exported for the fixture below.
 setup = test_integration_gitops.setup

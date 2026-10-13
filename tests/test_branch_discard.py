@@ -18,13 +18,11 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.tables import integration_branch_owners, repos, task_branch_origins
 from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitError, GitManager
 from src.integration.branch_discard import MAX_ATTEMPTS, BranchDiscardService
 from src.models import Project, RepoConfig, RepoSourceType
-from tests.db_fixtures import lease_dsn
 
 BASE = "a" * 40
 MOVED = "b" * 40
@@ -157,9 +155,8 @@ class _Git:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("branch-discard.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("branch-discard.db")
     await database.create_project(Project(id="p", name="discard"))
     await database.create_repo(
         RepoConfig(
@@ -171,7 +168,6 @@ async def db(tmp_path):
         )
     )
     yield database
-    await database.close()
 
 
 async def _pending_origin(

@@ -16,7 +16,7 @@ from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import insert, select, text, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from src.database import Database, tables
+from src.database import tables
 from src.database.tables import (
     integration_subject_journal,
     integration_subjects,
@@ -62,7 +62,6 @@ from src.integration.runtime_contracts import (
     schedule_values,
     subject_key,
 )
-from tests.db_fixtures import lease_dsn
 
 NOW = 1_000_000.0
 HEAD = "a" * 40
@@ -456,9 +455,8 @@ async def test_ports_answer_closed_outcomes_or_unknown():
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("subjects"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("subjects")
     async with database._engine.begin() as conn:
         for sha in (ARTIFACT, NEW_ARTIFACT):
             await conn.execute(
@@ -473,7 +471,6 @@ async def db(tmp_path):
                 )
             )
     yield database
-    await database.close()
 
 
 def _row(subject: Subject) -> dict:

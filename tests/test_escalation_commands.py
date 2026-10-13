@@ -9,7 +9,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.event_bus import EventBus
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
@@ -17,9 +16,8 @@ from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def env(tmp_path):
-    db = Database(lease_dsn("escalation-commands"))
-    await db.initialize()
+async def env(tmp_path, reuse_database):
+    db = await reuse_database("escalation-commands")
     await db.create_project(Project(id="p", name="Project P"))
     await db.create_project(Project(id="other", name="Other"))
     await db.create_profile(
@@ -68,7 +66,6 @@ async def env(tmp_path):
     orch.git = MagicMock()
     orch.bus = EventBus(env="dev")
     yield CommandHandler(orch, config), db
-    await db.close()
 
 
 def create_args(**overrides):

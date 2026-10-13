@@ -1,6 +1,7 @@
 """Real Git/PostgreSQL invariants for the shared retained-clone primitives."""
 
 import asyncio
+import shutil
 import subprocess
 import sys
 from dataclasses import replace
@@ -10,7 +11,6 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, update
 
-from src.database import Database
 from src.database.tables import (
     integration_branch_owners,
     integration_subjects,
@@ -50,7 +50,6 @@ from src.integration.runtime_contracts import (
     WriterStatus,
 )
 from src.models import Project, RepoConfig, RepoSourceType
-from tests.db_fixtures import lease_dsn
 
 ARTIFACT = "sha256:" + "1" * 64
 NOW = 1700000000.0
@@ -197,8 +196,10 @@ class LocalGit(GitManager):
             raise GitError("lost successful delete response")
 
 
-@pytest.fixture
-async def setup(tmp_path):
+@pytest.fixture(scope="session")
+def git_history_template(tmp_path_factory):
+    """Seed history once, then copy both repositories before each scenario."""
+    tmp_path = tmp_path_factory.mktemp("gitops-history")
     remote = tmp_path / "remote.git"
     git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
     store = tmp_path / "retained"
@@ -208,8 +209,18 @@ async def setup(tmp_path):
     base = commit(store, {"base.txt": "base\n"})
     git(store, "push", "origin", "HEAD:main")
     head = commit(store, {"new.txt": "new\n"})
-    db = Database(lease_dsn("gitops"))
-    await db.initialize()
+    return remote, store, base, head
+
+
+@pytest.fixture
+async def setup(tmp_path, reuse_database, git_history_template):
+    source_remote, source_store, base, head = git_history_template
+    remote = tmp_path / "remote.git"
+    store = tmp_path / "retained"
+    shutil.copytree(source_remote, remote)
+    shutil.copytree(source_store, store)
+    git(store, "remote", "set-url", "origin", str(remote))
+    db = await reuse_database("gitops")
     async with db._engine.begin() as conn:
         await conn.execute(
             insert(playbook_artifacts).values(
@@ -266,7 +277,6 @@ async def setup(tmp_path):
         authority=SubjectGitAuthority(db, trusted_green=trusted_green),
     )
     yield db, ops, subject, fence, repo, base, head, green
-    await db.close()
 
 
 def merge_args(subject, base, *heads):

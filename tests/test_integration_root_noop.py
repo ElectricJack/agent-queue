@@ -20,6 +20,7 @@ from src.integration.provenance import CompletedSource, CompletionIdentity, GitP
 from src.integration.train_controls import TrainControls
 from src.models import RepoSourceType, TaskCompletion, TaskStatus, Workspace
 from src.profiles.capabilities import DENY_ALL
+from tests.test_delivery_consumers import origin_template as origin_template
 from tests.test_delivery_consumers import git
 from tests.test_integration_train_sources import MAIN, completed, world as fixture_world
 

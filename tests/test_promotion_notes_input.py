@@ -38,6 +38,7 @@ from src.integration.promotion_notes import (
     step_pr_body,
 )
 from src.profiles.capabilities import DENY_ALL
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git
 from tests.test_integration_gitops import setup as setup
 from tests.test_promote_commands import _supervisor, request

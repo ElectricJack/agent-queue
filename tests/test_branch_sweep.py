@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import update
 
-from src.database import Database
 from src.database.tables import projects
 from src.git.manager import GitManager
 from src.integration.branch_sweep import SweepSafety, sweep_checkout
@@ -19,7 +18,6 @@ from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.orchestrator import Orchestrator
-from tests.db_fixtures import lease_dsn
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -188,7 +186,7 @@ async def test_daily_sweep_includes_non_active_registered_projects(tmp_path, mon
 
 
 @pytest.fixture
-async def guarded_repo(tmp_path):
+async def guarded_repo(tmp_path, reuse_database):
     origin, checkout = tmp_path / "origin.git", tmp_path / "checkout"
     _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
     _git(tmp_path, "clone", str(origin), str(checkout))
@@ -196,15 +194,13 @@ async def guarded_repo(tmp_path):
     _git(checkout, "push", "origin", "main")
     _git(checkout, "branch", "aq/candidate")
     _git(checkout, "push", "origin", "aq/candidate")
-    db = Database(lease_dsn("branch-sweep"))
-    await db.initialize()
+    db = await reuse_database("branch-sweep")
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(RepoConfig(
         id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=str(origin),
         checkout_base_path=str(checkout),
     ))
     yield db, GitManager(), checkout, origin
-    await db.close()
 
 
 @pytest.mark.parametrize("hold", ["task", "owner", "flow", "attached"])

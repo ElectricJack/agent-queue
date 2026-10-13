@@ -6,7 +6,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig
-from src.database import Database
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitManager
 from src.integration.completion_ci import completion_checks, verify_completion_ci
@@ -28,9 +27,8 @@ def run(name=REQUIRED, conclusion="success", *, head=HEAD, producer=15368, job=1
 
 
 @pytest.fixture
-async def setup(tmp_path, monkeypatch):
-    db = Database(lease_dsn("completion-ci"))
-    await db.initialize()
+async def setup(tmp_path, monkeypatch, reuse_database):
+    db = await reuse_database("completion-ci")
     policy = {"root": {"required_checks": {
         "version": "v1", "names": [REQUIRED], "producer_id": "15368",
     }}}
@@ -59,7 +57,6 @@ async def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(orch, "release_session_task_resources", AsyncMock())
     handler = CommandHandler(orch, config)
     yield handler, db, git, orch, config
-    await db.close()
 
 
 async def close(handler, **kwargs):

@@ -21,7 +21,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import GitManager
 from src.models import (
     AgentProfile,
@@ -69,14 +68,13 @@ def repo(tmp_path):
 
 
 @pytest.fixture
-async def handler(request, tmp_path, repo):
+async def handler(tmp_path, repo, reuse_database):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
 
     The close path writes task metadata and a completion row, so both
     dialects are exercised rather than assumed equivalent.
     """
-    db = Database(lease_dsn("close.db"))
-    await db.initialize()
+    db = await reuse_database("close.db")
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
@@ -100,7 +98,6 @@ async def handler(request, tmp_path, repo):
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker"))
     yield orch._command_handler
-    await db.close()
 
 
 async def _task_on_workspace(h: CommandHandler, repo: dict, task_title="Do work") -> str:
