@@ -772,6 +772,105 @@ class TestOperatorHandoffCheckpoint:
 
 
 class TestResetSlot:
+    async def test_exclusive_clone_can_be_prepared_again(self, mgr, base_ws, kind):
+        await mgr.reset_slot_for_task(base_ws, FakeTask(), kind=kind)
+
+        branch = await mgr.reset_slot_for_task(base_ws, FakeTask(), kind=kind)
+
+        assert branch == "aq/tsk-1"
+        assert mgr.read_sentinel(base_ws.workspace_path).base_workspace_id == ""
+
+    @pytest.mark.parametrize("locked", [False, True])
+    async def test_missing_slot_is_recreated_with_the_same_identity(
+        self, mgr, base_ws, kind, locked,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        foreign = Path(base_ws.workspace_path).parent / "unmanaged"
+        _git(["worktree", "add", "--detach", str(foreign)], base_ws.workspace_path)
+        shutil.rmtree(foreign)
+        if locked:
+            _git(["worktree", "lock", slot.workspace_path], base_ws.workspace_path)
+        shutil.rmtree(slot.workspace_path)
+
+        branch = await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+
+        assert branch == "aq/tsk-1"
+        sentinel = mgr.read_sentinel(slot.workspace_path)
+        assert sentinel.workspace_id == slot.id and sentinel.base_workspace_id == base_ws.id
+        assert mgr.db.workspaces[slot.id] is slot
+        assert _git(["branch", "--show-current"], slot.workspace_path) == branch
+        assert _git(["status", "--porcelain"], slot.workspace_path) == ""
+        assert str(foreign) in _git(["worktree", "list", "--porcelain"], base_ws.workspace_path)
+
+    async def test_missing_live_slot_is_preserved(self, mgr, base_ws, kind, monkeypatch):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        shutil.rmtree(slot.workspace_path)
+        monkeypatch.setattr(mgr.db, "list_sessions", AsyncMock(return_value=[
+            SimpleNamespace(work_dir=slot.workspace_path, task_id="foreign"),
+        ]))
+        with pytest.raises(GitError, match="live holder"):
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        assert not Path(slot.workspace_path).exists()
+
+    async def test_missing_slot_preflight_uses_project_git_budget(
+        self, mgr, base_ws, kind, monkeypatch,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        shutil.rmtree(slot.workspace_path)
+        mgr.config.slot_reset_git_timeouts[slot.project_id] = 1800
+        reprovision = mgr.reprovision_slot
+
+        async def verify_budget(*args, **kwargs):
+            assert mgr.git._command_timeout() == 1800
+            await reprovision(*args, **kwargs)
+
+        monkeypatch.setattr(mgr, "reprovision_slot", verify_budget)
+        await mgr.ensure_slot_checkout(slot, FakeTask(), kind=kind)
+        assert mgr.git._command_timeout() == 120
+        assert Path(slot.workspace_path, ".git").is_file()
+
+    async def test_missing_slot_with_retained_binding_is_preserved(
+        self, mgr, base_ws, kind, monkeypatch,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        shutil.rmtree(slot.workspace_path)
+        monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+        with pytest.raises(GitError, match="retains an owner or job pin"):
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        assert not Path(slot.workspace_path).exists()
+
+    @pytest.mark.parametrize("protection", ["unmanaged", "agent", "task", "owner"])
+    async def test_protected_branch_holder_is_never_detached(
+        self, mgr, base_ws, kind, monkeypatch, protection,
+    ):
+        holder = await mgr.create_slot(base_ws, kind, 0)
+        target = await mgr.create_slot(base_ws, kind, 1)
+        branch = await mgr.reset_slot_for_task(holder, FakeTask(), kind=kind)
+        if protection == "unmanaged":
+            del mgr.db.workspaces[holder.id]
+        elif protection == "agent":
+            holder.locked_by_agent_id = "foreign"
+        elif protection == "task":
+            holder.locked_by_task_id = "foreign"
+        else:
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+
+        with pytest.raises(GitError, match="already used by worktree"):
+            await mgr.reset_slot_for_task(target, FakeTask(), kind=kind)
+
+        assert _git(["branch", "--show-current"], holder.workspace_path) == branch
+
+    async def test_foreign_slot_identity_is_preserved(self, mgr, base_ws, kind):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        sentinel = mgr.read_sentinel(slot.workspace_path)
+        sentinel.workspace_id = "foreign-slot"
+        mgr.write_sentinel(slot.workspace_path, sentinel)
+        (Path(slot.workspace_path) / "progress.txt").write_text("preserve me")
+        with pytest.raises(GitError, match="mismatched sentinel"):
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        assert (Path(slot.workspace_path) / "progress.txt").read_text() == "preserve me"
+
     def _make_slot(self, mgr, base_ws, kind):
         return asyncio.run(mgr.create_slot(base_ws, kind, 0))
 
