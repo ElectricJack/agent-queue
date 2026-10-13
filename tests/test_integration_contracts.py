@@ -632,7 +632,8 @@ def test_retired_publishers_are_absent_from_command_registry():
                  "integration_push_conflict_resolution", "integration_resolve_candidate_member",
                  "integration_recover_candidate_member", "integration_rebind_repair",
                  "integration_recover_parent_head", "integration_recover_preserved_repair",
-                 "integration_rebind_detached_repair", "integration_recover_unwritten_resolution"):
+                 "integration_rebind_detached_repair", "integration_recover_unwritten_resolution",
+                 "integration_development_engine_transfer"):
         assert registry.get(name) is None
     for name in ("integration_seal_now", "integration_abort_batch", "integration_eject",
                  "integration_status", "integration_promotion_publish"):

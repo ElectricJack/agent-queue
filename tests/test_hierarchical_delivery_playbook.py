@@ -238,3 +238,65 @@ async def test_hosted_parent_ci_event_verifies_without_a_live_workspace(command_
     assert {snapshot.lifecycle.value for snapshot in runs.snapshots.values()} == {"completed"}
     checkpoint = await db.get_integration_checkpoint("parent")
     assert checkpoint["verified_sha"] == head_sha
+
+
+def _green_first_policy_case(artifact_path, kind, facts_type, **overrides):
+    from src.integration.models import BranchKey, Fence
+    from src.integration.runtime_contracts import (
+        CIEvidence,
+        CIState,
+        Subject,
+        SubjectPhase,
+        SubjectSchedule,
+        WriterBudget,
+        WriterLease,
+        WriterStatus,
+    )
+    from src.playbooks.integration_policy import CompiledIntegrationPolicy
+
+    compiled = CompiledIntegrationPolicy(load_definition_json(artifact_path.read_text()))
+    subject = Subject(
+        id="green-first", project_id="p", repository_id="r", kind=kind,
+        subject_key="green-first", task_id="epic" if kind.value == "parent_episode" else None,
+        phase=SubjectPhase.REPAIRING, policy=compiled.pin, target_ref="refs/heads/main",
+        head_sha="a" * 40, base_sha="b" * 40, created_at=1, updated_at=1,
+        schedule=SubjectSchedule.progress(now=100, max_wait_seconds=3600),
+    )
+    values = {
+        "subject_id": subject.id, "subject_version": 0, "kind": kind, "phase": subject.phase,
+        "observed_at": 100, "head": subject.head, "candidate": subject.head,
+        "default_branch_head": "b" * 40,
+        "ci": (CIEvidence(head_sha=subject.head_sha, state=CIState.GREEN),),
+        "no_progress": True, "ladder_exhausted": True,
+        "writer": WriterLease(status=WriterStatus.WORKING, task_id="dead"),
+        "budget": WriterBudget(ordinal=99, intelligence_class="deep-high", started_at=1,
+                               deadline_at=2, attempts=500, attempt_limit=1),
+    }
+    if kind.value == "root_batch":
+        values["publisher_fence"] = Fence(
+            target=BranchKey(repository_id="r", branch=subject.target_ref),
+            owner_id="publisher", token=1)
+    values.update(overrides)
+    return compiled.evaluate(subject, facts_type(**values))
+
+
+def test_parent_exact_green_precedes_legacy_dossier_writer_budget_and_stop_proof():
+    from src.integration.parent_adapters import ParentPolicyFacts
+    from src.integration.runtime_contracts import Primitive, SubjectKind
+
+    decision = _green_first_policy_case(PARENT_FIXTURE, SubjectKind.PARENT_EPISODE,
+                                       ParentPolicyFacts, legacy_repair_dossier={"exhausted": True})
+    assert (decision.rule, decision.request.primitive) == ("observe-green", Primitive.CI_OBSERVE)
+
+
+def test_parent_green_still_obeys_holds_rejection_and_competing_lease():
+    from src.integration.parent_adapters import ParentPolicyFacts
+    from src.integration.runtime_contracts import HoldFacts, SubjectKind
+
+    for hold in ("operator_hold", "review_rejected"):
+        decision = _green_first_policy_case(PARENT_FIXTURE, SubjectKind.PARENT_EPISODE,
+                                           ParentPolicyFacts, holds=(HoldFacts(kind=hold),))
+        assert decision.rule == "human-hold"
+    decision = _green_first_policy_case(PARENT_FIXTURE, SubjectKind.PARENT_EPISODE,
+                                       ParentPolicyFacts, competing_lease=True)
+    assert decision.rule == "competing-lease"

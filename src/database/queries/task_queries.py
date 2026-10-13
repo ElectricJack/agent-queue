@@ -203,14 +203,14 @@ _READY_REASONS = {
 #: can never be observed out of step with the status.
 TERMINAL_BLOCKED_META_KEY = "blocked_terminal"
 
-#: ``needs_attention`` code the lifecycle sweep raises on a BLOCKED or PAUSED
-#: task that stayed put past ``work_graph.stale_open_after_seconds`` with its
-#: blocker still in place.  Advisory, unlike every other code: it never holds a
+#: ``needs_attention`` code the lifecycle sweep raises on stale BLOCKED/PAUSED
+#: work or a continuously frontier-rejected READY task. Advisory: it never holds a
 #: task out of promotion or opens a recovery incident, and any transition out
-#: of BLOCKED/PAUSED removes it with its detail (see ``_apply_transition``).
+#: of the observed status removes it with its detail (see ``_apply_transition``).
 STALE_OPEN_ATTENTION = "stale_open"
 #: The recorded blockers behind a ``stale_open`` flag, for explain and doctor.
 STALE_OPEN_DETAIL_KEY = "stale_open_detail"
+FRONTIER_REJECTION_KEY = "frontier_rejection_since"
 
 #: Transition contexts that make an entry into BLOCKED terminal: the session
 #: close's three BLOCKED legs, merge conflicts, the execution timeout, an
@@ -1310,6 +1310,7 @@ class TaskQueryMixin:
         _operator_adoption_token=None,
         _integration_wake_token=None,
         accepted_close: dict | None = None,
+        integration_delivery=None,
         **kwargs,
     ) -> TransitionResult:
         """Validate and update status on a caller-owned connection (work-graph §4.1).
@@ -1427,9 +1428,13 @@ class TaskQueryMixin:
             current_status.value in self._TERMINAL_TASK_STATUSES
             and new_status.value not in self._TERMINAL_TASK_STATUSES
         ):
-            await self.guard_integration_mutation(task_id, "reopen", conn=conn)
+            await self.guard_integration_mutation(
+                task_id, "reopen", conn=conn, delivery=integration_delivery,
+            )
         if context == "abandoned_by_container":
-            await self.guard_integration_mutation(task_id, "disposition", conn=conn)
+            await self.guard_integration_mutation(
+                task_id, "disposition", conn=conn, delivery=integration_delivery,
+            )
         stable = (
             projection_stable
             and current_status in _PROJECTION_NEUTRAL_STATUSES
@@ -1733,29 +1738,26 @@ class TaskQueryMixin:
                     )
                 )
 
-            # A ``stale_open`` flag describes one stale BLOCKED/PAUSED
-            # episode; leaving the status by any path ends it.
-            if current_status in (TaskStatus.BLOCKED, TaskStatus.PAUSED):
-                await conn.execute(
-                    delete(task_metadata).where(
-                        task_metadata.c.task_id == task_id,
-                        (task_metadata.c.key == STALE_OPEN_DETAIL_KEY)
-                        | (
-                            (task_metadata.c.key == "needs_attention")
-                            & (task_metadata.c.value == json.dumps(STALE_OPEN_ATTENTION))
-                        ),
+            # Leaving a stopped or frontier-rejected episode clears its stale
+            # advisory. In flight/completed work also resolves any other
+            # operational incident. Use one delete for both so claiming READY
+            # work does not pay an extra round trip for the episode cleanup.
+            stale_episode_ended = current_status in (
+                TaskStatus.BLOCKED, TaskStatus.PAUSED, TaskStatus.READY,
+            )
+            attention_resolved = new_status in (TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED)
+            if stale_episode_ended or attention_resolved:
+                attention = task_metadata.c.key == "needs_attention"
+                if not attention_resolved:
+                    attention &= task_metadata.c.value == json.dumps(STALE_OPEN_ATTENTION)
+                if stale_episode_ended:
+                    attention |= task_metadata.c.key.in_(
+                        (STALE_OPEN_DETAIL_KEY, FRONTIER_REJECTION_KEY)
                     )
-                )
-
-            # A task in flight or terminally completed has resolved the
-            # previous operational incident.  Centralising this covers both
-            # push and pull execution paths, including callers outside the
-            # pool claim protocol.
-            if new_status in (TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED):
                 await conn.execute(
                     delete(task_metadata).where(
                         task_metadata.c.task_id == task_id,
-                        task_metadata.c.key == "needs_attention",
+                        attention,
                     )
                 )
 
@@ -1846,6 +1848,7 @@ class TaskQueryMixin:
         force: bool = False,
         expect_claim_epoch: int | None = None,
         skip_open_subtasks: bool = False,
+        integration_delivery=None,
         **kwargs,
     ) -> set[str]:
         """Public status write: one transaction, then post-commit emission.
@@ -1858,6 +1861,20 @@ class TaskQueryMixin:
         # stale snapshot across a concurrent integration seal. PostgreSQL's
         # immediate() remains an ordinary transaction; the project advisory
         # lock in guard_integration_mutation supplies its scoped exclusion.
+        from src.integration.delivery_observer import prerequisite_observer
+
+        if (integration_delivery is None and prerequisite_observer(self) is not None
+                and (new_status.value not in self._TERMINAL_TASK_STATUSES
+                     or context == "abandoned_by_container")):
+            task = await self.get_task(task_id)
+            if task is not None and (
+                task.status.value in self._TERMINAL_TASK_STATUSES
+                and new_status.value not in self._TERMINAL_TASK_STATUSES
+                or context == "abandoned_by_container"
+            ):
+                integration_delivery = await self.observe_removal_delivery(
+                    [task_id], for_mutation=True,
+                )
         async with self.immediate() as conn:
             result = await self._apply_transition(
                 conn,
@@ -1868,6 +1885,7 @@ class TaskQueryMixin:
                 force=force,
                 expect_claim_epoch=expect_claim_epoch,
                 skip_open_subtasks=skip_open_subtasks,
+                integration_delivery=integration_delivery,
                 **kwargs,
             )
         await self.log_blocked_flips(result.flipped)
@@ -2003,6 +2021,7 @@ class TaskQueryMixin:
         cascade: bool = False,
         conn=None,
         branch_policy: str | None = None,
+        delivery=None,
     ) -> TransitionResult:
         """Delete a task; with *cascade*, its whole subtree (spec §7).
 
@@ -2027,12 +2046,16 @@ class TaskQueryMixin:
         """
         if conn is not None:
             return await self._delete_task_body(
-                task_id, cascade=cascade, conn=conn, branch_policy=branch_policy
+                task_id, cascade=cascade, conn=conn, branch_policy=branch_policy, delivery=delivery,
             )
 
+        from src.integration.delivery_observer import prerequisite_observer
+
+        if delivery is None and prerequisite_observer(self) is not None:
+            delivery = await self.observe_removal_delivery([task_id], for_mutation=True)
         async with self._engine.begin() as c:
             result = await self._delete_task_body(
-                task_id, cascade=cascade, conn=c, branch_policy=branch_policy
+                task_id, cascade=cascade, conn=c, branch_policy=branch_policy, delivery=delivery,
             )
         await self.log_blocked_flips(result.flipped)
         await self._notify_settled(result.settled)
@@ -2040,13 +2063,14 @@ class TaskQueryMixin:
         return result
 
     async def _delete_task_body(
-        self, task_id: str, *, cascade: bool, conn, branch_policy: str | None = None
+        self, task_id: str, *, cascade: bool, conn, branch_policy: str | None = None, delivery=None,
     ) -> TransitionResult:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
         await self.guard_integration_mutation(
-            task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy
+            task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy,
+            delivery=delivery,
         )
         parent = (
             await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))

@@ -506,6 +506,89 @@ async def supervisor_messages(db, tid):
         ).all()
 
 
+async def test_ready_frontier_attention_is_delayed_deduplicated_and_cleared(db, orch):
+    from src.models import AgentProfile
+
+    await db.upsert_profile(AgentProfile(id="worker", name="Worker"))
+    await mktask(db, "ready", status=TaskStatus.READY, profile_id="worker",
+                 route_source="router")
+    now = time.time()
+    threshold = orch.config.work_graph.frontier_rejected_after_seconds
+    await db.set_task_meta("ready", "claim_prepare_backoff_until", now + 10 * threshold)
+    assert await orch.reevaluate_frontier_rejections(now=now) == []
+    assert await orch.reevaluate_frontier_rejections(now=now + threshold - 1) == []
+    assert await supervisor_messages(db, "ready") == []
+    assert await orch.reevaluate_frontier_rejections(now=now + threshold) == ["ready"]
+    assert await orch.reevaluate_frontier_rejections(now=now + threshold + 1) == []
+    [notice] = await supervisor_messages(db, "ready")
+    assert notice.to_id == f"supervisor-{PROJECT_ID}"
+    assert "frontier_claim_prepare_backoff" in notice.body
+    assert await db.get_task_meta("ready", "needs_attention") == "stale_open"
+    await db.set_task_meta("ready", "claim_prepare_backoff_until", 0)
+    # The advisory itself must never hold recovered work out of demand or claims.
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    async with db.immediate() as conn:
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        ) == "ready"
+    assert await orch.reevaluate_frontier_rejections(now=now + threshold + 2) == []
+    assert await db.get_task_meta("ready", "needs_attention") is None
+    assert await db.get_task_meta("ready", "frontier_rejection_since") is None
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    # A later rejection in the same READY status is a new notification episode.
+    await db.set_task_meta("ready", "claim_prepare_backoff_until", now + 10 * threshold)
+    later = now + 2 * threshold
+    assert await orch.reevaluate_frontier_rejections(now=later) == []
+    assert await orch.reevaluate_frontier_rejections(now=later + threshold) == ["ready"]
+    assert len(await supervisor_messages(db, "ready")) == 2
+    await db.transition_task("ready", TaskStatus.IN_PROGRESS)
+    assert await db.get_task_meta("ready", "needs_attention") is None
+    assert await db.get_task_meta("ready", "frontier_rejection_since") is None
+
+
+async def test_ready_frontier_attention_preserves_other_incidents_and_paused_projects(db, orch):
+    await mktask(db, "ready", status=TaskStatus.READY)
+    now = time.time()
+    await db.set_task_meta("ready", "needs_attention", "operator_required")
+    await orch.reevaluate_frontier_rejections(now=now)
+    await orch.reevaluate_frontier_rejections(now=now + 3600)
+    assert await db.get_task_meta("ready", "needs_attention") == "operator_required"
+    assert await supervisor_messages(db, "ready") == []
+    await db.update_project(PROJECT_ID, status="paused")
+    await orch.reevaluate_frontier_rejections(now=now + 7200)
+    assert await supervisor_messages(db, "ready") == []
+    orch.config.work_graph.frontier_rejected_after_seconds = 0
+    assert await orch.reevaluate_frontier_rejections(now=now + 10800) == []
+
+
+@pytest.mark.parametrize("before,after,attention,expected", [
+    (TaskStatus.READY, TaskStatus.IN_PROGRESS, "stale_open", None),
+    (TaskStatus.READY, TaskStatus.IN_PROGRESS, "operator_required", None),
+    (TaskStatus.READY, TaskStatus.FAILED, "stale_open", None),
+    (TaskStatus.READY, TaskStatus.FAILED, "operator_required", "operator_required"),
+    (TaskStatus.BLOCKED, TaskStatus.READY, "operator_required", "operator_required"),
+    (TaskStatus.PAUSED, TaskStatus.READY, "stale_open", None),
+])
+async def test_leaving_stale_episode_preserves_unresolved_incidents(
+    db, before, after, attention, expected,
+):
+    await mktask(db, "episode", status=before)
+    await db.set_task_meta("episode", "needs_attention", attention)
+    await db.set_task_meta("episode", "stale_open_detail", {"status": before.value})
+    await db.set_task_meta("episode", "frontier_rejection_since", time.time())
+    await db.set_task_meta("episode", "work_dir", "/retained/workspace")
+
+    if before == TaskStatus.PAUSED:
+        await db.resume_task("episode")
+    else:
+        await db.transition_task("episode", after)
+
+    assert await db.get_task_meta("episode", "needs_attention") == expected
+    assert await db.get_task_meta("episode", "stale_open_detail") is None
+    assert await db.get_task_meta("episode", "frontier_rejection_since") is None
+    assert await db.get_task_meta("episode", "work_dir") == "/retained/workspace"
+
+
 class TestStaleOpenReevaluation:
     async def test_satisfied_blocker_with_a_stale_projection_is_unblocked(self, db, orch):
         await blocked_on(db)
@@ -773,11 +856,8 @@ class TestObsoleteClose:
         assert await db.get_task("dup") is not None
 
     async def test_obsolete_work_is_never_published(self, db):
-        from types import SimpleNamespace
-
         from src.database import tables as t
-        from src.integration.development_adapter import ordered_development_members
-        from src.integration.development_runtime import DevelopmentFrontierReader
+        from src.integration.delivery_observer import development_delivery_scope
 
         await dev_project(db)
         await mktask(
@@ -794,18 +874,17 @@ class TestObsoleteClose:
                 base_sha="a" * 40, creation_generation=1, reserved=True, materialized=True,
                 created_at=time.time()
             ))
-        git_manager = SimpleNamespace(remote_head=AsyncMock(return_value=SimpleNamespace(
-            state="present", sha=SHA
-        )))
-        reader = DevelopmentFrontierReader(db, git=git_manager)
-        subject = SimpleNamespace(project_id=DEV_PROJECT, repository_id="dev-repo")
-        assert [m.task_id for m in ordered_development_members(await reader(subject), 10)] == ["dup"]
+        async def delivery_required():
+            async with db._engine.connect() as conn:
+                return list((await conn.execute(
+                    select(t.tasks.c.id).where(development_delivery_scope(t.tasks))
+                )).scalars())
+
+        assert await delivery_required() == ["dup"]
 
         await service(db).close("dup", reason="duplicate", principal="human:local-operator")
 
-        frontier = await reader(subject)
-        assert ordered_development_members(frontier, 10) == ()
-        assert "dup" in frontier.satisfied
+        assert await delivery_required() == []
         assert await db.obsolete_task_ids(["dup", "missing"]) == {"dup"}
 
     @pytest.mark.parametrize("batch_state", ["parked", "prepared", "publishing"])

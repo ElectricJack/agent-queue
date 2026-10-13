@@ -633,8 +633,9 @@ async def test_old_custom_worker_profile_reports_and_merges_missing_grants(tmp_p
     assert diff_profile(profile_id, data_dir).missing_grants == {}
 
 
-@pytest.mark.parametrize('command', [
-    'integration_resolve_conflict', 'integration_push_conflict_resolution',
+@pytest.mark.parametrize("command", [
+    "integration_resolve_conflict", "integration_push_conflict_resolution",
+    "integration_resolve_candidate_member",
 ])
 @pytest.mark.parametrize('assignment', ['parent', 'batch', 'inactive', 'ordinary'])
 async def test_retired_conflict_commands_are_denied_for_every_assignment(env, monkeypatch, command, assignment):

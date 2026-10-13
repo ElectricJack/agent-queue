@@ -249,3 +249,39 @@ async def _live_session(h: CommandHandler, task_id: str, work_dir: str) -> str:
     )
     await h.db.create_session(session)
     return session.id
+
+
+@pytest.mark.parametrize("remote_state", ["absent", "behind", "different_branch", "unreachable"])
+async def test_live_passing_close_requires_exact_task_branch_on_origin(handler, repo, remote_state):
+    h = handler
+
+    async def pipeline(ctx):
+        return "", True
+
+    h.orchestrator._run_completion_pipeline = pipeline
+    task_id = await _task_on_workspace(h, repo)
+    branch = f"aq/{task_id}"
+    _git(["checkout", "-b", branch], cwd=repo["clone"])
+    await h.db.update_task(task_id, branch_name=branch)
+    if remote_state == "behind":
+        _git(["push", "origin", branch], cwd=repo["clone"])
+    sha = _commit(repo["clone"], "work.py")
+    if remote_state == "different_branch":
+        _git(["push", "origin", "HEAD:aq/other"], cwd=repo["clone"])
+    if remote_state == "unreachable":
+        _git(["remote", "set-url", "origin", repo["origin"] + ".missing"], cwd=repo["clone"])
+    session = await _live_session(h, task_id, repo["clone"])
+    args = {"task_id": task_id, "outcome": "pass", "summary": "done", "session_id": session}
+    refused = await h.execute("task_close", args)
+    assert refused["success"] is False, refused
+    assert refused["result"] == "verification_failed"
+    assert "aq git push" in refused["error"]
+    assert (await h.db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
+    assert (await h.db.get_session(session)).state == "running"
+    assert await h.db.get_task_completion(task_id) is None
+    _git(["remote", "set-url", "origin", repo["origin"]], cwd=repo["clone"])
+    _git(["push", "origin", branch], cwd=repo["clone"])
+    assert _git(["rev-parse", f"refs/heads/{branch}"], cwd=repo["origin"]) == sha
+    accepted = await h.execute("task_close", args)
+    assert accepted["success"], accepted
+    assert (await h.db.get_task(task_id)).status == TaskStatus.COMPLETED

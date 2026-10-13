@@ -197,6 +197,47 @@ def scoped(handler, sid):
     return handler
 
 
+@pytest.mark.parametrize("decision", ["hold", "retry", "superseded", None, "missing"])
+@pytest.mark.parametrize("retry_allowed", [False, True])
+async def test_recovery_hold_frontier_demand_diagnostics_and_claim_agree(
+    handler, db, tmp_path, decision, retry_allowed,
+):
+    from src.scheduler import PoolKey
+
+    await mktask(db, "held", profile_id="worker")
+    if decision != "missing":
+        await db.set_task_meta("held", "supervisor_recovery_incident", {
+            "id": "incident-held", "decision": decision, "retry_allowed": retry_allowed,
+        })
+    # Legacy metadata can contain unencoded text outside the incident key.
+    async with db.immediate() as conn:
+        await conn.execute(task_metadata.insert().values(
+            task_id="held", key="legacy", value="not JSON",
+        ))
+    sid, _ = await pool_session(db, tmp_path)
+    allowed = decision != "hold"
+    assert await db.count_ready_by_profile(PROJECT_ID) == ({"worker": 1} if allowed else {})
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == int(allowed)
+    exclusions = await db.claim_frontier_exclusions("held")
+    assert [item["code"] for item in exclusions] == ([] if allowed else ["frontier_recovery_hold"])
+    worker = scoped(handler, sid)
+    if not allowed:
+        assert (await worker._cmd_task_claim({"task_id": "held"}))["result"] == "claim_conflict"
+    claim = await worker._cmd_task_claim({"next": True})
+    assert claim["result"] == ("claimed" if allowed else "no_ready_work"), claim
+    if allowed:
+        assert claim["task"]["id"] == "held"
+    else:
+        assert (await db.get_task("held")).claim_epoch == 0
+        assert (await db.get_session(sid)).task_id is None
+        await mktask(db, "available", profile_id="worker", priority=100)
+        assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+        following = await worker._cmd_task_claim({"next": True})
+        assert following["result"] == "claimed", following
+        assert following["task"]["id"] == "available"
+        assert (await db.get_task("held")).claim_epoch == 0
+
+
 async def ordinary_pool_repair(handler, db, tmp_path):
     from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
     from src.integration.lock import BranchLock
@@ -3353,6 +3394,13 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
     await db.save_task_completion(TaskCompletion(
         id="close-second", task_id="second-prerequisite", outcome="pass", commits=[second],
     ))
+    if conflict_kind == "incarnation":
+        from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+        await GitProvenance(handler.orchestrator.git, str(env.source),
+                            repository_url=str(env.remote)).write_completion(CompletedSource(
+            CompletionIdentity(PROJECT_ID, "repo", "second-prerequisite", "close-second"), second,
+        ))
     for tid in ("dependent", "prerequisite", "second-prerequisite"):
         await db.add_dependency(tid, "epic", "parent-child")
     await db.add_dependency("dependent", "second-prerequisite")
@@ -3525,6 +3573,13 @@ async def test_conflicting_multiple_stacked_prerequisites_cannot_activate_claim(
             id="repair-close", task_id=repair.id, outcome="pass",
             commits=[] if repair_result == "no-commit" else [resolved],
         ))
+        if repair_result == "pass":
+            from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+            await GitProvenance(handler.orchestrator.git, str(env.source),
+                                repository_url=str(env.remote)).write_completion(CompletedSource(
+                CompletionIdentity(PROJECT_ID, "repo", repair.id, "repair-close"), resolved,
+            ))
         await db.transition_task(repair.id, TaskStatus.COMPLETED, force=True)
         if repair_result == "moved":
             (env.source / "unreviewed").write_text("moved after close")
@@ -3856,6 +3911,12 @@ async def test_existing_child_parent_conflict_recovers_exact_inputs(
     git(env.source, "push", "origin", repair.branch_name)
     await db.save_task_completion(TaskCompletion(
         id="child-repair-pass", task_id=repair.id, outcome="pass", commits=[resolved],
+    ))
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    await GitProvenance(handler.orchestrator.git, str(env.source),
+                        repository_url=str(env.remote)).write_completion(CompletedSource(
+        CompletionIdentity(PROJECT_ID, "repo", repair.id, "child-repair-pass"), resolved,
     ))
     await db.transition_task(repair.id, TaskStatus.COMPLETED, force=True)
     await db.set_task_meta("dependent", "claim_prepare_backoff_until", time.time() - 1)

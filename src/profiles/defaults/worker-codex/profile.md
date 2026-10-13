@@ -56,6 +56,10 @@ somehow declares none.
 
 ## Capabilities
 
+The `## Capabilities` block below is the shared worker grant source. After
+editing it, run `python scripts/generate-worker-capabilities.py` to update every
+worker template.
+
 ```json
 {
   "harness_tools": [

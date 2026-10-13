@@ -1,57 +1,23 @@
-"""Development policy equivalence, engine ownership and its audited transfer."""
-
-import asyncio
+"""Retained reviewed Development policy and exact-head validation contracts."""
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert
 
-from src.database import Database
-from src.database.tables import (
-    integration_subjects,
-    playbook_artifacts,
-    projects,
-    repos,
-)
+from src.database.tables import playbook_artifacts
+
 from src.integration.ci_producers import LocalValidationPlan
 from src.integration.development import DevelopmentPolicy
-from src.integration.development_adapter import (
-    DevelopmentFrontier,
-    DevelopmentIntegrationAdapter,
-    DevelopmentMember,
-    ordered_development_members,
-)
 from src.integration.development_policy import PinnedDevelopmentPolicy, render_development_policy
 from src.integration.models import BranchKey, Fence
 from src.integration.runtime_contracts import (
-    AdmissionPredicate,
-    CIEvidence,
-    CIState,
-    HoldFacts,
-    GateFacts,
-    MemberFacts,
-    MemberRef,
-    MergeMembersArgs,
-    Primitive,
-    PrimitiveOutcome,
-    PrimitivePorts,
-    SealArgs,
-    Subject,
-    SubjectEngine,
-    SubjectFacts,
-    SubjectKind,
-    SubjectPhase,
-    SubjectSchedule,
-    WriterBudget,
-    WriterLease,
-    WriterStatus,
+    CIEvidence, CIState, HoldFacts, GateFacts, MemberFacts, Primitive, PrimitiveOutcome, Subject,
+    SubjectEngine, SubjectKind, SubjectPhase, SubjectSchedule, WriterBudget, WriterLease, WriterStatus,
 )
 from src.playbooks.definition import ProjectScope, load_definition_json, source_digest
 from src.playbooks.integration_policy import IntegrationPolicyFacts, policy_from_markdown
-from tests.db_fixtures import lease_dsn
 
 BASE, A, B, C = (letter * 40 for letter in "abcd")
 
@@ -80,6 +46,17 @@ def subject(pinned, phase=SubjectPhase.ADMITTING, **values):
     })
 
 
+async def store_subject(db, s, pinned):
+    """Persist historical subjects for retained cleanup-fence tests."""
+    async with db.immediate() as conn:
+        await conn.execute(insert(playbook_artifacts).values(
+            artifact_sha256=s.policy.artifact_sha256, playbook_id=s.policy.playbook_id,
+            source_digest=pinned.definition.source_hash, contract_fingerprint="sha256:" + "3" * 64,
+            compiler_build="test", path="/test/development.json", created_at=100,
+        ))
+        await db.ensure_integration_subject_on(conn, s.to_row())
+
+
 def facts(s, state=CIState.NONE, **values):
     if s.kind is SubjectKind.SOURCE:
         values.setdefault("members", (MemberFacts(task_id=s.task_id,
@@ -90,19 +67,6 @@ def facts(s, state=CIState.NONE, **values):
         "default_branch_head": BASE, "writer": s.writer, "budget": s.budget,
         "ci": (CIEvidence(head_sha=s.head_sha, state=state),), **values,
     })
-
-
-def member(task_id, sha=A, *, deps=(), **facts_values):
-    return DevelopmentMember(
-        MemberFacts(task_id=task_id, head_sha=sha, base_sha=BASE, **facts_values),
-        dependencies=frozenset(deps),
-    )
-
-
-def seal_args(**changes):
-    return SealArgs(admission=AdmissionPredicate(**{
-        "require_review": False, "include_authorized": False, **changes,
-    }))
 
 
 @pytest.mark.parametrize("mode", ["focused", "advisory", "none"])
@@ -185,31 +149,6 @@ def test_answered_retry_clears_gate_with_read_only_proof_before_any_mutation():
     assert pinned.compiled.phase(s, decision, result) is SubjectPhase.BUILDING
 
 
-async def test_parked_source_cleanup_requires_existing_delivery_truth(db):
-    pinned = pinned_policy()
-    s = subject(pinned, SubjectPhase.REPAIRING, kind=SubjectKind.SOURCE, task_id="a")
-    await store_subject(db, s, pinned)
-    a = adapter(db, pinned, DevelopmentFrontier((member("a", B),), satisfied=frozenset({"a"})))
-    decision = pinned.compiled.evaluate(s, await a.observe(s))
-    assert decision.rule == "source-contained"
-    assert decision.primitive is Primitive.CLEANUP
-
-
-async def test_completed_repair_waits_for_delivery_without_spending_another_generation(db):
-    pinned = pinned_policy()
-    s = subject(pinned, SubjectPhase.REPAIRING, kind=SubjectKind.SOURCE, task_id="a",
-                writer=WriterLease(status=WriterStatus.STOPPED, task_id="repair"),
-                budget=WriterBudget(ordinal=3, intelligence_class="standard-high",
-                                   started_at=0, deadline_at=1))
-    await store_subject(db, s, pinned)
-    repair = replace(member("repair", C), carries=frozenset({("a", B)}))
-    a = adapter(db, pinned, DevelopmentFrontier((member("a", B), repair),
-                                               parked=frozenset({("a", B)})))
-    decision = pinned.compiled.evaluate(s, await a.observe(s))
-    assert decision.rule == "source-replacement-pending"
-    assert decision.primitive is Primitive.WAIT
-
-
 @pytest.mark.parametrize("ordinal", [0, 1, 2, 3])
 def test_three_resumable_repair_generations_without_capacity_expiry(ordinal):
     pinned = pinned_policy()
@@ -225,406 +164,12 @@ def test_three_resumable_repair_generations_without_capacity_expiry(ordinal):
     assert pinned.compiled.evaluate(waiting, facts(waiting)).primitive is Primitive.WAIT
 
 
-@pytest.mark.parametrize("reason", ["parked", "held", "failing", "unpushed", "missing-base"])
-def test_one_ineligible_member_holds_only_its_dependents(reason):
-    bad = member("a")
-    parked = frozenset()
-    if reason == "parked":
-        parked = frozenset({("a", A)})
-    elif reason == "held":
-        bad = replace(bad, facts=bad.facts.model_copy(update={"held": True}))
-    elif reason == "failing":
-        bad = replace(bad, completed=False)
-    elif reason == "unpushed":
-        bad = replace(bad, pushed=False)
-    else:
-        bad = replace(bad, facts=bad.facts.model_copy(update={"base_sha": None}))
-    frontier = DevelopmentFrontier((bad, member("b", B, deps=("a",)), member("c", C)),
-                                   parked=parked)
-    assert [m.task_id for m in ordered_development_members(frontier, 50)] == ["c"]
-
-
-def test_dependency_order_cap_cycles_and_external_delivery_truth():
-    frontier = DevelopmentFrontier((member("a", deps=("z",)), member("z", B),
-                                    member("cycle", C, deps=("cycle",))))
-    assert [m.task_id for m in ordered_development_members(frontier, 50)] == ["z", "a"]
-    assert [m.task_id for m in ordered_development_members(frontier, 1)] == ["z"]
-    external = DevelopmentFrontier((member("a", deps=("outside",)),),
-                                   satisfied=frozenset({"outside"}))
-    assert [m.task_id for m in ordered_development_members(external, 50)] == ["a"]
-
-
-def test_verified_repair_carries_exact_parked_sources_and_releases_descendants():
-    repair = replace(member("repair", C), carries=frozenset({("a", A)}))
-    frontier = DevelopmentFrontier((member("a"), member("b", B, deps=("a",)), repair),
-                                   parked=frozenset({("a", A)}))
-    assert [m.task_id for m in ordered_development_members(frontier, 50)] == ["repair", "b"]
-    stale = replace(repair, carries=frozenset({("a", B)}))
-    assert [m.task_id for m in ordered_development_members(replace(
-        frontier, members=(member("a"), member("b", B, deps=("a",)), stale)
-    ), 50)] == ["repair"]
-
-
-@pytest.fixture
-async def db():
-    db = Database(lease_dsn("development_subjects"))
-    await db.initialize()
-    yield db
-    await db.close()
-
-
-async def store_subject(db, s, pinned):
-    async with db.immediate() as conn:
-        await conn.execute(insert(playbook_artifacts).values(
-            artifact_sha256=s.policy.artifact_sha256, playbook_id=s.policy.playbook_id,
-            source_digest=pinned.definition.source_hash, contract_fingerprint="sha256:" + "3" * 64,
-            compiler_build="test", path="/test/development.json", created_at=100,
-        ))
-        await db.ensure_integration_subject_on(conn, s.to_row())
-
-
-def adapter(db, pinned, frontier, *, shared=None):
-    async def observe(s):
-        return SubjectFacts(**facts(s).model_dump(exclude={"publisher_fence", "competing_lease"}))
-
-    return DevelopmentIntegrationAdapter(
-        db, observe=observe, frontier_for=AsyncMock(return_value=frontier),
-        policy_for=AsyncMock(return_value=pinned), repository_for=AsyncMock(
-            return_value=SimpleNamespace(store=Path("/test/retained"))),
-        shared_ports=shared or PrimitivePorts(), job_client=AsyncMock(), clock=lambda: 100,
-    )
-
-
-async def test_hosted_rate_limit_in_development_observer_preserves_retry_identity(db):
-    from src.git.github_contracts import GitHubAccessError
-    from src.integration.ci_producers import HostedCIProducer
-    from tests.test_integration_ci_producers import github
-
-    pinned = pinned_policy()
-    s = subject(pinned, SubjectPhase.TESTING)
-    await store_subject(db, s, pinned)
-    a = adapter(db, pinned, DevelopmentFrontier(()))
-    client, trust = github(app=False)
-    error = GitHubAccessError("rate_limited", "secondary limit", retry_at=1900, http_status=403)
-    client.paged_items.side_effect = error
-    a.producer_for = AsyncMock(return_value=HostedCIProducer(client, trust))
-
-    with pytest.raises(GitHubAccessError) as caught:
-        await a.observe(s)
-    assert caught.value is error
-
-
-
-
-
-@pytest.mark.parametrize("admission", [
-    {"require_review": True}, {"require_source_ci": True}, {"include_authorized": True},
-])
-async def test_copied_policy_admission_cannot_silently_ignore_a_stricter_filter(db, admission):
-    pinned = pinned_policy()
-    s = subject(pinned)
-    await store_subject(db, s, pinned)
-    a = adapter(db, pinned, DevelopmentFrontier((member("a"), member("b", B, deps=("a",)))))
-    result = await a.seal(s, seal_args(**admission))
-    assert result.outcome in {"empty", "unknown"}
-    assert a._manifest(await a._journal(s)) is None
-
-
-async def test_conflict_parks_one_exact_source_and_independent_member_keeps_building(db):
-    pinned = pinned_policy()
-    s = subject(pinned, SubjectPhase.BUILDING)
-    await store_subject(db, s, pinned)
-    args = MergeMembersArgs(target_ref=s.target_ref, base_sha=BASE, members=(
-        MemberRef(task_id="a", head_sha=A, base_sha=BASE),
-        MemberRef(task_id="c", head_sha=C, base_sha=BASE),
-    ))
-    shared = PrimitivePorts({Primitive.GIT_MERGE_MEMBERS: AsyncMock(return_value=PrimitiveOutcome(
-        primitive=Primitive.GIT_MERGE_MEMBERS, outcome="conflict",
-        detail={"member": "a", "files": ["x.py"], "head": BASE},
-    ))})
-    a = adapter(db, pinned, DevelopmentFrontier((member("a"), member("b", B, deps=("a",)),
-                                               member("c", C))), shared=shared)
-    await a.seal(s, seal_args())
-    result = await a.merge(s, args)
-    await a.merge(s, args)
-    decision = pinned.compiled.evaluate(s, facts(s, members=(member("c", C).facts,)))
-    assert pinned.compiled.phase(s, decision, result) is SubjectPhase.BUILDING
-    frontier = await a._frontier(s, await a._journal(s))
-    assert [m.task_id for m in ordered_development_members(frontier, 50)] == ["c"]
-    async with db._engine.connect() as conn:
-        parked = (await conn.execute(select(integration_subjects).where(
-            integration_subjects.c.kind == "source",
-        ))).mappings().all()
-    assert len(parked) == 1
-    assert (parked[0]["task_id"], parked[0]["head_sha"], parked[0]["phase"]) == (
-        "a", A, "repairing",
-    )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_local_producer_preserves_installed_zero_queue_budget():
     assert LocalValidationPlan(version="pinned", attempt_id="0", queue_seconds=0).queue_seconds == 0
 
 
-# -- the audited per-project engine transfer, through CommandHandler --------
-
-
-async def seed_project(db, repository_id="repo"):
-    """A real project and repository row, so the transfer's fence has identity."""
-    async with db.immediate() as conn:
-        await conn.execute(
-            insert(projects).values(
-                id="p", name="project", status="ACTIVE", created_at=1,
-                hierarchical_integration_policy={}, hierarchical_integration_generation=1,
-            )
-        )
-        await conn.execute(
-            insert(repos).values(
-                id=repository_id, project_id="p", url="https://example/repo.git",
-                default_branch="main", checkout_base_path="/checkout", source_type="clone",
-            )
-        )
-
-
-@pytest.fixture
-async def development(db):
-    """One seeded Development project whose root subject is still ``legacy``."""
-    await seed_project(db)
-    pinned = pinned_policy()
-    seeded = subject(pinned, engine=SubjectEngine.RECONCILER)
-    await store_subject(db, seeded, pinned)
-    return db, seeded
-
-
-def transfer_handler(db, *, reconciler_active=False):
-    from src.commands.integration_commands import IntegrationCommandsMixin
-
-    handler = IntegrationCommandsMixin()
-    handler.db = db
-    handler.config = SimpleNamespace(
-        integration=SimpleNamespace(reconciler_active=reconciler_active, reconciler_shadow=False)
-    )
-    return handler
-
-
-async def live_subject(db, subject):
-    """The subject as it is now, which is exactly what a preview would name."""
-    return Subject.from_row(await db.get_integration_subject(subject.id))
-
-
-def cutover_args(live, **overrides):
-    return {
-        "project_id": "p",
-        "engine": "reconciler",
-        "dry_run": False,
-        "expected_versions": {live.id: live.version},
-        "reason": "reviewed development cutover",
-        "evidence": ["shadow-week", "development-scenarios", "operator approval"],
-    } | overrides
-
-
-async def publish_intent(db, live, *, intent, outcome):
-    """Journal one publish row exactly the way the shared publisher writes it."""
-    await db.append_integration_subject_journal({
-        "subject_id": live.id,
-        "entry_kind": "action",
-        "mode": "active",
-        "idempotency_key": intent if outcome == "prepared" else f"{intent}:applied",
-        "policy_artifact_sha256": live.policy.artifact_sha256,
-        "subject_version": live.version,
-        "phase": live.phase.value,
-        "head_sha": live.head_sha,
-        "generation": live.generation,
-        "primitive": "git_publish",
-        "outcome": outcome,
-        "payload": {"repository_id": live.repository_id, "ref": live.target_ref},
-        "recorded_at": 100,
-    })
-
-
-def transfers_of(journal):
-    return [row for row in journal if row["payload"].get("command") == "development_engine_transfer"]
-
-
-def test_the_contract_is_registered_as_a_composite_operator_control():
-    from src.commands.contracts.integration import register_integration_contracts
-    from src.commands.contracts.registry import ContractRegistry
-
-    registry = ContractRegistry()
-    register_integration_contracts(registry)
-    contract = registry.get("integration_development_engine_transfer").contract
-    assert contract.execution.capability == "integration_development_engine_transfer"
-    assert contract.execution.side_effect.value == "composite"
-    assert {outcome.name for outcome in contract.execution.outcomes} == {
-        "preview", "transferred", "refused",
-    }
-    assert contract.execution.sensitive_args == frozenset({"reason"})
-
-
-async def test_development_transfer_preview_is_read_only_and_names_exact_versions(development):
-    db, seeded = development
-    before = await db.get_integration_subject(seeded.id)
-    preview = await transfer_handler(db)._cmd_integration_development_engine_transfer(
-        {"project_id": "p", "engine": "reconciler"}
-    )
-    assert preview["success"] is True and preview["outcome"] == "preview"
-    assert preview["subject_ids"] == [seeded.id]
-    assert preview["expected_versions"] == {seeded.id: seeded.version}
-    assert preview["current_engines"] == {seeded.id: "reconciler"}
-    assert await db.get_integration_subject(seeded.id) == before
-    assert not await db.list_integration_subject_journal(seeded.id)
-
-
-async def test_development_transfer_applies_at_exact_versions_and_audits_the_operator(development):
-    db, seeded = development
-    live = await live_subject(db, seeded)
-    # The reconciler must already be the active loop, or the transfer would hand
-    # a project to an engine that can only mirror it.
-    refused = await transfer_handler(db)._cmd_integration_development_engine_transfer(
-        cutover_args(live)
-    )
-    assert refused == {
-        "success": False,
-        "outcome": "refused",
-        "error": "enable the active loop before transferring development subjects",
-    }
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
-    assert not await db.list_integration_subject_journal(seeded.id)
-
-    applied = await transfer_handler(db, reconciler_active=True) \
-        ._cmd_integration_development_engine_transfer(cutover_args(live))
-    assert applied["outcome"] == "transferred"
-    assert applied["subject_ids"] == [seeded.id]
-    moved = await live_subject(db, seeded)
-    assert moved.engine is SubjectEngine.RECONCILER and moved.version == live.version + 1
-    journal = transfers_of(await db.list_integration_subject_journal(seeded.id))
-    assert len(journal) == 1
-    assert journal[0]["primitive"] == "record_decision"
-    assert journal[0]["outcome"] == "recorded"
-    payload = journal[0]["payload"]
-    assert (payload["from"], payload["to"]) == ("reconciler", "reconciler")
-    assert payload["operator_id"] == "human:local-operator"
-    assert payload["reason"] == "reviewed development cutover"
-    assert payload["evidence"] == ["shadow-week", "development-scenarios", "operator approval"]
-
-
-async def test_development_transfer_refuses_wrong_versions_and_a_partial_subject_set(development):
-    db, seeded = development
-    handler = transfer_handler(db, reconciler_active=True)
-    live = await live_subject(db, seeded)
-
-    # A version nobody previewed: the exact-version CAS is the whole point.
-    stale = await handler._cmd_integration_development_engine_transfer(
-        cutover_args(live, expected_versions={live.id: live.version + 1})
-    )
-    assert stale["outcome"] == "refused"
-    assert "development subject set/version changed" in stale["error"]
-    # A chosen subset is refused too, in both directions: the transfer moves a
-    # project, never part of it.
-    assert (await handler._cmd_integration_development_engine_transfer(
-        cutover_args(live, expected_versions={})))["outcome"] == "refused"
-    assert (await handler._cmd_integration_development_engine_transfer(
-        {"project_id": "p", "engine": "legacy", "dry_run": False,
-         "expected_versions": {}, "reason": "rollback"}))["outcome"] == "refused"
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
-    assert not await db.list_integration_subject_journal(seeded.id)
-
-
-async def test_development_transfer_refuses_an_unresolved_publication_in_both_directions(development):
-    db, seeded = development
-    handler = transfer_handler(db, reconciler_active=True)
-    live = await live_subject(db, seeded)
-    await publish_intent(db, live, intent="git:first-intent", outcome="prepared")
-
-    # Neither engine may take ownership over an ambiguous write: the reconciler
-    # must not adopt one and the old publisher must not resume one.
-    for engine in ("reconciler",):
-        refused = await handler._cmd_integration_development_engine_transfer(
-            cutover_args(live, engine=engine)
-        )
-        assert refused["outcome"] == "refused", engine
-        assert "unresolved development publication" in refused["error"], engine
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
-
-    # A confirmation settles only the intent it names; a later prepare stays open.
-    await publish_intent(db, live, intent="git:first-intent", outcome="applied")
-    await publish_intent(db, live, intent="git:second-intent", outcome="prepared")
-    assert (await handler._cmd_integration_development_engine_transfer(
-        cutover_args(live)))["outcome"] == "refused"
-    await publish_intent(db, live, intent="git:second-intent", outcome="applied")
-    assert (await handler._cmd_integration_development_engine_transfer(
-        cutover_args(live)))["outcome"] == "transferred"
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
-
-
-
-
-async def test_development_transfer_requires_an_operator_and_a_real_project(development):
-    from src.commands.principal import ExecutionPrincipal, principal_context
-
-    db, seeded = development
-    handler = transfer_handler(db, reconciler_active=True)
-    assert (await handler._cmd_integration_development_engine_transfer(
-        {"project_id": "missing", "engine": "reconciler"}))["error"] == "project does not exist"
-    with principal_context(ExecutionPrincipal.service("development transfer")):
-        refused = await handler._cmd_integration_development_engine_transfer(
-            {"project_id": "p", "engine": "reconciler"}
-        )
-    assert refused["outcome"] == "unauthorized"
-    assert "operator" in refused["error"]
-    invalid = await handler._cmd_integration_development_engine_transfer(
-        {"project_id": "p", "engine": "reconciler", "expected_versions": {"root": -1}}
-    )
-    assert invalid["outcome"] == "refused"
-    assert not await db.list_integration_subject_journal(seeded.id)
-
-
-async def test_development_transfer_waits_for_a_publisher_instead_of_racing_it(development):
-    """The command route keeps the fence the publisher already shares.
-
-    The route is only as safe as the mechanism behind it: a publisher holding
-    the shared engine lock must block the transfer exactly as it blocks the
-    Python helper during forward transfer.
-    """
-    from src.integration.development import publisher_exclusion
-
-    db, seeded = development
-    handler = transfer_handler(db, reconciler_active=True)
-    live = await live_subject(db, seeded)
-    holding, release = asyncio.Event(), asyncio.Event()
-
-    async def publishing():
-        async with publisher_exclusion(db, "repo"):
-            holding.set()
-            await release.wait()
-
-    publisher = asyncio.create_task(publishing())
-    await asyncio.wait_for(holding.wait(), timeout=30)
-    transfer = asyncio.create_task(
-        handler._cmd_integration_development_engine_transfer(cutover_args(live))
-    )
-    await asyncio.sleep(0.5)
-    assert not transfer.done(), "the transfer raced a publisher holding the fence"
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
-    release.set()
-    assert (await transfer)["outcome"] == "transferred"
-    await publisher
-    assert (await live_subject(db, seeded)).engine is SubjectEngine.RECONCILER
-
-
 def test_runtime_loads_retained_reviewed_source_after_vault_changes(tmp_path):
-    from src.integration.development_runtime import load_pinned_development_policy
+    from src.integration.development_policy import load_pinned_development_policy
     from src.playbooks.artifact_store import ArtifactStore
 
     pinned = pinned_policy()

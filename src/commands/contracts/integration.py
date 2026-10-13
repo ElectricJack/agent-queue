@@ -2568,32 +2568,6 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                                              {"preview", "transferred", "refused"})
 
         registry.register(CommandRegistration(name, contract, transfer_engine))
-    name = "integration_development_engine_transfer"
-    if registry.get(name) is None:
-        contract = _operational_contract(name, IntegrationDevelopmentEngineTransferArgs,
-            ("preview", "transferred", "refused"),
-            successes=frozenset({"preview", "transferred"}),
-            side_effect=SideEffectClass.COMPOSITE,
-            result_model=IntegrationDevelopmentEngineTransferValue)
-        contract = contract.model_copy(update={
-            "presentation": contract.presentation.model_copy(update={
-                "title": "Development engine transfer",
-                "summary": (
-                    "Preview or transfer every Development subject of one project "
-                    "to the reconciler, at the exact "
-                    "previewed versions; the same command rolls it back."
-                ),
-            }),
-        })
-
-        async def transfer_development(args, ctx):
-            return await _hierarchy_adapter(
-                "integration_development_engine_transfer", args, ctx,
-                IntegrationDevelopmentEngineTransferValue,
-                {"preview", "transferred", "refused"},
-            )
-
-        registry.register(CommandRegistration(name, contract, transfer_development))
     if registry.get(INTEGRATION_TRANSFER_OWNER.name) is None:
         registry.register(
             CommandRegistration(
@@ -2685,36 +2659,3 @@ class IntegrationEngineTransferValue(CommandValue):
     expected_versions: dict[str, int] = Field(default_factory=dict)
     current_engines: dict[str, str] = Field(default_factory=dict)
     reason: str | None = None
-
-
-class IntegrationDevelopmentEngineTransferArgs(CommandArgs):
-    """The audited per-project forward Development engine transfer.
-
-    ``expected_versions`` is the exact subject-version set the preview named, so
-    an apply is a CAS over the whole Development subject set rather than a
-    partial move. ``reason`` is required for an apply and ``evidence`` for a
-    reconciler activation; disabling visits preserves ownership, because
-    it never adopts a write the old publisher left ambiguous.
-    """
-
-    project_id: str = Field(min_length=1)
-    engine: Literal["reconciler"]
-    expected_versions: dict[str, StrictInt] = Field(default_factory=dict)
-    reason: str = ""
-    evidence: tuple[str, ...] = ()
-    dry_run: bool = True
-
-    @field_validator("expected_versions")
-    @classmethod
-    def nonnegative_versions(cls, value):
-        if any(not key or isinstance(version, bool) or version < 0 for key, version in value.items()):
-            raise ValueError("expected_versions must name exact nonnegative subject versions")
-        return value
-
-
-class IntegrationDevelopmentEngineTransferValue(CommandValue):
-    project_id: str | None = None
-    engine: Literal["reconciler"] | None = None
-    subject_ids: tuple[str, ...] = ()
-    expected_versions: dict[str, int] = Field(default_factory=dict)
-    current_engines: dict[str, str] = Field(default_factory=dict)

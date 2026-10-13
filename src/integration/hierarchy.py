@@ -59,13 +59,7 @@ _CHILD_FIELDS = frozenset({
     "dedup_key",
 })
 _ACTIVE_BATCH_STATES = (
-    "sealing",
-    "sealed",
-    "building",
-    "testing",
-    "repairing",
-    "human_blocked",
-    "promoting",
+    "sealing", "sealed", "building", "testing", "repairing", "human_blocked", "promoting",
     "cleanup_pending",
 )
 DefaultHeadResolver = Callable[[RepoConfig, str], Awaitable[str] | str]
@@ -1003,6 +997,7 @@ class HierarchyIntegration:
         new_parent_id = arguments.get("parent_id")
         if not new_parent_id:
             raise HierarchyError("invalid", "reparent requires parent_id")
+        delivery = await self.db.observe_removal_delivery([task_id], for_mutation=True)
         async with self.db.immediate() as conn:
             child = await self._task_row(conn, task_id)
             project, repo = await self._enabled_route(conn, child)
@@ -1014,7 +1009,7 @@ class HierarchyIntegration:
             new_parent = await self._task_row(conn, new_parent_id)
             if new_parent["project_id"] != project["id"]:
                 raise HierarchyError("invalid", "new parent belongs to another project")
-            await self._assert_reparentable(conn, task_id, repo.id)
+            await self._assert_reparentable(conn, task_id, repo.id, delivery=delivery)
             await self._ensure_origin_chain(conn, new_parent_id, repo)
             old_checkpoint = await self._locked_checkpoint(conn, old_parent_id)
             new_checkpoint = await self._locked_checkpoint(conn, new_parent_id)
@@ -1434,47 +1429,53 @@ class HierarchyIntegration:
             **supplied,
         )
 
-    async def _assert_reparentable(self, conn, task_id: str, repository_id: str) -> None:
+    async def _assert_reparentable(
+        self, conn, task_id: str, repository_id: str, *, delivery=None,
+    ) -> None:
         origin = await self._locked_origin(conn, task_id, repository_id)
         if origin["materialized"]:
             raise HierarchyError("delivery_target_fixed", "branch origin is already materialized")
         task = await self._task_row(conn, task_id)
         if task["status"] not in {TaskStatus.DEFINED.value, TaskStatus.READY.value}:
             raise HierarchyError("delivery_target_fixed", "task already started")
-        busy = (
-            await conn.execute(
-                select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
+        _delivery_query = (
+            select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
+        )
+        busy = (await conn.execute(_delivery_query)).first()
+        _delivery_query = (
+            select(sessions.c.id)
+            .where(sessions.c.task_id == task_id)
+            .where(sessions.c.state.in_(("starting", "running", "draining")))
+            .limit(1)
+        )
+        live = (await conn.execute(_delivery_query)).first()
+        from src.integration.delivery_observer import prerequisite_observer
+
+        if prerequisite_observer(self.db) is not None:
+            await self.db.guard_integration_mutation(
+                task_id, "reparent", conn=conn, delivery=delivery,
             )
-        ).first()
-        live = (
-            await conn.execute(
-                select(sessions.c.id)
-                .where(sessions.c.task_id == task_id)
-                .where(sessions.c.state.in_(("starting", "running", "draining")))
-                .limit(1)
-            )
-        ).first()
-        delivered = (
-            await conn.execute(
+            delivered = False
+        else:
+            _delivery_query = (
                 select(task_delivery_receipts.c.id)
                 .where(task_delivery_receipts.c.source_task_id == task_id)
                 .limit(1)
             )
-        ).first()
-        sealed = (
-            await conn.execute(
-                select(integration_batch_members.c.task_id)
-                .select_from(
-                    integration_batch_members.join(
-                        integration_batches,
-                        integration_batches.c.id == integration_batch_members.c.batch_id,
-                    )
+            delivered = (await conn.execute(_delivery_query)).first()
+        _delivery_query = (
+            select(integration_batch_members.c.task_id)
+            .select_from(
+                integration_batch_members.join(
+                    integration_batches,
+                    integration_batches.c.id == integration_batch_members.c.batch_id,
                 )
-                .where(integration_batch_members.c.task_id == task_id)
-                .where(integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES))
-                .limit(1)
             )
-        ).first()
+            .where(integration_batch_members.c.task_id == task_id)
+            .where(integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES))
+            .limit(1)
+        )
+        sealed = (await conn.execute(_delivery_query)).first()
         if busy or live or delivered:
             raise HierarchyError("delivery_target_fixed", "task has started or delivered work")
         if sealed:

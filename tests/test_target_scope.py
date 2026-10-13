@@ -894,6 +894,23 @@ async def test_a_session_with_null_project_is_refused(db):
     )
 
 
+@pytest.mark.parametrize(
+    ("intent_id", "expected_error"),
+    [
+        ("intent-p", None),
+        ("intent-other", "targets another project (intent_id belongs to other)"),
+        ("intent-null-p", None),
+        ("intent-null-other", "targets another project (intent_id belongs to other)"),
+        ("intent-null-missing-repo", "targets a row owned by no project"),
+    ],
+)
+async def test_promotion_intent_ownership_uses_repository_when_project_is_null(
+    db, intent_id, expected_error
+):
+    command = "historical_intent_read"
+    error = await target_scope_error(command, {"intent_id": intent_id}, "p", db=db)
+
+    assert error == (None if expected_error is None else f"out of scope: {command} {expected_error}")
 
 
 @pytest.mark.parametrize("argument", sorted(TARGET_RESOLVERS))
@@ -1106,3 +1123,13 @@ def test_the_local_operator_bypasses_both_gates():
 
     assert check_command_scope("integration_reserve_owner", args, RequestScope(kind="local")) is None
     assert args == {}
+
+
+@pytest.mark.parametrize(("reservation_id", "foreign"), [("res-p", False), ("res-other", True)])
+async def test_historical_candidate_reservation_resolver_preserves_ownership(db, reservation_id, foreign):
+    error = await target_scope_error(
+        "historical_reservation_read", {"reservation_id": reservation_id}, "p", db=db
+    )
+    assert (error is not None) == foreign
+    if foreign:
+        assert "another project" in error

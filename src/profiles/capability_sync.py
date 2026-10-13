@@ -53,7 +53,9 @@ logger = logging.getLogger(__name__)
 CAPABILITY_SYNC_KEY = "capability_sync"
 
 #: Shipped profiles synced unless their vault copy opts out.
-DEFAULT_SYNCED_PROFILE_IDS: frozenset[str] = frozenset({"supervisor", "worker-claude", "worker-codex"})
+DEFAULT_SYNCED_PROFILE_IDS: frozenset[str] = frozenset(
+    {"supervisor"} | {pid for pid in system_profile_ids() if pid.startswith("worker-")}
+)
 
 #: Event emitted once per profile whose vault copy gained grants.
 CAPABILITIES_SYNCED_EVENT = "profile.capabilities_synced"

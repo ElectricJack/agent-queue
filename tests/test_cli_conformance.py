@@ -209,9 +209,11 @@ def test_required_and_malformed_structured_values_are_usage_errors_without_dispa
         malformed = CliRunner().invoke(
             cli,
             [
-                "system",
-                "edit-intelligence-class",
-                "--mapping",
+                "playbook",
+                "dry-run",
+                "--playbook-id",
+                "example",
+                "--event",
                 "{bad",
             ],
         )

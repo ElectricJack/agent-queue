@@ -20,6 +20,7 @@ const api = vi.hoisted(() => ({
   getSessionMessagesApiSessionsNameMessagesGet: vi.fn(), postSessionMessageApiSessionsNameMessagePost: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
+vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: vi.fn(), close: vi.fn() }) }));
 function agent(id: string, name: string): FlockAgent {
   return {
     id, name, profile_id: "implementer", role: "worker", enabled: true,

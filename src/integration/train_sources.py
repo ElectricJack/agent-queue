@@ -2005,7 +2005,7 @@ class DaemonLanes:
         self._promotion_trust_cache: dict[str, tuple[str, float, Any, Any]] = {}
 
     async def __call__(self, target: TrainTarget) -> TrainLane:
-        from src.integration.development_runtime import development_repository
+        from src.integration.repository_git import development_repository
         from src.integration.train import _progress
 
         policy = await self._policy(target.project_id)
@@ -2507,7 +2507,7 @@ class DaemonLanes:
         return policy if isinstance(policy, dict) else {}
 
     async def _settings(self, policy: dict) -> tuple[Any, str | None]:
-        from src.integration.development_runtime import (
+        from src.integration.development_policy import (
             load_pinned_development_policy,
             project_development_pin,
         )

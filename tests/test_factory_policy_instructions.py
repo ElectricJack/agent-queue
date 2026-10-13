@@ -73,6 +73,7 @@ RETIRED = {
 POLICY_ROLES = (
     "worker-claude",
     "worker-codex",
+    "worker-opencode",
     "reviewer",
     "final-reviewer",
     "pr-merger",
@@ -96,6 +97,7 @@ SHIPPED_ROUTES = {
     "triage": ("claude", "fast-low"),
     "worker-claude": ("claude", "standard-high"),
     "worker-codex": ("codex", "astra-high"),
+    "worker-opencode": ("opencode", "standard-high"),
 }
 
 

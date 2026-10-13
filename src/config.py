@@ -2274,12 +2274,15 @@ class WorkGraphConfig:
         container whose children are all delivered; ``0`` disables.
     ``lifecycle_sweep_interval_seconds``
         Cadence of the lifecycle sweep: the stale-open re-evaluation and the
-        retry of obsolete-close cleanup left pending behind a publishing batch
-        or a refused owner release; ``0`` disables both.
+        READY frontier rejection check and retry of obsolete-close cleanup left
+        pending behind a publishing batch or a refused owner release; ``0`` disables all.
     ``stale_open_after_seconds``
         A BLOCKED or PAUSED task unchanged this long is re-evaluated: unblocked
         when its recorded blocker is gone, else flagged
         ``needs_attention=stale_open`` for the supervisor; ``0`` disables.
+    ``frontier_rejected_after_seconds``
+        Continuous READY frontier rejection this long raises an advisory
+        supervisor notice naming the rules; ``0`` disables.
     """
 
     gate_sweep_interval_seconds: int = 30
@@ -2287,6 +2290,7 @@ class WorkGraphConfig:
     container_sweep_interval_seconds: int = 60
     lifecycle_sweep_interval_seconds: int = 300
     stale_open_after_seconds: int = 6 * 3600
+    frontier_rejected_after_seconds: int = 600
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2295,6 +2299,7 @@ class WorkGraphConfig:
             "container_sweep_interval_seconds",
             "lifecycle_sweep_interval_seconds",
             "stale_open_after_seconds",
+            "frontier_rejected_after_seconds",
         ):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("work_graph", key, "must be >= 0"))
@@ -2610,9 +2615,6 @@ class IntegrationConfig:
     reconciler_shadow: bool = False
     #: Run the subject reconciler. New subjects belong to it by default;
     #: disabling visits preserves ownership and pauses delivery.
-    #: A Development subject transfer to the reconciler is refused while this
-    #: is off, so the reconciler can never be handed a project it may only
-    #: mirror (``aq integration development-engine-transfer``).
     reconciler_active: bool = True
     #: Integration protocol selector. Shadow keeps the subject runtimes
     #: authoritative and logs Git-first comparisons. Active replaces the root,
@@ -3823,10 +3825,12 @@ class GitIdentityConfig:
 
 @dataclass
 class DeployConfig:
-    """Optional tag selection; unset preserves the installation's branch updater."""
+    """Optional release selection or automatic tracking of an installed branch."""
 
     tag_glob: str | None = None
     target: str = "main"
+    track_branch: str | None = None
+    poll_interval_seconds: float = 300.0
 
     def validate(self) -> list[ConfigError]:
         errors = []
@@ -3836,6 +3840,20 @@ class DeployConfig:
             errors.append(ConfigError("deploy", "tag_glob", "must be a non-empty string or null"))
         if not isinstance(self.target, str) or not self.target.strip():
             errors.append(ConfigError("deploy", "target", "must be a non-empty branch name"))
+        if self.track_branch is not None and (
+            not isinstance(self.track_branch, str) or not self.track_branch.strip()
+            or self.track_branch.startswith("-") or any(c.isspace() for c in self.track_branch)
+        ):
+            errors.append(ConfigError("deploy", "track_branch", "must be a branch name or null"))
+        if self.track_branch is not None and self.tag_glob is not None:
+            errors.append(ConfigError("deploy", "track_branch", "cannot be combined with tag_glob"))
+        if (
+            isinstance(self.poll_interval_seconds, bool)
+            or not isinstance(self.poll_interval_seconds, (int, float))
+            or not math.isfinite(self.poll_interval_seconds)
+            or self.poll_interval_seconds < 60
+        ):
+            errors.append(ConfigError("deploy", "poll_interval_seconds", "must be finite and >= 60"))
         return errors
 
 
@@ -4318,7 +4336,7 @@ HOT_RELOADABLE_SECTIONS = {
     # an edit governs the next launch and retires stale pool sessions at
     # their next claim (docs/specs/git-identity.md).
     "git_identity",
-    "deploy",  # selectors are read per operator update
+    "deploy",  # selectors and automatic branch-check cadence are read live
     # Read per use through lambda getters (``orchestrator.core`` knowledge
     # reads and ``records`` outbox/export), so an edit bites on the next
     # access without a restart.
@@ -5375,6 +5393,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 wg.get("lifecycle_sweep_interval_seconds", 300)
             ),
             stale_open_after_seconds=int(wg.get("stale_open_after_seconds", 6 * 3600)),
+            frontier_rejected_after_seconds=int(wg.get("frontier_rejected_after_seconds", 600)),
         )
 
     if "integration" in raw and isinstance(raw["integration"], dict):

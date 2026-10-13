@@ -251,8 +251,6 @@ class TestLiveInvocationContext:
         assert current_invocation() is None
 
 
-
-
 class TestConsumeOrder:
     """§3.2's six checks, each with its own failure mode."""
 

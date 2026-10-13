@@ -3115,10 +3115,14 @@
     },
     {
       "name": "update_and_restart",
-      "description": "Update and restart the daemon. Without deploy.tag_glob, pull the upstream and restart even when already current. With a release selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
+      "description": "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream and restart even when already current. With a release or branch selector, run shared preflight and launch the operator updater; returns pid, log, selector and commit, or up_to_date without restarting. Read the log for the final outcome. Use wait_for_tasks=true to let running tasks finish before restarting; scheduling resumes if the updater exits without restarting. Excluded from MCP by default for safety.",
       "input_schema": {
         "type": "object",
         "properties": {
+          "automatic": {
+            "type": "boolean",
+            "description": "Tracked-branch background check; hold a previously failed target until an operator retries. Default: false."
+          },
           "reason": {
             "type": "string",
             "description": "Why the update/restart is being requested"
@@ -11499,57 +11503,6 @@
           "task_id"
         ],
         "title": "IntegrationDeliveryReadinessArgs",
-        "type": "object"
-      }
-    },
-    "integration_development_engine_transfer": {
-      "name": "integration_development_engine_transfer",
-      "description": "Preview or transfer every Development subject of one project to the reconciler, at the exact previewed versions; the same command rolls it back.",
-      "input_schema": {
-        "additionalProperties": false,
-        "description": "The audited per-project forward Development engine transfer.\n\n``expected_versions`` is the exact subject-version set the preview named, so\nan apply is a CAS over the whole Development subject set rather than a\npartial move. ``reason`` is required for an apply and ``evidence`` for a\nreconciler activation; disabling visits preserves ownership, because\nit never adopts a write the old publisher left ambiguous.",
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "engine": {
-            "const": "reconciler",
-            "title": "Engine",
-            "type": "string"
-          },
-          "expected_versions": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Expected Versions",
-            "type": "object"
-          },
-          "reason": {
-            "default": "",
-            "title": "Reason",
-            "type": "string"
-          },
-          "evidence": {
-            "default": [],
-            "items": {
-              "type": "string"
-            },
-            "title": "Evidence",
-            "type": "array"
-          },
-          "dry_run": {
-            "default": true,
-            "title": "Dry Run",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "project_id",
-          "engine"
-        ],
-        "title": "IntegrationDevelopmentEngineTransferArgs",
         "type": "object"
       }
     },

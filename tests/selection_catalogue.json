@@ -3988,7 +3988,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:0a02337ee2405c572ef7995c1bba369c1cdb1eef6534c706a0ac2af0752a98e3",
+      "digest": "sha256:75e55f2888d6b0028c17f3b3c7bd08f2b0866def8d61182d22f7759c568ddab4",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -3997,7 +3997,9 @@
         "src.models",
         "src.orchestrator"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "A failing close must never strand commits (``aq task close --outcome fail``)."
     },
     "tests/test_codex_fast_classes.py": {
@@ -4395,13 +4397,14 @@
         "config"
       ],
       "default_arm": true,
-      "digest": "sha256:7078580347507becf0fefec61141a64c28582bcd20f92a781a17213929a09a62",
+      "digest": "sha256:a176fd66c25d874fa6c64ccbec5f204acb8dd4493f303e5c3da0dd4439d36e09",
       "imports": [
         "src.cli.system_config",
         "src.commands.handler",
         "src.config",
         "src.config_editor",
-        "src.config_secrets"
+        "src.config_secrets",
+        "src.install.deploy_history"
       ],
       "markers": [
         "asyncio",
@@ -5083,8 +5086,9 @@
         "task-routing"
       ],
       "default_arm": true,
-      "digest": "sha256:f90bc41b3d932b1145dcfc5f08431200dabf7b46a1775ccadb8175ac6f693fc5",
+      "digest": "sha256:6b3c0f3cf88e5b018b77f0e9263abb08fd5e251b49353b2cd92aa93e718bfeda",
       "imports": [
+        "src.claim_file",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.handler",
@@ -5217,19 +5221,24 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:47e339c61a3d95619256bd0c3211f806ea6d454c529f5943c811d499cb78f8fb",
+      "digest": "sha256:00f0f1038d5b31f45626c36e05acb81323f131d635a13ed45863d36b1d8ad9f7",
       "imports": [
         "src.commands.handler",
         "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.stall_checks",
         "src.git.manager",
         "src.integration.admission",
+        "src.integration.child_delivery",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.epic_delivery",
         "src.integration.git_truth",
+        "src.integration.hierarchy",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
         "src.integration.service",
@@ -5248,7 +5257,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:103525f49d949b84f60f89771b2cce26da828dbd8ae7d136c50943d552285de1",
+      "digest": "sha256:28e31dbbc2945b79c5926974f341f97d10c716de764ed39674660419e9413f33",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -5261,7 +5270,8 @@
         "src.sessions.spec"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "skipif"
       ],
       "summary": "P3 end-to-end delivery integration test — supervisor-agent §5/§7/§8."
     },
@@ -5328,20 +5338,12 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:0650b8d86d9e4fea73f0fc6bed32c1c2cdd99d494f955e464ceee0db1170c603",
+      "digest": "sha256:989420ec78f6ff56f5f606a27eee0e29765b817613f70f9b610bf9ed33b57268",
       "imports": [
-        "src.commands.contracts.integration",
-        "src.commands.contracts.registry",
-        "src.commands.integration_commands",
-        "src.commands.principal",
-        "src.database",
         "src.database.tables",
-        "src.git.github_contracts",
         "src.integration.ci_producers",
         "src.integration.development",
-        "src.integration.development_adapter",
         "src.integration.development_policy",
-        "src.integration.development_runtime",
         "src.integration.models",
         "src.integration.runtime_contracts",
         "src.playbooks.artifact_store",
@@ -5351,7 +5353,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Development policy equivalence, engine ownership and its audited transfer."
+      "summary": "Retained reviewed Development policy and exact-head validation contracts."
     },
     "tests/test_digest.py": {
       "areas": [
@@ -7193,16 +7195,20 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:dbee61fc02509dcd843d2738f1c50326b6bd004f22988ade4b40a24f360170be",
+      "digest": "sha256:cef6e934aa410764af6f9a32491f84dd516a4f6397f675b31da8555ac2bc81dc",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.tables",
+        "src.integration.models",
+        "src.integration.parent_adapters",
+        "src.integration.runtime_contracts",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
+        "src.playbooks.integration_policy",
         "src.profiles.capabilities"
       ],
       "markers": [
@@ -7988,7 +7994,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:2e52a8ab8687f673d898f4c884d83e39fd5042136d78ebc5dd3b78a4bfb97648",
+      "digest": "sha256:05aac5cd38237bdaa8f94b0e523928257939d27907ad510f51989c108781c0e4",
       "imports": [
         "src.commands.job_commands",
         "src.config",
@@ -7999,7 +8005,6 @@
         "src.integration.ci",
         "src.integration.ci_adapters",
         "src.integration.ci_producers",
-        "src.integration.development_runtime",
         "src.integration.promotion_contracts",
         "src.integration.runtime_contracts",
         "src.jobs.adapters",
@@ -8926,7 +8931,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:b52c30805f0d1872e3548c9fca32e5baf48d48a2f69dc555cf844e7f166fdaf2",
+      "digest": "sha256:09c1b88a6640e1ce1d5f16cf555eb1c6036f385b6427e7ffd82428b0df66ad36",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -8939,7 +8944,9 @@
         "src.orchestrator",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "A train source whose recorded base is not its ancestor never strands a batch."
     },
     "tests/test_integration_stacked_branches.py": {
@@ -10119,7 +10126,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:66a953645214386352209685c1c5ba05f6039f7d0808aeec957435cb257a793f",
+      "digest": "sha256:1d2baabf32cb98ed375ffb5b2a8c238597d421447f0a5a094a4917582c18e5b5",
       "imports": [
         "src.commands.principal",
         "src.commands.session_commands",
@@ -10131,10 +10138,9 @@
         "src.doctor.models",
         "src.doctor.task_checks",
         "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
-        "src.integration.development_adapter",
-        "src.integration.development_runtime",
         "src.integration.owner_recovery",
         "src.integration.provenance",
         "src.integration.runtime_contracts",
@@ -12680,13 +12686,15 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:7595e538d07229cc3a9cfbe50e93731dad05b33aac9192a1506378789cfb11f4",
+      "digest": "sha256:116438ec17f55c8eceee236b3af84d5c6b5dd22c29b7929e4280a1a5b77d0691",
       "imports": [
         "src.api.auth",
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.database.queries",
+        "src.database.queries.claim_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.models",
@@ -16211,7 +16219,7 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "digest": "sha256:da338bfefa490117677361c50bbbfd539f89fb58621942e153177cae3150125d",
+      "digest": "sha256:787cb482e1c71322f448a347f84a1d34528db8d56f163da1917cce673e3bebec",
       "imports": [
         "src.api.models.system",
         "src.commands",
@@ -16222,6 +16230,7 @@
         "src.event_bus",
         "src.git.manager",
         "src.install",
+        "src.install.deploy_history",
         "src.install.update",
         "src.orchestrator",
         "src.plugins.registry",
@@ -17405,7 +17414,7 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:197daea52292118627a60761a8cc40edc3bfc87676cce8971907f1d44492b2f7",
+      "digest": "sha256:bf5b0c9b48e84a229832d166c2225c3a99a2f9db5b2e8a339e10b2cebdd6be77",
       "imports": [
         "src.cli",
         "src.cli.app",
@@ -17417,6 +17426,7 @@
         "src.install.command",
         "src.install.dashboard",
         "src.install.deploy",
+        "src.install.deploy_history",
         "src.install.update",
         "src.install.update_finish"
       ],

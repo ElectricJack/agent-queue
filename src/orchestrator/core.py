@@ -649,6 +649,8 @@ class Orchestrator(
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
         self._command_handler: Any = None
+        self._tracked_deploy_check = None
+        self._tracked_deploy_last_check = time.monotonic()
         # Shared tool registry, set by set_tool_registry() during daemon
         # wiring. May be None (e.g. before wiring, or in tests) — read
         # defensively; playbook_services() passes it through unchanged.
@@ -2910,6 +2912,9 @@ class Orchestrator(
         """
         from src.integration.completion_recovery import stop_ready_owner_recovery
 
+        if self._tracked_deploy_check is not None and not self._tracked_deploy_check.done():
+            self._tracked_deploy_check.cancel()
+            await asyncio.gather(self._tracked_deploy_check, return_exceptions=True)
         await stop_ready_owner_recovery(self)
         await self.message_delivery_service.stop()
         await self.provider_availability.close()
@@ -2954,6 +2959,33 @@ class Orchestrator(
             self.workflow_stage_resume_handler.shutdown()
         # MemoryExtractor shutdown is handled by the MemoryPlugin.
         await self.db.close()
+
+    def _schedule_tracked_deploy_check(self) -> None:
+        """Check installation updates without delaying task scheduling or worker claims."""
+        if not self.config.deploy.track_branch or self._command_handler is None:
+            return
+        if self._tracked_deploy_check is not None and not self._tracked_deploy_check.done():
+            return
+        now = time.monotonic()
+        if now - self._tracked_deploy_last_check < self.config.deploy.poll_interval_seconds:
+            return
+        self._tracked_deploy_last_check = now
+        self._tracked_deploy_check = asyncio.create_task(
+            self._check_tracked_deploy(), name="tracked-branch-deploy"
+        )
+
+    async def _check_tracked_deploy(self) -> None:
+        branch = self.config.deploy.track_branch
+        if not branch:
+            return
+        try:
+            result = await self._command_handler.execute("update_and_restart", {
+                "automatic": True, "reason": "Installation tracks " + branch,
+            })
+            if not result.get("success", False):
+                logger.warning("Tracked deployment refused: %s", result.get("error"))
+        except Exception:
+            logger.exception("Tracked deployment check failed")
 
     async def run_one_cycle(self) -> None:
         """Run one iteration of the orchestrator's main loop.
@@ -3011,6 +3043,7 @@ class Orchestrator(
         the daemon. Pool and session reconciliation still run after an
         earlier failure, so one broken step cannot stall the worker fleet.
         """
+        self._schedule_tracked_deploy_check()
         pools_attempted = False
         sessions_attempted = False
         hierarchy_modes = None

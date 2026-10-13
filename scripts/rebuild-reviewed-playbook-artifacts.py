@@ -143,7 +143,9 @@ def _recorded_semantic_body(playbook_id: str) -> dict[str, Any]:
     return {"rules": payload["rules"], "steps": payload["steps"]}
 
 
-def _rebased_recorded_body(template_id: str, source: PlaybookSource) -> dict[str, Any]:
+def _rebased_recorded_body(
+    template_id: str, source: PlaybookSource, *, retired_rules: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     """A reviewed template's graph with every source ref moved onto ``source``.
 
     ``parent-integration`` is ``agent-queue-parent-integration`` at system
@@ -152,6 +154,10 @@ def _rebased_recorded_body(template_id: str, source: PlaybookSource) -> dict[str
     new source.  A heading the new source lacks is a refusal, not a guess.
     """
     body = _recorded_semantic_body(template_id)
+    body["rules"] = [rule for rule in body["rules"] if rule["id"] not in retired_rules]
+    body["steps"] = {
+        name: step for name, step in body["steps"].items() if step["rule"] not in retired_rules
+    }
     template_lines = (
         (FIXTURE_ROOT / template_id / "source.md").read_text(encoding="utf-8").splitlines()
     )
@@ -325,21 +331,10 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
     if playbook_id in ("agent-queue-root-train", "root-train"):
         return _root_integration_train_body(source)
     if playbook_id in ("parent-integration", "agent-queue-parent-integration"):
-        body = (
-            _rebased_recorded_body("agent-queue-parent-integration", source)
-            if playbook_id == "parent-integration"
-            else _recorded_semantic_body(playbook_id)
+        return _rebased_recorded_body(
+            "agent-queue-parent-integration", source,
+            retired_rules=frozenset({"promote-delivery", "reconcile-resolution-push"}),
         )
-        transitions = body["steps"]["reconcile-resolution-push--reconcile"]["transitions"]
-        # Exact remote reconciliation may settle through a successor or wait
-        # for its writer. Preserve the contract's success/refusal distinction.
-        transitions.update({
-            "continued": "reconcile-resolution-push--done",
-            "superseded": "reconcile-resolution-push--done",
-            "waiting": "reconcile-resolution-push--failed",
-            "target_moved": "reconcile-resolution-push--failed",
-        })
-        return body
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
     if playbook_id == "supervisor-failure-triage":
@@ -619,9 +614,6 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
     def event(path: str) -> dict[str, Any]:
         return {"type": "event_ref", "path": path}
 
-    def bound(binding: str, path: str) -> dict[str, Any]:
-        return {"type": "binding_ref", "binding": binding, "path": path}
-
     def ref(rule: str) -> dict[str, Any]:
         return _source_ref_for_heading(source, f"## Rule: {rule}")
 
@@ -634,111 +626,6 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
         steps[done] = _terminal(rule, "completed", terminal_ref)
         steps[failed] = _terminal(rule, "failed", terminal_ref)
         return done, failed
-
-    rule = "seal-due-frontier"
-    done, failed = terminals(rule)
-    seal, release = f"{rule}--seal", f"{rule}--release-empty"
-    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.sweep_due"},
-                  "entry_step": seal, "source": ref(rule)})
-    steps[seal] = {"type": "command", "rule": rule, "title": "seal", "source": ref(rule),
-                   "command": "integration_seal", "save_result_as": "sealed",
-                   "inputs": {"project_id": event("project_id"), "request_id": event("operation_id")},
-                   "transitions": {"sealed": done, "empty": release, "busy": failed,
-                                   "runtime_error": failed}}
-    steps[release] = {"type": "command", "rule": rule, "title": "release-empty",
-                      "source": ref(rule), "command": "integration_release",
-                      "inputs": {"batch_id": bound("sealed", "batch_id")},
-                      "transitions": {name: (done if name in {"released", "already_released", "empty"} else failed)
-                                      for name in ("released", "already_released", "empty", "wait", "stale",
-                                                   "invariant_error", "runtime_error")}}
-
-    rule = "construct-and-test"
-    done, failed = terminals(rule)
-    build, ci, dispatch = (f"{rule}--build", f"{rule}--ci", f"{rule}--dispatch")
-    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.sealed"},
-                  "entry_step": build, "source": ref(rule)})
-    build_transitions = {name: failed for name in (
-        "source_moved", "base_moved", "stale_revision", "wait", "human_required",
-        "configuration_blocked", "runtime_error")}
-    build_transitions.update({"empty": done, "built": ci, "already_built": ci,
-                              "conflict": dispatch})
-    steps[build] = {"type": "command", "rule": rule, "title": "build", "source": ref(rule),
-                    "command": "integration_build_candidate", "save_result_as": "candidate",
-                    "inputs": {"batch_id": event("batch_id")}, "transitions": build_transitions}
-    ci_transitions = {name: failed for name in (
-        "full_suite_required", "stale_subject", "configuration_blocked", "runtime_error")}
-    ci_transitions.update({"green": done, "red": done, "pending": done})
-    steps[ci] = {"type": "command", "rule": rule, "title": "ci", "source": ref(rule),
-                 "command": "integration_ci_evidence", "inputs": {
-                     "batch_id": event("batch_id"), "revision": bound("candidate", "revision")},
-                 "transitions": ci_transitions}
-    steps[dispatch] = {"type": "command", "rule": rule, "title": "dispatch", "source": ref(rule),
-                       "command": "integration_repair_dispatch", "inputs": {
-                           "operation_id": event("operation_id")},
-                       "transitions": {name: (done if name in {"dispatched", "already_dispatched", "writer_reused"}
-                                              else failed) for name in (
-                           "dispatched", "already_dispatched", "writer_reused", "busy",
-                           "configuration_blocked", "stale", "human_required", "runtime_error")}}
-
-    rule = "promote-green-candidate"
-    done, failed = terminals(rule)
-    promote, rebuild, ci, dispatch = (
-        f"{rule}--promote",
-        f"{rule}--rebuild",
-        f"{rule}--ci",
-        f"{rule}--dispatch",
-    )
-    rules.append({"id": rule, "name": rule, "trigger": {"event_type": "integration.candidate_green"},
-                  "entry_step": promote, "source": ref(rule)})
-    promote_transitions = {name: failed for name in (
-        "ci_missing", "non_fast_forward", "wait", "reconciliation_blocked", "stale",
-        "configuration_blocked", "runtime_error")}
-    promote_transitions.update({"promoted": done, "already_promoted": done,
-                                "base_moved": rebuild})
-    steps[promote] = {"type": "command", "rule": rule, "title": "promote", "source": ref(rule),
-                      "command": "integration_promote_main", "inputs": {
-                          "batch_id": event("batch_id"), "revision": event("revision")},
-                      "transitions": promote_transitions}
-    rebuild_transitions = {name: failed for name in (
-        "source_moved", "base_moved", "stale_revision", "wait", "human_required",
-        "configuration_blocked", "runtime_error")}
-    rebuild_transitions.update({"empty": done, "built": ci, "already_built": ci,
-                                "conflict": dispatch})
-    steps[rebuild] = {"type": "command", "rule": rule, "title": "rebuild", "source": ref(rule),
-                      "command": "integration_build_candidate", "inputs": {"batch_id": event("batch_id")},
-                      "save_result_as": "rebuilt", "transitions": rebuild_transitions}
-    green_ci_transitions = {name: failed for name in (
-        "full_suite_required", "stale_subject", "configuration_blocked", "runtime_error")}
-    green_ci_transitions.update({"green": done, "red": done, "pending": done})
-    steps[ci] = {"type": "command", "rule": rule, "title": "ci-rebuilt", "source": ref(rule),
-                 "command": "integration_ci_evidence", "inputs": {
-                     "batch_id": event("batch_id"), "revision": bound("rebuilt", "revision")},
-                 "transitions": green_ci_transitions}
-    steps[dispatch] = {
-        "type": "command",
-        "rule": rule,
-        "title": "dispatch-rebuilt-conflict",
-        "source": ref(rule),
-        "command": "integration_repair_dispatch",
-        "inputs": {"operation_id": event("operation_id")},
-        "transitions": {
-            name: (
-                done
-                if name in {"dispatched", "already_dispatched", "writer_reused"}
-                else failed
-            )
-            for name in (
-                "dispatched",
-                "already_dispatched",
-                "writer_reused",
-                "busy",
-                "configuration_blocked",
-                "stale",
-                "human_required",
-                "runtime_error",
-            )
-        },
-    }
 
     rule = "repair-red-candidate"
     done, failed = terminals(rule)
@@ -755,50 +642,6 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
                                               else failed) for name in (
                            "dispatched", "already_dispatched", "writer_reused", "busy",
                            "configuration_blocked", "stale", "human_required", "runtime_error")}}
-
-    rule = "continue-closed-root-repair"
-    done, failed = terminals(rule)
-    current, build, ci, dispatch = (
-        f"{rule}--current", f"{rule}--build", f"{rule}--ci", f"{rule}--dispatch"
-    )
-    rules.append({"id": rule, "name": rule,
-                  "trigger": {"event_type": "integration.repair_delegate_closed"},
-                  "entry_step": current, "source": ref(rule)})
-    steps[current] = {"type": "command", "rule": rule, "title": "current",
-                      "source": ref(rule), "command": "integration_repair_close_current",
-                      "save_result_as": "closed_repair",
-                      "inputs": {name: event(name) for name in (
-                          "operation_id", "stage", "task_id", "session_id",
-                          "instance_token", "workspace_id", "fence_token")},
-                      "transitions": {"current": build, "not_batch": done,
-                                      "stale": failed, "runtime_error": failed}}
-    steps[build] = {"type": "command", "rule": rule, "title": "build",
-                    "source": ref(rule), "command": "integration_build_candidate",
-                    "save_result_as": "repaired_candidate",
-                    "inputs": {"batch_id": bound("closed_repair", "batch_id"),
-                               "expected_revision": bound("closed_repair", "revision")},
-                    "transitions": {"built": ci, "already_built": ci, "empty": done,
-                                    "conflict": dispatch,
-                                    **{name: failed for name in (
-                                        "source_moved", "base_moved", "stale_revision",
-                                        "wait", "human_required", "configuration_blocked",
-                                        "runtime_error")}}}
-    steps[ci] = {"type": "command", "rule": rule, "title": "ci",
-                 "source": ref(rule), "command": "integration_ci_evidence",
-                 "inputs": {"batch_id": bound("closed_repair", "batch_id"),
-                            "revision": bound("repaired_candidate", "revision")},
-                 "transitions": {"green": done, "red": done, "pending": done,
-                                 **{name: failed for name in (
-                                     "full_suite_required", "stale_subject",
-                                     "configuration_blocked", "runtime_error")}}}
-    steps[dispatch] = {"type": "command", "rule": rule, "title": "dispatch-conflict",
-                       "source": ref(rule), "command": "integration_repair_dispatch",
-                       "inputs": {"operation_id": event("operation_id")},
-                       "transitions": {name: (
-                           done if name in {"dispatched", "already_dispatched", "writer_reused"}
-                           else failed) for name in (
-                               "dispatched", "already_dispatched", "writer_reused", "busy",
-                               "configuration_blocked", "stale", "human_required", "runtime_error")}}
 
     rule = "dispatch-debug"
     done, failed = terminals(rule)

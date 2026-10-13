@@ -8650,6 +8650,12 @@
     },
     "src/portable_config.py::_stage_project_preferences": {
       "reason": "Writes a pending portable integration preference draft, retaining destination-local trust and rollout requirements without activation."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.transition_task": {
+      "reason": "Public lifecycle transition observes current Git delivery outside the transaction and passes request-scoped evidence to the locked mutation guard; no persisted delivery projection or ref replay authority."
+    },
+    "src/orchestrator/lifecycle.py::LifecycleMixin.reevaluate_frontier_rejections": {
+      "reason": "READY frontier lifecycle advisory evaluates shared integration admission predicates; it cannot publish refs or change delivery state."
     }
   },
   "exclusions": {
@@ -13424,13 +13430,13 @@
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
     },
     "src/database/queries/lifecycle_queries.py::LifecycleQueryMixin.flag_stale_open::e8a2b4864b5a13dbdbed6cc88cc2620503b9e9e167c4c21405eb953fbd12e150": {
-      "line": 106,
+      "line": 167,
       "owner": "LifecycleQueryMixin.flag_stale_open",
       "call": "log_event",
-      "owner_fingerprint": "e0929fb399b58625c16f3c16308815c7d7a8c9b69927e1b127b8452e7a19513f",
+      "owner_fingerprint": "4dc6402750e5adf9b2c4022a3ed495b66b0746b3edfaf351493b1b66e42ca15a",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary stale-open advisory, deduplicated supervisor notice and audit event; READY episode identity is rechecked before notification. No ref replay or delivery authority."
     },
     "src/database/queries/playbook_run_queries.py::PlaybookRunQueryMixin._record_snapshot_conflict::189143d8a6f1c20202a529c8f5ae4a36eb1d1e483934ef105f4dadda34b94115": {
       "line": 495,
@@ -13478,13 +13484,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1715,
+      "line": 1720,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "ed58169bce98bcfad556dc6d3ee783c7059596022f5a74010da56a65584887de",
+      "owner_fingerprint": "4e844ba42c664dad7d0e4cf0aee66804082eb0e60c141ce598fe88ddaea782d2",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle metadata cleanup, including failure generation bookkeeping, clearing the worker failure streak on an intentional READY restart, and guarded retry routing. The routing failed-attempt journal records work verdicts for class escalation; integration status, branch reservations and ref replay authority stay in their dedicated records."
+      "reason": "Ordinary task lifecycle metadata cleanup, including failure generation, guarded retry routing and accepted-close identity. Leaving READY/BLOCKED/PAUSED clears the stale episode; running/completed work also clears operational attention. The failed-attempt journal records work verdicts for class escalation. Current Git delivery evidence is observed outside the transaction and revalidated by the guarded lifecycle writer; integration status, branch reservations and ref replay authority remain in dedicated records."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2165,
@@ -14342,13 +14348,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2297,
+      "line": 2328,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "5c91697f1140595a7605c7bd17d7b9c88c252bc8dc6320bbc6bc80711bb7676a",
+      "owner_fingerprint": "a885b63e5f34fd8b35856fc1858a62248265bd43ef3082b5935f0a6ef54a9b16",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary needs_attention marker for an unproven integration handoff. The owner now distinguishes substantive verification failure from infrastructure pipeline refusal for routing; neither path adds ref replay authority or integration lifecycle storage."
+      "reason": "Ordinary needs_attention marker for an unproven integration handoff. The owner distinguishes substantive verification failure from infrastructure pipeline refusal for routing, and successful live-code close verifies its exact task branch on origin before resource release. Neither path adds ref replay authority or integration lifecycle storage."
     },
     "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::8984da29e38cdef16a89fdb5710ce864b3017bdca5db3309dce9f87f9f13fe70": {
       "line": 2297,
@@ -15116,13 +15122,13 @@
       "reason": "Explicit LOCAL abandonment appends a cancelled revision to the existing legacy development.operation lifecycle journal after exact event/hash/full-manifest and inactive-authority checks. It preserves prior revisions and makes no delivery claim. This compatibility writer retires with the legacy journal and receives no final-phase allowance."
     },
     "src/integration/root_pr_recovery.py::recover_root_pr_checks::9838abf578dc8c2a386d1d4a9012e2aabe1e175732dd1d51dbe41a2ef7cfc4e9": {
-      "line": 154,
+      "line": 162,
       "owner": "recover_root_pr_checks",
       "call": "log_event",
-      "owner_fingerprint": "c3379e0cf6851fdb157980e7cc490eb7030d2248444849254c144459f96608e3",
+      "owner_fingerprint": "4e4f44de3b9395140b13705c7056ce991551ab7c550940c6c4fb84b599584310",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Transactional audit of a completed root reopened after authenticated exact-head required-check failure and locked completion, origin and policy revalidation. Records the failed source SHA, completion identity and reopen attempt alongside ordinary feedback and bounded recovery accounting; no ref replay instructions, publication authority or duplicate delivery lifecycle. Fresh PR and candidate checks remain required."
+      "reason": "Transactional audit of a completed root reopened after authenticated exact-head required-check failure and locked completion, origin and policy revalidation. Records the failed source SHA, completion identity and reopen attempt alongside ordinary feedback and bounded recovery accounting; no ref replay instructions, publication authority or duplicate delivery lifecycle. Fresh PR and candidate checks remain required. Current Git delivery evidence is observed outside the transaction and revalidated by the guarded lifecycle writer; the storage disposition remains ordinary."
     },
     "src/database/queries/project_queries.py::ProjectQueryMixin.bind_project_repository::21ae1cd4ddf58cf690836c6bf31c504fe7942594a23d94bcc21935941e496c96": {
       "line": 124,
@@ -15222,6 +15228,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+    },
+    "src/database/queries/lifecycle_queries.py::LifecycleQueryMixin.record_frontier_rejection::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 79,
+      "owner": "LifecycleQueryMixin.record_frontier_rejection",
+      "call": "delete",
+      "owner_fingerprint": "16e506ef56173adb09c643606c9dee5d4145a6555ac3c5d2864ff550d85aaeda",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary continuous READY rejection timestamp and advisory cleanup. Clears only its own stale attention code on admission recovery; no ref replay or delivery authority."
     }
   },
   "generic_dependencies": {
@@ -15726,6 +15741,7 @@
     "src/git/manager.py::repository_urls_match": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/install/command.py::CommandRunner": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/install/command.py::run_command": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/install/deploy_history.py::read_history": "Generic read-only installation deployment evidence and migration recovery hold display; no project integration state, branch ownership, ref replay or delivery authority. The shared system-config response that calls it remains charged independently.",
     "src/install/postgres.py::CONFIG_HEADER": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/install/postgres.py::backup_path_for": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/install/prerequisites.py::STEP_DATA_DIR": "Generic dependency; integration-specific definitions in this file are charged independently.",
@@ -16081,6 +16097,9 @@
     "src/sessions/worker_recovery.py::STREAK_KEY": "Generic consecutive worker-failure metadata key; no integration lifecycle or replay authority.",
     "src/doctor/session_checks.py::_check_flock": "Generic session/process registration audit used by the stall patrol and sessions.untracked for every role and project; no integration, delivery, branch or Git authority. Integration-specific sweep orchestration is charged independently.",
     "src/commands/operator_authority.py::operator_grant_var": "Generic request-local operator grant context storage; it binds one audited command and argument digest, and every integration handler it reaches is charged independently.",
+    "src/commands/operator_authority.py::is_operator_profile": "Generic authored profile-role predicate for routing, claims and pool demand; reads only the operator_execute capability, with no integration policy, storage or delivery authority. Integration-specific callers remain independently charged.",
+    "src/database/queries/claim_queries.py::_pool_routing_predicates": "Generic pool class/role SQL shared by sizing and claiming; checks ordinary task fields only. No integration delivery, storage or authority. The integration frontier predicates and their callers remain independently charged.",
+    "src/database/queries/claim_queries.py::_pool_profiles_predicate": "Generic pool demand compatibility across authored profiles; composes ordinary task profile, class and role SQL, without integration delivery or storage. The frontier query remains independently charged.",
     "src/commands/operator_authority.py::local_or_operator": "Generic authority predicate: LOCAL principal or an operator grant for exactly the dispatched command; integration-specific checks that call it are charged independently.",
     "src/commands/operator_authority.py::bind_operator_dispatch": "Generic per-dispatch operator scoping: narrows the grant to the exact audited command and arguments and refuses unwrapped operator setup commands; integration handlers are charged independently.",
     "src/models.py::DAEMON_AUTHORED_TASK_TYPES": "Generic daemon task-kind classification used by startup recovery and routing; missing-session recovery only uses it to exclude daemon-authored work, and integration-specific guards remain independently charged.",

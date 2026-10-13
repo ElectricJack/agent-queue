@@ -234,6 +234,28 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail(ci
     assert "members" not in data
 
 
+
+
+
+
+
+
+@pytest.mark.parametrize("command", [
+    "rebind-repair", "rebind-detached-repair", "recover-preserved-repair",
+    "resolve-candidate-member", "recover-candidate-member", "development-engine-transfer",
+])
+def test_retired_recovery_commands_never_reach_transport(command):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "rebound"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", command, "--help"])
+
+    assert result.exit_code == 2
+    assert "No such command" in result.output
+    client.execute.assert_not_called()
+
+
 def test_operator_guide_uses_only_real_operational_commands_and_options():
     from src.cli.app import cli
 
@@ -332,32 +354,6 @@ def test_redrive_root_apply_needs_the_head_and_a_reason(argv):
 
 
 
-@pytest.mark.parametrize(
-    ("argv", "message"),
-    (
-        (["development-engine-transfer", "p", "--engine", "reconciler", "--apply"],
-         "--apply needs exact subject versions, a reason and cutover evidence"),
-        (["development-engine-transfer", "p", "--engine", "reconciler", "--apply",
-          "--expected-subject", "root:7"],
-         "--apply needs exact subject versions, a reason and cutover evidence"),
-        (["development-engine-transfer", "p", "--engine", "reconciler", "--apply",
-          "--expected-subject", "root:7", "--reason", "reviewed cutover"],
-         "--apply needs exact subject versions, a reason and cutover evidence"),
-        (["development-engine-transfer", "p", "--engine", "legacy", "--apply", "--reason", "rollback"],
-         "Invalid value for '--engine'"),
-    ),
-)
-def test_development_engine_transfer_apply_needs_the_previewed_fences(argv, message):
-    """Transfers require exact preview fences; the retired engine is refused."""
-    from src.cli.app import cli
-
-    client = _client({"outcome": "transferred"})
-    with patch("src.cli.integration._get_client", return_value=client):
-        result = CliRunner().invoke(cli, ["integration", *argv])
-
-    assert result.exit_code != 0
-    assert message in result.output
-    client.execute.assert_not_awaited()
 
 
 @pytest.mark.parametrize("options", [[], ["--reason", "resume"], ["--expected-version", "1"],
@@ -381,7 +377,7 @@ def test_every_engine_transfer_rejects_an_unusable_expected_subject(expected):
     from src.cli.app import cli
 
     client = _client({"outcome": "preview"})
-    argv = ["integration", "development-engine-transfer", "p", "--engine", "reconciler"]
+    argv = ["integration", "engine-transfer", "repo", "--engine", "reconciler"]
     for item in expected:
         argv += ["--expected-subject", item]
     with patch("src.cli.integration._get_client", return_value=client):
@@ -403,7 +399,8 @@ def test_integration_help_excludes_retired_controls():
                     "resolve-candidate-member", "recover-candidate-member", "rebind-repair",
                     "rebind-detached-repair", "recover-preserved-repair", "recover-parent-head",
                     "build-candidate", "promote-main", "seal", "schedule-due",
-                    "resolve-conflict", "push-conflict-resolution", "reconcile-promotion"):
+                    "resolve-conflict", "push-conflict-resolution", "reconcile-promotion",
+                    "development-engine-transfer"):
         assert retired not in commands
     assert {"status", "engine-transfer", "release-held-gate", "pause-batch", "resume-batch",
             "eject", "seal-now"} <= commands.keys()

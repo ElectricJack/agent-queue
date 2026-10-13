@@ -10,8 +10,10 @@ import inspect
 import re
 from pathlib import Path
 
-from src.git.github_contracts import GitHubAccessError
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.git.manager import GitError
+from src.integration.gitops import RetainedRepository
+from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.promotion_contracts import (
     PromotionInvariantError, PromotionRuntimeError, PromotionSourceMoved,
     ResolvedRepository,
@@ -143,3 +145,28 @@ class RepositoryGit:
         if result.returncode != 0 or any(not _OID_RE.fullmatch(oid) for oid in commits):
             raise PromotionRuntimeError((result.stderr or "commit range failed").strip())
         return commits
+
+
+async def development_repository(
+    primitives, repo, binding: GitHubRepositoryBinding, settings, *, fetch: bool = True,
+) -> RetainedRepository:
+    """The existing retained clone, bound to the pinned rebuild.
+
+    A worker checkout is never a delivery source: the store is the repository's
+    own retained clone through the existing delivery path (created on first use
+    and fetched with every head), and the regenerate command and timeout are the
+    ones the reviewed source froze. Regeneration is a property of the merge, not
+    of the validation mode: ``validation: none`` still rebuilds generated files.
+    An unset policy command falls back to the project's own regenerator, exactly
+    as the legacy candidate and promotion paths do.
+    The train passes ``fetch=False`` because its Git snapshot owns the fetch;
+    other callers retain the freshly fetched default.
+    """
+    return RetainedRepository(
+        repository_id=repo.id,
+        store=await primitives.store(repo, **({"fetch": False} if not fetch else {})),
+        binding=binding,
+        default_branch=repo.default_branch,
+        regenerate=settings.regenerate or DEFAULT_REGENERATE_COMMAND,
+        regenerate_timeout_seconds=settings.regenerate_timeout_seconds,
+    )

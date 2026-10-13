@@ -394,6 +394,15 @@ class TestNoArgumentlessCommandsByAccident:
             f"method: {', '.join(orphans)}"
         )
 
+    def test_retired_parent_action_has_no_handler_or_schema(self):
+        from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _FALLBACK_INPUT_SCHEMAS
+
+        assert "integration_parent_action" not in DEFAULT_EXCLUDED_COMMANDS
+        assert "integration_parent_action" not in _command_names()
+        assert "integration_parent_action" not in _FALLBACK_INPUT_SCHEMAS
+        assert "integration_parent_action" not in {
+            definition["name"] for definition in _ALL_TOOL_DEFINITIONS
+        }
 
     def test_fallback_schemas_never_shadow_a_typed_definition(self):
         """One schema per command — a typed definition wins, so a fallback

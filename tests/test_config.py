@@ -9,6 +9,26 @@ def config_dir(tmp_path):
     return tmp_path
 
 
+@pytest.mark.parametrize("seconds", [0, 120, 600])
+def test_ready_frontier_attention_threshold_loads(config_dir, seconds):
+    from src.config import WorkGraphConfig
+
+    assert WorkGraphConfig().frontier_rejected_after_seconds == 600
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "work_graph": {"frontier_rejected_after_seconds": seconds},
+        "discord": {"bot_token": "x", "guild_id": "1"},
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    config = load_config(str(config_file))
+    assert config.work_graph.frontier_rejected_after_seconds == seconds
+    assert config.work_graph.validate() == []
+    assert any(
+        error.field == "frontier_rejected_after_seconds"
+        for error in WorkGraphConfig(frontier_rejected_after_seconds=-1).validate()
+    )
+
+
 @pytest.mark.parametrize("value", ["shadow", "active"])
 def test_git_first_selector_loads_without_activating_ownership(config_dir, value):
     from src.config import IntegrationConfig
@@ -699,3 +719,29 @@ def test_scheduler_cadence_loads_and_hot_reloads(tmp_path):
     assert reloaded.scheduling.cycle_interval_seconds == 2
     assert reloaded.scheduling.min_cycle_interval_seconds == 0.25
     assert reloaded.scheduling.config_poll_interval_seconds == 0.5
+
+
+@pytest.mark.parametrize("branch,interval", [
+    ("", 300), (False, 300), ("dev branch", 300), ("-dev", 300),
+    ("dev", 59), ("dev", True), ("dev", float("inf")), ("dev", float("nan")),
+])
+def test_branch_tracking_rejects_invalid_settings(branch, interval):
+    from src.config import DeployConfig
+
+    assert DeployConfig(track_branch=branch, poll_interval_seconds=interval).validate()
+
+
+def test_branch_tracking_loads_and_conflicts_with_tag_selection(config_dir):
+    from src.config import DeployConfig
+
+    assert DeployConfig().track_branch is None
+    assert DeployConfig(track_branch="dev", tag_glob="v*").validate()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "deploy": {"track_branch": "dev", "poll_interval_seconds": 120},
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost:5534/aq_cfg_test"},
+    }))
+    config = load_config(str(config_file))
+    assert config.deploy.track_branch == "dev"
+    assert config.deploy.poll_interval_seconds == 120
