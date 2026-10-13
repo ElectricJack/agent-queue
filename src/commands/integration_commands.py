@@ -1425,6 +1425,14 @@ class IntegrationCommandsMixin:
         from src.integration.promotion_steps import read_stored_promotion_flow
 
         binding = inputs["binding"]
+        missing_origins = ()
+        if getattr(self.db, "_engine", None) is not None:
+            from src.integration.hierarchy import missing_origin_tasks_on
+
+            async with self.db._engine.connect() as conn:
+                missing_origins = tuple(await missing_origin_tasks_on(
+                    conn, inputs["project_id"], inputs["repository_id"],
+                ))
         report = await app_mode.evaluate(
             app_mode.AppModeContext(
                 project_id=inputs["project_id"],
@@ -1438,6 +1446,7 @@ class IntegrationCommandsMixin:
                 policy_path=args.get("policy_path") if args.get("policy") is not None else None,
                 repository_arg=args.get("repository_id") or None,
                 promotion_flow=await read_stored_promotion_flow(self.db, inputs["project_id"]),
+                missing_origins=missing_origins,
             )
         )
         return {
@@ -2178,16 +2187,48 @@ class IntegrationCommandsMixin:
             verify_workspace_checkpoint,
         )
 
-        async def resolve_head(repo, branch):
-            promotion = self._integration_repository_git()
+        def origin_git(repo):
+            # Activation may have just bound/inserted the repository in its
+            # transaction. Resolve that fenced row, rather than reading an old
+            # binding through a second database connection.
+            from src.integration.repository_git import RepositoryGit
+
+            return RepositoryGit(
+                self.db, data_dir=self.config.data_dir, git_manager=self.orchestrator.git,
+                repository_resolver=lambda rid: repo if rid == repo.id else None,
+            )
+
+        async def branch_head(repo, branch):
+            promotion = origin_git(repo)
             resolved = await promotion._resolve_repository(repo.id)
             await promotion._ensure_retained_repository(resolved)
             remote = await promotion.git.als_remote_ref(str(resolved.retained_git_dir), branch)
             if remote.state is RemoteRefState.ERROR:
                 raise GitError(remote.error or "repository head state is unknown")
-            if remote.state is not RemoteRefState.PRESENT or remote.oid is None:
+            if remote.state is RemoteRefState.ABSENT:
+                return None
+            if remote.oid is None:
                 raise GitError(f"repository branch {branch!r} does not exist")
             return remote.oid
+
+        async def resolve_head(repo, branch):
+            head = await branch_head(repo, branch)
+            if head is None:
+                raise GitError(f"repository branch {branch!r} does not exist")
+            return head
+
+        async def branch_base(repo, head, parent_head):
+            promotion = origin_git(repo)
+            resolved = await promotion._resolve_repository(repo.id)
+            await promotion._ensure_retained_repository(resolved)
+            async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
+                await promotion.git.afetch_origin(
+                    str(resolved.retained_git_dir), repository_url=resolved.origin_url,
+                    lock_held=True,
+                )
+                return await promotion.git.amerge_base(
+                    str(resolved.retained_git_dir), head, parent_head,
+                )
 
         async def materialize(repo, branch, base_sha):
             promotion = self._integration_repository_git()
@@ -2209,6 +2250,8 @@ class IntegrationCommandsMixin:
         return HierarchyIntegration(
             self.db,
             default_head_resolver=resolve_head,
+            branch_head_resolver=branch_head,
+            branch_base_resolver=branch_base,
             branch_materializer=materialize,
             checkpoint_verifier=verify_checkpoint,
             git_manager=self.orchestrator.git,

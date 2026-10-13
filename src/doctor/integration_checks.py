@@ -42,6 +42,50 @@ async def _check_delivery_engine(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_branch_origins(ctx: DoctorContext) -> CheckResult:
+    from src.integration.hierarchy import missing_origin_tasks_on
+
+    check_id = "integration.branch_origins"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    findings = []
+    for project in await ctx.db.list_projects():
+        if project.hierarchical_integration_mode not in {"hierarchy", "train"}:
+            continue
+        if not project.integration_repository_id:
+            continue  # integration.delivery_engine owns a missing repository.
+        async with ctx.db._engine.connect() as conn:
+            missing = await missing_origin_tasks_on(conn, project.id, project.integration_repository_id)
+        if missing:
+            findings.append({"project_id": project.id, "task_ids": missing,
+                             "mode": project.hierarchical_integration_mode,
+                             "generation": project.hierarchical_integration_generation})
+    return CheckResult(
+        check_id, Severity.ERROR if findings else Severity.OK,
+        f"{sum(len(row['task_ids']) for row in findings)} task(s) lack live branch origins; "
+        "repair with `aq doctor --check integration.branch_origins --fix`"
+        if findings else "every managed task has a live branch origin",
+        fixable=bool(findings), data={"projects": findings},
+    )
+
+
+async def _fix_branch_origins(ctx: DoctorContext) -> CheckResult:
+    if ctx.handler is None:
+        return _unavailable("integration.branch_origins", "command handler unavailable for Git proof")
+    before = await _check_branch_origins(ctx)
+    results = []
+    for row in before.data.get("projects", []):
+        results.append(await ctx.handler.execute("edit_project", {
+            "project_id": row["project_id"], "hierarchical_integration_mode": row["mode"],
+            "expected_integration_generation": row["generation"],
+            "reason": "doctor backfill missing branch origins",
+        }))
+    after = await _check_branch_origins(ctx)
+    after.fix_applied = bool(results) and after.severity == Severity.OK
+    after.data["repairs"] = results
+    return after
+
+
 async def _subjects(ctx, *, held):
     check_id = "integration.subjects_held" if held else "integration.subjects_overdue"
     if ctx.db is None:
@@ -585,6 +629,7 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(id=f"integration.{name}", run=run, fix=fix, timeout_s=timeout, owner=OWNER)
         for name, run, timeout, fix in (
             ("delivery_engine", _check_delivery_engine, 30.0, None),
+            ("branch_origins", _check_branch_origins, 300.0, _fix_branch_origins),
             ("legacy_deliveries", _check_legacy_deliveries, 300.0, None),
             ("completed_undelivered", _check_completed_undelivered, 300.0, None),
             ("finished_branch_owners", _check_finished_branch_owners,

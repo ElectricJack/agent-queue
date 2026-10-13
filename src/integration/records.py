@@ -1314,9 +1314,10 @@ class ParentEpisodeRecords(ParentReadiness, ParentVerification):
 class PolicyActivation:
     """Current project inputs; existing subjects retain their frozen artifact."""
 
-    def __init__(self, db, *, clock=time.time):
+    def __init__(self, db, *, hierarchy_service_factory=None, clock=time.time):
         self.db = db
         self.clock = clock
+        self.hierarchy_service_factory = hierarchy_service_factory
 
     async def configure(
         self,
@@ -1535,6 +1536,15 @@ class PolicyActivation:
             if dry_run:
                 return {"outcome": "checked", "project_id": project_id,
                         "generation": generation, "updates": dict(updates)}
+            # A mode edit is also the idempotent doctor repair entry point.
+            # Refuse before writes when the caller cannot prove/adopt legacy refs.
+            backfill = mode in {"hierarchy", "train"}
+            if backfill and self.hierarchy_service_factory is None:
+                from src.integration.hierarchy import missing_origin_tasks_on
+
+                if await missing_origin_tasks_on(conn, project_id, repository_id):
+                    return {"outcome": "blocked", "project_id": project_id,
+                            "generation": generation, "error": "branch_origins_missing"}
             if cutover is not None:
                 await cutover.prepare()
                 await cutover.write_on(conn, project)
@@ -1558,6 +1568,11 @@ class PolicyActivation:
             ).values(**updates, hierarchical_integration_generation=generation + 1))
             if changed.rowcount != 1:
                 raise RuntimeError("policy activation lost its generation fence")
+            backfilled = []
+            if backfill and self.hierarchy_service_factory is not None:
+                service = self.hierarchy_service_factory()
+                repo = await service._repo_on(conn, repository_id)
+                backfilled = await service.backfill_origins_on(conn, project_id, repo)
             if cutover is not None:
                 await cutover.verify_on(conn, generation + 1)
             effective = mode or project["hierarchical_integration_mode"]
@@ -1568,7 +1583,8 @@ class PolicyActivation:
                 project_integration_schedules.c.project_id == project_id
             ).values(enabled=effective == "train", updated_at=now))
         return {"outcome": "configured", "project_id": project_id,
-                "generation": generation + 1, "fields": configured_fields}
+                "generation": generation + 1, "fields": configured_fields,
+                "backfilled_origins": backfilled}
 
 
     @staticmethod

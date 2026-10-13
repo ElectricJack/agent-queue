@@ -168,6 +168,29 @@ A branchless parent's verification behavior is playbook policy with three typed 
 The shipped hierarchical-delivery playbook uses `verifier` for a branchless parent with delivered
 code and `skip` only for a proven code-less subtree.
 
+### 6.2.1 Origins for existing work
+
+Enabling `hierarchy` or `train` on an existing project backfills live branch origins
+under the project hierarchy lock and integration-generation fence. Every open task
+and every legacy artifact-bearing completion without an origin is covered,
+including ancestors needed to name a dedicated parent target. Existing published
+task branches are adopted at their observed exact tip without rewriting the ref;
+their origin base is the merge base with the parent/default target, and their initial
+checkpoint is the observed tip. Absent branches receive ordinary pinned reservations
+for the materialization consumer. Unknown remote state, incompatible checkpoints or
+branch ownership refuse activation atomically. Existing live origins are preserved.
+Retired completion origins remain cleanup history; an open child's retired ancestor
+refuses activation rather than resurrecting that history. Repair and verification
+delegates retain their subject branches, and code-less completions need no new
+branch. Receipts alone never exclude a legacy artifact from this backfill;
+ordinary Git containment still determines whether collection is owed.
+
+`integration.branch_origins` diagnoses and repairs projects already missing origins,
+using the same fenced configuration command. `app-verify`, functional preflight and
+`cutover-plan` report missing origins as `branch_origins_missing`, with task identities
+and the doctor repair command. Readiness reads never adopt refs or invent completions;
+collection still requires the ordinary exact completion provenance.
+
 ### 6.3 Suspending the parent
 
 A parent may continue its own work after filing a child, but it cannot close while children are
