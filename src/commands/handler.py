@@ -92,6 +92,7 @@ from src.commands.message_wait_commands import MessageWaitCommandsMixin
 from src.commands.session_commands import SessionCommandsMixin
 from src.commands.surface_commands import SurfaceCommandsMixin
 from src.commands.ops_commands import OpsCommandsMixin
+from src.commands.doctor_observation_commands import DoctorObservationCommandsMixin
 from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
@@ -390,6 +391,7 @@ class CommandHandler(
     SessionCommandsMixin,
     SurfaceCommandsMixin,
     OpsCommandsMixin,
+    DoctorObservationCommandsMixin,
     WorktreeCommandsMixin,
     # -- dv2 phase 2 mixins -----------------------------------------------
     GitCommandsMixin,

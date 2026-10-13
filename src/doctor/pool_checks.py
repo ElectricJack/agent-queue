@@ -627,17 +627,35 @@ async def _check_holder_consistency(ctx: DoctorContext) -> CheckResult:
     holders a missing ``claimed_by_session`` is still an anomaly, not a
     free pass.
     """
+    from collections import Counter
+    import json
+
+    from src.doctor.observations import MAX_PRODUCER_BYTES, MAX_ROWS, partition
+
+    check_id = "claims.holder_consistency"
     if ctx.db is None:
-        return _no_db_result("claims.holder_consistency")
+        return CheckResult(check_id, Severity.INFO, "database required",
+                           execution_status="unavailable", reasons=["dependency_unavailable"])
     sessions_by_task: dict[str, list[str]] = {}
     pool_session_ids: set[str] = set()
-    for s in await ctx.db.list_sessions():
-        if getattr(s, "lifecycle", "task") == "pool":
-            pool_session_ids.add(s.id)
-        if s.task_id:
-            sessions_by_task.setdefault(s.task_id, []).append(s.id)
-    bad = []
-    for task in await ctx.db.list_tasks(status=TaskStatus.IN_PROGRESS):
+    for session in await ctx.db.list_sessions():
+        if getattr(session, "lifecycle", "task") == "pool":
+            pool_session_ids.add(session.id)
+        if session.task_id:
+            sessions_by_task.setdefault(session.task_id, []).append(session.id)
+    tasks = await ctx.db.list_tasks(status=TaskStatus.IN_PROGRESS)
+    projects = ({project.id for project in await ctx.db.list_projects()}
+                if ctx.read_only else {task.project_id for task in tasks})
+    totals = Counter(task.project_id for task in tasks)
+    observed = Counter()
+    bad, identities = [], []
+    size = 0
+    capped = False
+    for index, task in enumerate(tasks):
+        if ctx.read_only and (index >= MAX_ROWS or size >= MAX_PRODUCER_BYTES):
+            capped = True
+            break
+        observed[task.project_id] += 1
         if not task.assigned_agent_id:
             continue
         holders = sessions_by_task.get(task.id, [])
@@ -645,25 +663,43 @@ async def _check_holder_consistency(ctx: DoctorContext) -> CheckResult:
             continue
         agent = await ctx.db.get_agent(task.assigned_agent_id)
         meta = await ctx.db.get_task_meta(task.id, "claimed_by_session")
-        ok = (
-            agent is not None
-            and agent.current_task_id == task.id
-            and len(holders) == 1
-            and meta is not None
-            and meta == holders[0]
-        )
+        ok = (agent is not None and agent.current_task_id == task.id
+              and len(holders) == 1 and meta is not None and meta == holders[0])
         if not ok:
             bad.append(task.id)
-    if not bad:
-        return CheckResult(
-            id="claims.holder_consistency", severity=Severity.OK, detail="holders consistent"
-        )
+            item = {"task_id": task.id, "project_id": task.project_id}
+            item_size = len(json.dumps(item).encode())
+            if len(identities) < MAX_ROWS and size + item_size <= MAX_PRODUCER_BYTES:
+                identities.append(item)
+                size += item_size
+            else:
+                capped = True
+    coverage = [partition(check_id, "holder_inconsistency", pid,
+                          complete=not capped and observed[pid] == totals[pid],
+                          observed=observed[pid], total=totals[pid],
+                          reasons=["producer_limit"] if capped else [])
+                for pid in sorted(projects | set(totals), key=lambda pid: pid or "")]
+    if not coverage:
+        coverage = [partition(check_id, "holder_inconsistency", None,
+                              complete=True, observed=0, total=0)]
     return CheckResult(
-        id="claims.holder_consistency",
-        severity=Severity.WARN,
-        detail=f"{len(bad)} IN_PROGRESS task(s) with an inconsistent claim holder (report-only)",
-        data={"count": len(bad), "tasks": bad[:50]},
+        id=check_id, severity=Severity.WARN if bad else Severity.OK,
+        detail=(f"{len(bad)} IN_PROGRESS task(s) with an inconsistent claim holder (report-only)"
+                if bad else "holders consistent"),
+        data={"count": len(bad), "tasks": bad[:50]} if bad else {},
+        execution_status="partial" if capped else "succeeded", complete=not capped,
+        coverage=coverage, reasons=["producer_limit"] if capped else [],
+        observation_data=identities,
     )
+
+
+def _holder_observations(result: CheckResult) -> list[dict]:
+    from src.doctor.observations import finding
+
+    return [finding("claims.holder_consistency", "holder_inconsistency",
+                    row["project_id"], "task", row["task_id"],
+                    "IN_PROGRESS task has an inconsistent claim holder", row)
+            for row in result.observation_data]
 
 
 # ---------------------------------------------------------------------------
@@ -1510,7 +1546,14 @@ def pool_checks() -> list[DoctorCheck]:
         ),
         # Report-only: no ``fix`` — a claim/holder mismatch needs a human to
         # decide which side (agent, session, or task) is authoritative.
-        DoctorCheck(id="claims.holder_consistency", run=_check_holder_consistency, owner=OWNER),
+        DoctorCheck(
+            id="claims.holder_consistency", run=_check_holder_consistency, owner=OWNER,
+            supported_scopes=("system",), read_only_audited=True,
+            finding_schema={"version": 1, "kinds": ["holder_inconsistency"]},
+            identity_adapter=_holder_observations,
+            completeness_contract="per-project holder inventory v1",
+            groups=("task_observations_v1",),
+        ),
         # Report-only by design (global-worker-pools §4): picking a fleet size
         # is an operator decision, so this one states the arithmetic and stops.
         DoctorCheck(

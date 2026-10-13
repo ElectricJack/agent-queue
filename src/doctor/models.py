@@ -7,6 +7,7 @@ See ``docs/specs/design/trust-and-ops.md`` §5 and
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -52,6 +53,13 @@ class CheckResult:
     fix_applied: bool = False
     duration_ms: int = 0
     data: dict[str, Any] = field(default_factory=dict)
+    # Health and execution are independent. Legacy producers cannot prove absence.
+    execution_status: str = "unknown"
+    complete: bool = False
+    coverage: list[dict[str, Any]] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    # Producer-owned full model; deliberately separate from legacy CLI data.
+    observation_data: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +70,10 @@ class CheckResult:
             "fix_applied": self.fix_applied,
             "duration_ms": self.duration_ms,
             "data": self.data,
+            "execution_status": self.execution_status,
+            "complete": self.complete,
+            "coverage": self.coverage,
+            "reasons": self.reasons,
         }
 
 
@@ -79,6 +91,14 @@ class DoctorCheck:
     fix: Callable[["DoctorContext"], Awaitable[CheckResult]] | None = None
     timeout_s: float = 5.0
     owner: str = "core"
+    supported_scopes: tuple[str, ...] = ()
+    read_only_audited: bool = False
+    finding_schema: dict[str, Any] = field(default_factory=dict)
+    identity_adapter: Callable[[CheckResult], list[dict[str, Any]]] | None = None
+    identity_version: int = 1
+    payload_version: int = 1
+    completeness_contract: str | None = None
+    groups: tuple[str, ...] = ()
 
 
 @dataclass
@@ -93,6 +113,18 @@ class DoctorContext:
     config: "AppConfig"
     db: Any = None
     handler: Any = None  # CommandHandler — checks that reuse existing commands
+    project_id: str | None = None
+    reference_time: float | None = None
+    read_only: bool = False
+    # A separate context is made for each concurrent probe.
+    observation_reasons: list[dict[str, Any]] = field(default_factory=list)
+
+    def incomplete(self, reason: str, *, project_id: str | None = None) -> None:
+        self.observation_reasons.append({"reason": reason, "project_id": project_id})
+
+
+class ObservationUnavailable(RuntimeError):
+    """A producer cannot observe a required dependency (never healthy absence)."""
 
 
 # ---------------------------------------------------------------------------
@@ -123,3 +155,15 @@ RESERVED_CHECK_IDS: dict[str, str] = {
     "worktrees.orphans": "worktree-execution",
     "leases.stale": "worktree-execution",
 }
+
+
+# Nested read handlers can report a caught failure without changing legacy results.
+observation_context: ContextVar[DoctorContext | None] = ContextVar(
+    "doctor_observation_context", default=None,
+)
+
+
+def observation_read_failed(reason: str, project_id: str | None = None) -> None:
+    ctx = observation_context.get()
+    if ctx is not None:
+        ctx.incomplete(reason, project_id=project_id)

@@ -5538,6 +5538,9 @@ class TaskCommandsMixin:
         try:
             labels = await self.db.get_task_labels(str(task_id))
         except Exception:
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("task_labels_unavailable", task.project_id)
             labels = []
         for lbl in labels:
             if lbl.startswith("hold:"):
@@ -5654,6 +5657,9 @@ class TaskCommandsMixin:
         try:
             blockers = await self.db.get_blocking_dependencies(str(task_id))
         except Exception:
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("blocking_dependencies_unavailable", task.project_id)
             blockers = []
         for dep_id, dep_title, dep_status, dep_type, dep_project in blockers:
             if dep_project and dep_project != task.project_id:
@@ -5669,6 +5675,9 @@ class TaskCommandsMixin:
         try:
             gates = await self.db.get_gates_for_task(str(task_id))
         except Exception:
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("task_gates_unavailable", task.project_id)
             gates = []
         for g in gates:
             if g["status"] != "resolved":
@@ -5698,7 +5707,18 @@ class TaskCommandsMixin:
         provider_hold = None
         availability = getattr(self.orchestrator, "provider_availability", None)
         if availability is not None and not retirement:
-            provider_hold = await availability.hold_for(task)
+            from src.doctor.models import observation_context
+
+            observation = observation_context.get()
+            if observation is not None:
+                # Supply these reads explicitly: hold_for's human diagnostic
+                # fallback swallows their failures and cannot prove absence.
+                profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+                if project is None or (task.profile_id and task.profile_id not in profiles):
+                    observation.incomplete("provider_context_unavailable", project_id=task.project_id)
+                provider_hold = await availability.hold_for(task, project=project, profiles=profiles)
+            else:
+                provider_hold = await availability.hold_for(task)
         if provider_hold is not None:
             until = provider_hold.get("until")
             reasons.append(Reason(
@@ -5920,6 +5940,9 @@ class TaskCommandsMixin:
                 router, task.id, since=now - _ROUTER_RUN_LOOKBACK_SECONDS
             )
         except Exception:  # diagnostics only: no run is "awaiting"
+            from src.doctor.models import observation_read_failed
+
+            observation_read_failed("router_run_unavailable", task.project_id)
             logger.debug("explain: router run lookup failed for %s", task.id, exc_info=True)
             run = None
         emitted = getattr(self.orchestrator, "__dict__", {}).get("_route_needed_emitted") or {}
