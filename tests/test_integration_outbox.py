@@ -449,6 +449,9 @@ async def test_runtime_restart_replays_an_accepted_but_unstarted_pending_event(d
     assert await _accepted_activation_count(db, "event-1") == 1
     [row] = await _pending_rows(db)
     assert row["resolution"] == "dispatched"
+    [run] = await db.list_runs(playbook_id="integration-train")
+    assert run.context["observed_at"] == NOW
+    assert run.context["observation_id"] == "event-1"
 
 
 async def test_zero_matching_activations_keeps_event_for_retry(db):

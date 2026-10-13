@@ -2380,9 +2380,8 @@ class TestSequentialLoops:
         assert live.no_side_effects is True
 
     @pytest.mark.asyncio
-    async def test_a_second_loop_while_one_is_active_is_a_contract_violation(self):
-        """Package 2 rejects a *nested* loop statically; this is the dynamic
-        form of the same thing — two frames, one snapshot field."""
+    async def test_an_inner_loop_resolves_its_own_collection(self):
+        """A different owning frame starts an inner loop, which still needs inputs."""
         from src.playbooks.executors.foreach import ForEachExecutor
 
         artifact = loop_artifact()
@@ -2406,7 +2405,7 @@ class TestSequentialLoops:
             ),
         )
         result = await ForEachExecutor().execute(step, ctx)
-        assert result.outcome == "contract_violation"
+        assert result.outcome == "input_resolution_failed"
 
     @pytest.mark.asyncio
     async def test_a_collection_that_changed_under_an_active_loop_is_refused(self):

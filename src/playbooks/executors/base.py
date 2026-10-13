@@ -198,6 +198,9 @@ class StepContext:
     mode: ExecutionMode = ExecutionMode.LIVE
     attempt: int = 1
     iteration_index: int | None = None
+    iteration_path: str = ""
+    loop_stack: tuple[LoopFrame, ...] = ()
+    iteration_entries: int = 0
     run_deadline_at: float | None = None
     step_deadline_at: float | None = None
     cancel_requested: bool = False

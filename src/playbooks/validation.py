@@ -26,6 +26,7 @@ from dataclasses import field as dataclass_field
 from typing import Any, Final, Literal, Protocol, runtime_checkable
 
 from src.playbooks.definition import (
+    loop_body as _loop_body,
     LLM_RESERVED_OUTCOMES,
     RESERVED_OUTCOMES,
     RUNTIME_ERROR_KEY,
@@ -684,38 +685,6 @@ def _loop_exits(loop: Any) -> set[str]:
     return exits
 
 
-def _loop_body(definition: PlaybookDefinition, loop_id: str) -> set[str]:
-    """§6.3 — the steps that are *inside* the loop.
-
-    The plan states this as "BFS from ``body_entry``, stopping at ``f`` itself".
-    Taken literally that is a plain forward closure, which swallows every target
-    a body step has — including the loop's own failure terminal — and makes
-    ``loop_body_escapes`` vacuous, because a step's target is in its own closure
-    by construction.  The body is therefore the closure restricted to the steps
-    that can reach ``f`` again: exactly the nodes on a path from ``body_entry``
-    back to the loop node, which is what "inside the loop" means.  Recorded as
-    an amendment in the child plan's §20.
-    """
-    loop = definition.steps[loop_id]
-    forward: set[str] = set()
-    queue: deque[str] = deque([loop.body_entry])
-    while queue:
-        step_id = queue.popleft()
-        if step_id == loop_id or step_id in forward or step_id not in definition.steps:
-            continue
-        forward.add(step_id)
-        queue.extend(step_targets(definition.steps[step_id]).values())
-
-    inside: set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for step_id in forward - inside:
-            targets = set(step_targets(definition.steps[step_id]).values())
-            if loop_id in targets or targets & inside:
-                inside.add(step_id)
-                changed = True
-    return inside
 
 
 ENTER = "enter"
@@ -743,7 +712,7 @@ def _cfg(definition: PlaybookDefinition, rule: Rule, closure: set[str],
         step = definition.steps[step_id]
         if isinstance(step, ForEachStep):
             successors[f"{step_id}#{ENTER}"] = [
-                node_in(step.body_entry, from_step=step_id)
+                node_in(step.body_entry, from_step=step_id), f"{step_id}#{EXIT}",
             ]
             outgoing = list(step.transitions.values())
             if step.continuation is not None:
@@ -768,6 +737,7 @@ def _must_analysis(
     successors: Mapping[str, list[str]],
     entry: str,
     gen: Mapping[str, frozenset[str]],
+    kill: Mapping[str, frozenset[str]] | None = None,
 ) -> dict[str, frozenset[str]]:
     """§6.4 steps 3-5 — the optimistic must-analysis fixpoint.
 
@@ -776,6 +746,7 @@ def _must_analysis(
     converges; ``MAX_FIXPOINT_ITERATIONS`` is a trip-wire, not the termination
     argument.
     """
+    kill = kill or {}
     universe = frozenset().union(*gen.values()) if gen else frozenset()
     predecessors: dict[str, list[str]] = {node: [] for node in successors}
     for node, targets in successors.items():
@@ -786,7 +757,7 @@ def _must_analysis(
         node: (frozenset() if node == entry else universe) for node in successors
     }
     outgoing: dict[str, frozenset[str]] = {
-        node: incoming[node] | gen.get(node, frozenset()) for node in successors
+        node: (incoming[node] - kill.get(node, frozenset())) | gen.get(node, frozenset()) for node in successors
     }
     for _ in range(MAX_FIXPOINT_ITERATIONS):
         changed = False
@@ -799,7 +770,7 @@ def _must_analysis(
             if nxt != incoming[node]:
                 incoming[node] = nxt
                 changed = True
-            out = nxt | gen.get(node, frozenset())
+            out = (nxt - kill.get(node, frozenset())) | gen.get(node, frozenset())
             if out != outgoing[node]:
                 outgoing[node] = out
                 changed = True
@@ -1074,14 +1045,26 @@ def _loops(context: _Context) -> None:
         body = context.bodies[loop_id]
         enclosing = [other for other, other_body in context.bodies.items()
                      if other != loop_id and loop_id in other_body]
-        if enclosing:
-            context.emit(
-                "nested_loop",
-                f"loop {loop_id!r} sits inside the body of {min(enclosing)!r}; "
-                f"V2 rejects nested loops",
-                rule_id=loop.rule,
-                step_id=loop_id,
-            )
+        if len(enclosing) >= 4:
+            context.emit("nested_loop", "loop depth exceeds 4", rule_id=loop.rule, step_id=loop_id)
+        for other, other_body in context.bodies.items():
+            if other == loop_id:
+                continue
+            if body & other_body and not (
+                body | {loop_id} <= other_body or other_body | {other} <= body
+            ):
+                context.emit("loop_body_escapes", "loop bodies overlap across frames",
+                             rule_id=loop.rule, step_id=loop_id)
+        # Only the owning foreach may enter its body from outside.
+        for source_id, source in definition.steps.items():
+            if source_id == loop_id or source_id in body:
+                continue
+            if set(step_targets(source).values()) & body:
+                context.emit("loop_body_escapes", "loop body has an external entry",
+                             rule_id=source.rule, step_id=source_id)
+        if any(rule.entry_step in body for rule in definition.rules):
+            context.emit("loop_body_escapes", "rule entry bypasses foreach",
+                         rule_id=loop.rule, step_id=loop_id)
 
         exits = _loop_exits(loop)
         for body_step_id in sorted(body):
@@ -1223,9 +1206,19 @@ def _definite_assignment(context: _Context) -> None:
                 gen[f"{step_id}#{EXIT}"] = produced
             else:
                 gen[step_id] = produced
-        incoming = _must_analysis(successors, entry, gen)
+        kill: dict[str, frozenset[str]] = {}
+        for loop_id, body in context.bodies.items():
+            names = frozenset(
+                name for item in body
+                if (name := getattr(definition.steps[item], "save_result_as", None))
+            )
+            own = getattr(definition.steps[loop_id], "save_result_as", None)
+            kill[f"{loop_id}#{ENTER}"] = names | (frozenset({own}) if own else frozenset())
+            kill[f"{loop_id}#{EXIT}"] = names
+        incoming = _must_analysis(successors, entry, gen, kill)
         outgoing = {
-            node: incoming.get(node, frozenset()) | gen.get(node, frozenset())
+            node: (incoming.get(node, frozenset()) - kill.get(node, frozenset()))
+                  | gen.get(node, frozenset())
             for node in successors
         }
         context.assigned[rule.id] = incoming

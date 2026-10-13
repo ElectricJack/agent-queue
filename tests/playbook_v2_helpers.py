@@ -500,6 +500,27 @@ def _agent_task_twin() -> dict[str, Any]:
     return artifact
 
 
+def _too_deep_loop_twin() -> dict[str, Any]:
+    """Five properly nested loops exceed the supported four-frame stack."""
+    artifact = _foreach_twin()
+    ids = ["loop", "inner", "level3", "level4", "level5"]
+    artifact["steps"]["loop"]["body_entry"] = "inner"
+    for index, step_id in enumerate(ids[1:], start=1):
+        artifact["steps"][step_id] = {
+            "type": "foreach",
+            "rule": "r1",
+            "title": "Inner",
+            "collection": {"type": "binding_ref", "binding": "bound", "path": "tasks"},
+            "item_binding": "leaf" if index == 1 else f"item{index + 1}",
+            "failure_policy": "halt",
+            "body_entry": ids[index + 1] if index + 1 < len(ids) else "body",
+            "transitions": {"completed": ids[index - 1], "failed": ids[index - 1]},
+            "source": source(9),
+        }
+    artifact["steps"]["body"]["transitions"] = {"done": "level5", "skipped": "level5"}
+    return artifact
+
+
 def _mutate(base: dict[str, Any], mutation: Any) -> dict[str, Any]:
     artifact = copy.deepcopy(base)
     mutation(artifact)
@@ -676,26 +697,7 @@ def _invalid_artifacts() -> dict[str, dict[str, Any]]:
                 ),
             ),
         ),
-        "nested_loop": _mutate(
-            _foreach_twin(),
-            lambda a: (
-                a["steps"]["loop"].update(body_entry="inner"),
-                a["steps"].update(
-                    inner={
-                        "type": "foreach",
-                        "rule": "r1",
-                        "title": "Inner",
-                        "collection": {"type": "binding_ref", "binding": "bound", "path": "tasks"},
-                        "item_binding": "leaf",
-                        "failure_policy": "halt",
-                        "body_entry": "body",
-                        "transitions": {"completed": "loop", "failed": "loop"},
-                        "source": source(9),
-                    }
-                ),
-                a["steps"]["body"].update(transitions={"done": "inner", "skipped": "inner"}),
-            ),
-        ),
+        "nested_loop": _too_deep_loop_twin(),
         "loop_body_escapes": _mutate(
             # A body step ending the run at a terminal the loop never declares
             # as one of its own exits.

@@ -1145,3 +1145,18 @@ async def test_an_insert_may_rely_on_the_pending_event_column_defaults(db):
     assert row["event"] == {}
     assert row["dedup_key"] == ""
     assert row["attempts"] == 0
+
+
+async def test_active_waits_and_claims_keep_the_complete_iteration_path(db):
+    snapshot = await db.create_run(make_snapshot())
+    paths = ['[["outer",0],["inner",0]]', '[["outer",1],["inner",0]]']
+    for i, path in enumerate(paths):
+        await db.register(make_wait(wait_id=f"nested-{i}", iteration=0,
+                                    iteration_path=path), snapshot.version + 1)
+    waits = await db.list_active(snapshot.run_id)
+    assert {w.iteration_path for w in waits} == set(paths)
+    with pytest.raises(DuplicateWait):
+        await db.register(make_wait(wait_id="duplicate", iteration=0,
+                                    iteration_path=paths[1]), snapshot.version + 1)
+    claims = await db.claim_for_event(Event("pr.merged", "arrival", {"pr": {"number": 41}}), now=NOW + 1)
+    assert {claim.iteration_path for claim in claims} == set(paths)

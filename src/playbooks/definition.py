@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import deque
 
 import yaml
 from datetime import datetime
@@ -1031,6 +1032,7 @@ __all__ = [
     "contract_fingerprint",
     "is_executable_path",
     "load_definition_json",
+    "loop_body",
     "normalize_source",
     "referenced_profile_ids",
     "reserved_outcomes_for",
@@ -1042,4 +1044,51 @@ __all__ = [
     "step_targets",
     "step_values",
     "truncate_excerpt",
+    "uses_iteration_paths",
 ]
+
+
+def loop_body(definition: PlaybookDefinition, loop_id: str) -> set[str]:
+    """§6.3 — the steps that are *inside* the loop.
+
+    The plan states this as "BFS from ``body_entry``, stopping at ``f`` itself".
+    Taken literally that is a plain forward closure, which swallows every target
+    a body step has — including the loop's own failure terminal — and makes
+    ``loop_body_escapes`` vacuous, because a step's target is in its own closure
+    by construction.  The body is therefore the closure restricted to the steps
+    that can reach ``f`` again: exactly the nodes on a path from ``body_entry``
+    back to the loop node, which is what "inside the loop" means.  Recorded as
+    an amendment in the child plan's §20.
+    """
+    loop = definition.steps[loop_id]
+    forward: set[str] = set()
+    exits = set(loop.transitions.values())
+    if loop.continuation is not None:
+        exits.add(loop.continuation)
+    queue: deque[str] = deque([loop.body_entry])
+    while queue:
+        step_id = queue.popleft()
+        if (step_id == loop_id or step_id in exits or step_id in forward
+                or step_id not in definition.steps):
+            continue
+        forward.add(step_id)
+        queue.extend(step_targets(definition.steps[step_id]).values())
+
+    inside: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for step_id in forward - inside:
+            targets = set(step_targets(definition.steps[step_id]).values())
+            if loop_id in targets or targets & inside:
+                inside.add(step_id)
+                changed = True
+    return inside
+
+
+def uses_iteration_paths(definition: PlaybookDefinition) -> bool:
+    """B3 may pin the feature explicitly; nested syntax already requires it."""
+    if "nested_foreach_v1" in getattr(definition, "required_features", ()):
+        return True
+    loops = {key for key, step in definition.steps.items() if isinstance(step, ForEachStep)}
+    return any(loop_body(definition, key) & loops for key in loops)
