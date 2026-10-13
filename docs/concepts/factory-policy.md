@@ -61,9 +61,11 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   reconciliation preserve it; reopening then failing replaces it. Current `FAILED` incidents,
   including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
   status or counters. Retry requires a stopped attempt on a `BLOCKED` task and all recovery guards.
-- An accepted explicit task restart or reopen supersedes its previous recovery incident in the
-  READY-write transaction, including holds on already-READY tasks; preserve diagnosis, history and
-  recovery budget, and archive the notification. Projection and refused restarts retain holds;
+- An accepted explicit task restart, reopen or resume supersedes its previous recovery incident in
+  the status-write transaction, including holds on already-READY tasks; preserve diagnosis, history
+  and recovery budget, and archive the notification. Projection of the same stopped failure,
+  manual pauses and refused controls retain holds. The recovery scan supersedes obsolete holds
+  when the underlying failure or attempt changes, including holds left by older resume paths;
   repair delegates release them only after branch handoff. Pauses, labels, dependencies, human gates
   and integration ownership remain binding.
 - A known transient failure retries within the existing budget. An unknown cause, an exhausted

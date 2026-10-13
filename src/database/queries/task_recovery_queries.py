@@ -94,11 +94,14 @@ def _incident_id(task, attempt, reason, meta):
     return "recovery-" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
 
 
-def _incident_is_current(task, meta, attempt, incident_id):
-    """Holds and reconciliation fence exactly the failure eligible for notification."""
+def _incident_is_current(task, meta, attempt, incident_id, *, allow_ready_hold=False):
+    """Fence one failure; held READY projections must still match its stopped attempt."""
     reason = incident_reason(meta, task)
     return (
-        task["status"] in _FAILURE_STATUSES
+        (
+            task["status"] in _FAILURE_STATUSES
+            or (allow_ready_hold and task["status"] == TaskStatus.READY.value)
+        )
         and bool(reason)
         and (
             (attempt is not None and attempt["state"] in ("stopped", "quarantined"))
@@ -525,12 +528,15 @@ class TaskRecoveryQueryMixin:
                 )
             )
         pending = _decoded(raw) if raw is not None else None
-        if isinstance(pending, dict) and pending.get("id") and not pending.get("decision"):
+        if (
+            isinstance(pending, dict) and pending.get("id")
+            and pending.get("decision") in (None, "hold")
+        ):
             await self._supersede_stale_task_recovery_incident(task_id, pending["id"])
         return await self._ensure_task_recovery_incident(task_id, project_id=project_id)
 
     async def _supersede_stale_task_recovery_incidents(self):
-        """Archive pending incidents after their task or attempt changes."""
+        """Archive pending incidents and obsolete holds after their failure changes."""
         async with self._engine.connect() as conn:
             rows = (
                 await conn.execute(
@@ -544,7 +550,10 @@ class TaskRecoveryQueryMixin:
                 incident = json.loads(raw)
             except (TypeError, ValueError):
                 continue
-            if not isinstance(incident, dict) or incident.get("decision") or not incident.get("id"):
+            if (
+                not isinstance(incident, dict) or not incident.get("id")
+                or incident.get("decision") not in (None, "hold")
+            ):
                 continue
             try:
                 await self._supersede_stale_task_recovery_incident(task_id, incident["id"])
@@ -560,9 +569,20 @@ class TaskRecoveryQueryMixin:
                 return
             meta, attempt = await self._recovery_context(conn, task)
             incident = meta.get(INCIDENT_KEY) or {}
-            if incident.get("id") != expected_id or incident.get("decision"):
+            if (
+                incident.get("id") != expected_id
+                or incident.get("decision") not in (None, "hold")
+            ):
                 return
-            current = _incident_is_current(task, meta, attempt, expected_id)
+            held = incident.get("decision") == "hold"
+            # A manual pause retains the diagnosis until its accepted resume.
+            # A bare READY projection also retains a hold on the same stopped
+            # attempt, but changed failure metadata or a new attempt does not.
+            if held and "manual_pause" in meta:
+                return
+            current = _incident_is_current(
+                task, meta, attempt, expected_id, allow_ready_hold=held,
+            )
             owner = await self._recovery_owner(conn, task) if current else None
             if current and owner["kind"] != "retired":
                 return
@@ -578,6 +598,12 @@ class TaskRecoveryQueryMixin:
                 )
             else:
                 decision_reason = "Task or execution attempt changed before supervisor decision."
+            history = list(incident.get("decision_history", []))
+            if held:
+                history.append({
+                    key: incident.get(key)
+                    for key in ("decision", "decision_reason", "decided_at", "decided_by")
+                })
             now = time.time()
             await self._upsert_meta(
                 task_id,
@@ -588,6 +614,10 @@ class TaskRecoveryQueryMixin:
                     "decision_reason": decision_reason,
                     "decided_at": now,
                     "decided_by": "system:reconciler",
+                    "decision_history": history,
+                    "retry_allowed": False,
+                    "retry_blocker": decision_reason,
+                    "next_action": decision_reason,
                 },
                 conn=conn,
             )
@@ -598,11 +628,11 @@ class TaskRecoveryQueryMixin:
             )
 
     async def _supersede_restarted_task_recovery_on(self, conn, task_id, *, context):
-        """Retire the old failure after an explicit READY write holds the task lock.
+        """Retire the old failure after an accepted execution control holds the task lock.
 
         Ordinary status projection never releases a decided hold. Restart/reopen
-        intentionally begin a new attempt, including when a held task was already
-        projected to READY. Preserve its diagnosis and budget instead of deleting
+        and resume intentionally retire the old failure, including when a held
+        task was already projected to READY. Preserve its diagnosis and budget instead of deleting
         the incident, and archive its notification before claim waiters wake.
         Return whether a hold was released so READY-to-READY can announce it too.
         """
