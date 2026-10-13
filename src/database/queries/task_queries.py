@@ -1306,6 +1306,7 @@ class TaskQueryMixin:
         assume_pre_state: tuple[TaskStatus, bool] | None = None,
         _manual_pause_control: bool = False,
         _defer_projection: bool = False,
+        _defer_recovery_supersession: bool = False,
         _integration_completion_token=None,
         _operator_adoption_token=None,
         _integration_wake_token=None,
@@ -1342,6 +1343,11 @@ class TaskQueryMixin:
         set defers projection, settlement and frontier work until all mutations apply.
         """
         values = self._coerce_task_values(kwargs)
+        supersede_recovery = (
+            new_status == TaskStatus.READY
+            and context in {"restart_task", "reopen_with_feedback"}
+            and not _defer_recovery_supersession
+        )
         from src.database.tables import projects
 
         # Only managed parents can waive integration in development mode. Cache the
@@ -1497,13 +1503,17 @@ class TaskQueryMixin:
             return True, (dict(out) if out is not None else None)
 
         if current_status == new_status:
-            if values or extra_values:
+            if values or extra_values or supersede_recovery:
                 values["updated_at"] = time.time()
                 matched, result.row = await _write(values)
                 if not matched and expect_claim_epoch is not None:
                     raise StaleClaim(f"{task_id}: claim epoch {expect_claim_epoch} is not current")
                 if not matched:
                     return result
+                if supersede_recovery:
+                    await self._supersede_task_recovery_incident_on(
+                        conn, task_id, reason=f"Explicit {context} authorized a new attempt.",
+                    )
                 if accepted_close is not None:
                     await self._upsert_meta(
                         task_id, ACCEPTED_CLOSE_KEY, accepted_close, conn=conn
@@ -1636,6 +1646,10 @@ class TaskQueryMixin:
                 # claim fence).  Nothing was written, so there is nothing to
                 # project or announce.
                 return result
+            if supersede_recovery:
+                await self._supersede_task_recovery_incident_on(
+                    conn, task_id, reason=f"Explicit {context} authorized a new attempt.",
+                )
             await self._record_recovery_failure_generation_on(
                 conn, task_id, current_status, new_status, values["updated_at"],
             )

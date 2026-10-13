@@ -11152,12 +11152,14 @@
         "migrations"
       ],
       "default_arm": true,
-      "digest": "sha256:56757c42c86c4a63b758032f69d190de8cc9cc9381208ea7beabd8a9f08ffcff",
+      "digest": "sha256:a233e70895827860e08fbaaedbb43bc35f52dcdfd23addfd251f1c80cc30c4a8",
       "imports": [
         "src.database",
         "src.database.tables"
       ],
-      "markers": [],
+      "markers": [
+        "migration"
+      ],
       "summary": "Focused migration-chain versus table-metadata regression tests."
     },
     "tests/test_migration_parent_collection.py": {

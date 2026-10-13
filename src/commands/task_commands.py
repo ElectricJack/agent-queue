@@ -4551,9 +4551,20 @@ class TaskCommandsMixin:
             context="restart_task",
             retry_count=0,
             assigned_agent_id=None,
+            _defer_recovery_supersession=True,
         )
         reservation = await self._integration_repair_service().reserve_delegate(task.id)
         if reservation["outcome"] in {"acquired", "already_reserved"}:
+            # Supersede a recovery hold only once the reservation accepted the
+            # restart. A refused handoff must retain its original incident;
+            # a concurrent claim must not be reset by this final READY write.
+            from src.database.tables import tasks
+
+            await self.db.transition_task(
+                task.id, TaskStatus.READY, context="restart_task", assigned_agent_id=None,
+                extra_where=(tasks.c.status == TaskStatus.READY.value)
+                & (tasks.c.claim_epoch == task.claim_epoch),
+            )
             return {
                 "restarted": task.id,
                 "title": task.title,
