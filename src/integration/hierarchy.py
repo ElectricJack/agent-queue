@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import inspect
+import json
+import logging
 import re
 import time
 import uuid
@@ -35,6 +37,8 @@ from src.integration.ownership import BranchOwnership
 from src.integration.records import ParentEpisodeRecords
 from src.models import RepoConfig, Task, TaskStatus
 from src.task_names import child_task_id, fresh_root_id
+
+logger = logging.getLogger(__name__)
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
 #: The ``Task`` fields a child filing may supply (``_build_child``): what the
@@ -1065,6 +1069,7 @@ class HierarchyIntegration:
         if repo is None:
             raise HierarchyError("invalid", "origin repository does not exist")
         branch = task["branch_name"]
+        await self._reacquire_expired_reservation(origin_id, repo.id, branch)
         ownership = await self.ownership.get_owner(
             BranchKey(repository_id=repo.id, branch=branch)
         )
@@ -1122,6 +1127,102 @@ class HierarchyIntegration:
             "branch": branch,
             "base_sha": current["base_sha"],
         }
+
+    async def _reacquire_expired_reservation(
+        self, origin_id: str, repository_id: str, branch: str
+    ) -> None:
+        """Re-lease a detached task's own expired reservation before its cut.
+
+        Backfill leases a pre-existing managed owner row to its task for the
+        finite ref-lease TTL; a drain backlog can outlive it, after which every
+        retry fails ``ref lease expired``.  Only the same holder is re-leased,
+        only with no writer anywhere, only for this exact live origin in the
+        designated repository; ``acquire_on``'s fence bump fences out every
+        older grant.  Anything else is left for the ordinary checks to refuse.
+        """
+        from src.database.queries.integration_state_queries import session_attached_clause
+        from src.database.tables import events, projects
+        from src.integration.lock import BranchLock, managed
+
+        lock = BranchLock(self.db, clock=self.ownership._clock)
+        async with self.db.immediate() as conn:
+            project_id = (await conn.execute(
+                select(tasks.c.project_id)
+                .select_from(tasks.join(task_branch_origins,
+                                        task_branch_origins.c.task_id == tasks.c.id))
+                .where(task_branch_origins.c.id == origin_id)
+            )).scalar_one_or_none()
+            if project_id is None:
+                return
+            await self.db.lock_hierarchy_project(conn, project_id)
+            origin = (await conn.execute(
+                select(task_branch_origins)
+                .where(task_branch_origins.c.id == origin_id).with_for_update()
+            )).mappings().one()
+            task = await self._task_row(conn, origin["task_id"])
+            project = (await conn.execute(
+                select(projects).where(projects.c.id == project_id)
+            )).mappings().one()
+            if (
+                origin["retired_at"] is not None
+                or not origin["reserved"]
+                or origin["materialized"]
+                or origin["repository_id"] != repository_id
+                or origin["branch_name"] != branch
+                or task["branch_name"] != branch
+                or task["project_id"] != project_id
+                or project["integration_repository_id"] != repository_id
+                or project["hierarchical_integration_mode"] not in {"hierarchy", "train"}
+            ):
+                return
+            target = BranchKey(repository_id=repository_id, branch=branch)
+            row = await lock.lock_on(conn, target)
+            if (
+                not managed(row)
+                or row["ref"] != branch
+                or row["holder"] != task["id"]
+                or row["owner_id"] != task["id"]
+                or row["owner_role"] != "worker"
+                or row["handoff_state"] != "reserved"
+                or row["session_id"] is not None
+                or row["workspace_id"] is not None
+                or row["expires_at"] is None
+                or row["expires_at"] > lock.clock()
+            ):
+                return
+            live_session = (await conn.execute(
+                select(sessions.c.id)
+                .where(sessions.c.task_id == task["id"], session_attached_clause()).limit(1)
+            )).scalar_one_or_none()
+            held_workspace = (await conn.execute(
+                select(workspaces.c.id)
+                .where(workspaces.c.locked_by_task_id == task["id"]).limit(1)
+            )).scalar_one_or_none()
+            if task["assigned_agent_id"] or live_session or held_workspace:
+                raise HierarchyError(
+                    "invalid", "expired origin reservation still has a writer or workspace"
+                )
+            fence = await lock.acquire_on(conn, target, task["id"], role="worker")
+            await conn.execute(insert(events).values(
+                event_type="integration.origin_lease_reacquired",
+                project_id=project_id,
+                task_id=task["id"],
+                timestamp=self.clock(),
+                payload=json.dumps({
+                    "origin_id": origin_id,
+                    "repository_id": repository_id,
+                    "branch": branch,
+                    "base_sha": origin["base_sha"],
+                    "creation_generation": origin["creation_generation"],
+                    "previous_fence": row["fence"],
+                    "previous_expires_at": row["expires_at"],
+                    "fence": fence.token,
+                }),
+            ))
+        logger.info(
+            "Re-leased expired reservation aq/%s for origin %s (fence %s -> %s)",
+            task["id"], origin_id, row["fence"], fence.token,
+        )
 
     async def mutate_hierarchy(
         self, task_id: str, mutation: str, arguments: dict

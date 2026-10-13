@@ -835,6 +835,280 @@ async def test_materialized_origin_is_published_to_ready_only_after_exact_confir
     assert persisted["materialized"] is True
 
 
+# -- a backfill lease that expired before the drain reached its origin ---------
+
+
+async def _expired_managed_reservation(db, hierarchy, *, holder=None):
+    """A filed child whose owner row is a managed lease that has already expired.
+
+    Mirrors activation backfill re-leasing a pre-existing managed owner row with
+    the finite ref-lease TTL, then a drain backlog reaching the origin later.
+    """
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "child"}], 0)
+    origin, child_id = filed["origins"][0], filed["children"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.ref == origin["branch"])
+            .values(
+                holder=holder or child_id, owner_id=holder or child_id,
+                fence=4, fence_token=4, expires_at=time.time() - 60,
+            )
+        )
+    return origin, child_id
+
+
+async def _owner(db, branch):
+    async with db._engine.connect() as conn:
+        return dict((await conn.execute(
+            select(integration_branch_owners).where(integration_branch_owners.c.ref == branch)
+        )).mappings().one())
+
+
+async def _lease_events(db):
+    from src.database.tables import events
+
+    async with db._engine.connect() as conn:
+        return [dict(row) for row in (await conn.execute(
+            select(events).where(events.c.event_type == "integration.origin_lease_reacquired")
+        )).mappings()]
+
+
+async def test_expired_own_reservation_is_re_leased_then_materialized(db, hierarchy):
+    origin, child_id = await _expired_managed_reservation(db, hierarchy)
+    calls = []
+
+    async def materialize(_repo, branch, base_sha):
+        owner = await _owner(db, branch)
+        # The cut runs under the re-leased, current fence -- never the stale one.
+        assert owner["fence"] == 5 and owner["expires_at"] > time.time()
+        calls.append((branch, base_sha))
+        return base_sha
+
+    service = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: BASE, branch_materializer=materialize,
+    )
+
+    result = await service.materialize_origin(origin["id"])
+
+    assert result["outcome"] == "materialized"
+    assert calls == [(origin["branch"], BASE)]
+    owner = await _owner(db, origin["branch"])
+    assert (owner["holder"], owner["owner_id"], owner["fence"], owner["fence_token"]) == (
+        child_id, child_id, 5, 5
+    )
+    assert (owner["handoff_state"], owner["session_id"], owner["workspace_id"]) == (
+        "reserved", None, None
+    )
+    assert (await db.get_task(child_id)).status is TaskStatus.READY
+    persisted = await db.get_task_branch_origin_for_promotion(child_id, "repo")
+    assert persisted["materialized"] is True
+    [event] = await _lease_events(db)
+    assert event["task_id"] == child_id and event["project_id"] == "p"
+    assert {
+        "origin_id": origin["id"], "repository_id": "repo", "branch": origin["branch"],
+        "base_sha": BASE, "previous_fence": 4, "fence": 5,
+    }.items() <= json.loads(event["payload"]).items()
+
+    # Idempotent: the origin is cut and the lease current, so a retry neither
+    # re-leases nor records another event.
+    again = await service.materialize_origin(origin["id"])
+    assert again["outcome"] == "materialized"
+    assert (await _owner(db, origin["branch"]))["fence"] == 5
+    assert len(await _lease_events(db)) == 1
+
+
+async def test_expired_reservation_keeps_task_hold_and_route(db, hierarchy):
+    origin, child_id = await _expired_managed_reservation(db, hierarchy)
+    await db.update_task(child_id, status=TaskStatus.PAUSED)
+    service = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: BASE,
+        branch_materializer=lambda _repo, _branch, base_sha: base_sha,
+    )
+
+    await service.materialize_origin(origin["id"])
+
+    task = await db.get_task(child_id)
+    assert task.status is TaskStatus.PAUSED
+    assert (task.profile_id, task.route_source) == (None, "unrouted")
+    assert (await db.get_task_branch_origin_for_promotion(child_id, "repo"))["materialized"]
+
+
+@pytest.mark.parametrize("writer", ["workspace", "session", "assigned_agent"])
+async def test_expired_reservation_with_a_writer_is_never_re_leased(db, hierarchy, writer):
+    origin, child_id = await _expired_managed_reservation(db, hierarchy)
+    if writer == "workspace":
+        await db.create_workspace(Workspace(
+            id="slot", project_id="p", workspace_path="/slots/slot",
+            source_type=RepoSourceType.LINK, locked_by_task_id=child_id,
+        ))
+    elif writer == "session":
+        from src.database.tables import sessions
+
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(sessions).values(
+                id="live", task_id=child_id, project_id="p", profile_id="worker",
+                harness="claude", provider="tmux", name="s-live", lifecycle="task",
+                state="running", desired_state="running", work_dir="/slots/live",
+                epoch="e", instance_token="token-live", started_at=1.0,
+            ))
+    else:
+        from src.database.tables import agents
+
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(agents).values(
+                id="agent-1", name="agent-1", profile_id="worker", created_at=1.0
+            ))
+            await conn.execute(
+                update(tasks).where(tasks.c.id == child_id).values(assigned_agent_id="agent-1")
+            )
+    calls = []
+    service = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: BASE,
+        branch_materializer=lambda _repo, branch, base_sha: calls.append(branch) or base_sha,
+    )
+
+    with pytest.raises(HierarchyError, match="writer"):
+        await service.materialize_origin(origin["id"])
+
+    assert calls == []
+    owner = await _owner(db, origin["branch"])
+    assert (owner["fence"], owner["expires_at"] < time.time()) == (4, True)
+    assert not (await db.get_task_branch_origin_for_promotion(child_id, "repo"))["materialized"]
+    assert await _lease_events(db) == []
+
+
+async def test_expired_foreign_or_attached_reservation_is_never_re_leased(db, hierarchy):
+    from src.integration.ownership import StaleFence
+
+    origin, child_id = await _expired_managed_reservation(db, hierarchy)
+    service = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: BASE,
+        branch_materializer=lambda _repo, _branch, base_sha: base_sha,
+    )
+    # Expired lease, but attached to a session: the attachment is not ours to clear.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.ref == origin["branch"])
+            .values(session_id="gone")
+        )
+    with pytest.raises(StaleFence, match="expired"):
+        await service.materialize_origin(origin["id"])
+    # A foreign holder (a verifier or repair delegate sharing the branch).
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.ref == origin["branch"])
+            .values(session_id=None, holder="delegate", owner_id="delegate")
+        )
+    with pytest.raises(HierarchyError, match="no task ownership"):
+        await service.materialize_origin(origin["id"])
+
+    owner = await _owner(db, origin["branch"])
+    assert (owner["fence"], owner["holder"]) == (4, "delegate")
+    assert not (await db.get_task_branch_origin_for_promotion(child_id, "repo"))["materialized"]
+    assert await _lease_events(db) == []
+
+
+async def test_unexpired_own_reservation_is_not_re_leased(db, hierarchy):
+    origin, _child_id = await _expired_managed_reservation(db, hierarchy)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.ref == origin["branch"])
+            .values(expires_at=time.time() + 300)
+        )
+    service = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: BASE,
+        branch_materializer=lambda _repo, _branch, base_sha: base_sha,
+    )
+
+    await service.materialize_origin(origin["id"])
+
+    assert (await _owner(db, origin["branch"]))["fence"] == 4
+    assert await _lease_events(db) == []
+
+
+async def test_expired_reservation_outside_the_designated_repository_is_not_re_leased(
+    db, hierarchy
+):
+    from src.integration.ownership import StaleFence
+
+    origin, _child_id = await _expired_managed_reservation(db, hierarchy)
+    await db.create_repo(RepoConfig(id="other-repo", project_id="p",
+                                    source_type=RepoSourceType.LINK))
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects).where(projects.c.id == "p")
+            .values(integration_repository_id="other-repo")
+        )
+    service = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: BASE,
+        branch_materializer=lambda _repo, _branch, base_sha: base_sha,
+    )
+
+    with pytest.raises(StaleFence, match="expired"):
+        await service.materialize_origin(origin["id"])
+    assert (await _owner(db, origin["branch"]))["fence"] == 4
+    assert await _lease_events(db) == []
+
+
+@pytest.mark.parametrize("remote_state", ["absent", "exact", "conflicting"])
+async def test_re_leased_reservation_cuts_only_an_absent_or_exact_real_ref(
+    db, hierarchy, tmp_path, remote_state
+):
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    _git(["init", "--bare", str(remote)], tmp_path)
+    _git(["init", str(work)], tmp_path)
+    _git(["config", "user.email", "test@example.com"], work)
+    _git(["config", "user.name", "Test"], work)
+    (work / "value.txt").write_text("base\n")
+    _git(["add", "value.txt"], work)
+    _git(["commit", "-m", "base"], work)
+    base = _git(["rev-parse", "HEAD"], work)
+    _git(["remote", "add", "origin", str(remote)], work)
+    _git(["push", "origin", f"{base}:refs/heads/main"], work)
+    pinned = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: base,
+        checkpoint_verifier=lambda _task, _repo, head_sha: head_sha,
+    )
+    origin, child_id = await _expired_managed_reservation(db, pinned)
+    ref = f"refs/heads/{origin['branch']}"
+    published = None
+    if remote_state == "exact":
+        _git(["push", "origin", f"{base}:{ref}"], work)
+    elif remote_state == "conflicting":
+        (work / "value.txt").write_text("someone's real work\n")
+        _git(["commit", "-am", "published"], work)
+        published = _git(["rev-parse", "HEAD"], work)
+        _git(["push", "origin", f"{published}:{ref}"], work)
+    git = GitManager()
+    service = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: base,
+        branch_materializer=lambda _repo, branch, base_sha: materialize_exact_branch(
+            git, str(work), branch, base_sha, repository_url=str(remote)
+        ),
+    )
+
+    if remote_state == "conflicting":
+        with pytest.raises(HierarchyError) as refused:
+            await service.materialize_origin(origin["id"])
+        assert refused.value.code == "delivery_target_fixed"
+        assert _git(["rev-parse", ref], remote) == published
+        assert not (await db.get_task_branch_origin_for_promotion(child_id, "repo"))[
+            "materialized"
+        ]
+    else:
+        await service.materialize_origin(origin["id"])
+        assert _git(["rev-parse", ref], remote) == base
+        assert (await db.get_task_branch_origin_for_promotion(child_id, "repo"))[
+            "materialized"
+        ]
+
+
 async def test_checkpoint_verifies_actual_clean_and_pushed_workspace_head(db, tmp_path):
     remote = tmp_path / "checkpoint.git"
     work = tmp_path / "checkpoint-work"
