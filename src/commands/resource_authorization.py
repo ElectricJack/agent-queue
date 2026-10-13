@@ -135,7 +135,16 @@ session_list session_logs session_peek session_show show_effective_profile show_
 """.split())
 
 
+STATE_COMMANDS = frozenset({
+    "playbook_state_get", "playbook_state_list", "playbook_state_set",
+    "playbook_state_delete", "playbook_state_inspect", "playbook_state_reset",
+})
+AUDITED_READS |= {"playbook_state_get", "playbook_state_list", "playbook_state_inspect"}
+
+
 def resource_requirements(name: str) -> tuple[str, ...]:
+    if name in STATE_COMMANDS:
+        return ("invocation_namespace_or_operator",)
     if name in SESSION_COMMANDS:
         return ("live_session",)
     if name in HELD_COMMANDS:
@@ -226,6 +235,10 @@ async def authorize_resources(
 
         if command in CONTRACTS.typed_contracts():
             return None
+    if command in STATE_COMMANDS:
+        # This handler derives namespace membership from a pinned invocation;
+        # no injected project argument or recursive interpretation of private values.
+        return None
     project = principal.project_id
     if project is not None and args.get("project_id") not in (None, project):
         return deny()

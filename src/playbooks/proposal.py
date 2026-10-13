@@ -389,6 +389,17 @@ def propose(
         diagnostics.append(Diagnostic("error", "ambiguous_prose", str(exc)))
         digest = source_digest(source.raw)
         return CompileProposal(None, diagnostics, [], digest, None, COMPILER_BUILD, None, None)
+    metadata = artifact.trusted_execution
+    old_metadata = baseline.trusted_execution if baseline is not None else None
+    if metadata is not None and metadata.state_schema_version is not None:
+        old_version = old_metadata.state_schema_version if old_metadata is not None else 1
+        if metadata.state_schema_version != old_version:
+            diagnostics.append(Diagnostic(
+                "warning", "state_namespace_migration",
+                "Changing state_schema_version selects a new namespace and resets suppression. "
+                "An operator must review the migration and explicitly provision that namespace; "
+                "activation never deletes or migrates the previous namespace.",
+            ))
     artifact = _snapshots(artifact, contracts, profiles)
     diagnostics.extend(
         validate_definition(

@@ -128,3 +128,49 @@ async def test_observation_snapshots_upgrade_prior_and_current_metadata():
             await conn.run_sync(verify)
     finally:
         await db.close()
+
+
+async def test_playbook_state_upgrade_prior_and_current_preserves_journals():
+    from sqlalchemy import insert, select
+    from src.database import tables as t
+
+    revision = importlib.import_module("migrations.versions.a00000000098_playbook_state")
+    db = Database(lease_dsn("playbook_state_migration"))
+    await db.initialize()
+    try:
+        async with db.immediate() as conn:
+            names = {"playbook_state_namespaces", "playbook_state_entries", "playbook_state_operations"}
+            for name in ("playbook_state_operations", "playbook_state_entries",
+                         "playbook_state_namespaces"):
+                await conn.exec_driver_sql(f"DROP TABLE {name}")
+
+            def verify(bind):
+                context = MigrationContext.configure(bind, opts={
+                    "include_object": lambda obj, name, kind, reflected, compare_to: (
+                        name in names if kind == "table" else True),
+                })
+                with Operations.context(context):
+                    revision.upgrade()
+                    revision.upgrade()
+                    assert not compare_metadata(context, metadata)
+                    for name in names:
+                        assert all(c["name"] for c in inspect(bind).get_check_constraints(name))
+                        for fk in inspect(bind).get_foreign_keys(name):
+                            assert fk["options"].get("ondelete") != "CASCADE"
+
+            await conn.run_sync(verify)
+            await conn.execute(insert(t.playbook_state_namespaces).values(
+                namespace_id="namespace", scope_kind="system", scope_owner="system",
+                playbook_id="deleted-playbook", state_schema_version=1, created_at=1, updated_at=1))
+            await conn.execute(insert(t.playbook_state_operations).values(
+                namespace_id="namespace", operation_key="retained", request_digest="digest",
+                result_reference={"__private_value__": "retained"}, byte_count=1,
+                revision=1, committed_at=1))
+
+            def rollback_code_only(bind):
+                with Operations.context(MigrationContext.configure(bind)):
+                    revision.downgrade()
+            await conn.run_sync(rollback_code_only)
+            assert await conn.scalar(select(t.playbook_state_operations.c.operation_key)) == "retained"
+    finally:
+        await db.close()

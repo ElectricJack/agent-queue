@@ -193,10 +193,13 @@ def test_state_metadata_is_source_derived_and_requires_future_executor(tmp_path)
     assert result.artifact.required_features == ("state_v1",)
     assert not result.activatable
     assert any(d.code == "unsupported_feature" for d in result.diagnostics)
+    warning = next(d for d in result.diagnostics if d.code == "state_namespace_migration")
+    assert "resets suppression" in warning.message
     raw = twin()
     raw["steps"]["act"]["command"] = "playbook_state_get"
     result = proposal(tmp_path, body={"rules": raw["rules"], "steps": raw["steps"]})
     assert result.artifact.trusted_execution.state_schema_version == 1
+    assert not any(d.code == "state_namespace_migration" for d in result.diagnostics)
 
 
 @pytest.mark.parametrize("value", ["true", "0", "-1", '"2"', "1.5", "null"])

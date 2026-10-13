@@ -251,6 +251,11 @@ class PrivateValueService:
             raise PrivateValueError("private_value_unauthorized")
         if owner.kind == "run" and invocation is not None and invocation.run_id == owner.identifier:
             return
+        if owner.kind == "namespace":
+            from src.playbooks.state import authorized_private_namespace
+
+            if authorized_private_namespace(owner, principal, invocation):
+                return
         if owner.kind == "namespace" and self._namespace_authorizer is not None:
             if await self._namespace_authorizer(owner, principal, invocation):
                 return
