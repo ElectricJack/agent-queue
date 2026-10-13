@@ -200,13 +200,22 @@ async def _sealed_events(db, prefix: str):
     return [row for row in rows if row["id"].startswith(prefix)]
 
 
-def test_reviewed_root_train_still_ends_moved_construction_failed():
-    """The graph gives these outcomes no continuation; the durable state must."""
-    for playbook in ("root-train", "agent-queue-root-train"):
-        artifact = json.loads((REVIEWED_ARTIFACTS / playbook / "artifact.json").read_text())
-        transitions = artifact["steps"]["construct-and-test--build"]["transitions"]
-        assert transitions["source_moved"] == "construct-and-test--failed"
-        assert transitions["base_moved"] == "construct-and-test--failed"
+@pytest.mark.parametrize("playbook", ("root-train", "agent-queue-root-train"))
+def test_reviewed_root_train_preserves_moved_construction_policy(playbook):
+    """Retired event construction leaves bounded retries in the authored table."""
+    artifact = json.loads((REVIEWED_ARTIFACTS / playbook / "artifact.json").read_text())
+    assert "construct-and-test--build" not in artifact["steps"]
+    assert "integration.sealed" not in {rule["trigger"]["event_type"] for rule in artifact["rules"]}
+
+    build = artifact["integration_policy"]["tables"]["root_batch"]["actions"]["build"]
+    assert build["primitive"] == "git_merge_members"
+    for outcome in ("source_moved", "base_moved"):
+        assert build["outcomes"][outcome] == {
+            "kind": "wait",
+            "phase": "building",
+            "reason": outcome.replace("_", "-"),
+            "seconds": 60,
+        }
 
 
 

@@ -8927,7 +8927,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:b52c30805f0d1872e3548c9fca32e5baf48d48a2f69dc555cf844e7f166fdaf2",
+      "digest": "sha256:09c1b88a6640e1ce1d5f16cf555eb1c6036f385b6427e7ffd82428b0df66ad36",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -8940,7 +8940,9 @@
         "src.orchestrator",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "A train source whose recorded base is not its ancestor never strands a batch."
     },
     "tests/test_integration_stacked_branches.py": {
