@@ -176,6 +176,60 @@ One consequence is deliberate: because a failed attempt is now published, `_retr
 
 **Slot affinity is the price of the forensic exception.** A slot left on an unpushed `aq/<task_id>` branch means the *next push dispatch* of that same task must land on that slot or it cannot check the branch out at all. Pool sessions acquire slots before they know the task, so preparation detects an idle unclaimed holder and detaches it; a live holder is never disturbed. Clean pushed branches are normally detached at release, avoiding the collision altogether. Push acquisition still **prefers the slot that already holds the task's branch** (`WorkspaceMixin._slot_branch_affinity` → `acquire_for_task(preferred_workspaces=...)` → the existing `prefer_workspace_id` seam).
 
+**Preparation identity and reconciliation.** Preparation requires an enabled
+registered row with the exact project, session `work_dir`, agent and task lock.
+A failed holder UPDATE never authorizes an agent-only fallback. Session instance,
+claim epoch and workspace acquisition generation are captured transactionally
+in `claim_workspace` metadata and checked before reset and activation, including
+a resumed preparation whose original in-memory workspace row is gone; the registered workspace is locked through reset, claim-file writing
+and activation. A changed binding cannot publish a branch or active claim.
+The task key remains protected during reset, while dependency/gate status
+updates can invalidate admission; activation rechecks under a task status lock.
+Missing directories, foreign claims and mismatched sentinel/repository identity
+are preserved for investigation. Preparation does not transfer misplaced locks,
+unlock Git registrations or recreate a missing source. Valid idle predecessor
+branches remain reusable after existing salvage/checkpoint ownership checks.
+Managed slots detached by normal release may retain the predecessor sentinel
+while HEAD equals the cached default tip; an explicit operator handoff may use
+its proved commit instead. Attached branch disagreement still refuses reset.
+Legacy clones retain their existing branch-cleanup behavior.
+
+Retirement re-reads and locks the registered workspace instead of trusting the
+cycle's snapshot. Live session, claim, owner, job pin, changed generation,
+unproved repository identity or dirty checkout refuses deletion. Unknown process
+inventory also refuses retirement, including hosts without readable `/proc`.
+The DB DELETE is attempted before disk removal within that transaction; a failed
+DELETE leaves disk intact, and a Git refusal rolls the DELETE back. Removal uses
+Git's non-forcing primitive. Only successful commit emits `worktree.reaped`.
+Filesystem removal and PostgreSQL commit cannot be one atomic operation: a commit
+failure after Git succeeds must be reported as incomplete, never as a completed
+reap. Missing registered paths retain that evidence for supervisor reconciliation.
+Shared workspace faults are infrastructure incidents for supervisor escalation,
+not grounds for mass-pausing otherwise ready tasks. Bounded retries still apply.
+
+**Cause-first evidence (2026-10-13).** The pre-fix sequence `record_holder`
+(exact-path/enabled UPDATE returning no row) → agent-only workspace fallback →
+slot reset → claim-file write at the session path → session/task-only activation
+could make DB task locks, physical branch and claim path disagree. Trailing-slash,
+disabled, foreign and reassigned rows are disposable regressions for this mechanism.
+The workspace-edit command also checked an unlocked snapshot before an
+unconditional path update; a concurrent acquisition could make that check stale.
+Relocation now compares the acquisition generation and unlocked state in its
+UPDATE. Mutex keys use physical path aliases only for serialization; registered
+ownership remains byte-exact. The startup slot/base lock map already rebuilds
+from registered rows, and preparation verifies their actual Git common repository.
+The retired-slot sweep selected earlier unlocked rows, while `reap_slot` previously
+removed the directory before a separately committed DB deletion and swallowed
+its failure. That ordering could leave a registered missing directory and a false
+success event. Its process scanner returned an empty inventory on enumeration
+failure; empty inventory did not establish quiescence. Legacy cleanup already
+short-circuits correctly classified slot rows, so restart cleanup alone does not
+prove a deletion cause. The actual Matter incident's deletion event and first
+`jobs.cwd_invalid` clause remain unknown; the reported absolute external test
+argument independently violates managed-job path policy. Fixture mechanisms are
+not host incident attribution. Checkpoint capture/restore provenance is a separate
+coordinated correction; reconciliation must preserve evidence for it.
+
 Three decisions make that a hint rather than a new piece of state:
 
 - **Derived, never recorded.** The holder is read per acquisition from `git worktree list --porcelain` in the base — the same state git consults when it refuses the checkout, so the hint cannot disagree with the refusal it exists to avoid. No column, no field on the task, nothing to migrate, nothing to go stale: a manual `git switch` in a slot, a restarted daemon or a reaped slot all resolve correctly on the next look.

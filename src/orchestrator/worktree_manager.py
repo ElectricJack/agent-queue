@@ -580,6 +580,90 @@ class WorktreeSlotManager:
 
     @guard_workspace("slot_ws")
     @_slot_reset_timeout
+    async def ensure_slot_checkout(
+        self, slot_ws: Workspace, task, *, kind=None, handoff_sha: str | None = None,
+    ) -> None:
+        """Validate an acquired slot before checkpoint or origin Git reads.
+
+        Missing directories and foreign identity require investigation; this
+        preflight never recreates or removes a registered source.
+        """
+        from src.claim_file import read_claim_file
+
+        if slot_ws.locked_by_task_id not in (None, task.id):
+            raise GitError(f"slot {slot_ws.id} is locked by task {slot_ws.locked_by_task_id}")
+        slot_dir = Path(slot_ws.workspace_path)
+        claim = read_claim_file(slot_dir)
+        if claim is None and Path(slot_dir, ".aq", "claim.json").exists():
+            raise GitError(f"slot {slot_ws.id} retains an unreadable claim")
+        if claim is not None and (
+            claim.get("task_id") != task.id
+            or ("claim_epoch" in claim
+                and claim["claim_epoch"] != getattr(task, "claim_epoch", None))
+        ):
+            raise GitError(f"slot {slot_ws.id} at {slot_dir} retains a foreign claim")
+        if slot_dir.exists() and any(slot_dir.iterdir()):
+            sentinel = self.read_sentinel(slot_dir)
+            if slot_ws.is_slot:
+                base_ws = await self._base_of(slot_ws)
+                if (sentinel is None or base_ws is None
+                        or base_ws.project_id != slot_ws.project_id
+                        or await self.git.aworktree_base_path(str(slot_dir))
+                        != await self.git.aworktree_base_path(base_ws.workspace_path)):
+                    raise GitError(f"slot {slot_ws.id} at {slot_dir} has unproved repository identity")
+            if sentinel is not None and (
+                sentinel.workspace_id not in ("", slot_ws.id)
+                or sentinel.base_workspace_id != (slot_ws.base_workspace_id or "")
+                or sentinel.project_id != slot_ws.project_id
+            ):
+                raise GitError(f"slot {slot_ws.id} at {slot_dir} has a mismatched sentinel")
+            if slot_ws.is_slot and sentinel is not None and sentinel.branch:
+                actual = await self.git.aget_current_branch(str(slot_dir))
+                detached_predecessor = False
+                if actual == "HEAD":
+                    head = await self.git.arev_parse(str(slot_dir), "HEAD")
+                    detached_predecessor = (
+                        (handoff_sha is not None and head == handoff_sha)
+                        or (await self._ref_exists(str(slot_dir), sentinel.branch)
+                            and head == await self.git.arev_parse(str(slot_dir), sentinel.branch))
+                    )
+                if actual == "HEAD" and not detached_predecessor:
+                    # Normal release detaches a published slot onto the
+                    # cached default tip while retaining its task sentinel.
+                    default = await self._default_branch(
+                        str(slot_dir), project_id=slot_ws.project_id,
+                    )
+                    default_ref = f"origin/{default}"
+                    detached_predecessor = (
+                        await self._ref_exists(str(slot_dir), default_ref)
+                        and head == await self.git.arev_parse(str(slot_dir), default_ref)
+                    )
+                if actual != sentinel.branch and not detached_predecessor:
+                    raise GitError(f"slot {slot_ws.id} branch disagrees with its source sentinel; "
+                                   "checkout left unchanged")
+            return
+        raise GitError(
+            f"managed slot {slot_ws.id} at {slot_dir} is missing; "
+            "registered source retained for supervisor investigation"
+        )
+
+    async def _slot_has_retained_binding(self, workspace_id: str) -> bool:
+        if not hasattr(self.db, "_engine"):
+            return False
+        from sqlalchemy import exists, or_, select
+        from src.database.tables import integration_branch_owners, job_workspace_pins
+
+        async with self.db._engine.connect() as conn:
+            return bool(await conn.scalar(select(or_(
+                exists().where(
+                    integration_branch_owners.c.workspace_id == workspace_id,
+                    integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+                ),
+                exists().where(job_workspace_pins.c.workspace_id == workspace_id),
+            ))))
+
+    @guard_workspace("slot_ws")
+    @_slot_reset_timeout
     async def reset_slot_for_task(
         self,
         slot_ws: Workspace,
@@ -620,6 +704,9 @@ class WorktreeSlotManager:
         if preserve_branch and (target_branch is None or not is_valid_git_oid(base_branch)):
             raise GitError("child preparation requires an exact branch and proved parent commit")
         slot_dir = Path(slot_ws.workspace_path)
+        await self.ensure_slot_checkout(
+            slot_ws, task, kind=kind, handoff_sha=base_branch if operator_handoff else None,
+        )
         await self.ensure_git_exclude(slot_dir)
         await self.git.aclear_stale_locks(str(slot_dir))
         if operator_handoff:
@@ -1201,6 +1288,11 @@ class WorktreeSlotManager:
         if base_ws is None:
             return
         entries = await self.git.aworktree_list(base_ws.workspace_path)
+        managed = {
+            _norm_path(ws.workspace_path): ws
+            for ws in await self.db.list_workspaces(project_id=base_ws.project_id)
+            if ws.is_slot and ws.base_workspace_id == base_ws.id
+        }
         live_work_dirs = {
             _norm_path(session.work_dir)
             for session in await self.db.list_sessions(live_only=True)
@@ -1211,12 +1303,56 @@ class WorktreeSlotManager:
             path = entry.get("path")
             if not path or entry.get("branch") != branch or _norm_path(path) == mine:
                 continue
+            holder = managed.get(_norm_path(path))
+            if (holder is None or holder.locked_by_agent_id or holder.locked_by_task_id):
+                raise GitError(f"branch {branch} is already used by worktree at {path}; "
+                               "holder is unmanaged or locked")
+            if await self._slot_has_retained_binding(holder.id):
+                raise GitError(f"branch {branch} is already used by worktree at {path}; "
+                               "holder retains an owner or job pin")
             if _norm_path(path) in live_work_dirs:
                 raise GitError(f"branch {branch} is already used by worktree at {path}")
-            if read_claim_file(path) is not None and not await retire_stopped_slot_claim(self.db, path):
-                raise GitError(f"branch {branch} is already used by worktree at {path}")
-            logger.warning("Detaching stale worktree %s from %s before claim preparation", path, branch)
-            await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
+            if Path(path, ".aq", "claim.json").exists():
+                if (read_claim_file(path) is None or await self._slot_is_live(holder)
+                        or not await retire_stopped_slot_claim(self.db, path)):
+                    raise GitError(f"branch {branch} is already used by worktree at {path}")
+            if not Path(path).exists():
+                raise GitError(f"branch {branch} retains a missing managed worktree at {path}")
+            async with self._idle_branch_holder(holder):
+                logger.warning("Detaching idle worktree %s from %s before preparation", path, branch)
+                await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
+
+    @contextlib.asynccontextmanager
+    async def _idle_branch_holder(self, holder):
+        """Fence branch detachment against concurrent registered acquisition."""
+        if not hasattr(self.db, "_engine"):
+            yield  # lightweight doubles have no concurrent row mutation
+            return
+        from sqlalchemy import select
+        from src.database.tables import sessions, workspaces
+
+        async with self.db._engine.begin() as conn:
+            # The caller holds the repository mutex. Never wait for a row
+            # held by preparation, which may itself be waiting for that mutex.
+            row = (await conn.execute(select(workspaces).where(
+                workspaces.c.id == holder.id,
+            ).with_for_update(nowait=True))).mappings().one_or_none()
+            if (row is None or not row["enabled"]
+                    or row["locked_by_agent_id"] or row["locked_by_task_id"]
+                    or row["generation"] != holder.generation
+                    or row["workspace_path"] != holder.workspace_path
+                    or row["project_id"] != holder.project_id
+                    or row["base_workspace_id"] != holder.base_workspace_id):
+                raise GitError("branch holder changed; checkout left unchanged")
+            if await conn.scalar(select(sessions.c.id).where(
+                sessions.c.work_dir == holder.workspace_path,
+                sessions.c.state.in_(("starting", "running", "draining")),
+            ).limit(1)) or await self._slot_has_retained_binding(holder.id):
+                raise GitError("branch holder retains a session, owner or job pin")
+            if (Path(holder.workspace_path, ".aq", "claim.json").exists()
+                    or await self._slot_is_live(holder)):
+                raise GitError("branch holder liveness is not quiescent")
+            yield
 
     async def _base_of_slot_dir(self, slot_dir: Path) -> Workspace | None:
         """Find the base row for a slot path without trusting its sentinel."""
@@ -1308,62 +1444,62 @@ class WorktreeSlotManager:
         Returns True when the slot was removed, False otherwise (live,
         unknowable liveness, or removal failure).
         """
+        from sqlalchemy import select
+        from src.database.tables import integration_branch_owners, projects, sessions, workspaces
+
+        if not hasattr(self.db, "_engine"):
+            return False  # retirement needs transactional registered ownership proof
         slot_dir = Path(slot_ws.workspace_path)
-
-        # ── Liveness check ────────────────────────────────────────────
         try:
-            live = await self._slot_is_live(slot_ws)
-        except Exception as e:
-            logger.warning(
-                "Slot %s reap skipped: liveness scan failed: %s", slot_ws.id, e
-            )
+            async with self.db._engine.begin() as conn:
+                cap = await conn.scalar(select(projects.c.max_concurrent_agents).where(
+                    projects.c.id == slot_ws.project_id,
+                ).with_for_update(read=True))
+                if cap is None or slot_ws.slot_index is None or slot_ws.slot_index < cap:
+                    return False
+                row = (await conn.execute(select(workspaces).where(
+                    workspaces.c.id == slot_ws.id,
+                ).with_for_update())).mappings().one_or_none()
+                if (row is None or row["locked_by_agent_id"] or row["locked_by_task_id"]
+                        or row["generation"] != slot_ws.generation
+                        or row["project_id"] != slot_ws.project_id
+                        or row["workspace_path"] != slot_ws.workspace_path
+                        or row["base_workspace_id"] != slot_ws.base_workspace_id
+                        or row["slot_index"] != slot_ws.slot_index):
+                    return False
+                if await conn.scalar(select(sessions.c.id).where(
+                    sessions.c.work_dir == slot_ws.workspace_path,
+                    sessions.c.state.in_(("starting", "running", "draining")),
+                ).limit(1)):
+                    return False
+                if await conn.scalar(select(integration_branch_owners.c.owner_id).where(
+                    integration_branch_owners.c.workspace_id == slot_ws.id,
+                    integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+                ).limit(1)):
+                    return False
+                if Path(slot_dir, ".aq", "claim.json").exists() or await self._slot_is_live(slot_ws):
+                    return False
+                base_ws = await self._base_of(slot_ws)
+                sentinel = self.read_sentinel(slot_dir)
+                if (base_ws is None or base_ws.project_id != slot_ws.project_id
+                        or sentinel is None or sentinel.workspace_id != slot_ws.id
+                        or sentinel.base_workspace_id != base_ws.id
+                        or sentinel.project_id != slot_ws.project_id
+                        or await self.git.aworktree_base_path(str(slot_dir))
+                        != await self.git.aworktree_base_path(base_ws.workspace_path)):
+                    return False
+                if await self.git.aget_dirty_paths(str(slot_dir)) != []:
+                    return False
+                # Reject DB deletion before touching disk; the row lock prevents
+                # acquisition until commit. Git refusal rolls the DELETE back.
+                # The job mutation guard prevents pins during the whole operation.
+                if not await self.db.delete_workspace(slot_ws.id, conn=conn):
+                    return False
+                async with self._git_mutex(base_ws.workspace_path):
+                    await self.git.aremove_worktree_exact(base_ws.workspace_path, str(slot_dir))
+        except Exception as exc:
+            logger.warning("Slot %s reap refused; retirement not completed: %s", slot_ws.id, exc)
             return False
-        if live:
-            logger.info(
-                "Slot %s reap skipped: a live process is still using it", slot_ws.id
-            )
-            return False
-
-        # ── Removal ───────────────────────────────────────────────────
-        base_ws = await self._base_of(slot_ws)
-        base_path = base_ws.workspace_path if base_ws else str(slot_dir.parent)
-
-        async with self._git_mutex(base_path):
-            try:
-                await self.git.aremove_worktree(base_path, str(slot_dir))
-            except Exception as e:
-                logger.warning(
-                    "git worktree remove %s failed (trying force): %s", slot_dir, e
-                )
-                try:
-                    # Force removal — the slot is retired; we own the dir.
-                    await self.git._arun(
-                        ["worktree", "remove", "--force", str(slot_dir)],
-                        cwd=base_path,
-                    )
-                except Exception as e2:
-                    logger.warning(
-                        "git worktree remove --force %s also failed: %s", slot_dir, e2
-                    )
-                    # Fall through to prune + row delete anyway.
-            try:
-                await self.git.aworktree_prune(base_path)
-            except GitError as e:
-                logger.debug("worktree prune failed: %s", e)
-
-        # Best-effort dir removal if git didn't take it.
-        if slot_dir.exists():
-            import shutil
-
-            try:
-                shutil.rmtree(slot_dir)
-            except OSError as e:
-                logger.warning("rmtree %s failed: %s", slot_dir, e)
-
-        try:
-            await self.db.delete_workspace(slot_ws.id)
-        except Exception as e:
-            logger.warning("delete_workspace(%s) failed: %s", slot_ws.id, e)
 
         await self._emit(
             "worktree.reaped",
@@ -1385,6 +1521,10 @@ class WorktreeSlotManager:
         turns into "skip".  A clean empty list is not the same thing.
         """
         from src.sessions.proctable import scan_by_env_marker
+
+        # The generic scanner returns [] on enumeration failure. Require a
+        # readable POSIX inventory here; absence on another host is unknown.
+        await asyncio.to_thread(lambda: list(Path("/proc").iterdir()))
 
         # Ids to treat as this slot's live task: the DB lock's current
         # holder, and (as a belt) the sentinel's last-assigned task id.
@@ -1411,7 +1551,7 @@ class WorktreeSlotManager:
                 cwd = Path(f"/proc/{e.pid}/cwd").resolve()
             except (OSError, RuntimeError):
                 continue
-            if str(cwd).startswith(slot_dir_resolved):
+            if cwd.is_relative_to(Path(slot_dir_resolved)):
                 return True
         return False
 

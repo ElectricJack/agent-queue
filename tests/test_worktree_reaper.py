@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from unittest.mock import AsyncMock
+
+from sqlalchemy import update
 
 import pytest
 
@@ -129,6 +132,7 @@ class TestReapSlot:
 
             # No task holding the slot — release it and mark it retired.
             await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
 
             # No live processes.
             async def fake_scan(marker_key):
@@ -167,6 +171,7 @@ class TestReapSlot:
             await _seed(o, base_repo)
             slot_ws, slot_dir = await _make_slot(o, base_repo)
             await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
 
             # Simulate a live process carrying the task's AQ_TASK_ID.
             from src.sessions.proctable import ProcEntry
@@ -195,6 +200,7 @@ class TestReapSlot:
             await _seed(o, base_repo)
             slot_ws, slot_dir = await _make_slot(o, base_repo)
             await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
 
             async def broken_scan(marker_key):
                 raise OSError("/proc unavailable")
@@ -207,6 +213,102 @@ class TestReapSlot:
             ok = await mgr.reap_slot(slot_ws, reason="retired-test")
             assert ok is False, "unknown liveness → never reap"
             assert slot_dir.is_dir()
+        finally:
+            await o.shutdown()
+
+    async def test_unreadable_process_inventory_is_not_an_empty_live_set(
+        self, tmp_path, base_repo, monkeypatch,
+    ):
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, slot_dir = await _make_slot(o, base_repo)
+            await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
+            slot_ws = await o.db.get_workspace(slot_ws.id)
+            iterdir = Path.iterdir
+
+            def unreadable(path):
+                if str(path) == "/proc":
+                    raise PermissionError("inventory is unknown")
+                return iterdir(path)
+
+            monkeypatch.setattr(Path, "iterdir", unreadable)
+            scanner = AsyncMock(return_value=[])
+            monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", scanner)
+            assert not await o._worktree_slots().reap_slot(slot_ws, reason="retired-test")
+            scanner.assert_not_awaited()
+            assert slot_dir.is_dir()
+            assert await o.db.get_workspace(slot_ws.id) is not None
+        finally:
+            await o.shutdown()
+
+    @pytest.mark.parametrize("protection", ["agent", "generation", "session", "claim", "dirty", "delete_refused", "db_delete", "git_remove", "proc_unknown"])
+    async def test_retirement_preserves_source_on_changed_or_unproved_identity(
+        self, tmp_path, base_repo, monkeypatch, protection,
+    ):
+        from src.claim_file import write_claim_file
+        from src.database.tables import workspaces
+        from src.models import SessionRecord
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, slot_dir = await _make_slot(o, base_repo)
+            await o.db.release_workspace(slot_ws.id)
+            await o.db.update_project("p1", max_concurrent_agents=0)
+            slot_ws = await o.db.get_workspace(slot_ws.id)
+            mgr = o._worktree_slots()
+            monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(return_value=False))
+            if protection == "agent":
+                await o.db.update_workspace(slot_ws.id, locked_by_agent_id="tsk-1-a")
+            elif protection == "generation":
+                async with o.db.immediate() as conn:
+                    await conn.execute(update(workspaces).where(workspaces.c.id == slot_ws.id).values(
+                        generation=workspaces.c.generation + 1,
+                    ))
+            elif protection == "session":
+                await o.db.create_session(SessionRecord(
+                    id="live", project_id="p1", profile_id="p", harness="codex", provider="fake",
+                    name="live", lifecycle="pool", work_dir=str(slot_dir), epoch="e",
+                    instance_token="token", state="running", started_at=1,
+                ))
+            elif protection == "claim":
+                write_claim_file(str(slot_dir), {"task_id": "tsk-1", "claim_epoch": 9})
+            elif protection == "dirty":
+                (slot_dir / "README.md").write_text("staged progress")
+                _git(["add", "README.md"], slot_dir)
+                (slot_dir / "untracked").write_bytes(b"untracked progress")
+            elif protection == "delete_refused":
+                monkeypatch.setattr(o.db, "delete_workspace", AsyncMock(return_value=False))
+            elif protection == "db_delete":
+                monkeypatch.setattr(o.db, "delete_workspace", AsyncMock(side_effect=RuntimeError("DB rejected deletion")))
+            elif protection == "git_remove":
+                monkeypatch.setattr(mgr.git, "aremove_worktree_exact", AsyncMock(side_effect=RuntimeError("registration locked")))
+            else:
+                monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(side_effect=OSError("process ownership unknown")))
+            head = _git(["rev-parse", "HEAD"], slot_dir)
+            index = _git(["write-tree"], slot_dir)
+            status = _git(["status", "--porcelain"], slot_dir)
+            registration = _git(["worktree", "list", "--porcelain"], base_repo)
+            events = []
+            emit = o.bus.emit
+
+            async def record(event, payload):
+                events.append(event)
+                return await emit(event, payload)
+
+            monkeypatch.setattr(o.bus, "emit", record)
+            assert not await mgr.reap_slot(slot_ws, reason="retired-test")
+            assert slot_dir.is_dir()
+            assert await o.db.get_workspace(slot_ws.id) is not None
+            assert _git(["rev-parse", "HEAD"], slot_dir) == head
+            assert _git(["write-tree"], slot_dir) == index
+            assert _git(["status", "--porcelain"], slot_dir) == status
+            assert _git(["worktree", "list", "--porcelain"], base_repo) == registration
+            assert "worktree.reaped" not in events
+            if protection == "dirty":
+                assert (slot_dir / "untracked").read_bytes() == b"untracked progress"
         finally:
             await o.shutdown()
 

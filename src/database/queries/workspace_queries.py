@@ -68,7 +68,10 @@ class WorkspaceQueryMixin:
                 )
             )
 
-    async def update_workspace(self, workspace_id: str, **fields) -> int:
+    async def update_workspace(
+        self, workspace_id: str, *, expected_generation: int | None = None,
+        require_unlocked: bool = False, **fields,
+    ) -> int:
         """Update arbitrary columns on a workspace. Returns rows affected.
 
         Used by ``_cmd_edit_workspace`` to atomically change path, source_type,
@@ -77,10 +80,14 @@ class WorkspaceQueryMixin:
         """
         if not fields:
             return 0
+        stmt = update(workspaces).where(workspaces.c.id == workspace_id)
+        if expected_generation is not None:
+            stmt = stmt.where(workspaces.c.generation == expected_generation)
+        if require_unlocked:
+            stmt = stmt.where(workspaces.c.locked_by_agent_id.is_(None),
+                              workspaces.c.locked_by_task_id.is_(None), unpinned_workspace())
         async with self._engine.begin() as conn:
-            result = await conn.execute(
-                update(workspaces).where(workspaces.c.id == workspace_id).values(**fields)
-            )
+            result = await conn.execute(stmt.values(**fields))
             return result.rowcount
 
     async def get_workspace(self, workspace_id: str) -> Workspace | None:
@@ -122,12 +129,13 @@ class WorkspaceQueryMixin:
             result = await conn.execute(stmt)
             return [self._row_to_workspace(r) for r in result.mappings().fetchall()]
 
-    async def delete_workspace(self, workspace_id: str) -> None:
-        """Delete a workspace record."""
-        async with self._engine.begin() as conn:
-            await conn.execute(
-                delete(workspaces).where(workspaces.c.id == workspace_id, unpinned_workspace())
-            )
+    async def delete_workspace(self, workspace_id: str, *, conn=None) -> bool:
+        """Delete an unpinned record, optionally inside a retirement transaction."""
+        stmt = delete(workspaces).where(workspaces.c.id == workspace_id, unpinned_workspace())
+        if conn is not None:
+            return (await conn.execute(stmt)).rowcount == 1
+        async with self._engine.begin() as connection:
+            return (await connection.execute(stmt)).rowcount == 1
 
     async def acquire_workspace(
         self,
@@ -735,6 +743,7 @@ class WorkspaceQueryMixin:
             locked_at=row["locked_at"],
             lock_mode=WorkspaceMode(raw_mode) if raw_mode else None,
             enabled=bool(row["enabled"]),
+            generation=row["generation"],
             disabled_reason=row.get("disabled_reason"),
             disabled_at=row.get("disabled_at"),
             slot_index=row["slot_index"],

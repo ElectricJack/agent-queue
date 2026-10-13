@@ -41,6 +41,7 @@ from src.models import (
     Task,
     TaskStatus,
     Workspace,
+    WorkspaceMode,
 )
 from src.orchestrator import Orchestrator
 from src.sessions import SessionProviderRegistry
@@ -663,6 +664,203 @@ def emitted(handler):
 
 
 class TestClaim:
+    @pytest.mark.parametrize("foreign_task", ["foreign", "t1"])
+    async def test_foreign_claim_in_the_session_path_survives_preparation_refusal(
+        self, handler, db, tmp_path, foreign_task,
+    ):
+        from src.claim_file import read_claim_file, write_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        foreign = {"task_id": foreign_task, "claim_epoch": 1, "session_id": "foreign-session"}
+        write_claim_file(wd, foreign)
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "prepare_failed"
+        assert "retains a foreign claim" in result["reason"]
+        assert read_claim_file(wd) == foreign
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
+    @pytest.mark.parametrize("protection", [None, "task", "session", "claim", "other_project"])
+    async def test_claim_preserves_misplaced_workspace_locks(
+        self, handler, db, tmp_path, protection,
+    ):
+        from src.claim_file import read_claim_file, write_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        old_path = tmp_path / "wrong-slot"
+        old_path.mkdir()
+        if protection == "task":
+            await mktask(db, "foreign", status=TaskStatus.IN_PROGRESS)
+        await db.update_workspace("ws-agent-1", locked_by_agent_id=None)
+        await db.create_workspace(Workspace(
+            id="wrong-slot", project_id=PROJECT_ID, workspace_path=str(old_path),
+            kind_id="project-repo", source_type=RepoSourceType.LINK,
+            locked_by_agent_id="agent-1",
+            locked_by_task_id="foreign" if protection == "task" else None,
+            lock_mode=WorkspaceMode.EXCLUSIVE,
+        ))
+        await db.update_workspace("wrong-slot", lock_mode=WorkspaceMode.EXCLUSIVE.value)
+        if protection == "session":
+            await db.create_session(SessionRecord(
+                id="foreign-session", project_id=PROJECT_ID, profile_id="worker",
+                harness="codex", provider="fake", name="foreign", lifecycle="pool",
+                work_dir=str(old_path), epoch="e", instance_token="foreign", state="running",
+                started_at=NOW,
+            ))
+        if protection == "claim":
+            write_claim_file(old_path, {"task_id": "foreign", "claim_epoch": 1})
+        if protection == "other_project":
+            await db.create_project(Project(id="other", name="Other project"))
+            await db.create_agent(Agent(id="foreign-agent", name="Foreign", profile_id="worker"))
+            await db.create_workspace(Workspace(
+                id="foreign-workspace", project_id="other", workspace_path=str(wd),
+                source_type=RepoSourceType.LINK, locked_by_agent_id="foreign-agent",
+            ))
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        old = await db.get_workspace("wrong-slot")
+        assert result["result"] == "prepare_failed"
+        assert "workspace binding mismatch" in result["reason"]
+        reset.assert_not_awaited()
+        assert old.locked_by_agent_id == "agent-1"
+        assert old.lock_mode is WorkspaceMode.EXCLUSIVE
+        assert read_claim_file(wd) is None
+        if protection == "task":
+            assert old.locked_by_task_id == "foreign"
+        if protection == "claim":
+            assert read_claim_file(old_path)["task_id"] == "foreign"
+        if protection == "other_project":
+            assert (await db.get_workspace("foreign-workspace")).locked_by_agent_id == "foreign-agent"
+
+    @pytest.mark.parametrize("disagreement", ["slash", "disabled", "project", "agent", "task"])
+    async def test_registered_slot_mismatch_never_activates_or_resets(
+        self, handler, db, tmp_path, disagreement,
+    ):
+        from src.claim_file import read_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        import subprocess
+
+        def git(*args):
+            return subprocess.check_output(
+                ["git", "-c", "user.name=T", "-c", "user.email=t@t.com", *args],
+                cwd=wd, text=True, stderr=subprocess.PIPE,
+            ).strip()
+
+        git("init", "--initial-branch=aq/source")
+        (wd / "tracked").write_text("source commit")
+        git("add", "tracked")
+        git("commit", "-m", "source")
+        (wd / "tracked").write_text("staged source")
+        git("add", "tracked")
+        (wd / "untracked").write_bytes(b"untracked source")
+        head = git("rev-parse", "HEAD")
+        branch = git("branch", "--show-current")
+        index = git("write-tree")
+        updates = {}
+        if disagreement == "slash":
+            updates["workspace_path"] = str(wd) + "/"
+        elif disagreement == "disabled":
+            updates["enabled"] = False
+        elif disagreement == "project":
+            await db.create_project(Project(id="other", name="Other"))
+            updates["project_id"] = "other"
+        elif disagreement == "agent":
+            await db.create_agent(Agent(id="peer", name="peer", profile_id="worker"))
+            updates["locked_by_agent_id"] = "peer"
+        else:
+            await mktask(db, "foreign", status=TaskStatus.IN_PROGRESS)
+            updates["locked_by_task_id"] = "foreign"
+        await db.update_workspace("ws-agent-1", **updates)
+        before = await db.get_workspace("ws-agent-1")
+        (wd / "progress").write_bytes(b"keep exact bytes")
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "prepare_failed"
+        assert (await db.get_session(sid)).claim_phase != "active"
+        assert (await db.get_session(sid)).claims == 0
+        assert (await db.get_task("t1")).branch_name is None
+        assert read_claim_file(wd) is None
+        assert (wd / "progress").read_bytes() == b"keep exact bytes"
+        assert git("rev-parse", "HEAD") == head
+        assert git("branch", "--show-current") == branch
+        assert git("write-tree") == index
+        assert (wd / "tracked").read_text() == "staged source"
+        assert (wd / "untracked").read_bytes() == b"untracked source"
+        after = await db.get_workspace("ws-agent-1")
+        assert after.workspace_path == before.workspace_path
+        assert after.enabled == before.enabled
+        assert after.locked_by_task_id == before.locked_by_task_id
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
+    @pytest.mark.parametrize("disagreement", ["generation", "resume_generation", "instance", "disabled", "task"])
+    async def test_preparation_rechecks_identity_after_reservation(
+        self, handler, db, tmp_path, monkeypatch, disagreement,
+    ):
+        from src.claim_file import read_claim_file
+        from src.database.tables import workspaces
+
+        await mktask(db, "t1", profile_id="worker")
+        await mktask(db, "foreign", status=TaskStatus.IN_PROGRESS)
+        sid, wd = await pool_session(db, tmp_path)
+        prepare = handler._prepare_and_activate_locked
+
+        async def raced(*args, **kwargs):
+            if disagreement == "instance":
+                await db.update_session(sid, instance_token="successor")
+            else:
+                if disagreement == "resume_generation":
+                    kwargs["slot"] = None
+                values = {"generation": workspaces.c.generation + 1} if disagreement in {"generation", "resume_generation"} else (
+                    {"enabled": False} if disagreement == "disabled" else {"locked_by_task_id": "foreign"}
+                )
+                async with db.immediate() as conn:
+                    await conn.execute(update(workspaces).where(workspaces.c.id == "ws-agent-1").values(**values))
+            return await prepare(*args, **kwargs)
+
+        monkeypatch.setattr(handler, "_prepare_and_activate_locked", raced)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "prepare_failed"
+        assert (await db.get_session(sid)).claim_phase != "active"
+        assert (await db.get_task("t1")).branch_name is None
+        assert read_claim_file(wd) is None
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+        if disagreement == "task":
+            assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "foreign"
+        if disagreement == "instance":
+            assert (await db.get_session(sid)).task_id == "t1"
+            assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+    async def test_activation_rechecks_resumed_generation_before_publishing_branch(
+        self, handler, db, tmp_path,
+    ):
+        from src.database.tables import workspaces
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "claimed"
+        before = await db.get_task("t1")
+        await db.update_session(sid, claim_phase="preparing")
+        await db.set_task_meta("t1", "needs_attention", "preserve diagnosis")
+        async with db.immediate() as conn:
+            await conn.execute(update(workspaces).where(workspaces.c.id == "ws-agent-1").values(
+                generation=workspaces.c.generation + 1,
+            ))
+        assert await db.activate_claim(
+            sid, "t1", epoch=1, now=time.time(), branch_name="aq/foreign",
+            clear_preparation_metadata=True, instance_token="t",
+        ) is None
+        assert (await db.get_task("t1")).branch_name == before.branch_name
+        assert (await db.get_session(sid)).claim_phase == "preparing"
+        assert (await db.get_session(sid)).claims == 1
+        assert await db.get_task_meta("t1", "needs_attention") == "preserve diagnosis"
+
     async def test_reparent_cannot_turn_a_claimed_leaf_into_a_container(
         self, handler, db, tmp_path
     ):
@@ -3194,10 +3392,13 @@ async def test_prepare_timeout_waits_for_live_reset(handler, db, config, tmp_pat
         # same actual request, rather than inferring abandonment from age.
         from src.doctor.pool_checks import run_check
 
-        await db.update_session(sid, claim_phase_at=time.time() - 3 * config.swarm.prepare_timeout)
-        finding = await run_check(
-            db, "pools.preparing_stuck", config=config, handler=handler, repair=True
-        )
+        # Preparation now holds the session identity lock through reset.
+        # Age the request by its clock rather than blocking on that row lock.
+        with monkeypatch.context() as aged:
+            aged.setattr(time, "time", lambda: row.claim_phase_at + 3 * config.swarm.prepare_timeout)
+            finding = await run_check(
+                db, "pools.preparing_stuck", config=config, handler=handler, repair=True
+            )
         assert finding.data.get("count", 0) == 0
         expired = row.claim_phase_at + config.swarm.prepare_timeout + 1
         await reconciler._step_prepare_timeout([row], expired)

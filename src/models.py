@@ -686,6 +686,7 @@ class Workspace:
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
     enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
+    generation: int = 0  # incremented on acquisition; fences preparation against reassignment
     # ``"<code>: <detail>"`` and timestamp of the last disable (src/workspace_disable.py).
     disabled_reason: str | None = None
     disabled_at: float | None = None

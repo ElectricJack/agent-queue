@@ -18167,8 +18167,9 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:87f43fbc69ea4e0fd074b21dae6465c52bff02718048ea954573df6171c583aa",
+      "digest": "sha256:a6195d1233a04b517b72db08619cc0d8f34ad222ff4f75b5bce9ff6a0def2ddd",
       "imports": [
+        "src.claim_file",
         "src.config",
         "src.event_schemas",
         "src.git.manager",
@@ -18223,9 +18224,11 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:9a4cfa9c523c923fc9f94cf8de210b2f6b84c6b3283bfa054ee1599a2c38a4e0",
+      "digest": "sha256:f7d44b1bbcf168ee5de641035c398e351ba7a36b292a89493de0a83398733c21",
       "imports": [
+        "src.claim_file",
         "src.config",
+        "src.database.tables",
         "src.git.manager",
         "src.models",
         "src.orchestrator",
@@ -18235,7 +18238,9 @@
         "src.sessions.proctable",
         "src.workspace_disable"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Worktree slot reaper + boot adoption + branch pruning (P4)."
     },
     "tests/test_worktree_slot_starvation.py": {

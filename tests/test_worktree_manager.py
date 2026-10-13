@@ -764,6 +764,123 @@ class TestOperatorHandoffCheckpoint:
 
 
 class TestResetSlot:
+    @pytest.mark.parametrize("delete_predecessor_branch", [False, True])
+    async def test_reuses_published_slot_detached_at_default_tip(
+        self, mgr, base_ws, kind, delete_predecessor_branch,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        path = Path(slot.workspace_path)
+        await mgr.reset_slot_for_task(slot, FakeTask())
+        _git(["commit", "--allow-empty", "-m", "published predecessor"], path)
+        _git(["push", "origin", "aq/tsk-1"], path)
+        await mgr.restore_slot_after_task(slot, task_id="tsk-1")
+        assert _git(["rev-parse", "--abbrev-ref", "HEAD"], path) == "HEAD"
+        assert _git(["rev-parse", "HEAD"], path) == _git(["rev-parse", "origin/main"], path)
+        if delete_predecessor_branch:
+            _git(["branch", "-D", "aq/tsk-1"], path)
+        assert await mgr.reset_slot_for_task(slot, FakeTask(id="tsk-2")) == "aq/tsk-2"
+
+    async def test_exclusive_clone_can_be_prepared_again(self, mgr, base_ws, kind):
+        await mgr.reset_slot_for_task(base_ws, FakeTask(), kind=kind)
+
+        branch = await mgr.reset_slot_for_task(base_ws, FakeTask(), kind=kind)
+
+        assert branch == "aq/tsk-1"
+        assert mgr.read_sentinel(base_ws.workspace_path).base_workspace_id == ""
+
+    @pytest.mark.parametrize("locked", [False, True])
+    async def test_missing_slot_retains_its_registration_for_investigation(
+        self, mgr, base_ws, kind, locked,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        if locked:
+            _git(["worktree", "lock", slot.workspace_path], base_ws.workspace_path)
+        shutil.rmtree(slot.workspace_path)
+        registrations = _git(["worktree", "list", "--porcelain"], base_ws.workspace_path)
+        with pytest.raises(GitError, match="missing.*supervisor investigation"):
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        assert not Path(slot.workspace_path).exists()
+        assert mgr.db.workspaces[slot.id] is slot
+        assert _git(["worktree", "list", "--porcelain"], base_ws.workspace_path) == registrations
+
+    @pytest.mark.parametrize("protection", ["unmanaged", "agent", "task", "owner"])
+    async def test_protected_branch_holder_is_never_detached(
+        self, mgr, base_ws, kind, monkeypatch, protection,
+    ):
+        holder = await mgr.create_slot(base_ws, kind, 0)
+        target = await mgr.create_slot(base_ws, kind, 1)
+        branch = await mgr.reset_slot_for_task(holder, FakeTask(), kind=kind)
+        if protection == "unmanaged":
+            del mgr.db.workspaces[holder.id]
+        elif protection == "agent":
+            holder.locked_by_agent_id = "foreign"
+        elif protection == "task":
+            holder.locked_by_task_id = "foreign"
+        else:
+            monkeypatch.setattr(mgr, "_slot_has_retained_binding", AsyncMock(return_value=True))
+
+        with pytest.raises(GitError, match="already used by worktree"):
+            await mgr.reset_slot_for_task(target, FakeTask(), kind=kind)
+
+        assert _git(["branch", "--show-current"], holder.workspace_path) == branch
+
+    async def test_foreign_slot_identity_is_preserved(self, mgr, base_ws, kind):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        sentinel = mgr.read_sentinel(slot.workspace_path)
+        sentinel.workspace_id = "foreign-slot"
+        mgr.write_sentinel(slot.workspace_path, sentinel)
+        (Path(slot.workspace_path) / "progress.txt").write_text("preserve me")
+        with pytest.raises(GitError, match="mismatched sentinel"):
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        assert (Path(slot.workspace_path) / "progress.txt").read_text() == "preserve me"
+
+    @pytest.mark.parametrize("disagreement", ["branch", "repository", "claim", "unreadable_claim", "sentinel"])
+    async def test_source_disagreement_preserves_index_and_worktree(
+        self, mgr, base_ws, kind, disagreement,
+    ):
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        path = Path(slot.workspace_path)
+        if disagreement == "branch":
+            _git(["switch", "-c", "aq/foreign"], path)
+        elif disagreement == "repository":
+            other = path.parent / "other-repository"
+            _git(["clone", base_ws.workspace_path, str(other)], path.parent)
+            other_ws = Workspace(id="other-base", project_id=base_ws.project_id,
+                                 workspace_path=str(other), source_type=RepoSourceType.CLONE)
+            mgr.db.workspaces[other_ws.id] = other_ws
+            slot.base_workspace_id = other_ws.id
+            sentinel = mgr.read_sentinel(path)
+            sentinel.base_workspace_id = other_ws.id
+            mgr.write_sentinel(path, sentinel)
+        elif disagreement in {"claim", "unreadable_claim"}:
+            from src.claim_file import write_claim_file
+            write_claim_file(str(path), {"task_id": "foreign", "claim_epoch": 7})
+            if disagreement == "unreadable_claim":
+                (path / ".aq" / "claim.json").write_bytes(b"unreadable claim")
+        else:
+            sentinel = mgr.read_sentinel(path)
+            sentinel.workspace_id = "foreign"
+            mgr.write_sentinel(path, sentinel)
+        (path / "README.md").write_bytes(b"staged source")
+        _git(["add", "README.md"], path)
+        (path / "untracked").write_bytes(b"untracked source")
+        head = _git(["rev-parse", "HEAD"], path)
+        index = _git(["write-tree"], path)
+        branch = _git(["branch", "--show-current"], path)
+        sentinel = (path / WORKTREE_SENTINEL_NAME).read_bytes()
+
+        with pytest.raises(GitError):
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert _git(["write-tree"], path) == index
+        assert _git(["branch", "--show-current"], path) == branch
+        assert (path / "README.md").read_bytes() == b"staged source"
+        assert (path / "untracked").read_bytes() == b"untracked source"
+        assert (path / WORKTREE_SENTINEL_NAME).read_bytes() == sentinel
+
     def _make_slot(self, mgr, base_ws, kind):
         return asyncio.run(mgr.create_slot(base_ws, kind, 0))
 

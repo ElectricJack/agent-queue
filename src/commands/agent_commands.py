@@ -540,7 +540,13 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 "enabled": ws.enabled,
             }
 
-        await self.db.update_workspace(ws.id, **updates)
+        relocated = "workspace_path" in updates or "source_type" in updates
+        changed = await self.db.update_workspace(
+            ws.id, expected_generation=ws.generation if relocated else None,
+            require_unlocked=relocated, **updates,
+        )
+        if not changed:
+            return {"error": "Workspace binding changed or is locked; edit was not applied"}
         return {
             "updated": ws.id,
             "fields": changed_fields,

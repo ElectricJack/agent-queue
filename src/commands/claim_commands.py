@@ -7,6 +7,7 @@ import logging
 import math
 import time
 from dataclasses import replace
+from pathlib import Path
 
 # Re-exported for backwards compatibility: the claim-file helpers moved to the
 # leaf module ``src.claim_file`` so ``src.sessions.reconciler`` can use them
@@ -1038,7 +1039,7 @@ class ClaimCommandsMixin:
                     )
                     if attempt < len(_PREPARATION_RETRY_DELAYS):
                         await asyncio.sleep(_PREPARATION_RETRY_DELAYS[attempt])
-            remove_claim_file_if_matches(row.work_dir, task.id, task.claim_epoch)
+            remove_claim_file_if_matches(row.work_dir, task.id, task.claim_epoch, session_id=session.id)
             self._resolve_claim_waiters(session.id, task.claim_epoch, "no_ready_work")
             return self._simple(
                 ClaimResult.NO_READY_WORK, "claim preparation database contention", row, cap
@@ -1130,10 +1131,35 @@ class ClaimCommandsMixin:
         fresh = None
         prepared_branch: str | None = None
         try:
-            if slot is None:
-                slot = await self.db.get_workspace_for_agent(row.agent_id)
-            if slot is None:
-                raise RuntimeError("session holds no workspace slot")
+            async with self.db.immediate() as identity_conn:
+                registered = await self.db.lock_claim_workspace(
+                    identity_conn, session.id, task.id, epoch=epoch,
+                    instance_token=session.instance_token, expected_workspace=slot,
+                )
+            if registered is None:
+                raise RuntimeError(
+                    f"workspace binding mismatch: session {session.id}, task {task.id}, "
+                    f"registered path {row.work_dir}; checkout left unchanged"
+                )
+            slot = registered
+            on_disk = read_claim_file(row.work_dir)
+            if on_disk is None and Path(row.work_dir, ".aq", "claim.json").exists():
+                raise RuntimeError(f"workspace {slot.id} retains an unreadable claim; checkout unchanged")
+            if (on_disk is not None and on_disk.get("task_id") == task.id
+                    and on_disk.get("session_id") == session.id
+                    and isinstance(on_disk.get("claim_epoch"), int)
+                    and 0 < on_disk["claim_epoch"] < epoch):
+                # This session has atomically acquired a newer epoch of the
+                # same task. Retire its own superseded marker, never a peer's.
+                remove_claim_file_if_matches(row.work_dir, task.id, on_disk["claim_epoch"])
+                on_disk = read_claim_file(row.work_dir)
+            if on_disk is not None and (
+                on_disk.get("task_id") != task.id or on_disk.get("claim_epoch") != epoch
+                or on_disk.get("session_id") != session.id
+            ):
+                raise RuntimeError(f"workspace {slot.id} at {row.work_dir} retains a foreign claim")
+            if slot.is_slot:
+                await self.orchestrator._worktree_slots().ensure_slot_checkout(slot, task)
             if project is _UNSET:
                 project = await self.db.get_project(task.project_id)
             if (admission is None
@@ -1151,6 +1177,19 @@ class ClaimCommandsMixin:
                 *, conn=None, base_branch=None, target_branch=None, preserve_branch=False
             ):
                 nonlocal prepared_branch
+                if conn is None:
+                    async with self.db.immediate() as prepare_conn:
+                        return await prepare_and_activate(
+                            conn=prepare_conn, base_branch=base_branch,
+                            target_branch=target_branch, preserve_branch=preserve_branch,
+                        )
+                registered = await self.db.lock_claim_workspace(
+                    conn, session.id, task.id, epoch=epoch,
+                    instance_token=session.instance_token, expected_workspace=slot,
+                    lock_task_status=False,
+                )
+                if registered is None:
+                    raise RuntimeError("workspace binding changed before reset; checkout left unchanged")
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
                     reset_kwargs["target_branch"] = target_branch
@@ -1213,6 +1252,8 @@ class ClaimCommandsMixin:
                     # table, one fewer pooled checkout.
                     clear_preparation_metadata=True,
                     admission=admission,
+                    instance_token=session.instance_token,
+                    expected_workspace=slot,
                 )
                 if activated and hierarchy_enabled:
                     await verify_preparation(origin, conn=conn, finalize=True)
@@ -1244,14 +1285,20 @@ class ClaimCommandsMixin:
                     # on the canonical repair lock order) so the pool claim never
                     # holds a row lock ahead of the repair rows it re-arms.
                     await RepairService(self.db).start_claimed_stage_budget(task.id)
-                    async with ownership.mutation_exclusion(
-                        fence, expected_role=owner_role,
-                        state="attached" if hierarchy_attached else "reserved",
-                    ):
-                        base_sha = await self.orchestrator._hierarchy_repair_start(
-                            slot.workspace_path, origin, fence,
-                            repository_url=project.repo_url or "",
-                        )
+                    async with self.db.immediate() as repair_conn:
+                        if await self.db.lock_claim_workspace(
+                            repair_conn, session.id, task.id, epoch=epoch,
+                            instance_token=session.instance_token, expected_workspace=slot,
+                        ) is None:
+                            raise RuntimeError("workspace binding changed before repair preparation")
+                        async with ownership.mutation_exclusion_on(
+                            repair_conn, fence, expected_role=owner_role,
+                            state="attached" if hierarchy_attached else "reserved",
+                        ):
+                            base_sha = await self.orchestrator._hierarchy_repair_start(
+                                slot.workspace_path, origin, fence,
+                                repository_url=project.repo_url or "",
+                            )
                 if not hierarchy_attached:
                     await ownership.attach(
                         fence,
@@ -1297,6 +1344,16 @@ class ClaimCommandsMixin:
                 # Retry only after the failed transaction unwinds; never run
                 # permanent failure cleanup for a database conflict.
                 raise
+            current = await self.db.get_session(session.id)
+            current_task = await self.db.get_task(task.id)
+            if (current is None or current.instance_token != session.instance_token
+                    or current.task_id != task.id or current.last_claim_epoch != epoch
+                    or current_task is None or current_task.claim_epoch != epoch
+                    or current_task.assigned_agent_id != row.agent_id):
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(
+                    ClaimResult.PREPARE_FAILED, "claim identity changed; holder left unchanged", row, cap
+                )
             from src.git.manager import ChildPreparationConflict, GitError
             from src.integration.stacked_branches import (
                 EpicRefreshPending, StackedBranches, StackPrerequisitesConflict,
@@ -1330,24 +1387,30 @@ class ClaimCommandsMixin:
                     await self.db.set_task_meta(task.id, "needs_attention", exc.code)
                     self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                     return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
-                remove_claim_file_if_matches(row.work_dir, task.id, epoch)
+                remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
                 await self.db.release_claim(
-                    session.id, task_status=TaskStatus.READY, context=exc.code,
+                    session.id,
+                    expected_task_id=task.id, expected_claim_epoch=epoch,
+                    expected_instance_token=session.instance_token, task_status=TaskStatus.READY, context=exc.code,
                     now=time.time(), result="no_ready_work", needs_attention=exc.code,
                     prepare_backoff=True,
                 )
                 self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
                 return self._simple(ClaimResult.NO_READY_WORK, str(exc), row, cap)
             if isinstance(exc, EpicRefreshPending):
-                remove_claim_file_if_matches(row.work_dir, task.id, epoch)
+                remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
                 await self.db.release_claim(
-                    session.id, task_status=TaskStatus.READY, context="epic_refresh_pending",
+                    session.id,
+                    expected_task_id=task.id, expected_claim_epoch=epoch,
+                    expected_instance_token=session.instance_token, task_status=TaskStatus.READY, context="epic_refresh_pending",
                     now=time.time(), result="no_ready_work",
                 )
                 self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
                 return self._simple(ClaimResult.NO_READY_WORK, str(exc), row, cap)
-            logger.warning("claim %s/%s: prepare failed: %s", session.id, task.id, exc)
-            remove_claim_file(row.work_dir)
+            logger.warning(
+                "claim %s/%s: prepare failed: %s", session.id, task.id, exc, exc_info=True
+            )
+            remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             from src.integration.repair import UnpublishedRepairTarget
 
             if isinstance(exc, UnpublishedRepairTarget):
@@ -1358,7 +1421,9 @@ class ClaimCommandsMixin:
                 # attachment. Never erase a binding if the fence moved.
                 if await BranchLock(self.db).release(fence):
                     await self.db.release_claim(
-                        session.id, task_status=TaskStatus.BLOCKED,
+                        session.id,
+                        expected_task_id=task.id, expected_claim_epoch=epoch,
+                        expected_instance_token=session.instance_token, task_status=TaskStatus.BLOCKED,
                         context="integration_train_defect", now=time.time(),
                         result="prepare_failed", needs_attention="repair_target_unpublished",
                     )
@@ -1389,6 +1454,8 @@ class ClaimCommandsMixin:
                 if released:
                     await self.db.release_claim(
                         session.id,
+                        expected_task_id=task.id, expected_claim_epoch=epoch,
+                        expected_instance_token=session.instance_token,
                         task_status=TaskStatus.READY,
                         context="integration_prepare_failed",
                         now=time.time(),
@@ -1432,6 +1499,8 @@ class ClaimCommandsMixin:
             })
             await self.db.release_claim(
                 session.id,
+                expected_task_id=task.id, expected_claim_epoch=epoch,
+                expected_instance_token=session.instance_token,
                 task_status=TaskStatus.BLOCKED if attempt >= 3 else TaskStatus.READY,
                 context="slot_reset_failed",
                 now=time.time(),
@@ -1452,10 +1521,12 @@ class ClaimCommandsMixin:
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
         if not fresh:
-            remove_claim_file(row.work_dir)
+            remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             if admission is not None:
                 await self.db.release_claim(
-                    session.id, task_status=TaskStatus.READY,
+                    session.id,
+                    expected_task_id=task.id, expected_claim_epoch=epoch,
+                    expected_instance_token=session.instance_token, task_status=TaskStatus.READY,
                     context="delivery_snapshot_changed", now=time.time(), result="prepare_failed",
                 )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")

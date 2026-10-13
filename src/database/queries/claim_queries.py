@@ -972,10 +972,10 @@ class ClaimQueryMixin:
 
         The workspace UPDATE uses ``RETURNING`` so the caller
         (``_prepare_and_activate``) does not have to re-read the slot it
-        just stamped, and both metadata keys go out in one multi-row upsert
+        just stamped, and holder provenance goes out in one multi-row upsert
         (spec §15).
         """
-        await conn.execute(
+        token = (await conn.execute(
             update(sessions)
             .where(sessions.c.id == session_id)
             .values(
@@ -984,7 +984,8 @@ class ClaimQueryMixin:
                 claim_phase_at=now,
                 last_claim_epoch=claim_epoch,
             )
-        )
+            .returning(sessions.c.instance_token)
+        )).scalar_one()
         slot = None
         if agent_id:
             if not agent_reserved:
@@ -1005,6 +1006,8 @@ class ClaimQueryMixin:
                     workspaces.c.workspace_path == work_dir,
                     workspaces.c.enabled.is_(True),
                     workspaces.c.locked_by_agent_id == agent_id,
+                    or_(workspaces.c.locked_by_task_id.is_(None),
+                        workspaces.c.locked_by_task_id == task_id),
                 )
                 .values(
                     locked_by_agent_id=agent_id,
@@ -1015,7 +1018,14 @@ class ClaimQueryMixin:
             row = (await conn.execute(stmt.returning(*workspaces.c))).mappings().fetchone()
             slot = self._row_to_workspace(row) if row is not None else None
         await self._upsert_meta_many(
-            task_id, {CLAIMED_BY_SESSION_KEY: session_id, "work_dir": work_dir}, conn=conn
+            task_id, {
+                CLAIMED_BY_SESSION_KEY: session_id, "work_dir": work_dir,
+                "claim_workspace": {
+                    "workspace_id": slot.id, "generation": slot.generation,
+                    "session_id": session_id, "instance_token": token,
+                    "claim_epoch": claim_epoch,
+                } if slot is not None else None,
+            }, conn=conn
         )
         await self._start_task_session_attempt(
             conn,
@@ -1025,12 +1035,86 @@ class ClaimQueryMixin:
         )
         return slot
 
-    async def lock_claim_for_activation(self, conn, session_id, task_id, *, epoch: int):
+    async def lock_claim_workspace(
+        self, conn, session_id, task_id, *, epoch: int,
+        instance_token: str | None = None, expected_workspace: Workspace | None = None,
+        lock_task_status: bool = True,
+    ) -> Workspace | None:
+        """Prove the exact registered holder before touching its checkout.
+
+        Keep session/workspace locks until reset and activation finish. The
+        task key lock during reset allows dependency admission to change;
+        activation rechecks it under the stronger task status lock.
+        Paths are compared byte for byte: filesystem aliases do not establish
+        the registered owner. A resumed preparation must already hold its task
+        lock; this read never repairs or acquires an alternative workspace.
+        """
+        if await self.lock_claim_for_activation(
+            conn, session_id, task_id, epoch=epoch, lock_task_status=lock_task_status,
+        ) is None:
+            return None
+        holder = (await conn.execute(select(sessions).where(
+            sessions.c.id == session_id,
+        ))).mappings().one()
+        if (holder["last_claim_epoch"] != epoch
+                or not holder["agent_id"] or not holder["work_dir"]
+                or (instance_token is not None and holder["instance_token"] != instance_token)):
+            return None
+        rows = (await conn.execute(select(workspaces).where(
+            workspaces.c.workspace_path == holder["work_dir"],
+        ).order_by(workspaces.c.id).with_for_update())).mappings().all()
+        candidates = [row for row in rows if (
+            row["project_id"] == holder["project_id"] and row["enabled"]
+            and row["locked_by_agent_id"] == holder["agent_id"]
+            and row["locked_by_task_id"] == task_id
+        )]
+        if len(candidates) != 1:
+            return None
+        row = candidates[0]
+        raw = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == "claim_workspace",
+        ))
+        try:
+            receipt = json.loads(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+        if receipt != {
+            "workspace_id": row["id"], "generation": row["generation"],
+            "session_id": session_id, "instance_token": holder["instance_token"],
+            "claim_epoch": epoch,
+        }:
+            return None
+        if any(other["id"] != row["id"] and (
+            other["locked_by_agent_id"] is not None or other["locked_by_task_id"] is not None
+        ) for other in rows):
+            return None
+        if expected_workspace is not None and (
+            row["id"] != expected_workspace.id
+            or row["generation"] != expected_workspace.generation
+            or row["project_id"] != expected_workspace.project_id
+            or row["workspace_path"] != expected_workspace.workspace_path
+            or row["base_workspace_id"] != expected_workspace.base_workspace_id
+            or row["slot_index"] != expected_workspace.slot_index
+        ):
+            return None
+        assignment = (await conn.execute(select(tasks.c.project_id, tasks.c.assigned_agent_id)
+                                        .where(tasks.c.id == task_id))).one()
+        if (assignment.project_id != holder["project_id"]
+                or assignment.assigned_agent_id != holder["agent_id"]):
+            return None
+        return self._row_to_workspace(row)
+
+    async def lock_claim_for_activation(
+        self, conn, session_id, task_id, *, epoch: int, lock_task_status: bool = True,
+    ):
         """Lock session then task before a caller acquires managed ref exclusion.
 
         Task identity is immutable here, so FOR NO KEY UPDATE excludes status
         changes while permitting the slot reset's separate salvage transaction
         to take FK key-share locks when inserting task context or metadata.
+        During reset, ``lock_task_status=False`` uses FOR KEY SHARE instead:
+        dependency/gate changes may invalidate admission, and activation must
+        observe them rather than deadlocking their blocked-state propagation.
         """
         holder = (await conn.execute(
             select(sessions.c.id).where(
@@ -1048,7 +1132,7 @@ class ClaimQueryMixin:
                 tasks.c.id == task_id,
                 tasks.c.status == TaskStatus.IN_PROGRESS.value,
                 tasks.c.claim_epoch == epoch,
-            ).with_for_update(key_share=True)
+            ).with_for_update(read=not lock_task_status, key_share=True)
         )).fetchone()
 
     async def activate_claim(
@@ -1056,6 +1140,8 @@ class ClaimQueryMixin:
         branch_name: str | None = None,
         clear_preparation_metadata: bool = False,
         admission=None,
+        instance_token: str | None = None,
+        expected_workspace: Workspace | None = None,
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
@@ -1080,6 +1166,11 @@ class ClaimQueryMixin:
             # can observe a pre-pause PostgreSQL statement snapshot.
             claim = await self.lock_claim_for_activation(c, session_id, task_id, epoch=epoch)
             if claim is None:
+                return None
+            if await self.lock_claim_workspace(
+                c, session_id, task_id, epoch=epoch, instance_token=instance_token,
+                expected_workspace=expected_workspace,
+            ) is None:
                 return None
             if admission is not None and (
                 not await admission.matches(conn=c, lock=True, task_id=task_id)
@@ -1163,6 +1254,7 @@ class ClaimQueryMixin:
         preparation_expired_before=None,
         expected_task_id=None,
         expected_claim_epoch=None,
+        expected_instance_token=None,
         expected_task_status=None,
         expected_task_claim_epoch=None,
         drain_after_release=False,
@@ -1202,6 +1294,8 @@ class ClaimQueryMixin:
             and task_id != expected_task_id
             or expected_claim_epoch is not None
             and row["last_claim_epoch"] != expected_claim_epoch
+            or expected_instance_token is not None
+            and row["instance_token"] != expected_instance_token
         ):
             return out
         # An attached integration owner is durable evidence that this exact
@@ -1344,14 +1438,16 @@ class ClaimQueryMixin:
 
             await release_session_leases_on(self, conn, session_id, task_id)
         if agent_id:
-            # Clear the task lock unconditionally — even a session that held no
-            # task (e.g. released mid-``claiming``) must not leave a stale
-            # ``locked_by_task_id`` on its agent's workspace.  A task that
-            # became non-live underneath an active worker must also release
-            # the agent lock, so the slot can serve the next claim.
+            # Release only this claim's task lock (or its idle agent lock).
+            # Misplaced agent bindings must not erase another task's lock
+            # when preparation discovers and refuses that mismatch.
             await conn.execute(
                 update(workspaces)
-                .where(workspaces.c.locked_by_agent_id == agent_id)
+                .where(
+                    workspaces.c.locked_by_agent_id == agent_id,
+                    or_(workspaces.c.locked_by_task_id.is_(None),
+                        workspaces.c.locked_by_task_id == task_id),
+                )
                 .values(
                     locked_by_agent_id=None if release_workspace_lock else workspaces.c.locked_by_agent_id,
                     locked_by_task_id=None,
@@ -1400,6 +1496,7 @@ class ClaimQueryMixin:
         needs_attention=None,
         expected_task_id=None,
         expected_claim_epoch=None,
+        expected_instance_token=None,
         expected_task_status=None,
         expected_task_claim_epoch=None,
         drain_after_release=False,
@@ -1419,6 +1516,7 @@ class ClaimQueryMixin:
             needs_attention=needs_attention,
             expected_task_id=expected_task_id,
             expected_claim_epoch=expected_claim_epoch,
+            expected_instance_token=expected_instance_token,
             expected_task_status=expected_task_status,
                 expected_task_claim_epoch=expected_task_claim_epoch,
             drain_after_release=drain_after_release,

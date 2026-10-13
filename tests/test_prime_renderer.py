@@ -21,6 +21,7 @@ from src.config import AppConfig, DatabaseConfig
 from src.models import AgentProfile, Project, ProjectStatus, SessionRecord, Task, TaskType
 from src.prime import PrimeRenderer
 from src.prime.models import PrimeDocument, PrimeSection
+from src.prime.sections import build_role_section
 from src.profiles.parser import parse_profile
 
 pytestmark = pytest.mark.asyncio
@@ -84,6 +85,17 @@ async def test_paused_project_instruction_survives_local_override(db, config, ta
 
 
 class TestGoldenAssembly:
+    @pytest.mark.parametrize("profile_id", ["supervisor", "coder"])
+    async def test_installed_supervisor_receives_infrastructure_policy(self, config, profile_id):
+        path = Path(config.vault_agent_types) / profile_id / "profile.md"
+        _write(path, "## Role\nOperator-customized role.\n")
+
+        section = await build_role_section(config, profile_id)
+
+        assert "Operator-customized role." in section.body
+        assert ("Never mass-pause" in section.body) == (profile_id == "supervisor")
+        assert path.read_text() == "## Role\nOperator-customized role.\n"
+
     async def test_an_unrouted_task_takes_no_role_sections(self, db, config):
         """An unrouted task takes no role from any profile (mandatory routing §8)."""
         await db.create_profile(AgentProfile(id="coder", name="Coder"))

@@ -690,6 +690,7 @@ class Orchestrator(
 
     def _git_mutex(self, workspace_path: str) -> asyncio.Lock:
         """Get or create an asyncio.Lock for shared git operations on a workspace."""
+        workspace_path = os.path.normcase(os.path.realpath(workspace_path))
         if workspace_path not in self._git_mutexes:
             self._git_mutexes[workspace_path] = asyncio.Lock()
         return self._git_mutexes[workspace_path]
@@ -707,6 +708,7 @@ class Orchestrator(
         (``GitManager._arun`` calls it inline), which is why it reads a cache
         rather than asking git.
         """
+        cwd = os.path.normcase(os.path.realpath(cwd))
         key = self._worktree_base_paths.get(cwd, cwd)
         return self._git_mutexes.get(key)
 

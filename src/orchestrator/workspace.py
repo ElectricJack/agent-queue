@@ -1368,7 +1368,9 @@ class WorkspaceMixin:
         rows, not a filename convention.
         """
         for slot in slots:
-            self._worktree_base_paths[slot.workspace_path] = base_path
+            self._worktree_base_paths[os.path.normcase(os.path.realpath(slot.workspace_path))] = (
+                os.path.normcase(os.path.realpath(base_path))
+            )
         self._git_mutex(base_path)  # ensure the lock exists for the resolver
 
     def _recover_worktree_base_paths(self, all_workspaces: list[Workspace]) -> None:
