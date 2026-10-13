@@ -765,16 +765,19 @@ class TestClaim:
     ):
         await mktask(db, "t1", profile_id="worker")
         sid, _wd = await pool_session(db, tmp_path)
+        await db.update_workspace("ws-agent-1", slot_index=0, base_workspace_id="base")
         slots = handler.orchestrator._worktree_slots.return_value
-        slots.ensure_slot_checkout.side_effect = TimeoutError()
+        slots.ensure_slot_checkout = AsyncMock(side_effect=TimeoutError())
         events = spy_events(handler)
 
         result = await scoped(handler, sid)._cmd_task_claim({"next": True})
 
+        assert result["result"] == "prepare_failed"
         assert_one_reason(
             result, await db.get_session(sid), await db.get_task_meta("t1", "prepare_failure"),
             events, stage="ensure_slot_checkout", error_type="TimeoutError",
         )
+        slots.ensure_slot_checkout.assert_awaited_once()
         slots.reset_slot_for_task.assert_not_awaited()
 
     @pytest.mark.parametrize("protection", [None, "task", "session", "claim", "other_project"])
