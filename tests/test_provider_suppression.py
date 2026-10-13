@@ -295,6 +295,7 @@ async def pool_db(tmp_path):
             Task(
                 id=f"t{i}", project_id=POOL_PROJECT, title="t", description="d",
                 status=TaskStatus.READY, profile_id="worker", route_source="legacy",
+                intelligence_class="standard-medium",
             )
         )
     yield database

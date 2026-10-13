@@ -306,6 +306,7 @@ class PoolsMixin:
                 allowed_task_ids=allowed,
                 router_ready=project.id in ready_projects,
                 hierarchy_mode=hierarchy_modes.get(project.id) or ProjectIntegrationMode.of(project),
+                pool_profiles=pool_profiles,
             )
             workspace_capacity = await self.db.count_available_workspaces(
                 project.id,

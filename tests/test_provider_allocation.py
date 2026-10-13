@@ -131,6 +131,7 @@ async def _fleet(orch) -> None:
                 description="d",
                 status=status,
                 profile_id=profile_id, route_source=route_source_for(profile_id),
+                intelligence_class=(await db.get_profile(profile_id)).default_class,
                 provider_intent=intent,
                 assigned_agent_id=agent_id,
             )

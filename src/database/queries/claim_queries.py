@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 
 from sqlalchemy import (
     Float,
@@ -67,7 +67,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
+from src.models import AgentProfile, AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
 from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, claimable_sources
 
 
@@ -144,6 +144,43 @@ def route_claimable(router_ready: bool):
         tasks.c.profile_id.is_not(None),
         tasks.c.route_source.in_(claimable_sources(router_ready)),
     )
+
+
+def _pool_role_predicate(operator: bool):
+    operator_task = func.coalesce(tasks.c.task_type, "") == "operator"
+    return operator_task if operator else ~operator_task
+
+
+def _pool_routing_predicates(*, operator=None, enforce_routing=False, intelligence_class=None):
+    """Match the task's authored class and role to a fixed pool identity.
+
+    An explicit task class never inherits a provider pin. Missing launch
+    identity cannot prove compatibility when routing is enforced.
+    """
+    predicates = []
+    if enforce_routing:
+        explicit_class = func.nullif(func.trim(tasks.c.intelligence_class), "")
+        predicates.append(explicit_class == intelligence_class if intelligence_class else false())
+    if operator is not None:
+        predicates.append(_pool_role_predicate(operator))
+    return predicates
+
+
+def _pool_profiles_predicate(pool_profiles: Mapping[str, AgentProfile]):
+    """Demand compatible with any pool's authored class and role; empty means none."""
+    from src.commands.operator_authority import is_operator_profile
+
+    compatible = []
+    for profile_id, profile in pool_profiles.items():
+        fixed_class = (profile.default_class or "").strip()
+        compatible.append(and_(
+            tasks.c.profile_id == profile_id,
+            *_pool_routing_predicates(
+                operator=is_operator_profile(profile), enforce_routing=bool(fixed_class),
+                intelligence_class=fixed_class,
+            ),
+        ))
+    return or_(false(), *compatible)
 
 
 def route_claimable_in(ready_project_ids: Collection[str]):
@@ -752,6 +789,7 @@ class ClaimQueryMixin:
         intelligence_class=None,
         llm_provider=None,
         options_hash=None,
+        operator: bool | None = None,
         hierarchy_mode: ProjectIntegrationMode | None = None,
         allowed_task_ids: set[str] | None = None,
         excluded_task_ids: set[str] | None = None,
@@ -831,10 +869,7 @@ class ClaimQueryMixin:
                     profile_ok,
                     *preparation_predicates.values(),
                 )
-                .order_by(
-                    tasks.c.priority.asc(),
-                    tasks.c.created_at.asc(),
-                )
+                .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
                 .limit(1)
             )
             if allowed_task_ids is not None:
@@ -844,15 +879,10 @@ class ClaimQueryMixin:
             if pinned:
                 stmt = stmt.where(tasks.c.affinity_agent_id == agent_id)
             stmt = apply_label_filters(stmt, exclude_hold=True)
-            if enforce_routing:
-                # The task row is the route (assignment-routing-as-playbook
-                # spec §2): a worker fixed on a class takes only tasks
-                # carrying that class.  An explicit class never inherits a
-                # provider pin.
-                explicit_class = func.nullif(func.trim(tasks.c.intelligence_class), "")
-                stmt = stmt.where(
-                    explicit_class == intelligence_class if intelligence_class else false(),
-                )
+            stmt = stmt.where(*_pool_routing_predicates(
+                operator=operator, enforce_routing=enforce_routing,
+                intelligence_class=intelligence_class,
+            ))
             if task_id is not None:
                 stmt = stmt.where(tasks.c.id == task_id)
             return stmt.with_for_update(of=tasks, skip_locked=True)
@@ -2230,12 +2260,17 @@ class ClaimQueryMixin:
     async def count_ready_by_profile(
         self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
         hierarchy_mode: ProjectIntegrationMode | None = None,
+        pool_profiles: Mapping[str, AgentProfile] | None = None,
     ) -> dict[str | None, int]:
         """Count structural work, restricted to verified development admission when supplied.
 
         *router_ready* counts only claimable work (:func:`route_claimable`),
         which is what pool demand is (mandatory routing §9.1); ``None``
         counts every READY frontier row, unrouted ones under ``None``.
+
+        *pool_profiles* restricts sizing demand to the fixed class and operator
+        role each pool can execute. A stale route must not start a session that
+        cannot claim its task. Structural callers may omit this snapshot.
         """
         if hierarchy_mode is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
@@ -2243,13 +2278,13 @@ class ClaimQueryMixin:
             hierarchy_mode = (await hierarchy_frontier_modes(
                 self, project_ids={project_id}
             )).get(project_id)
-        stmt = (
-            select(tasks.c.profile_id, func.count())
-            .where(_frontier_where(project_id, hierarchy_mode, router_ready=router_ready))
-            .group_by(tasks.c.profile_id)
-        )
+        stmt = select(tasks.c.profile_id, func.count()).where(
+            _frontier_where(project_id, hierarchy_mode, router_ready=router_ready),
+        ).group_by(tasks.c.profile_id)
         if allowed_task_ids is not None:
             stmt = stmt.where(tasks.c.id.in_(allowed_task_ids))
+        if pool_profiles is not None:
+            stmt = stmt.where(_pool_profiles_predicate(pool_profiles))
         stmt = apply_label_filters(stmt, exclude_hold=True)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).fetchall()
