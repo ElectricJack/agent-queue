@@ -16385,7 +16385,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:62191e39f50e28564fc500d081fd7b5600f6fb6cb33629b7b24328b12c9e940b",
+      "digest": "sha256:6296288c38d5dada4b404b123373a2d9ca42c8cd72637d91bf5ee5276ddf87d4",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -16393,7 +16393,8 @@
         "src.models"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Tests for close-with-summary enforcement (Dv2 Phase 2 Task 2)."
     },

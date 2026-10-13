@@ -1221,8 +1221,23 @@ class SessionCommandsMixin:
             evaluate_deliverables,
             parse_unmet_reasons,
             resolve_task_deliverables,
+            review_revision_guidance,
             review_submit_guidance,
         )
+
+        if outcome == "pass":
+            response = await self.db.get_task_meta(task.id, "review_response")
+            if response and not await self.db.has_review_response_submission(
+                task.id, response["review_id"], response["revision"]
+            ):
+                return {
+                    "success": False,
+                    "code": "reviews.revision_unpublished",
+                    "review_id": response["review_id"],
+                    "after_revision": response["revision"],
+                    "error": "close refused: the assigned review revision is unpublished. "
+                    + review_revision_guidance(response),
+                }
 
         def _string_list(value) -> list[str]:
             if value is None:

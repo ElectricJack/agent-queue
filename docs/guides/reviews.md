@@ -303,6 +303,16 @@ From the worker's point of view the workflow is short:
    `aq review show --review-id <id> --comments`, then resubmit with
    `aq review submit --review-id <id> --file <draft> --changes "…"
    [--resolves <comment-id> …]`, and close it.
+   Revise a local draft; do not edit the vault mirror or its frontmatter
+   directly. A passing close is refused with `reviews.revision_unpublished`
+   until this task has submitted a newer revision of its assigned review.
+   Editing a file, submitting an unrelated review, or another task's
+   publication does not satisfy this gate. It cannot be waived with
+   `--deliverable-unmet`; a failing close remains available. Prime states
+   the assigned review and revision even when the description is truncated.
+   Record the new revision number and content hash in the close summary;
+   publication does not approve the review and does not require waiting for
+   its decision. See [the completion contract](../specs/design/review-revision-completion.md).
 
 This is wired into every shipped worker profile's `## Rules` section as
 *Documents go to review, not the repo*, and the shipped supervisor profile

@@ -110,6 +110,13 @@ else gets `not_your_task`).
 
 4. Close the task with the new revision number and content hash.
 
+A passing close is refused with `reviews.revision_unpublished` until this
+task publishes a newer revision of its assigned review. Edit a local draft,
+not the vault mirror or its frontmatter. An unrelated review or another
+task's submission does not meet this requirement, and deliverable waivers
+cannot waive it. A failing close remains available. Do not wait for approval
+after publication.
+
 `--resolves` marks a comment resolved in the new revision; it does not make a
 rebuttal accepted. The decider checks each one, and the next round's reviewer
 sees it. `stale_revision` means the review moved: re-read, never bump the
