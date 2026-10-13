@@ -43287,7 +43287,7 @@
     "tests/fixtures/playbooks/v2/invalid/loop_ref_outside_loop.json": "363b4349802013d818ebeb56247569f5fac783c57656effb22a632e9f5fd32ee",
     "tests/fixtures/playbooks/v2/invalid/loop_variable_shadow.json": "79d75fdc4a7e6cf597899f339b86575931595ccb933eb23addb7b4c3831ec501",
     "tests/fixtures/playbooks/v2/invalid/narrowing_not_subset.json": "b57e9d78394cdf52368cc043fd83650c55764f63f6f80071303c9de0549f7333",
-    "tests/fixtures/playbooks/v2/invalid/nested_loop.json": "f86524be159a197d456f224a88da3b0c5fbab066fffe71260d4251a48314bcee",
+    "tests/fixtures/playbooks/v2/invalid/nested_loop.json": "652f035218cb9c8233eee337f8c09ed7434e2705b439df4af5f00bc03d3d0ae0",
     "tests/fixtures/playbooks/v2/invalid/no_terminal_path.json": "b2de812ca20377df9a855b88bbd41bde0bf91c9cf362402f05bd0c3f1b9cd7ac",
     "tests/fixtures/playbooks/v2/invalid/orphan_step.json": "ac71992a2427ca1ecc800b30797f94e1f653b721f0cfda1aea365b26d49c1ede",
     "tests/fixtures/playbooks/v2/invalid/outcome_enum_mismatch.json": "65c340f1b7cde30d067a5ced860d27866a4837e368899d6c7d89c4fee1e1d0e3",
