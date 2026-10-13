@@ -205,7 +205,10 @@ class DB:
 
 
 @pytest.fixture
-def context(tmp_path):
+def context(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(module, "_waiting_train_repairs", AsyncMock(return_value={}))
     return DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=DB(), handler=Handler({}))
 
 
@@ -257,6 +260,43 @@ async def test_explain_calls_are_bounded_and_cached(context):
     assert context.handler.maximum > 1
     assert context.handler.maximum <= 8
     assert context.handler.calls.count("work-0") == 1
+
+
+@pytest.mark.parametrize("age", [1800, 1801, 10 * 3600])
+@pytest.mark.parametrize("blocked", [False, True])
+async def test_train_repair_capacity_wait_has_its_own_alarm(context, monkeypatch, age, blocked):
+    from unittest.mock import AsyncMock
+
+    read = AsyncMock(return_value={"repair": {"batch_id": "train", "operation_id": "op"}})
+    monkeypatch.setattr(module, "_waiting_train_repairs", read)
+    reasons = [reason("route_waiting_for_compatible_agent", "fleet at capacity")]
+    if blocked:
+        reasons.append(reason("blocked_dependency", "dep status=IN_PROGRESS", "dep"))
+    context.handler = Handler({"repair": reasons})
+    findings = await module._work_findings(
+        context, [task("repair", age=age)], NOW, module._Explains(context),
+    )
+    alarms = [f for f in findings if f["kind"] == "train_repair_capacity_wait"]
+    # A returned binding only applies to candidates actually over the threshold.
+    assert bool(alarms) == (age > 1800 and not blocked)
+    if alarms:
+        assert alarms[0]["batch_id"] == "train" and alarms[0]["profile_id"] == "worker"
+
+
+@pytest.mark.parametrize("detail", [
+    "pool is quarantined", "swarm.enabled is false", "task class is not what pool runs",
+])
+async def test_train_repair_noncapacity_pool_wait_is_not_capacity_alarm(context, monkeypatch, detail):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(module, "_waiting_train_repairs", AsyncMock(return_value={
+        "repair": {"batch_id": "train", "operation_id": "op"},
+    }))
+    context.handler = Handler({"repair": [reason("awaiting_pool_session", detail)]})
+    findings = await module._work_findings(
+        context, [task("repair")], NOW, module._Explains(context),
+    )
+    assert [f["kind"] for f in findings] == ["unclaimed_work"]
 
 
 @pytest.mark.parametrize("unowned", [0, 2])

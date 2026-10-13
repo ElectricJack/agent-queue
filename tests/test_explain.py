@@ -178,6 +178,37 @@ async def spill_task(db, tid="spill", *, age=900, intent="preferred", priority=1
         await conn.execute(update(tasks).where(tasks.c.id == tid).values(updated_at=10_000 - age))
 
 
+@pytest.mark.parametrize("age,target_kind,active,alarm", [
+    (1790, "batch", True, False),
+    (1810, "batch", True, True),
+    (40_000, "batch", False, False),
+    (40_000, "parent", True, False),
+])
+async def test_explain_train_repair_capacity_alarm(
+    handler, db, spill_pool, monkeypatch, age, target_kind, active, alarm,
+):
+    from sqlalchemy import update
+
+    from src.database.tables import tasks
+
+    await spill_task(db, intent="pinned")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "spill").values(
+            updated_at=time.time() - age,
+        ))
+    monkeypatch.setattr(db, "get_active_integration_repair_for_task", AsyncMock(
+        return_value={"target_kind": target_kind, "batch_id": "train-1", "id": "operation-1"}
+        if active else None,
+    ))
+    result = await handler._cmd_explain_task({"task_id": "spill"})
+    assert ("train_repair_capacity_wait" in result["reason_codes"]) is alarm
+    assert "awaiting_pool_session" in result["reason_codes"]
+    if alarm:
+        reason = result["reasons"][-1]
+        assert reason["ref"] == "operation-1"
+        assert "train-1" in reason["detail"] and "fast-low-codex" in reason["detail"]
+
+
 @pytest.mark.parametrize(
     "age,intent,target_idle,expected",
     [

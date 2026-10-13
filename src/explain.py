@@ -50,6 +50,8 @@ class Reason(TypedDict):
     ``router_not_ready``, ``route_failed``, ``route_no_candidates``,
     ``route_held`` or ``awaiting_route`` (``src/routing/explain.py``), and a
     routed one waiting on scheduling as ``route_waiting_for_compatible_agent``.
+    ``train_repair_capacity_wait`` additionally alarms when a current batch
+    repair delegate has waited on pool capacity longer than thirty minutes.
     ``needs_attention``,
     ``paused_backoff``, and ``paused_manually`` cover recovery states;
     ``recovery_incident`` names an open incident's owner, remaining budget and

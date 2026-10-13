@@ -5724,6 +5724,27 @@ class TaskCommandsMixin:
                 for item in integration["blockers"]
             )
 
+        # Give the supervisor's timed patrol the same distinct capacity alarm
+        # as doctor. Resolve the current durable stage, never a title heuristic.
+        if (task.status is TaskStatus.READY and time.time() - task.updated_at > 30 * 60
+                and reasons and all(r["code"] in {
+                    "route_waiting_for_compatible_agent", "awaiting_pool_session"
+                } for r in reasons)
+                and not any(
+                    text in r["detail"] for r in reasons
+                    for text in ("quarantined", "swarm.enabled is false", "is not what pool")
+                )):
+            repair = await self.db.get_active_integration_repair_for_task(str(task_id))
+            if repair is not None and repair["target_kind"] == "batch":
+                reasons.append(Reason(
+                    code="train_repair_capacity_wait",
+                    detail=(f"active train repair for batch {repair['batch_id']} "
+                            f"(operation {repair['id']}) has waited "
+                            f"{int((time.time() - task.updated_at) / 60)}m "
+                            f"for worker capacity on {task.profile_id}"),
+                    ref=repair["id"],
+                ))
+
         return {
             "success": True,
             "reasons": reasons,

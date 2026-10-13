@@ -90,6 +90,24 @@ def test_min_active_keeps_idle_workers():
     assert [(a.kind, a.count) for a in actions] == [("start", 1)]
 
 
+def test_repairs_receive_limited_global_headroom_before_ordinary_profiles():
+    ordinary, repair = PoolKey("a-ordinary"), PoolKey("z-repair")
+    actions, _ = run(
+        demand={ordinary: 500, repair: 2}, bounds={ordinary: (0, 6), repair: (0, 6)},
+        global_cap=2, repair_demand={repair: 2},
+    )
+    assert [(a.key, a.count) for a in actions] == [(repair, 2)]
+
+
+def test_repair_priority_never_overrides_a_disabled_pool():
+    ordinary, repair = PoolKey("ordinary"), PoolKey("repair")
+    actions, _ = run(
+        demand={ordinary: 5, repair: 1}, bounds={ordinary: (0, 6), repair: (0, 0)},
+        global_cap=1, repair_demand={repair: 1},
+    )
+    assert [(a.key, a.count) for a in actions] == [(ordinary, 1)]
+
+
 def test_never_below_busy_plus_starting():
     actions, _ = run(
         supply={K: PoolSupply(running_busy=2, starting=1)}, demand={K: 0}, bounds={K: (0, 1)}

@@ -313,6 +313,15 @@ for pid, t in candidates:
         if status in ("READY", "DEFINED"):
             why = explain(tid)
             rows = (why.get("reasons") or []) if isinstance(why, dict) else []
+            repair_alarm = next(
+                (r for r in rows if r["code"] == "train_repair_capacity_wait"), None
+            )
+            if repair_alarm is not None:
+                findings.append(
+                    f"TRAIN-REPAIR-CAPACITY {pid} {tid} "
+                    f"[{status} {age(t['updated_at'])} {prof}] {repair_alarm['detail']}"
+                )
+                continue
             deps = [r for r in rows if r["code"] == "blocked_dependency"]
             # Waiting on an unfinished blocker is normal. A COMPLETED blocker
             # means its branch has not been delivered to main yet; that is

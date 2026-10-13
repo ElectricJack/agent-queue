@@ -12714,7 +12714,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:110d9e6a4db69d712d44035eb4eff18ed642f141d1bb679ea46288290c5ebd49",
+      "digest": "sha256:f9a584c846885d1aca95da373073d3ee880ad0b02a365ba975277d57085984af",
       "imports": [
         "src.api.auth",
         "src.commands.claim_commands",
@@ -12726,6 +12726,7 @@
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.models",
+        "src.doctor.stall_checks",
         "src.doctor.task_checks",
         "src.git.github_contracts",
         "src.git.manager",
