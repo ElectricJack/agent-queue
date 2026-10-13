@@ -144,6 +144,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/playbook_fixture_activation.py"], areas: ["shipped-playbooks"] }
   - { paths: ["tests/playbook_v2_engine_helpers.py"], areas: ["ci-sentinel", "epic-trains", "integration-promotion", "playbook-engine", "shipped-playbooks", "task-routing"] }
   - { paths: ["tests/playbook_v2_helpers.py"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
+  - { paths: ["tests/_private_values_helper.py"], areas: ["playbook-engine", "shipped-playbooks"] }
   - { paths: ["tests/session_dispatch_helpers.py"], areas: ["integration-promotion", "memory-facts", "orchestrator", "profiles", "prompts", "provider-failover", "task-lifecycle"] }
   - { paths: ["tests/fixtures/app_mode/**"], areas: ["integration-controls"] }
   - { paths: ["tests/fixtures/integration/**"], areas: ["integration-promotion"] }

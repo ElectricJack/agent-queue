@@ -11,7 +11,13 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
-    for table in ("playbook_step_receipts", "playbook_waits"):
+    # A partial or restored schema may lack either table: nothing to widen there.
+    present = {
+        table
+        for table in ("playbook_step_receipts", "playbook_waits")
+        if sa.inspect(bind).has_table(table)
+    }
+    for table in sorted(present):
         if "iteration_path" not in {c["name"] for c in sa.inspect(bind).get_columns(table)}:
             op.add_column(
                 table, sa.Column("iteration_path", sa.Text(), nullable=False, server_default="")
@@ -28,10 +34,12 @@ def upgrade() -> None:
         "turn_index",
         "receipt_kind",
     ]
-    existing = {
-        c["name"]: c["column_names"] for c in sa.inspect(bind).get_unique_constraints(table)
-    }
-    if existing.get(name) != columns:
+    existing = (
+        {c["name"]: c["column_names"] for c in sa.inspect(bind).get_unique_constraints(table)}
+        if table in present
+        else {}
+    )
+    if table in present and existing.get(name) != columns:
         if name in existing:
             op.drop_constraint(name, table, type_="unique")
         op.create_unique_constraint(name, table, columns)
@@ -50,6 +58,8 @@ def upgrade() -> None:
             True,
         ),
     ):
+        if table not in present:
+            continue
         indexes = {i["name"]: i["column_names"] for i in sa.inspect(bind).get_indexes(table)}
         if indexes.get(name) != columns:
             if name in indexes:

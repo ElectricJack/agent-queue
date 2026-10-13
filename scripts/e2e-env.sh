@@ -549,6 +549,20 @@ fi
 # path by default.
 PLAYBOOKS_ENABLED="${AQ_E2E_PLAYBOOKS_ENABLED:-true}"
 
+# Protected playbook values (command results saved with save_result_as, LLM
+# transcripts) need an encryption key in the daemon's environment; without
+# one, S18's shipped triage step refuses with private_storage_key_unavailable.
+# The daemon loads .env beside its config, as an operator install does.  The
+# key is disposable but kept for this world's lifetime, so a non-reset rerun
+# can still decrypt values the database already holds.
+E2E_ENV_FILE="$AQ_E2E_HOME/.env"
+if ! grep -q '^AQ_E2E_PLAYBOOK_PRIVATE_KEY=' "$E2E_ENV_FILE" 2>/dev/null; then
+    ( umask 077
+      printf 'AQ_E2E_PLAYBOOK_PRIVATE_KEY=%s\n' "$(python3 -c \
+          'import base64, os; print(base64.b64encode(os.urandom(32)).decode())')" \
+          >> "$E2E_ENV_FILE" )
+fi
+
 # Both fake providers start healthy; S16 rewrites this file mid-run.
 printf '{"prova": "ok", "provb": "ok"}\n' > "$E2E_FAKE_SCRIPT"
 
@@ -658,6 +672,9 @@ state_machine:
 # database-only sink; messaging_platform:none prevents external delivery.
 playbooks:
   enabled: $PLAYBOOKS_ENABLED
+  private_value_active_key_id: e2e
+  private_value_key_env:
+    e2e: AQ_E2E_PLAYBOOK_PRIVATE_KEY
 
 messages:
   enabled: true

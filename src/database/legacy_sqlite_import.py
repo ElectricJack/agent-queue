@@ -252,6 +252,16 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_compatibility_usage",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
+        # Encrypted playbook private values (revision 95), protected
+        # observation snapshots (revision 97) and durable playbook state
+        # namespaces and journals (revision 98) shipped after SQLite removal;
+        # legacy files have none of them.
+        "playbook_private_values",
+        "observation_snapshots",
+        "observation_snapshot_pages",
+        "playbook_state_namespaces",
+        "playbook_state_entries",
+        "playbook_state_operations",
     }
 )
 

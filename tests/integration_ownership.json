@@ -8768,7 +8768,11 @@
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
-    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
+    "src/database/queries/observation_snapshot_queries.py::task_rows": "Generic protected-snapshot projection of ordinary task rows; integration_mode is an existing task column copied verbatim. No integration storage, lifecycle or ref authority.",
+    "src/doctor/stall_checks.py::_SUBJECTS['completed_undelivered']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['continuous_promotion_lag']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['integration_unknown_facts']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -16122,7 +16126,17 @@
     "src/profiles/capabilities.py::DENY_ALL": "Generic empty capability policy, shared by every principal kind; no integration-specific behavior.",
     "src/api/scope.py::_PLAYBOOK_COMPILER_COMMANDS": "Generic compiler command vocabulary used for assignment-scoped authoring authority; no integration lifecycle or publication behavior.",
     "src/api/scope.py::_has_live_playbook_compiler_assignment": "Read-only generic check of a live compiler session and held compiler task; no integration state or publication authority.",
-    "src/commands/operator_authority.py::operator_grant": "Generic context-local exact-command grant lookup; binding validates command and arguments before shared resource authorization, with no integration-specific behavior."
+    "src/commands/operator_authority.py::operator_grant": "Generic context-local exact-command grant lookup; binding validates command and arguments before shared resource authorization, with no integration-specific behavior.",
+    "src/doctor/models.py::observation_context": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/models.py::observation_read_failed": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::MAX_PRODUCER_BYTES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::MAX_ROWS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::finding": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::partition": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/definition.py::step_values": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/definition.py::uses_iteration_paths": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/features.py::execution_metadata_from_source": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

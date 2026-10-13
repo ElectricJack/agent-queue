@@ -4690,3 +4690,149 @@ actuals and the operation id; every other state carries no actuals
 | `provider_operation_id` | TEXT | nullable | Stable operation id, required once unknown or settled |
 | `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Reservation time |
 | `updated_at` | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Last settlement time |
+
+### Table: `playbook_private_values`
+
+Encrypted private values owned by a playbook run, a state namespace or an
+observation snapshot. Plaintext never reaches this table: only AEAD ciphertext,
+its 12-byte nonce (`ck_playbook_private_values_nonce`) and the key id are stored,
+and safe projections reference a value by id and digest. Expired rows are
+collected by `expires_at` (`idx_private_values_expiry`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `value_id` | TEXT | PRIMARY KEY | Private value identity |
+| `owner_kind` | TEXT | NOT NULL | run, namespace or snapshot (`ck_playbook_private_values_owner_kind`) |
+| `owner_id` | TEXT | NOT NULL, non-blank | Owning run, namespace or snapshot id (`ck_playbook_private_values_owner`) |
+| `scope_kind` | TEXT | NOT NULL | system, project or profile (`ck_playbook_private_values_scope_kind`) |
+| `scope_owner` | TEXT | NOT NULL, non-blank | Scope owner id |
+| `format_version` | INTEGER | NOT NULL, > 0 | Envelope format (`ck_playbook_private_values_format_version`) |
+| `content_type` | TEXT | NOT NULL | Plaintext content type |
+| `ciphertext` | BYTEA | NOT NULL | Encrypted value |
+| `key_id` | TEXT | NOT NULL | Encryption key identity |
+| `nonce` | BYTEA | NOT NULL, 12 bytes | AEAD nonce |
+| `digest` | TEXT | NOT NULL | Plaintext digest used by safe projections |
+| `byte_count` | BIGINT | NOT NULL, >= 0 | Plaintext size (`ck_playbook_private_values_byte_count`) |
+| `expires_at` | FLOAT | nullable | Expiry (Unix seconds); NULL lives with its owner |
+
+Indexed by owner (`idx_private_values_owner`) and expiry.
+
+### Table: `observation_snapshots`
+
+Immutable, protected observation snapshots behind opt-in `pagination: snapshot`
+reads (`list_tasks`, `list_projects`, `get_stuck_tasks`, `doctor_run`). One row is
+the snapshot header: the producer, the authority fingerprint and scope it was
+materialised for, the request hash, its coverage and identity manifest, and the
+expiry after which `observation_snapshot_cleanup` collects it. See
+[guides/observation-snapshots.md](../guides/observation-snapshots.md).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `snapshot_id` | TEXT | PRIMARY KEY | Snapshot identity |
+| `producer` | TEXT | NOT NULL | Producing command |
+| `producer_version` | INTEGER | NOT NULL, > 0 | Producer schema version (`ck_observation_snapshots_version`) |
+| `authority_fingerprint` | TEXT | NOT NULL | Principal authority the snapshot is bound to |
+| `scope_kind` | TEXT | NOT NULL | system, project or profile (`ck_observation_snapshots_scope`) |
+| `scope_owner` | TEXT | NOT NULL, non-blank | Scope owner id |
+| `run_id` | TEXT | nullable | Playbook run that requested it (`idx_observation_snapshots_run`) |
+| `request_hash` | TEXT | NOT NULL | Hash of the normalised request |
+| `observed_at` | FLOAT | NOT NULL | Observation time (Unix seconds) |
+| `materialized_at` | FLOAT | NOT NULL | Materialisation time |
+| `expires_at` | FLOAT | NOT NULL, > materialized_at | Expiry (`ck_observation_snapshots_expiry`, `idx_observation_snapshots_expiry`) |
+| `manifest` | JSONB | NOT NULL | Identity manifest |
+| `coverage` | JSONB | NOT NULL | Coverage records |
+| `envelope` | JSONB | NOT NULL | Response envelope without page bodies |
+| `complete` | BOOLEAN | NOT NULL | Whether the observation covered everything |
+| `page_count` | INTEGER | NOT NULL, >= 0 | Number of pages |
+| `content_digest` | TEXT | NOT NULL | Digest over all pages |
+| `byte_count` | BIGINT | NOT NULL, >= 0 | Total size (`ck_observation_snapshots_sizes`) |
+
+Indexed by scope (`idx_observation_snapshots_scope`).
+
+### Table: `observation_snapshot_pages`
+
+The pages of one snapshot. Page bodies live in `playbook_private_values` (owner
+kind `snapshot`) and are referenced here; callers hold only an opaque page token,
+stored as a hash.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `snapshot_id` | TEXT | PK, FK observation_snapshots.snapshot_id, CASCADE | Owning snapshot |
+| `ordinal` | INTEGER | PK, >= 0 | Page index |
+| `kind` | TEXT | NOT NULL | Page kind (rows, artifact, ...) |
+| `token_hash` | TEXT | NOT NULL, UNIQUE | Hash of the opaque page token |
+| `private_reference` | JSONB | NOT NULL | Reference to the encrypted page body |
+| `content_digest` | TEXT | NOT NULL | Page digest |
+| `byte_count` | BIGINT | NOT NULL, >= 0 | Page size |
+| `row_count` | INTEGER | NOT NULL, >= 0 | Rows in the page (`ck_observation_snapshot_pages_sizes`) |
+| `artifact` | BOOLEAN | NOT NULL | Whether the page is an artifact rather than rows |
+
+### Table: `playbook_state_namespaces`
+
+Durable playbook state namespaces, one per scope, owner, playbook and state schema
+version (`uq_playbook_state_namespace_identity`). Deliberately no FK to mutable
+playbook or source rows. `revision` is the namespace CAS counter; the accounting
+columns enforce quotas. See [guides/playbook-state.md](../guides/playbook-state.md).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `namespace_id` | TEXT | PRIMARY KEY | Namespace identity |
+| `scope_kind` | TEXT | NOT NULL | system, project or profile; system owner is `system` (`ck_playbook_state_namespace_scope`) |
+| `scope_owner` | TEXT | NOT NULL, non-blank | Scope owner id |
+| `playbook_id` | TEXT | NOT NULL, non-blank | Owning playbook |
+| `state_schema_version` | INTEGER | NOT NULL, > 0 | State schema version (`ck_playbook_state_namespace_version`) |
+| `revision` | BIGINT | NOT NULL, DEFAULT 0 | Namespace revision |
+| `key_count` | INTEGER | NOT NULL, DEFAULT 0 | Live keys |
+| `value_bytes` | BIGINT | NOT NULL, DEFAULT 0 | Stored value bytes |
+| `journal_bytes` | BIGINT | NOT NULL, DEFAULT 0 | Operation journal bytes (`ck_playbook_state_namespace_accounting`) |
+| `replay_floor` | FLOAT | nullable | Reset fence: older operations never replay |
+| `created_at` | FLOAT | NOT NULL | Creation time (Unix seconds) |
+| `updated_at` | FLOAT | NOT NULL | Last change |
+
+### Table: `playbook_state_entries`
+
+Keys in a namespace, in two record spaces: `kv` values and `notification`
+episodes (`ck_playbook_state_entry_identity`). Values live in
+`playbook_private_values` and are referenced. Deletes leave tombstones, which are
+never active (`ck_playbook_state_tombstone_inactive`); notification records never
+expire (`ck_playbook_state_notification_no_expiry`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `namespace_id` | TEXT | PK, FK playbook_state_namespaces.namespace_id | Owning namespace |
+| `record_space` | TEXT | PK | kv or notification |
+| `key` | TEXT | PK, non-blank | Entry key |
+| `value_reference` | JSONB | nullable | Reference to the encrypted value |
+| `value_bytes` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Value size |
+| `revision` | BIGINT | NOT NULL, > 0 | Entry revision (`ck_playbook_state_entry_counters`) |
+| `tombstone` | BOOLEAN | NOT NULL, DEFAULT false | Deleted marker |
+| `expires_at` | FLOAT | nullable | TTL expiry for kv entries |
+| `created_at` | FLOAT | NOT NULL | Creation time |
+| `updated_at` | FLOAT | NOT NULL | Last change |
+| `episode` | BIGINT | NOT NULL, DEFAULT 0, >= 0 | Notification episode counter |
+| `active` | BOOLEAN | NOT NULL, DEFAULT false | Notification condition is present |
+| `source_partition` | JSONB | nullable | Observation partition that owns the condition |
+| `first_seen` | FLOAT | nullable | Episode start |
+| `last_seen` | FLOAT | nullable | Latest presence observation |
+| `last_notified` | FLOAT | nullable | Latest notification sent |
+| `last_observation_id` | TEXT | nullable | Latest observation applied |
+| `last_observed_at` | FLOAT | nullable | Its observation time |
+| `message_id` | TEXT | nullable | Latest enqueued notification message |
+| `replay_floor` | FLOAT | nullable | Observations older than this are ignored |
+
+### Table: `playbook_state_operations`
+
+The idempotency journal: one row per committed `operation_key` in a namespace, so a
+retried mutation with the same request digest replays its recorded result instead
+of applying twice.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `namespace_id` | TEXT | PK, FK playbook_state_namespaces.namespace_id | Owning namespace |
+| `operation_key` | TEXT | PK, non-blank | Caller idempotency key (`ck_playbook_state_operation_identity`) |
+| `request_digest` | TEXT | NOT NULL | Digest of the original request |
+| `result_reference` | JSONB | NOT NULL | Reference to the recorded result |
+| `byte_count` | BIGINT | NOT NULL, >= 0 | Recorded result size |
+| `revision` | BIGINT | NOT NULL, > 0 | Namespace revision it committed |
+| `message_id` | TEXT | nullable | Notification message enqueued with it |
+| `committed_at` | FLOAT | NOT NULL | Commit time |

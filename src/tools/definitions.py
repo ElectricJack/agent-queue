@@ -6,8 +6,10 @@ These are pure data — no logic.
 
 from __future__ import annotations
 
-from src.commands.doctor_observation_commands import CATALOG_SCHEMA, RUN_SCHEMA
-from src.commands.playbook_state_commands import STATE_SCHEMAS
+# Pure-data schema modules: importing the command mixins here would pull the
+# doctor registry and the database into every CLI start.
+from src.commands.doctor_observation_schemas import CATALOG_SCHEMA, RUN_SCHEMA
+from src.commands.playbook_state_schemas import STATE_SCHEMAS
 
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).

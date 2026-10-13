@@ -2888,11 +2888,14 @@ def s18_supervisor_failure_triage(state: dict) -> str:
         )
         for row in rows:
             detail = api_checked("inspect_playbook_run", {"run_id": row["run_id"]})["run"]
-            if detail.get("event", {}).get("task_id") == task_id:
+            # The run row appears as soon as dispatch starts it; judge it only
+            # once it has left ``running`` (its command steps take a moment).
+            if (detail.get("event", {}).get("task_id") == task_id
+                    and detail.get("lifecycle") not in ("running", "cancelling")):
                 return detail
         return None
 
-    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run")
+    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run to finish")
     check(run["lifecycle"] == "completed", f"S18 triage run: {run}")
     supervisor = supervisor_recipient()
 

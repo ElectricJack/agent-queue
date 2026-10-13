@@ -73,6 +73,22 @@ KNOWN_AUTO_REGISTERED: frozenset[str] = frozenset(
         "explain_task",
         "gate_list",
         "gate_show",
+        # Read-only doctor observations, snapshot cleanup and playbook state
+        # (doctor_observation_commands.py, playbook_state_commands.py). Their
+        # shared schemas are deliberately fallback schemas so every descriptor
+        # projection reads one source (docs/specs/design/trust-and-ops.md 5.7,
+        # docs/guides/observation-snapshots.md, docs/guides/playbook-state.md);
+        # no typed LLM-facing definition is written for them.
+        "doctor_catalog",
+        "doctor_run",
+        "observation_snapshot_cleanup",
+        "playbook_state_delete",
+        "playbook_state_get",
+        "playbook_state_inspect",
+        "playbook_state_list",
+        "playbook_state_notify",
+        "playbook_state_reset",
+        "playbook_state_set",
     }
 )
 
@@ -104,6 +120,11 @@ KNOWN_EMPTY_SCHEMA_COMMANDS: frozenset[str] = frozenset(
         "plugin_remove",
         "plugin_reset_prompts",
         "plugin_update",
+        # Take no arguments: each reads ``args`` only to reject anything passed.
+        # Their shared fallback is closed (``additionalProperties: false``), so
+        # the empty schema is the contract, not a dropped one.
+        "doctor_catalog",
+        "observation_snapshot_cleanup",
     }
 )
 
@@ -433,6 +454,10 @@ class TestNoArgumentlessCommandsByAccident:
         for name, schema in _FALLBACK_INPUT_SCHEMAS.items():
             assert schema.get("type") == "object", name
             properties = schema.get("properties")
+            if name in KNOWN_EMPTY_SCHEMA_COMMANDS and properties == {}:
+                # Ledgered argumentless commands: closed, so nothing is dropped.
+                assert schema.get("additionalProperties") is False, name
+                continue
             assert properties, f"{name}: a fallback with no properties is the bug it fixes"
             for field in schema.get("required", []):
                 assert field in properties, f"{name}: required '{field}' is not a property"

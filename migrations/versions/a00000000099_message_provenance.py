@@ -10,8 +10,10 @@ depends_on = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    if "provenance" not in {c["name"] for c in sa.inspect(bind).get_columns("messages")}:
+    inspector = sa.inspect(op.get_bind())
+    if inspector.has_table("messages") and "provenance" not in {
+        c["name"] for c in inspector.get_columns("messages")
+    }:
         op.add_column("messages", sa.Column("provenance", JSONB, nullable=True))
 
 
