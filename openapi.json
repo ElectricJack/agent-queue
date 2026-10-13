@@ -48604,6 +48604,18 @@
               }
             ],
             "title": "Pane Open"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance"
           }
         },
         "additionalProperties": true,

@@ -1070,6 +1070,7 @@ class Message:
     created_seq: int | None = None  # server sequence for typed message waits
     last_notified_at: float | None = None
     notification_attempts: int = 0
+    provenance: dict | None = None
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).

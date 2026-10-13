@@ -957,6 +957,7 @@
         "tests/test_playbook_run_repository.py",
         "tests/test_playbook_services.py",
         "tests/test_playbook_state.py",
+        "tests/test_playbook_state_notify.py",
         "tests/test_playbook_wait_repository.py",
         "tests/test_v2_dry_run.py",
         "tests/test_v2_engine.py",
@@ -11287,10 +11288,11 @@
         "migrations"
       ],
       "default_arm": false,
-      "digest": "sha256:33793d1176e20f495ca3a332cce406b81aca642c9fb10fc7854cc1c5b808b4a7",
+      "digest": "sha256:2c97101e27a4724fcd3a15d807eea3f5850a4c85f347bf7ba766c8df0bfb7b68",
       "imports": [
         "src.database",
-        "src.database.tables"
+        "src.database.tables",
+        "src.models"
       ],
       "markers": [
         "migration"
@@ -12496,6 +12498,37 @@
         "parametrize"
       ],
       "summary": "D1 state boundaries and transaction races against disposable PostgreSQL."
+    },
+    "tests/test_playbook_state_notify.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c15275941d5c1ce3556e3a8e341fe076443ca16060ca6dddd1cc115f527d6445",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.playbook_state_queries",
+        "src.database.tables",
+        "src.messages.service",
+        "src.models",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.executors.command",
+        "src.playbooks.expressions",
+        "src.playbooks.private_values",
+        "src.playbooks.state",
+        "src.playbooks.state_notify",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "D2 authority, atomicity, observation ordering and database-free preview proofs."
     },
     "tests/test_playbook_v2_api_dtos.py": {
       "areas": [

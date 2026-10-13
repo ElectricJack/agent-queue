@@ -27,6 +27,7 @@ import math
 import time
 import uuid
 from collections.abc import Callable, Collection, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
@@ -298,6 +299,7 @@ class _DryRunCursor:
     nodes: tuple[DryRunNode, ...] = ()
     unresolved: bool = False
     iteration_entries: int = 0
+    state_preview: dict = field(default_factory=dict)
 
 
 class InMemoryRunRecorder:
@@ -896,6 +898,7 @@ class PlaybookEngine:
                                 cursor.nodes + (node,),
                                 True,
                                 cursor.iteration_entries,
+                                deepcopy(cursor.state_preview),
                             )
                         )
                 continue
@@ -990,6 +993,7 @@ class PlaybookEngine:
                     cursor.nodes + (node,),
                     cursor.unresolved,
                     cursor.iteration_entries + int(result.loop_frame is not None),
+                    cursor.state_preview,
                 )
             )
         if truncated:
@@ -1044,6 +1048,7 @@ class PlaybookEngine:
             iteration_path=encode_iteration_path([(f.step_id, f.index) for f in cursor.loop_stack])
                 if uses_iteration_paths(artifact) else "",
             iteration_entries=cursor.iteration_entries,
+            state_preview=cursor.state_preview,
             loop_stack=cursor.loop_stack,
             inputs=inputs,
             authored_idempotency_key=authored_key,

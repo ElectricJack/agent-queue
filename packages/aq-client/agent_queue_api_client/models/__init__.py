@@ -922,6 +922,7 @@ from .message_list_response import MessageListResponse
 from .message_list_response_422 import MessageListResponse422
 from .message_model import MessageModel
 from .message_model_pane_open_type_0 import MessageModelPaneOpenType0
+from .message_model_provenance_type_0 import MessageModelProvenanceType0
 from .message_reply_request import MessageReplyRequest
 from .message_reply_response import MessageReplyResponse
 from .message_reply_response_422 import MessageReplyResponse422
@@ -2860,6 +2861,7 @@ __all__ = (
     "MessageListResponse422",
     "MessageModel",
     "MessageModelPaneOpenType0",
+    "MessageModelProvenanceType0",
     "MessageReplyRequest",
     "MessageReplyResponse",
     "MessageReplyResponse422",

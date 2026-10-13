@@ -36,6 +36,20 @@ def _schema(properties, required=()):
 
 
 STATE_SCHEMAS = {
+    "playbook_state_notify": _schema({
+        "key": _TEXT, "action": {"enum": ["present", "cleared"]},
+        "observed_at": {"type": "number"}, "observation_id": _TEXT,
+        "expected_revision": _REVISION, "last_value": {},
+        "source_partition": {"type": ["object", "null"]},
+        "repeat_after_seconds": {"type": ["integer", "null"], "minimum": 1,
+                                 "maximum": 2_147_483_647},
+        "message": _schema({
+            "to_kind": {"enum": ["session", "task", "profile", "user"]},
+            "to_id": _TEXT,
+            "body": {"type": "string", "minLength": 1, "maxLength": 16384, "pattern": r"\S"},
+            "subject": {"type": ["string", "null"], "maxLength": 512},
+        }, ["to_kind", "to_id", "body"]),
+    }, ["key", "action", "observed_at", "observation_id", "message"]),
     "playbook_state_get": _schema({"key": _TEXT, **_READ}, ["key"]),
     "playbook_state_list": _schema(_PAGES),
     "playbook_state_set": _schema({
@@ -70,6 +84,18 @@ class PlaybookStateCommandsMixin:
                 namespace = Namespace(**args["namespace"])
             else:
                 namespace = await resolve_namespace(self, command)
+            if command == "playbook_state_notify":
+                from src.playbooks.invocation import current_invocation
+
+                invocation = current_invocation()
+                if (not principal.policy.allows_aq_command("message_send")
+                        or "message_send" not in invocation.aq_commands):
+                    raise StateError("unauthorized")
+                if args["action"] == "cleared" and "expected_revision" not in args:
+                    raise StateError("state.invalid_arguments")
+                disabled = self._messages_disabled_error()
+                if disabled:
+                    return disabled
             engine = getattr(self.db, "_engine", None)
             if engine is None:
                 raise StateError("state.storage_unavailable")
@@ -78,6 +104,11 @@ class PlaybookStateCommandsMixin:
                 private = PrivateValueService.from_config(engine, self.config.playbooks)
             service = StateService(engine, private)
             inputs = {key: value for key, value in args.items() if key != "namespace"}
+            if command == "playbook_state_notify":
+                from src.playbooks.state_notify import NotificationService
+
+                return await NotificationService(engine, private).notify(
+                    self, namespace, principal, **inputs)
             if command == "playbook_state_get" or (command == "playbook_state_inspect"
                                                    and "key" in inputs):
                 if set(inputs) - {"key", "record_space"}:
@@ -120,3 +151,7 @@ class PlaybookStateCommandsMixin:
     async def _cmd_playbook_state_reset(self, args: dict) -> dict:
         """Operator reset: retain revisions/journals and warn of deliberate re-alert."""
         return await self._state_command("playbook_state_reset", args)
+
+    async def _cmd_playbook_state_notify(self, args: dict) -> dict:
+        """Atomically enqueue episode/reminder/clear messages with observation replay."""
+        return await self._state_command("playbook_state_notify", args)

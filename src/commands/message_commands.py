@@ -13,9 +13,8 @@ activity signal.  Until it lands, ``messages.enabled`` alone gives the
 degraded but useful "queue and inbox" mode described in §13.
 
 Convention (see ``src/commands/handler.py``): every ``_cmd_*`` method takes a
-flat ``dict`` of arguments and returns a ``dict`` — domain data on success,
-``{"error": "..."}`` on failure.  No ``_cmd_*`` in this codebase injects a
-``success`` key; ``CommandHandler.execute()`` returns the dict verbatim.
+flat ``dict`` of arguments and returns a ``dict`` with a boolean ``success``
+field. ``CommandHandler.execute()`` returns the command envelope verbatim.
 """
 
 from __future__ import annotations
@@ -61,6 +60,7 @@ def message_to_dict(msg: Message) -> dict:
         "priority": msg.priority,
         "created_at": msg.created_at,
         "created_seq": msg.created_seq,
+        "provenance": msg.provenance,
         "delivered_at": msg.delivered_at,
         "read_at": msg.read_at,
         "read": msg.read_at is not None,
@@ -179,25 +179,6 @@ class MessageCommandsMixin:
             return True
         return await self._recipient_project_id(message.to_kind, message.to_id) == project_id
 
-    async def _supervisor_mailbox(self, to_id: str, project_id: str | None) -> str | None:
-        """The supervisor address to store for *to_id*, or None if it names none.
-
-        The suffix of ``supervisor-<suffix>`` is authoritative when it names a
-        project (CHAT-1), and ``supervisor-global`` is the global supervisor.
-        A suffix naming no project (agents wrote ``supervisor-aq`` for
-        ``agent-queue``) is stored as the supervisor of the message's own,
-        already validated project: that supervisor's ``message_inbox`` lists
-        only its name and ``supervisor-<its project>``, so the alias would
-        otherwise reach it through the delivery nudge alone. A projectless
-        message has no supervisor to resolve an alias to.
-        """
-        suffix = to_id.removeprefix(_SUPERVISOR_ADDRESS_PREFIX)
-        if to_id == _GLOBAL_SUPERVISOR_ADDRESS or (
-            suffix and await self.db.get_project(suffix) is not None
-        ):
-            return to_id
-        return _SUPERVISOR_ADDRESS_PREFIX + project_id if project_id else None
-
     async def _emit_message_event(self, event_type: str, payload: dict) -> None:
         """Emit a ``message.*`` event without letting it fail the command."""
         try:
@@ -218,142 +199,17 @@ class MessageCommandsMixin:
         if is_collaboration_thread(args.get("thread_id")):
             return await self._send_collaboration_message(args)
 
-        to_kind = (args.get("to_kind") or "").strip()
-        to_id = (args.get("to_id") or "").strip()
-        if to_kind not in MESSAGE_TO_KINDS:
-            return {
-                "success": False,
-                "error": f"Invalid to_kind '{to_kind}'. "
-                f"Allowed: {', '.join(sorted(MESSAGE_TO_KINDS))}"
-            }
-        if not to_id:
-            return {"success": False, "error": "to_id is required"}
+        from src.messages.submission import playbook_sender, prepare_submission
+        from src.commands.principal import PrincipalKind, current_principal
 
-        from_kind = (args.get("from_kind") or "user").strip()
-        if from_kind not in MESSAGE_FROM_KINDS:
-            return {
-                "success": False,
-                "error": f"Invalid from_kind '{from_kind}'. "
-                f"Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}"
-            }
-        from_id = (args.get("from_id") or "").strip()
-        if not from_id:
-            return {"success": False, "error": "from_id is required"}
-
-        # A task, or a session addressed by id, belongs to one project, and its
-        # readers are fenced to that project: a durable message wait matches
-        # only same-project rows.  When
-        # the caller names no project the recipient supplies it, so the global
-        # supervisor's reply lands where the waiting worker can see it.
-        requested_project_id = args.get("project_id") or (
-            None
-            if args.get("system_only")
-            else await self._recipient_project_id(to_kind, to_id)
-        )
-        scope = self._current_scope or {}
-        global_sender = (
-            scope.get("kind") == "session"
-            and scope.get("elevated")
-            and scope.get("project_id") is None
-            and not requested_project_id
-        )
-        system_only = global_sender or bool(args.get("system_only")) or (
-            to_kind == "session" and to_id == "supervisor-global"
-        ) or (
-            not requested_project_id
-            and from_kind == "session"
-            and from_id == "supervisor-global"
-        )
-        if system_only:
-            scope_error = self._system_message_scope_error()
-            if scope_error:
-                return scope_error
-            project_id = None
-        else:
-            project_id = requested_project_id or self._active_project_id
-            if not project_id:
-                return {"success": False, "error": "project_id is required (no active project set)"}
-            project = await self.db.get_project(project_id)
-            if not project:
-                return {"success": False, "error": f"Project '{project_id}' not found"}
-
-        if to_kind == "session" and to_id.startswith(_SUPERVISOR_ADDRESS_PREFIX):
-            mailbox = await self._supervisor_mailbox(to_id, project_id)
-            if mailbox is None:
-                return {
-                    "success": False,
-                    "error": (
-                        f"session:{to_id} names no project and the message has no "
-                        f"project to resolve it to; send to "
-                        f"session:{_SUPERVISOR_ADDRESS_PREFIX}<project-id> or "
-                        f"session:{_GLOBAL_SUPERVISOR_ADDRESS}"
-                    )
-                }
-            to_id = mailbox
-
-        body = args.get("body")
-        if not body or not str(body).strip():
-            return {"success": False, "error": "body is required"}
-
-        priority = args.get("priority", 100)
-        if isinstance(priority, bool) or not isinstance(priority, int):
-            return {"success": False, "error": "priority must be an integer"}
-
-        reply_to_id = args.get("reply_to_id")
-        if reply_to_id:
-            parent = await self.db.get_message(reply_to_id)
-            if parent is None:
-                return {"success": False, "error": f"Message '{reply_to_id}' not found (reply_to_id)"}
-            if is_collaboration_thread(parent.thread_id):
-                return {
-                    "success": False,
-                    "error": "Collaboration replies must use their collaboration thread",
-                    "error_code": "collaboration.invalid",
-                }
-
-        pane_open = args.get("pane_open")
-        # Private internal callers can label a message for a delivery policy
-        # without exposing a new public message-send option.
-        body_kind = args.get("_body_kind")
-        if body_kind not in {None, "task_comment"}:
-            return {"success": False, "error": "invalid internal message body kind"}
-        pane_open_json: str | None = None
-        if pane_open is not None:
-            if not isinstance(pane_open, dict):
-                return {"success": False, "error": "pane_open must be an object"}
-            view_id = pane_open.get("view")
-            if not view_id or not isinstance(view_id, str):
-                return {"success": False, "error": "pane_open.view is required"}
-            from src.panes.registry import SERVER_PANE_REGISTRY
-
-            entry = SERVER_PANE_REGISTRY.get(view_id)
-            if entry is None:
-                return {"success": False, "error": f"unknown pane view '{view_id}'"}
-            if not entry.agent_pushable:
-                return {"success": False, "error": f"pane view '{view_id}' is not agent-pushable"}
-            pane_args = pane_open.get("args", {})
-            if not isinstance(pane_args, dict):
-                return {"success": False, "error": "pane_open.args must be an object"}
-            import json as _json
-
-            pane_open_json = _json.dumps({"view": view_id, "args": pane_args})
-            body_kind = "pane_open"
-
-        msg = await self.db.create_message(
-            project_id=project_id,
-            from_kind=from_kind,
-            from_id=from_id,
-            to_kind=to_kind,
-            to_id=to_id,
-            body=str(body),
-            subject=args.get("subject"),
-            thread_id=args.get("thread_id"),
-            priority=priority,
-            archive_after_inject=bool(args.get("archive_after_inject", False)),
-            reply_to_id=reply_to_id,
-            body_kind=body_kind,
-            pane_open=pane_open_json,
-        )
+        submission = await prepare_submission(self, args)
+        if submission.get("success") is False:
+            return submission
+        principal = current_principal()
+        if principal and principal.kind is PrincipalKind.PLAYBOOK:
+            submission.update(playbook_sender())
+        msg = await self.db.create_message(**submission)
+        pane_open_json = submission["pane_open"]
 
         _sent_payload = {
             "message_id": msg.id,
@@ -371,8 +227,7 @@ class MessageCommandsMixin:
             _sent_payload["pane_open"] = _json.loads(pane_open_json)
         await self._emit_message_event("message.sent", _sent_payload)
 
-        # "queued" is the only state Phase 1 can honestly report: nothing
-        # delivers a message until the Phase 3 engine exists.
+        # The delivery service consumes this committed row asynchronously.
         return {
             "success": True,
             "message_id": msg.id,

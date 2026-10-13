@@ -1,5 +1,5 @@
 {
-  "cli_catalogue_sha256": "74f1afcbf73a4f2c92c8d8e4f9a563adfa6e036a07ee33bff1213135fef1cf12",
+  "cli_catalogue_sha256": "074ac7979f95e93d367d4d4ea857c8f8617da929648cf293f7e64a428f704bd2",
   "contracts": {
     "get_stuck_tasks": {
       "execution": {

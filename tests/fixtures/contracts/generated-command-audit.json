@@ -269,7 +269,7 @@
       "tests/test_message_commands.py"
     ],
     "helper_producers": {
-      "_cmd_message_send": "sha256:12af9dd781699962c8ee4658764fd1e1c21a8294dc3786eb2da090bf76bb2844",
+      "_cmd_message_send": "sha256:b5f366331763d8148f6d74df2fea686fffd11b9eedda3c0bf55d0232bcb7b39f",
       "_messages_disabled_error": "sha256:5f28d51e074476c21a185382f7257100fb1e390d96b4fff61b166c4a2814cb95",
       "_queue_supervisor_message": "sha256:f88c938d3e532f7f7005435f1812ba7f87db17a2549af2bd282e1e5b86f25259",
       "_send_collaboration_message": "sha256:47207c4d2dcca9b0e53bb086936bf805ab07722ac121832c2d0cb94abd998632",
@@ -10401,7 +10401,7 @@
   "message_send": {
     "mode": "typed",
     "producer": "src/commands/message_commands.py:MessageCommandsMixin._cmd_message_send",
-    "source_digest": "sha256:12af9dd781699962c8ee4658764fd1e1c21a8294dc3786eb2da090bf76bb2844",
+    "source_digest": "sha256:b5f366331763d8148f6d74df2fea686fffd11b9eedda3c0bf55d0232bcb7b39f",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -10432,94 +10432,29 @@
     "return_branches": [
       {
         "return": "disabled",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "await self._send_collaboration_message(args)",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': False, 'error': f\"Invalid to_kind '{to_kind}'. Allowed: {', '.join(sorted(MESSAGE_TO_KINDS))}\"}",
         "protocol": "explicit_boolean: False"
       },
       {
-        "return": "{'success': False, 'error': 'to_id is required'}",
+        "return": "_send_collaboration_message",
+        "protocol": "delegated_producer; existing held-member transaction"
+      },
+      {
+        "return": "prepare_submission failure envelope",
         "protocol": "explicit_boolean: False"
       },
       {
-        "return": "{'success': False, 'error': f\"Invalid from_kind '{from_kind}'. Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}\"}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': 'from_id is required'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "scope_error",
-        "protocol": "delegated_producer"
-      },
-      {
-        "return": "{'success': False, 'error': 'project_id is required (no active project set)'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': f\"Project '{project_id}' not found\"}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': f'session:{to_id} names no project and the message has no project to resolve it to; send to session:{_SUPERVISOR_ADDRESS_PREFIX}<project-id> or session:{_GLOBAL_SUPERVISOR_ADDRESS}'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': 'body is required'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': 'priority must be an integer'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': f\"Message '{reply_to_id}' not found (reply_to_id)\"}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': 'Collaboration replies must use their collaboration thread', 'error_code': 'collaboration.invalid'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': 'invalid internal message body kind'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': 'pane_open must be an object'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': 'pane_open.view is required'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': f\"unknown pane view '{view_id}'\"}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': f\"pane view '{view_id}' is not agent-pushable\"}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': False, 'error': 'pane_open.args must be an object'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': True, 'message_id': msg.id, 'state': 'queued', 'message': message_to_dict(msg)}",
+        "return": "queued message envelope",
         "protocol": "explicit_boolean: True"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_message_commands.py",
+      "tests/test_playbook_state_notify.py::test_normal_send_shares_sender_validation_and_atomic_insert_can_rollback"
+    ],
+    "review_notes": "Shared submission preserves body, priority, reply-thread, pane and recipient normalization validation. PLAYBOOK sends derive their system sender/provenance and verify recipient ownership. Collaboration still requires a live member session and uses its existing sequence transaction."
   },
   "message_status": {
     "mode": "json_object",
@@ -11064,6 +10999,42 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+    ]
+  },
+  "observation_snapshot_cleanup": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_observation_snapshot_cleanup",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'success': True, 'removed': removed}"
+      },
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'success': False, 'error_code': 'operator_only', 'error': 'operator_only'}"
+      },
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': 'invalid_arguments'}"
+      }
+    ],
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:438a2d237e6fdbd8d40187a5da7436a820632d028a11db7f0dbfc2bec3c4760b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_observation_snapshots.py"
     ]
   },
   "observe_integration_source_ci": {
@@ -12148,7 +12119,7 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ],
     "helper_producers": {
-      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+      "_state_command": "sha256:b9491667bb907f9431ca6100bd957ab5bac056cb441637799dddefdc3fe23bc9"
     },
     "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
   },
@@ -12185,7 +12156,7 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ],
     "helper_producers": {
-      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+      "_state_command": "sha256:b9491667bb907f9431ca6100bd957ab5bac056cb441637799dddefdc3fe23bc9"
     },
     "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
   },
@@ -12228,7 +12199,7 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ],
     "helper_producers": {
-      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+      "_state_command": "sha256:b9491667bb907f9431ca6100bd957ab5bac056cb441637799dddefdc3fe23bc9"
     },
     "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
   },
@@ -12269,9 +12240,53 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ],
     "helper_producers": {
-      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+      "_state_command": "sha256:b9491667bb907f9431ca6100bd957ab5bac056cb441637799dddefdc3fe23bc9"
     },
     "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
+  },
+  "playbook_state_notify": {
+    "mode": "json_object",
+    "producer": "src/commands/playbook_state_commands.py:PlaybookStateCommandsMixin._cmd_playbook_state_notify",
+    "source_digest": "sha256:b47aa04c057d1a260fbee795c148af32a84dc346b242bc8775f15ecaa06d8606",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "action",
+      "expected_revision",
+      "key",
+      "last_value",
+      "message",
+      "observation_id",
+      "observed_at",
+      "repeat_after_seconds",
+      "source_partition"
+    ],
+    "effect": "destructive",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "invocation_namespace_or_operator"
+    ],
+    "denial_reason": null,
+    "result_policy": "explicit boolean success with episode/revision/enqueue metadata; safe failure codes",
+    "return_branches": [
+      {
+        "return": "NotificationService.notify original receipt or new atomic enqueue/state result",
+        "protocol": "explicit_boolean: True"
+      },
+      {
+        "return": "shared message validation, disabled messages, StateError, PrivateValueError or SQLAlchemyError",
+        "protocol": "explicit_boolean: False; safe error_code or messages-disabled text"
+      }
+    ],
+    "tests": [
+      "tests/test_playbook_state_notify.py",
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
+    ],
+    "helper_producers": {
+      "_state_command": "sha256:b9491667bb907f9431ca6100bd957ab5bac056cb441637799dddefdc3fe23bc9"
+    },
+    "review_notes": "Pinned namespace and both state_notify/message_send grants required. Shared message submission reauthorizes the recipient before replay or suppression. Namespace lock, message insertion, state, protected values, quotas and replay journal share one SQL transaction. Preview uses a run/path-local memory overlay only."
   },
   "playbook_state_reset": {
     "mode": "json_object",
@@ -12308,7 +12323,7 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ],
     "helper_producers": {
-      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+      "_state_command": "sha256:b9491667bb907f9431ca6100bd957ab5bac056cb441637799dddefdc3fe23bc9"
     },
     "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
   },
@@ -12348,7 +12363,7 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete"
     ],
     "helper_producers": {
-      "_state_command": "sha256:bb40359ff0c9b6c88ec0b8c6e821a03b38423714e1e345a14ae91fb770640bd7"
+      "_state_command": "sha256:b9491667bb907f9431ca6100bd957ab5bac056cb441637799dddefdc3fe23bc9"
     },
     "review_notes": "Ordinary commands verify the current invocation, capability, pinned artifact and retained source before deriving namespace. Inspect/reset require independent LOCAL/SERVICE authority. Inputs and results are redacted for all principals. Durable mutation replay uses the original protected success result, after authorization."
   },
@@ -21800,41 +21815,5 @@
     ],
     "helper_producers": {},
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
-  },
-  "observation_snapshot_cleanup": {
-    "argument_reads_diagnostic_only": [],
-    "denial_reason": null,
-    "effect": "destructive",
-    "helper_producers": {},
-    "input_schema_source": "fallback",
-    "mode": "json_object",
-    "principal_requirement": "original_principal",
-    "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_observation_snapshot_cleanup",
-    "resource_gates": [
-      "system_scope"
-    ],
-    "result_policy": "strict boolean success at producer; no inferred outcome",
-    "retry_safe": false,
-    "return_branches": [
-      {
-        "protocol": "explicit_boolean_or_legacy_typed",
-        "return": "{'success': True, 'removed': removed}"
-      },
-      {
-        "protocol": "explicit_boolean_or_legacy_typed",
-        "return": "{'success': False, 'error_code': 'operator_only', 'error': 'operator_only'}"
-      },
-      {
-        "protocol": "explicit_boolean_or_legacy_typed",
-        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': 'invalid_arguments'}"
-      }
-    ],
-    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows.",
-    "schema_quality": "declared",
-    "source_digest": "sha256:438a2d237e6fdbd8d40187a5da7436a820632d028a11db7f0dbfc2bec3c4760b",
-    "tests": [
-      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
-      "tests/test_observation_snapshots.py"
-    ]
   }
 }

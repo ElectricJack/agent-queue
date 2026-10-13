@@ -16104,6 +16104,53 @@
       }
     },
     {
+      "path": "aq system playbook-state-notify",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "playbook_state_notify",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--key",
+          "--action",
+          "--observed-at",
+          "--observation-id",
+          "--message"
+        ],
+        "optional": [
+          "--expected-revision",
+          "--last-value",
+          "--source-partition",
+          "--repeat-after-seconds",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--source-partition",
+          "--message"
+        ],
+        "nullable": [
+          "--repeat-after-seconds"
+        ]
+      }
+    },
+    {
       "path": "aq system playbook-state-reset",
       "registration": "generated",
       "owner_kind": "core",

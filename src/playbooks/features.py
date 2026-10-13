@@ -30,7 +30,7 @@ KNOWN_FEATURES: Final = frozenset({
     "observation_context_v1", "state_v1", "script_v1",
 })
 # Add a feature only with its complete executor. Knowing its name is not support.
-SUPPORTED_FEATURES: Final = KNOWN_FEATURES - {"state_v1", "script_v1"}
+SUPPORTED_FEATURES: Final = KNOWN_FEATURES - {"script_v1"}
 STATE_COMMANDS: Final = frozenset({
     "playbook_state_get", "playbook_state_list", "playbook_state_set",
     "playbook_state_delete", "playbook_state_notify", "playbook_state_inspect",
