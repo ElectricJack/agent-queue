@@ -8650,6 +8650,9 @@
     },
     "src/portable_config.py::_stage_project_preferences": {
       "reason": "Writes a pending portable integration preference draft, retaining destination-local trust and rollout requirements without activation."
+    },
+    "src/orchestrator/lifecycle.py::LifecycleMixin.reevaluate_frontier_rejections": {
+      "reason": "READY frontier lifecycle advisory evaluates shared integration admission predicates; it cannot publish refs or change delivery state."
     }
   },
   "exclusions": {
@@ -13424,13 +13427,13 @@
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
     },
     "src/database/queries/lifecycle_queries.py::LifecycleQueryMixin.flag_stale_open::e8a2b4864b5a13dbdbed6cc88cc2620503b9e9e167c4c21405eb953fbd12e150": {
-      "line": 106,
+      "line": 167,
       "owner": "LifecycleQueryMixin.flag_stale_open",
       "call": "log_event",
-      "owner_fingerprint": "e0929fb399b58625c16f3c16308815c7d7a8c9b69927e1b127b8452e7a19513f",
+      "owner_fingerprint": "4dc6402750e5adf9b2c4022a3ed495b66b0746b3edfaf351493b1b66e42ca15a",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary stale-open advisory, deduplicated supervisor notice and audit event; READY episode identity is rechecked before notification. No ref replay or delivery authority."
     },
     "src/database/queries/playbook_run_queries.py::PlaybookRunQueryMixin._record_snapshot_conflict::189143d8a6f1c20202a529c8f5ae4a36eb1d1e483934ef105f4dadda34b94115": {
       "line": 495,
@@ -13481,10 +13484,10 @@
       "line": 1715,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "ed58169bce98bcfad556dc6d3ee783c7059596022f5a74010da56a65584887de",
+      "owner_fingerprint": "247006a15d0cc1fdf99a7c8bebdaee0c4ec4f688d7302c432761761d33ffacb6",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle metadata cleanup, including failure generation bookkeeping, clearing the worker failure streak on an intentional READY restart, and guarded retry routing. The routing failed-attempt journal records work verdicts for class escalation; integration status, branch reservations and ref replay authority stay in their dedicated records."
+      "reason": "Ordinary task lifecycle metadata cleanup, failure/routing bookkeeping and accepted-close identity. Leaving READY/BLOCKED/PAUSED clears the stale episode; running/completed work also clears operational attention. No new ref replay or integration lifecycle storage."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2165,
@@ -14342,13 +14345,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2297,
+      "line": 2328,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "780a28d8dfa16a95ab1d4ac46016e3ee97dbff91d4486854a9b6957185423f46",
+      "owner_fingerprint": "0db1c2bd73cff27e27f7735070884f6d6edec0253e045eb9fe66d8a032adc16b",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary needs_attention marker for an unproven integration handoff. The owner now distinguishes substantive verification failure from infrastructure pipeline refusal for routing; neither path adds ref replay authority or integration lifecycle storage."
+      "reason": "Ordinary needs_attention marker for an unproven handoff. The successful live-code close additionally verifies its exact task branch on origin before resource release; no new ref replay or integration lifecycle storage."
     },
     "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::8984da29e38cdef16a89fdb5710ce864b3017bdca5db3309dce9f87f9f13fe70": {
       "line": 2297,
@@ -15213,6 +15216,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Clears the ordinary supervisor_recovery_failure_at metadata clock when a task leaves FAILED. This failure incarnation identifies supervisor incidents; it records no Git ref update, replay authority or separate integration lifecycle."
+    },
+    "src/database/queries/lifecycle_queries.py::LifecycleQueryMixin.record_frontier_rejection::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 79,
+      "owner": "LifecycleQueryMixin.record_frontier_rejection",
+      "call": "delete",
+      "owner_fingerprint": "16e506ef56173adb09c643606c9dee5d4145a6555ac3c5d2864ff550d85aaeda",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary continuous READY rejection timestamp and advisory cleanup. Clears only its own stale attention code on admission recovery; no ref replay or delivery authority."
     }
   },
   "generic_dependencies": {

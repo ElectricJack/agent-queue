@@ -9721,6 +9721,9 @@
     },
     "src/portable_config.py::_stage_project_preferences": {
       "reason": "Writes a pending portable integration preference draft, retaining destination-local trust and rollout requirements without activation."
+    },
+    "src/orchestrator/lifecycle.py::LifecycleMixin.reevaluate_frontier_rejections": {
+      "reason": "READY frontier lifecycle advisory evaluates shared integration admission predicates; it cannot publish refs or change delivery state."
     }
   },
   "shared_state": {
