@@ -13064,109 +13064,109 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::4c9eda3727972063970ceb5f31add9dca5ecf28f36a7217710d665d7181a99bb": {
-      "line": 1348,
+      "line": 1363,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary close failure_class metadata, explicitly reset to null when the current close has no failure class so a prior transient attempt cannot suppress substantive-failure routing. No ref replay or duplicate integration lifecycle storage."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::4440a33c54ab4fa4c809666198358bb0499a892c5fc60e199b16f28357f6a517": {
-      "line": 1358,
+      "line": 1373,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::56578aa26104563e627d6920b6ab71ed75c43b52451419defe2a62b353044c31": {
-      "line": 1362,
+      "line": 1377,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::660e646c2bc73a87acbd9635c6d7c2d7bfb27bc207880247753c79164914ad87": {
-      "line": 1746,
+      "line": 1761,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ae11c6bd4fb43bd6de75c4c48200714e0e53b8fabfe707dbbd4107030938735a": {
-      "line": 1350,
+      "line": 1365,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::be73c4ceb2c880e944a4b02d2f545fec23c5e2b042151119ccb55a6a109bcd41": {
-      "line": 1352,
+      "line": 1367,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ca3f2cdcd35a7a2089869aaff868b1ed242d5a4dc3a16c2f22bbee657ab3d40f": {
-      "line": 1620,
+      "line": 1635,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::da4a85ceaecac9a0a1152f3e0883f7f88015afbe1b94fb6f5e36892a01f386b4": {
-      "line": 1346,
+      "line": 1361,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::dc542d68e996f280c4f1a0ad5174d7f358d5e33051a34bae65de5a76b92faf40": {
-      "line": 1360,
+      "line": 1375,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::e6420f7ac1c540cf49ce31f733f1e46efaca47d04099608408916ce1c06433ab": {
-      "line": 1418,
+      "line": 1433,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f27f9aaff90d2f291ca36b29a447e4ecbd3822acfd900bbda99ee4792c8e586f": {
-      "line": 1356,
+      "line": 1371,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f3b4697bfd97ba0305066ae8ff852bfbb7c8f4a9737eb15f0d6b36946b634acd": {
-      "line": 1602,
+      "line": 1617,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "57fda2dabfeb8e9276d0b82df7f19562b3b4615b0e4f8d16ebfbaa6911045627",
+      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
@@ -14351,10 +14351,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2328,
+      "line": 2358,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "a885b63e5f34fd8b35856fc1858a62248265bd43ef3082b5935f0a6ef54a9b16",
+      "owner_fingerprint": "331df816c3545f061eb5ad32d01a92a88cef6ec2c4d688739df8062b8b4576a9",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary needs_attention marker for an unproven integration handoff. The owner distinguishes substantive verification failure from infrastructure pipeline refusal for routing, and successful live-code close verifies its exact task branch on origin before resource release. Neither path adds ref replay authority or integration lifecycle storage."
@@ -15242,19 +15242,19 @@
       "reason": "Ordinary continuous READY rejection timestamp and advisory cleanup. Clears only its own stale attention code on admission recovery; no ref replay or delivery authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::91f3e9ef1047553b1b6a181d34a45e38af1c9c81aa3244f1605030fa2da742ba": {
-      "line": 1818,
+      "line": 1847,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "5b393032a06a381e3b33df01ee35b0fe2f2ebba03316c44fc86aafb648af6732",
+      "owner_fingerprint": "331df816c3545f061eb5ad32d01a92a88cef6ec2c4d688739df8062b8b4576a9",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Updates the existing identity-bound pending completion draft with the verified source SHA before the terminal transition, preserving accepted-close crash recovery; no new lifecycle or journal."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::ae8c919429f58dac2642af5184c5d10500c81e12bf5ef7db9da07251fc6b167d": {
-      "line": 1809,
+      "line": 1838,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "5b393032a06a381e3b33df01ee35b0fe2f2ebba03316c44fc86aafb648af6732",
+      "owner_fingerprint": "331df816c3545f061eb5ad32d01a92a88cef6ec2c4d688739df8062b8b4576a9",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary completion audit evidence for exact published-source required CI. It records a check observation, not ref replay or managed delivery state."

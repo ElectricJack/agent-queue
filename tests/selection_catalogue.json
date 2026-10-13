@@ -10283,11 +10283,12 @@
         "orchestrator"
       ],
       "default_arm": true,
-      "digest": "sha256:361f2a98e5f9b44130b64b82b141866fd17709ea57805cf1ab6bde0c9a98ab4e",
+      "digest": "sha256:bbfb3bce3fc39ef6a206137f8eca00054f965d7fca6b00c4f79cb67c386b92e8",
       "imports": [
         "src.config",
         "src.event_bus",
         "src.main",
+        "src.orchestrator.pools",
         "src.remote_links"
       ],
       "markers": [
@@ -12711,7 +12712,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:116438ec17f55c8eceee236b3af84d5c6b5dd22c29b7929e4280a1a5b77d0691",
+      "digest": "sha256:110d9e6a4db69d712d44035eb4eff18ed642f141d1bb679ea46288290c5ebd49",
       "imports": [
         "src.api.auth",
         "src.commands.claim_commands",
@@ -12740,6 +12741,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.pool_claims",
         "src.scheduler",
         "src.sessions.harness_parser"
