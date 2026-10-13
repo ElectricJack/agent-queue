@@ -6,15 +6,12 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.models import Project, Task
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     # Tasks need a project; the FK on task_workspace_requirements depends on
     # tasks existing.  Create a minimal project and task for the test scope.
     await database.create_project(Project(id="p1", name="test"))
@@ -27,7 +24,6 @@ async def db(tmp_path):
         description="", created_at=time.time(), updated_at=time.time(),
     ))
     yield database
-    await database.close()
 
 
 class TestAddTaskRequirements:

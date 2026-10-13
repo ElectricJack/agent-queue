@@ -11,6 +11,7 @@ Verifies the full sync-merge-push flow:
 
 import pathlib
 import subprocess
+import shutil
 from unittest.mock import patch
 
 import pytest
@@ -56,9 +57,10 @@ def _current_branch(cwd: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def git_repo(tmp_path):
+@pytest.fixture(scope="session")
+def _git_repo_seed(tmp_path_factory):
     """Create a bare remote + working clone with an initial commit."""
+    tmp_path = tmp_path_factory.mktemp("git-seed")
     remote = tmp_path / "remote.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(remote)],
@@ -81,6 +83,17 @@ def git_repo(tmp_path):
         capture_output=True,
     )
     subprocess.run(["git", "push"], cwd=str(clone), check=True, capture_output=True)
+    return {"remote": str(remote), "clone": str(clone)}
+
+
+@pytest.fixture
+def git_repo(tmp_path, _git_repo_seed):
+    """Copy both repos so every test owns its refs, objects, hooks and worktree."""
+    remote = tmp_path / "remote.git"
+    clone = tmp_path / "clone"
+    shutil.copytree(_git_repo_seed["remote"], remote)
+    shutil.copytree(_git_repo_seed["clone"], clone)
+    _git(["config", "remote.origin.url", str(remote)], cwd=str(clone))
     return {"remote": str(remote), "clone": str(clone)}
 
 
