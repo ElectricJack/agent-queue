@@ -1928,6 +1928,12 @@ from .wait_response import WaitResponse
 from .withheld_task import WithheldTask
 from .workspace_doctor_request import WorkspaceDoctorRequest
 from .workspace_doctor_response_422 import WorkspaceDoctorResponse422
+from .workspace_list_diagnostics import WorkspaceListDiagnostics
+from .workspace_list_diagnostics_git_status_counts import WorkspaceListDiagnosticsGitStatusCounts
+from .workspace_list_diagnostics_presence_counts import WorkspaceListDiagnosticsPresenceCounts
+from .workspace_owner import WorkspaceOwner
+from .workspace_owner_session import WorkspaceOwnerSession
+from .workspace_owner_task import WorkspaceOwnerTask
 from .workspace_reap_request import WorkspaceReapRequest
 from .workspace_reap_response_422 import WorkspaceReapResponse422
 from .workspace_summary import WorkspaceSummary
@@ -3853,6 +3859,12 @@ __all__ = (
     "WithheldTask",
     "WorkspaceDoctorRequest",
     "WorkspaceDoctorResponse422",
+    "WorkspaceListDiagnostics",
+    "WorkspaceListDiagnosticsGitStatusCounts",
+    "WorkspaceListDiagnosticsPresenceCounts",
+    "WorkspaceOwner",
+    "WorkspaceOwnerSession",
+    "WorkspaceOwnerTask",
     "WorkspaceReapRequest",
     "WorkspaceReapResponse422",
     "WorkspaceSummary",

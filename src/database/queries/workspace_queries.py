@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import time
 
-from sqlalchemy import case, delete, func, insert, nulls_first, select, true, update
+from sqlalchemy import and_, case, delete, func, insert, nulls_first, or_, select, true, update
 
-from src.database.tables import workspaces
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.database.queries.job_queries import unpinned_workspace
+from src.database.tables import sessions, task_metadata, tasks, workspaces
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -121,6 +122,60 @@ class WorkspaceQueryMixin:
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
             return [self._row_to_workspace(r) for r in result.mappings().fetchall()]
+
+    async def read_workspace_owner_facts(
+        self, rows: list[Workspace]
+    ) -> dict[str, list[dict]]:
+        """Read-only owner facts for listed workspaces, in one transaction.
+
+        Returns ``{"tasks": [...], "sessions": [...]}``: each task a lock
+        names (status, claim fence, and the session its claim record names)
+        and every unended session whose agent, task or ``work_dir`` points at
+        one of *rows*.  Matching facts to rows is the caller's job
+        (:mod:`src.workspace_listing`); nothing here writes or takes a row
+        lock, so a listing can never contend with a claim.
+        """
+        if not rows:
+            return {"tasks": [], "sessions": []}
+        task_ids = sorted({ws.locked_by_task_id for ws in rows if ws.locked_by_task_id})
+        agent_ids = sorted({ws.locked_by_agent_id for ws in rows if ws.locked_by_agent_id})
+        paths = sorted({ws.workspace_path for ws in rows if ws.workspace_path})
+        session_match = [sessions.c.work_dir.in_(paths)]
+        if task_ids:
+            session_match.append(sessions.c.task_id.in_(task_ids))
+        if agent_ids:
+            session_match.append(sessions.c.agent_id.in_(agent_ids))
+        async with self._engine.begin() as conn:
+            task_rows = []
+            if task_ids:
+                task_rows = (await conn.execute(
+                    select(
+                        tasks.c.id, tasks.c.status, tasks.c.claim_epoch,
+                        tasks.c.assigned_agent_id,
+                        task_metadata.c.value.label("claimed_by_session"),
+                    )
+                    .select_from(tasks.outerjoin(task_metadata, and_(
+                        task_metadata.c.task_id == tasks.c.id,
+                        task_metadata.c.key == CLAIMED_BY_SESSION_KEY,
+                    )))
+                    .where(tasks.c.id.in_(task_ids))
+                )).mappings().fetchall()
+            session_rows = (await conn.execute(
+                select(
+                    sessions.c.id, sessions.c.project_id, sessions.c.agent_id,
+                    sessions.c.task_id, sessions.c.lifecycle, sessions.c.state,
+                    sessions.c.desired_state, sessions.c.claim_phase,
+                    sessions.c.claim_phase_at, sessions.c.last_claim_epoch,
+                    sessions.c.last_activity, sessions.c.work_dir,
+                    sessions.c.started_at,
+                )
+                .where(sessions.c.ended_at.is_(None), or_(*session_match))
+                .order_by(sessions.c.started_at.desc(), sessions.c.id)
+            )).mappings().fetchall()
+        return {
+            "tasks": [dict(r) for r in task_rows],
+            "sessions": [dict(r) for r in session_rows],
+        }
 
     async def delete_workspace(self, workspace_id: str) -> None:
         """Delete a workspace record."""
