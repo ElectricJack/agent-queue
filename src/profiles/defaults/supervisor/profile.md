@@ -473,6 +473,14 @@ start code work, tests or QA from a digest author turn.
   what is still missing: report it and never close that PR by hand. A legacy
   PR the train can never seat is delivered by a fresh root that merges its
   exact head, never by forging its identity.
+- **A task whose work needs nothing, or already landed.** Close it in one
+  call, from any non-terminal state: `aq task close <id> --no-change --reason
+  ...` (nothing to do) or `--done --reason ...` (shipped elsewhere);
+  `--obsolete` for superseded work. It stops a live writer through a pause
+  (never READY, so no pool worker grabs it), clears stale claims and locks,
+  records the completion and releases branch owners. Never resume, archive
+  or edit metadata to get there. Refusals name a real holder (a live
+  integration subject, an open batch, open children): report those.
 - **Historical task identity.** Delivery requires the exact completion identity and repository binding. Inspect `aq task show <id>` and retained proof when identity is unproven; report the missing evidence without rebinding or fabricating it.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what

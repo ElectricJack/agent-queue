@@ -232,6 +232,33 @@ async def test_root_noop_refuses_unsafe_identity_without_completion_writes(
     )
 
 
+@pytest.mark.parametrize("holder_state", ["stopped", "running"])
+async def test_root_noop_ignores_a_claim_left_by_a_durably_stopped_session(
+    world, monkeypatch, holder_state
+):
+    """azure-beacon-38: a paused root kept its dead worker's claim record."""
+    from src.models import SessionRecord
+
+    base = await empty_root(world)
+    await world.db.create_session(
+        SessionRecord(
+            id="dead", project_id="p", profile_id="worker-codex", harness="codex",
+            provider="openai", name="dead", lifecycle="pool", work_dir=str(world.origin.clone),
+            epoch="test", instance_token="test", started_at=1, task_id=None,
+            state=holder_state, desired_state=holder_state,
+        )
+    )
+    await world.db.set_task_meta("noop", "claimed_by_session", "dead")
+    monkeypatch.setattr(GitProvenance, "write_completion", AsyncMock())
+    if holder_state == "running":
+        with pytest.raises(ValueError, match="worker claim"):
+            await record(world, dry_run=False, head=base)
+        return
+    applied = await record(world, dry_run=False, head=base)
+    assert applied["head_sha"] == base
+    assert (await world.db.get_task("noop")).status is TaskStatus.COMPLETED
+
+
 async def test_root_noop_refuses_changed_head_and_unavailable_evidence(world):
     base = await empty_root(world)
     with pytest.raises(ValueError, match="changed from preview"):

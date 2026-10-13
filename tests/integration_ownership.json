@@ -7917,9 +7917,6 @@
     "src/sessions/obsolete.py::ReleaseOwner": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
-    "src/sessions/obsolete.py::import from src.database.tables import integration_branch_owners, integration_subjects, projects, sessions, task_metadata, tasks": {
-      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
-    },
     "src/sessions/obsolete.py::import from src.integration.finished_owners import stop_confirmer_for": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
@@ -8668,6 +8665,15 @@
     },
     "src/doctor/stall_checks.py::_waiting_train_repairs": {
       "reason": "Stall-sweep adapter that reads the active train-repair delegate bindings once for aged READY candidates, so a waiting repair names its operation and batch. Read-only diagnostics; no storage or delivery authority."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose._release_stopped_claim": {
+      "reason": "Operator one-shot close (amber-quest-41): clears the claim record, workspace locks and agent binding a stopped writer left, so a no-change/done/obsolete close needs no resume through READY. Ordinary task lifecycle; adds no delivery state or publication authority."
+    },
+    "src/sessions/obsolete.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "reason": "Claim-record key the operator one-shot close (amber-quest-41) clears for a durably stopped writer; ordinary claim lifecycle."
+    },
+    "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
     }
   },
   "exclusions": {
@@ -13073,109 +13079,109 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::4c9eda3727972063970ceb5f31add9dca5ecf28f36a7217710d665d7181a99bb": {
-      "line": 1363,
+      "line": 1436,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary close failure_class metadata, explicitly reset to null when the current close has no failure class so a prior transient attempt cannot suppress substantive-failure routing. No ref replay or duplicate integration lifecycle storage."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::4440a33c54ab4fa4c809666198358bb0499a892c5fc60e199b16f28357f6a517": {
-      "line": 1373,
+      "line": 1446,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::56578aa26104563e627d6920b6ab71ed75c43b52451419defe2a62b353044c31": {
-      "line": 1377,
+      "line": 1450,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::660e646c2bc73a87acbd9635c6d7c2d7bfb27bc207880247753c79164914ad87": {
-      "line": 1761,
+      "line": 1834,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ae11c6bd4fb43bd6de75c4c48200714e0e53b8fabfe707dbbd4107030938735a": {
-      "line": 1365,
+      "line": 1438,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::be73c4ceb2c880e944a4b02d2f545fec23c5e2b042151119ccb55a6a109bcd41": {
-      "line": 1367,
+      "line": 1440,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ca3f2cdcd35a7a2089869aaff868b1ed242d5a4dc3a16c2f22bbee657ab3d40f": {
-      "line": 1635,
+      "line": 1708,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::da4a85ceaecac9a0a1152f3e0883f7f88015afbe1b94fb6f5e36892a01f386b4": {
-      "line": 1361,
+      "line": 1434,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::dc542d68e996f280c4f1a0ad5174d7f358d5e33051a34bae65de5a76b92faf40": {
-      "line": 1375,
+      "line": 1448,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::e6420f7ac1c540cf49ce31f733f1e46efaca47d04099608408916ce1c06433ab": {
-      "line": 1433,
+      "line": 1506,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f27f9aaff90d2f291ca36b29a447e4ecbd3822acfd900bbda99ee4792c8e586f": {
-      "line": 1371,
+      "line": 1444,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch'"
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f3b4697bfd97ba0305066ae8ff852bfbb7c8f4a9737eb15f0d6b36946b634acd": {
-      "line": 1617,
+      "line": 1690,
       "owner": "SessionCommandsMixin._cmd_task_close",
       "call": "set_task_meta",
-      "owner_fingerprint": "dd5053739781ad1846235170b062e9bedb75f86b78ffb469aca0f14a030c36cb",
+      "owner_fingerprint": "8b8749688a2b809e9a550b109861fc78ff358e276a826f459884f75a2e602588",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
@@ -14665,20 +14671,11 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
-    "src/sessions/obsolete.py::ObsoleteClose.close::323f29e5c2576fb3bb7d12d8133d3446524707629df5ca97c22e69b9324ca590": {
-      "line": 243,
-      "owner": "ObsoleteClose.close",
-      "call": "log_event",
-      "owner_fingerprint": "5d106dba93d4e960d95d85d4625d588e53160cbea3b4e087c02c66872ac555e3",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
-    },
     "src/sessions/obsolete.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 207,
+      "line": 256,
       "owner": "ObsoleteClose.close",
       "call": "delete",
-      "owner_fingerprint": "5d106dba93d4e960d95d85d4625d588e53160cbea3b4e087c02c66872ac555e3",
+      "owner_fingerprint": "ec49bd5e9066b5c54a2cc0c36d97d1220c7470d21e214d44405b527c9d2c938e",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
@@ -15276,6 +15273,24 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary pool-progress watchdog audit event, pool.scaler_stalled. Records bounded demand, live supply, ticks and a reconciliation hint; no Git ref replay, delivery state or integration lifecycle authority. Recovery re-measures ordinary scheduling admission through the existing pool reconciler."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose.close::37df82dbbcf4ce30cc0f9d0951d9e179f7f7f5023c7650af375ece047532cf8d": {
+      "line": 310,
+      "owner": "ObsoleteClose.close",
+      "call": "log_event",
+      "owner_fingerprint": "ec49bd5e9066b5c54a2cc0c36d97d1220c7470d21e214d44405b527c9d2c938e",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Logs the operator close with its disposition (obsolete, no-change or done)."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose._release_stopped_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 352,
+      "owner": "ObsoleteClose._release_stopped_claim",
+      "call": "delete",
+      "owner_fingerprint": "a9f88374fe0b48e9c86b20e79b34bc351b9a4ad4e2e38c16d163715f410c5508",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Deletes the claimed_by_session record a durably stopped writer left on a task the operator closes (azure-beacon-38); ordinary claim lifecycle, no ref replay or duplicate integration lifecycle storage."
     }
   },
   "generic_dependencies": {

@@ -883,34 +883,41 @@ class SessionCommandsMixin:
         session = await self.db.get_session(str(session_id))
         return session.task_id if session is not None else None
 
-    async def _close_task_obsolete(self, args: dict) -> dict:
-        """``aq task close <id> --obsolete --reason``: retire superseded work.
+    async def _close_task_obsolete(self, args: dict, disposition: str = "obsolete") -> dict:
+        """``aq task close <id> --obsolete|--no-change|--done --reason``: one-shot close.
 
         An operator or supervisor decision (``integration_operator``), never a
-        worker's: it releases the task's branch owners and drops it from parked
-        development batches (:mod:`src.sessions.obsolete`).  No
-        completion pipeline runs and nothing is published.
+        worker's.  From any state, in one call: a live writer is stopped
+        through the operator pause (the task goes PAUSED, never READY, so no
+        pool worker can claim it in between), then the close clears the stale
+        claim, workspace locks and agent binding, records the disposition and
+        marks the task COMPLETED, and the cleanup releases its branch owners
+        (:mod:`src.sessions.obsolete`).  No completion pipeline runs and
+        nothing is published.
         """
         from src.commands.supervisor_authority import integration_operator
         from src.database.queries.hierarchy_queries import HierarchyError
         from src.sessions.obsolete import (
+            DISPOSITIONS,
             ObsoleteClose,
             ObsoleteCloseRefused,
             obsolete_owner_release_for,
         )
 
+        flag = "--" + disposition.replace("_", "-")
+        label = DISPOSITIONS[disposition][2]
         task_id = str(args.get("task_id") or "").strip()
         if not task_id:
             return {
                 "success": False,
                 "code": "obsolete.task_required",
-                "error": "--obsolete needs the id of the task to close",
+                "error": f"{flag} needs the id of the task to close",
             }
         if args.get("outcome"):
             return {
                 "success": False,
                 "code": "obsolete.outcome_conflict",
-                "error": "--obsolete is its own outcome; drop --outcome",
+                "error": f"{flag} is its own outcome; drop --outcome",
             }
         task = await self.db.get_task(task_id)
         if task is None:
@@ -921,18 +928,30 @@ class SessionCommandsMixin:
                 "success": False,
                 "code": "obsolete.not_authorized",
                 "error": (
-                    f"closing a task as obsolete is an operator or supervisor decision: {refusal}. "
-                    "A worker closes its own task with --outcome and names the superseding "
-                    "work in its summary."
+                    f"closing a task as {label} is an operator or supervisor decision: "
+                    f"{refusal}. A worker closes its own task with --outcome and names the "
+                    "superseding work in its summary."
                 ),
             }
+        if not str(args.get("reason") or "").strip():
+            return {
+                "success": False,
+                "code": "obsolete.reason_required",
+                "error": f"{flag} requires --reason",
+            }
+        stopped = await self._stop_writer_for_operator_close(task_id)
+        if isinstance(stopped, dict):
+            return stopped
         service = ObsoleteClose(
             self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
             git_manager=self.orchestrator.git,
         )
         try:
             result = await service.close(
-                task_id, reason=str(args.get("reason") or ""), principal=principal
+                task_id,
+                reason=str(args.get("reason") or ""),
+                principal=principal,
+                disposition=disposition,
             )
         except ObsoleteCloseRefused as exc:
             return {"success": False, "code": exc.code, "error": exc.detail}
@@ -942,10 +961,11 @@ class SessionCommandsMixin:
                 "code": f"hierarchy.{exc.code}",
                 "error": f"hierarchy.{exc.code}: {exc.detail}",
             }
+        result["stopped_writer"] = stopped
         cleanup = result["cleanup"]
         if result["outcome"] == "closed":
             body = (
-                f"Closed as obsolete by {principal} (was {result['previous_status']}): "
+                f"Closed as {label} by {principal} (was {result['previous_status']}): "
                 f"{result['reason']}"
             )
             try:
@@ -956,7 +976,7 @@ class SessionCommandsMixin:
                     author_id=principal,
                 )
             except Exception:
-                logger.warning("Could not comment on obsolete task %s", task_id, exc_info=True)
+                logger.warning("Could not comment on closed task %s", task_id, exc_info=True)
             refreshed = await self.db.get_task(task_id)
             if refreshed is not None:
                 await self._emit_task_graph_change("task.updated", refreshed)
@@ -967,6 +987,50 @@ class SessionCommandsMixin:
                 "the lifecycle sweep retries them"
             )
         return {"success": True, **result}
+
+    async def _stop_writer_for_operator_close(self, task_id: str) -> bool | dict:
+        """Stop whatever still writes for *task_id* before the operator close.
+
+        The operator pause is the supported stop: it moves the task to PAUSED
+        (which no claim can take), stops the exact captured sessions, revokes
+        their tokens, checkpoints the workspace and releases the agent.
+        Returns whether a stop ran, or a refusal result when it failed.
+        """
+        from sqlalchemy import select
+
+        from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
+        from src.database.tables import sessions, workspaces
+
+        task = await self.db.get_task(task_id)
+        if task is None or task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            return False
+        async with self.db._engine.connect() as conn:
+            live = await conn.scalar(
+                select(sessions.c.id)
+                .where(sessions.c.task_id == task_id, sessions.c.state.in_(LIVE_SESSION_STATES))
+                .limit(1)
+            )
+            locked = await conn.scalar(
+                select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
+            )
+        in_flight = bool(task.assigned_agent_id) and task.status in (
+            TaskStatus.ASSIGNED,
+            TaskStatus.IN_PROGRESS,
+        )
+        if not (live or locked or in_flight):
+            return False
+        pause = getattr(self.orchestrator, "pause_task", None)
+        if pause is None:
+            return False  # The close's own refusal names what is still held.
+        try:
+            await pause(task_id)
+        except ValueError as exc:
+            return {
+                "success": False,
+                "code": "obsolete.stop_failed",
+                "error": f"could not stop the writer of {task_id}: {exc}",
+            }
+        return True
 
     async def _cmd_task_close(self, args: dict) -> dict:
         """Close a task with an outcome.  Backs ``aq task close``.
@@ -981,8 +1045,17 @@ class SessionCommandsMixin:
         that is either a bug or an agent that wandered, and both should be
         loud rather than silently accepted.
         """
-        if args.get("obsolete"):
-            return await self._close_task_obsolete(args)
+        dispositions = [
+            name for name in ("obsolete", "no_change", "done") if args.get(name)
+        ]
+        if len(dispositions) > 1:
+            return {
+                "success": False,
+                "code": "obsolete.disposition_conflict",
+                "error": "choose one of --obsolete, --no-change or --done",
+            }
+        if dispositions:
+            return await self._close_task_obsolete(args, dispositions[0])
         task_id = args.get("task_id") or await self._scoped_held_task_id()
         if not task_id:
             return {

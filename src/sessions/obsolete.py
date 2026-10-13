@@ -1,21 +1,37 @@
-"""Close a task as obsolete and safely release its stopped branch owners.
+"""The operator's one-shot close: obsolete, no-change or done, from any state.
 
-``aq task close <id> --obsolete --reason "..."`` is the supported way to retire
-work that was superseded (a duplicate fix that landed another way, a plan that
-changed).  Before it existed the only tools were a failing close plus a status
-edit.  That left the task in COMPLETED with its branch still publishable, so the
-development publisher collected it again, parked the batch, and the task could
-never be deleted (solid-cascade and crisp-apex, 2026-09-26).
+``aq task close <id> --obsolete|--no-change|--done --reason "..."`` is the
+supported way for an operator or supervisor to finish a task no worker will
+close: work that was superseded (a duplicate fix that landed another way, a
+plan that changed), work that needed no change, or work already done
+elsewhere.  Before the obsolete form existed the only tools were a failing
+close plus a status edit.  That left the task in COMPLETED with its branch
+still publishable, so the development publisher collected it again, parked the
+batch, and the task could never be deleted (solid-cascade and crisp-apex,
+2026-09-26).  Before the no-change and done forms existed, closing finished
+work in a train project took six refused commands, a resume through READY (a
+pool worker claimed it within seconds) and a hand-deleted claim record
+(azure-beacon-38, 2026-10-13).
+
+The three dispositions differ only in what they record
+(:data:`DISPOSITIONS`): ``obsolete`` is ``work_outcome=abandoned``;
+``no_change`` is a passing completion with ``work_outcome=no-op``; ``done`` is
+a passing completion with ``work_outcome=shipped``.  All three leave nothing
+to publish.
 
 :meth:`ObsoleteClose.close` does two things:
 
 1. **The close.**  In one transaction the task moves to COMPLETED from any
    non-terminal status (a stale hold or terminal BLOCKED included) or from
-   FAILED.  It gets ``work_outcome=abandoned`` and the ``obsolete`` marker
-   (``blocked_state.OBSOLETE_META_KEY``).  The marker is what the development
-   publisher and delivery admission honor: the task is never published, and
-   dependents stop waiting for its delivery.  The dependents'
-   projection is recomputed in the same transaction.
+   FAILED, never through READY.  The claim record, workspace locks and agent
+   binding a stopped writer left behind are cleared and the claim epoch is
+   bumped, so no stale holder can act on the task again.  The task gets the
+   disposition's ``work_outcome`` and the ``obsolete`` marker
+   (``blocked_state.OBSOLETE_META_KEY``, which names the disposition).  The
+   marker is what the development publisher, the train and delivery admission
+   honor: the task is never published, and dependents stop waiting for its
+   delivery.  The dependents' projection is recomputed in the same
+   transaction.
 2. **The cleanup** (:meth:`ObsoleteClose.cleanup`, idempotent):
 
    * every unreleased branch-owner row the task owns goes through the
@@ -33,9 +49,12 @@ never be deleted (solid-cascade and crisp-apex, 2026-09-26).
    or archived.
 
 It refuses a task a live session holds, a task with an agent still assigned,
-a container with open children, and hierarchy/train projects, where a child's
-branch belongs to its parent's collection episode and the train owns
-abandonment.
+a container with open children, and, in hierarchy/train projects, a child
+(whose branch belongs to its parent's collection episode) or a root that is a
+member of an open integration batch.  The command
+(:meth:`src.commands.session_commands.SessionCommandsMixin._close_task_obsolete`)
+stops a live writer through the operator pause before it calls the close, so
+the first two refusals only fire when that stop could not be confirmed.
 """
 
 from __future__ import annotations
@@ -46,18 +65,24 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import case, delete, insert, select, update
 
 from src.database.queries.blocked_state import OBSOLETE_META_KEY
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.database.queries.hierarchy_queries import HIERARCHY_MODES, LIVE_SESSION_STATES
 from src.database.queries.task_queries import STALE_OPEN_DETAIL_KEY, TransitionResult
 from src.database.tables import (
+    agents,
+    integration_batch_members,
+    integration_batches,
     integration_branch_owners,
     integration_subjects,
     projects,
     sessions,
+    task_completion_records,
     task_metadata,
     tasks,
+    workspaces,
 )
 from src.integration.finished_owners import stop_confirmer_for
 from src.integration.owner_recovery import (
@@ -68,12 +93,21 @@ from src.integration.owner_recovery import (
     OwnerRecovery,
     RecoveryOutcome,
 )
-from src.models import TaskStatus
+from src.models import AgentState, TaskStatus
 
 logger = logging.getLogger(__name__)
 
 #: Transition context of the close, and the audit event's suffix.
 CLOSED_OBSOLETE = "closed_obsolete"
+
+#: ``disposition -> (work_outcome, transition context, label)``.  ``obsolete``
+#: abandons the work; ``no_change`` and ``done`` also record a passing
+#: completion, so the close reads like any other finished task.
+DISPOSITIONS: dict[str, tuple[str, str, str]] = {
+    "obsolete": ("abandoned", CLOSED_OBSOLETE, "obsolete"),
+    "no_change": ("no-op", "closed_no_change", "no change"),
+    "done": ("shipped", "closed_done", "done"),
+}
 #: Statuses a task can be closed obsolete from.  COMPLETED re-runs the cleanup.
 _CLOSEABLE_FROM = frozenset(
     {
@@ -163,16 +197,28 @@ class ObsoleteClose:
     # -- the close --------------------------------------------------------------
 
     async def close(
-        self, task_id: str, *, reason: str, principal: str
+        self,
+        task_id: str,
+        *,
+        reason: str,
+        principal: str,
+        disposition: str = "obsolete",
     ) -> dict[str, Any]:
-        """Close *task_id* as obsolete, then run its cleanup.
+        """Close *task_id* with *disposition*, then run its cleanup.
 
         Raises :class:`ObsoleteCloseRefused` when the task cannot be closed.
         """
+        if disposition not in DISPOSITIONS:
+            raise ObsoleteCloseRefused(
+                "obsolete.invalid_disposition",
+                f"disposition must be one of {sorted(DISPOSITIONS)}",
+            )
+        work_outcome, context, label = DISPOSITIONS[disposition]
+        flag = "--" + disposition.replace("_", "-")
         reason = (reason or "").strip()
         if not reason:
             raise ObsoleteCloseRefused(
-                "obsolete.reason_required", "--obsolete requires --reason"
+                "obsolete.reason_required", f"{flag} requires --reason"
             )
         task = await self.db.get_task(task_id)
         if task is None:
@@ -194,31 +240,52 @@ class ObsoleteClose:
             await self._refuse_unsafe(conn, row)
             previous = row["status"]
             existing = await self._marker(conn, task_id)
+            closed_at = self.clock()
             marker = existing or {
                 "reason": reason,
+                "disposition": disposition,
                 "closed_by": principal,
-                "closed_at": self.clock(),
+                "closed_at": closed_at,
                 "previous_status": previous,
                 "cleanup": {"state": "pending"},
             }
             await self.db._upsert_meta(task_id, OBSOLETE_META_KEY, marker, conn=conn)
-            await self.db._upsert_meta(task_id, "work_outcome", "abandoned", conn=conn)
+            if existing is None:
+                await self.db._upsert_meta(task_id, "work_outcome", work_outcome, conn=conn)
             await conn.execute(
                 delete(task_metadata).where(
                     task_metadata.c.task_id == task_id,
                     task_metadata.c.key.in_(_CLEARED_KEYS),
                 )
             )
+            released = await self._release_stopped_claim(conn, row)
+            if existing is None and disposition != "obsolete":
+                await conn.execute(
+                    insert(task_completion_records).values(
+                        id=f"{context}:{task_id}:{closed_at}",
+                        task_id=task_id,
+                        outcome="pass",
+                        work_outcome=work_outcome,
+                        branch=row["branch_name"],
+                        commits="[]",
+                        summary=reason,
+                        notes=json.dumps(
+                            {"authority": principal, "disposition": disposition}
+                        ),
+                        completed_at=closed_at,
+                    )
+                )
             if previous != TaskStatus.COMPLETED.value:
                 result = await self.db._apply_transition(
                     conn,
                     task_id,
                     TaskStatus.COMPLETED,
-                    context=CLOSED_OBSOLETE,
+                    context=context,
                     force=True,
                     _manual_pause_control=True,
                     assigned_agent_id=None,
                     resume_after=None,
+                    extra_values={"claim_epoch": tasks.c.claim_epoch + 1},
                 )
             else:
                 # Already COMPLETED: the marker alone changes what its
@@ -237,18 +304,20 @@ class ObsoleteClose:
                 from src.integration.branch_retirement import request_task_retirement_on
 
                 await request_task_retirement_on(
-                    conn, task_id, request_id=f"obsolete:{task_id}:{marker['closed_at']}",
-                    reason=f"superseded: {reason}",
+                    conn, task_id, request_id=f"{disposition}:{task_id}:{closed_at}",
+                    reason=f"closed {label}: {reason}",
                 )
                 await self.db.log_event(
-                    f"task.{CLOSED_OBSOLETE}",
+                    f"task.{context}",
                     project_id=row["project_id"],
                     task_id=task_id,
                     payload=json.dumps(
                         {
                             "reason": reason,
+                            "disposition": disposition,
                             "closed_by": principal,
                             "previous_status": previous,
+                            "released": released,
                         }
                     ),
                     conn=conn,
@@ -257,13 +326,63 @@ class ObsoleteClose:
         await self.db._notify_settled(result.settled)
         await self.db._notify_ready(result.ready)
         cleanup = await self.cleanup(task_id, principal=principal)
+        recorded = existing or marker
         return {
             "outcome": "already_obsolete" if existing else "closed",
             "task_id": task_id,
-            "previous_status": (existing or marker)["previous_status"],
-            "reason": (existing or marker)["reason"],
+            "disposition": recorded.get("disposition", "obsolete"),
+            "previous_status": recorded["previous_status"],
+            "reason": recorded["reason"],
+            "released": released,
             "settled": list(result.settled),
             "cleanup": cleanup,
+        }
+
+    async def _release_stopped_claim(self, conn, row) -> dict[str, Any]:
+        """Clear what a stopped writer left on the task, in the close's transaction.
+
+        :meth:`_refuse_unsafe` has already proved no live session works on the
+        task, so the claim record (``claimed_by_session``), workspace locks
+        and the agent binding are history: a dead session's record is exactly
+        what made azure-beacon-38 unclosable.  The claim-epoch bump in the
+        transition fences any holder that still believes it owns the claim.
+        """
+        task_id = row["id"]
+        claim = await conn.execute(
+            delete(task_metadata)
+            .where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == CLAIMED_BY_SESSION_KEY,
+            )
+            .returning(task_metadata.c.value)
+        )
+        holder = claim.scalar_one_or_none()
+        unlocked = (
+            (
+                await conn.execute(
+                    update(workspaces)
+                    .where(workspaces.c.locked_by_task_id == task_id)
+                    .values(locked_by_task_id=None, locked_by_agent_id=None, locked_at=None)
+                    .returning(workspaces.c.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await conn.execute(
+            update(agents)
+            .where(agents.c.current_task_id == task_id)
+            .values(
+                current_task_id=None,
+                state=case(
+                    (agents.c.state == AgentState.BUSY.value, AgentState.IDLE.value),
+                    else_=agents.c.state,
+                ),
+            )
+        )
+        return {
+            "claimed_by_session": json.loads(holder) if holder else None,
+            "workspaces": sorted(unlocked),
         }
 
     async def _refuse_unsafe(self, conn, row) -> None:
@@ -276,12 +395,35 @@ class ObsoleteClose:
             )
         ).scalar_one_or_none()
         if mode in HIERARCHY_MODES:
-            raise ObsoleteCloseRefused(
-                "obsolete.unsupported_mode",
-                f"project {row['project_id']} integrates in {mode} mode, where a task's branch "
-                "belongs to its parent's collection; abandon it through the container close "
-                "or `aq task archive --disposition obsolete --reason ...` instead",
+            if row["parent_task_id"] is not None:
+                raise ObsoleteCloseRefused(
+                    "obsolete.unsupported_mode",
+                    f"project {row['project_id']} integrates in {mode} mode, where a child's "
+                    "branch belongs to its parent's collection; abandon it through the "
+                    "container close or `aq task archive --disposition obsolete --reason ...` "
+                    "instead",
+                )
+            # A root is the train's own candidate; the marker keeps it out of
+            # every later batch, but one already cut must settle first.
+            batch_id = await conn.scalar(
+                select(integration_batches.c.id)
+                .where(
+                    integration_batches.c.id.in_(
+                        select(integration_batch_members.c.batch_id).where(
+                            integration_batch_members.c.task_id == task_id
+                        )
+                    ),
+                    integration_batches.c.intent != "aborted",
+                    integration_batches.c.lifecycle != "promoted",
+                )
+                .limit(1)
             )
+            if batch_id is not None:
+                raise ObsoleteCloseRefused(
+                    "obsolete.open_batch",
+                    f"{task_id} is a member of open integration batch {batch_id}; let the "
+                    "batch settle (or abort it) first",
+                )
         subject_id = await conn.scalar(
             select(integration_subjects.c.id)
             .where(
@@ -423,7 +565,7 @@ class ObsoleteClose:
             else:
                 pr_cleanup = await SettledTaskPullRequestClosure(self.db, self.git).run(
                     task_id,
-                    reason=f"Superseded/obsolete: {marker['reason']}",
+                    reason=_pull_request_reason(marker),
                     principal=principal,
                 )
             if pr_cleanup["outcome"] == "blocked":
@@ -518,6 +660,14 @@ class ObsoleteClose:
                     payload=json.dumps(summary, sort_keys=True, default=str),
                     conn=conn,
                 )
+
+
+def _pull_request_reason(marker: dict) -> str:
+    """The note an open pull request is closed with, by disposition."""
+    if marker.get("disposition", "obsolete") == "obsolete":
+        return f"Superseded/obsolete: {marker['reason']}"
+    label = DISPOSITIONS[marker["disposition"]][2]
+    return f"Closed as {label}, nothing to publish: {marker['reason']}"
 
 
 def _pending_owner(row: dict, reason: str, detail: str) -> dict:

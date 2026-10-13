@@ -17001,6 +17001,8 @@
           "task_id",
           "--outcome",
           "--obsolete",
+          "--no-change",
+          "--done",
           "--reason",
           "--summary",
           "--failure-class",

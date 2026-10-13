@@ -97,6 +97,7 @@ class TrainControls:
                 request.completion_id)
 
     async def _assert_root_unheld(self, conn, task):
+        from src.database.queries.integration_state_queries import unresolved_claim_clause
         from src.database.tables import sessions, task_metadata, workspaces
         from src.integration.lock import BranchLock
         from src.integration.models import BranchKey
@@ -107,8 +108,11 @@ class TrainControls:
             workspaces.c.locked_by_task_id == task["id"],
         ).limit(1)):
             raise ValueError("root still has a live writer or claimed workspace")
+        # A claim record survives pause and close as provenance; only a holder
+        # that is not durably stopped still claims the root (azure-beacon-38).
         if await conn.scalar(select(task_metadata.c.value).where(
             task_metadata.c.task_id == task["id"], task_metadata.c.key == "claimed_by_session",
+            unresolved_claim_clause(),
         )):
             raise ValueError("root still has a worker claim; reset it before recording a no-op")
         owner = await BranchLock(self.db).lock_on(conn, BranchKey(
