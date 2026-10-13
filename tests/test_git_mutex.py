@@ -26,6 +26,16 @@ def _git(args: list[str], cwd: str) -> str:
     return result.stdout.strip()
 
 
+def _disable_auto_maintenance(repo: str) -> None:
+    # Git 2.47+ detaches auto-maintenance after commit/push (receive-pack on the
+    # remote side); its objects/maintenance.lock can appear and vanish while the
+    # per-test copytree walks the seed. Local transport strips -c config from
+    # receive-pack, so the setting has to live in each repository's own config.
+    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
+    for key, value in settings:
+        _git(["config", key, value], cwd=repo)
+
+
 @pytest.fixture(scope="session")
 def _git_repo_seed(tmp_path_factory):
     """Create a bare remote + working clone for testing."""
@@ -36,8 +46,10 @@ def _git_repo_seed(tmp_path_factory):
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(str(remote))
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
+    _disable_auto_maintenance(str(clone))
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
     subprocess.run(
