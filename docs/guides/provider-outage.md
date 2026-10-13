@@ -149,6 +149,9 @@ Under `provider_failover.mode: enforce` (the default):
    comment, `rerouted_from`, a `task_reroutes` row). What it will not move, it
    holds with a reason. See the
    [fallback rule](../concepts/scheduling.md#the-fallback-rule).
+   Stopped `BLOCKED` tasks are also eligible once their writer is gone. A move
+   preserves their status, stop marker, retries and graph blockers; restart the
+   task explicitly when it should run again.
 5. **Unrouted tasks wait for the router.** There is no project default to
    fall back to. The router leaves out candidates on a provider that cannot
    launch; when every candidate is down it holds the task unrouted
@@ -182,6 +185,7 @@ returns exactly the plan the sweep would apply — `moved`, `held` (with
 | AQ thinks it is down but it is not | [Force it available](#a-false-alarm). |
 | A pinned task must run now | [Force-move it](#move-a-task-by-hand) among its route candidates; an override has none to move to, so `aq task route` sends it back to the router. |
 | Tasks paused before failover existed are stuck on a dead provider | [Include them in a sweep](#move-tasks-that-were-paused-before-failover). |
+| A stopped `BLOCKED` task needs a new route | `aq task route --task-id <id>` sends it back to the router. A successful `aq task stop` confirms its session has terminated before releasing ownership. If stop reports unproven termination, follow its recovery instructions first. Rerouting keeps it stopped; use `aq task restart <id>` when ready to run it. |
 | A move was wrong | [Undo it](#undo-a-re-route). |
 
 ### Log in again

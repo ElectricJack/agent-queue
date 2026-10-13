@@ -85,7 +85,7 @@ async def test_health_transport_failure_closes_client_before_command_submission(
     assert client._http is None
 
 
-@pytest.mark.parametrize("command", ["pool_status", "explain_task"])
+@pytest.mark.parametrize("command", ["pool_status", "explain_task", "provider_reroute"])
 async def test_fleet_diagnostics_allow_more_than_default_read_budget(command):
     calls = []
 

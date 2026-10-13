@@ -1473,6 +1473,53 @@ class Orchestrator(
         # Preparation handoff atomically releases to READY. A successor can claim
         # before its preparation takes our control lock; never clear that claim.
         if not preparation_claim_released:
+            # A BLOCKED row alone does not prove its writer stopped. Otherwise
+            # task route remains refused until reconciliation, and workspace
+            # release can race a process that is still writing into the slot.
+            from src.sessions.provider import SessionHandle
+
+            for old in await self.db.list_sessions(project_id=task.project_id, live_only=True):
+                if old.task_id != task_id:
+                    continue
+                async with self._pool_teardown_lock(old.id):
+                    session = await self.db.get_session(old.id)
+                    if session is None or session.task_id != task_id:
+                        continue
+                    if session.instance_token != old.instance_token:
+                        return "Session instance changed during stop; task resources were retained."
+                    if not await self.db.update_session_instance(
+                        session.id, session.instance_token, desired_state="stopped",
+                    ):
+                        return "Session instance changed during stop; task resources were retained."
+                    token_store = getattr(self, "token_store", None)
+                    if token_store is not None:
+                        await token_store.revoke_session(session.id)
+                    provider = self.session_providers.create(session.provider, self.config)
+                    handle = SessionHandle(session.name, session.provider, session.instance_token)
+                    try:
+                        await asyncio.wait_for(provider.stop(handle, grace=2.0), timeout=10)
+                        confirmed = await asyncio.wait_for(provider.confirm_stopped(handle), timeout=10)
+                    except Exception:
+                        logger.warning("Task stop could not terminate %s", session.id, exc_info=True)
+                        confirmed = False
+                    if confirmed is not True:
+                        return (
+                            f"Session '{session.id}' termination is unproven; task assignment "
+                            f"and workspace were retained. Stop its exact writer with "
+                            f"`aq session kill {session.id}`, wait for confirmed termination, "
+                            f"then retry `aq task stop {task_id}`."
+                        )
+                    if not await self.db.update_session_instance(
+                        session.id, session.instance_token, require_desired_state="stopped",
+                        state="stopped", desired_state="stopped", end_reason="manually_stopped",
+                        task_id=None if session.lifecycle == "pool" else task_id,
+                        claim_phase=None, claim_phase_at=None, last_claim_result="manually_stopped",
+                    ):
+                        return "Session instance changed during stop; task resources were retained."
+                    if session.lifecycle == "pool":
+                        from src.claim_file import remove_claim_file_if_matches
+
+                        remove_claim_file_if_matches(session.work_dir, task.id, task.claim_epoch)
             ws = await self.db.get_workspace_for_task(task_id)
             if ws:
                 self._remove_sentinel(ws.workspace_path)

@@ -12,12 +12,16 @@ from __future__ import annotations
 import json
 import re
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.routing_commands import INVALID_OVERRIDE, NOT_PERMITTED, NOT_ROUTABLE
-from src.models import AgentProfile, SessionRecord, TaskStatus, TaskType
+from src.models import (
+    Agent, AgentProfile, AgentState, RepoSourceType, SessionRecord, TaskStatus, TaskType, Workspace,
+)
 from src.profiles.capabilities import CapabilityPolicy
 from src.routing.filing import ROUTING_CHOICE_FORBIDDEN
 from src.routing.sources import OVERRIDE, ROLE, ROUTER, UNROUTED
@@ -214,6 +218,105 @@ async def test_route_admits_a_worker_for_its_own_filing_and_the_supervisor(handl
     refused = await _as(handler, stale, "task_route", {"task_id": "theirs"})
     assert refused["code"] == NOT_PERMITTED
     assert "live named supervisor" in refused["error"]
+
+
+# -- Stopped tasks retain routing and writer safety -------------------------------
+
+
+@pytest.mark.parametrize("lifecycle", ["pool", "task"])
+async def test_stop_then_route_does_not_wait_for_the_reconciler(
+    handler, orch, monkeypatch, lifecycle, tmp_path,
+):
+    await orch.db.create_agent(Agent(
+        id="worker", name="Worker", profile_id="standard-high-codex", state=AgentState.BUSY,
+    ))
+    await _create(orch.db, "t", status=TaskStatus.IN_PROGRESS, assigned_agent_id="worker",
+                  profile_id="standard-high-codex", intelligence_class="standard-high",
+                  route_source=ROUTER, retry_count=2, task_type=TaskType.RESEARCH,
+                  class_hint="standard-high")
+    await orch.db.update_task("t", claim_epoch=7)
+    await orch.db.update_agent("worker", current_task_id="t")
+    claim_file = tmp_path / ".aq" / "claim.json"
+    claim_file.parent.mkdir()
+    claim_file.write_text(json.dumps({"task_id": "t", "claim_epoch": 7}))
+    await orch.db.create_session(SessionRecord(
+        id="writer", project_id="p", task_id="t", agent_id="worker",
+        profile_id="standard-high-codex", harness="codex", provider="fake", name="writer",
+        lifecycle=lifecycle, work_dir=str(tmp_path), epoch="test", instance_token="exact-token",
+        state="running", started_at=time.time(), claim_phase="active", last_claim_epoch=7,
+    ))
+    provider = SimpleNamespace(stop=AsyncMock(), confirm_stopped=AsyncMock(return_value=True))
+    monkeypatch.setattr(orch.session_providers, "create", lambda *_: provider)
+
+    stopped = await handler.execute("stop_task", {"task_id": "t"})
+    assert stopped.get("stopped") == "t", stopped
+    provider.stop.assert_awaited_once()
+    handle = provider.stop.await_args.args[0]
+    assert (handle.name, handle.instance_token) == ("writer", "exact-token")
+    provider.confirm_stopped.assert_awaited_once_with(handle)
+    session = await orch.db.get_session("writer")
+    assert session.state == session.desired_state == "stopped"
+    assert session.task_id == (None if lifecycle == "pool" else "t")
+    assert session.claim_phase is None
+    assert claim_file.exists() is (lifecycle != "pool")
+    assert (await orch.db.get_agent("worker")).state == AgentState.IDLE
+
+    routed = await handler.execute("task_route", {"task_id": "t"})
+    assert routed["success"], routed
+    task = await orch.db.get_task("t")
+    assert (task.status, task.profile_id, task.route_source, task.retry_count) == (
+        TaskStatus.BLOCKED, None, UNROUTED, 2,
+    )
+    assert await orch.db.get_task_meta("t", "blocked_terminal") == "stop_task"
+    # The real router can re-plan the stopped task without waking it.
+    assert (await _route(handler, "t"))["outcome"] == "routed"
+    assert (await orch.db.get_task("t")).status == TaskStatus.BLOCKED
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unconfirmed", "replaced"])
+async def test_unproven_stop_retains_task_and_workspace(handler, orch, monkeypatch, failure):
+    await orch.db.create_agent(Agent(
+        id="worker", name="Worker", profile_id="standard-high-codex", state=AgentState.BUSY,
+    ))
+    await _create(orch.db, "t", status=TaskStatus.IN_PROGRESS, assigned_agent_id="worker")
+    await orch.db.update_agent("worker", current_task_id="t")
+    await _router._session(orch.db, "writer", task_id="t", agent_id="worker")
+    await orch.db.create_workspace(Workspace(
+        id="slot", project_id="p", workspace_path="/private/work",
+        source_type=RepoSourceType.LINK,
+        locked_by_task_id="t", locked_by_agent_id="worker",
+    ))
+    provider = SimpleNamespace(
+        stop=AsyncMock(side_effect=TimeoutError("still alive") if failure == "timeout" else None),
+        confirm_stopped=AsyncMock(return_value=False),
+    )
+    if failure == "replaced":
+        async def replace_instance(_handle):
+            await orch.db.update_session("writer", instance_token="successor")
+            return True
+
+        provider.confirm_stopped.side_effect = replace_instance
+    monkeypatch.setattr(orch.session_providers, "create", lambda *_: provider)
+    stopped = await handler.execute("stop_task", {"task_id": "t"})
+    assert "retained" in stopped["error"], stopped
+    task = await orch.db.get_task("t")
+    assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "worker")
+    assert (await orch.db.get_workspace("slot")).locked_by_task_id == "t"
+    assert (await orch.db.get_agent("worker")).state == AgentState.BUSY
+    assert (await orch.db.get_session("writer")).state == "running"
+
+
+@pytest.mark.parametrize("state", ["starting", "running", "draining", "stopped"])
+async def test_blocked_route_keeps_the_live_session_guard(handler, orch, state):
+    await _create(orch.db, "t", status=TaskStatus.BLOCKED,
+                  profile_id="standard-high-codex", intelligence_class="standard-high")
+    await _router._session(orch.db, "writer", task_id="t", state=state, desired_state="stopped")
+    result = await handler.execute("task_route", {"task_id": "t"})
+    assert result["success"] is (state == "stopped"), result
+    if state != "stopped":
+        assert "live session 'writer'" in result["error"]
+        assert "aq session kill writer" in result["error"]
+    assert (await orch.db.get_task("t")).status == TaskStatus.BLOCKED
 
 
 # -- task_route_override: the audited emergency override ---------------------------

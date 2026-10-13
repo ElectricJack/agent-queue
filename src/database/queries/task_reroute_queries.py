@@ -347,7 +347,7 @@ class TaskRerouteQueryMixin:
     ) -> list[dict]:
         """Queued tasks on *profile_ids* the sweep may move, in claim order.
 
-        ``READY`` unblocked unassigned rows, plus every ``PAUSED`` row on an
+        ``READY`` unblocked rows and stopped ``BLOCKED`` rows, plus every ``PAUSED`` row on an
         automatic backoff (``resume_after`` set -- never an operator hold) so
         the caller can tell a provider pause (``task_metadata
         ['provider_pause']``) from a legacy one.  *task_ids* narrows to
@@ -356,7 +356,7 @@ class TaskRerouteQueryMixin:
         ids = sorted(set(profile_ids))
         if not ids and task_ids is None:
             return []
-        conditions = [tasks.c.assigned_agent_id.is_(None)]
+        conditions = [_unheld()]
         if ids:
             conditions.append(tasks.c.profile_id.in_(ids))
         if task_ids is not None:
@@ -370,7 +370,8 @@ class TaskRerouteQueryMixin:
             paused = and_(
                 tasks.c.status == TaskStatus.PAUSED.value, tasks.c.resume_after.is_not(None)
             )
-            conditions.append(ready | paused)
+            blocked = tasks.c.status == TaskStatus.BLOCKED.value
+            conditions.append(ready | blocked | paused)
         stmt = (
             select(tasks)
             .where(and_(*conditions))
