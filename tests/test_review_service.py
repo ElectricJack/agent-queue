@@ -21,7 +21,6 @@ from src.models import Project, Task, TaskStatus
 from src.reviews.diff import block_diff
 from src.reviews.service import MAX_CONTENT_BYTES, ReviewError, ReviewHooks, ReviewService
 from src.reviews.vault import body_sha256, split_frontmatter
-from tests.db_fixtures import lease_dsn
 
 PROJECT = "p"
 NOW = 1_790_000_000.0
@@ -57,12 +56,10 @@ class Clock:
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("review_service.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database: Database = await reuse_database("review_service.db")
     await database.create_project(Project(id=PROJECT, name="p"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
