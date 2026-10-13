@@ -578,24 +578,39 @@ class TaskRecoveryQueryMixin:
                 )
             else:
                 decision_reason = "Task or execution attempt changed before supervisor decision."
-            now = time.time()
-            await self._upsert_meta(
-                task_id,
-                INCIDENT_KEY,
-                {
-                    **incident,
-                    "decision": "superseded",
-                    "decision_reason": decision_reason,
-                    "decided_at": now,
-                    "decided_by": "system:reconciler",
-                },
-                conn=conn,
+            await self._supersede_task_recovery_incident_on(
+                conn, task_id, reason=decision_reason,
             )
-            await conn.execute(
-                update(messages)
-                .where(messages.c.id == "msg-" + expected_id)
-                .values(archived_at=now)
-            )
+
+    async def _supersede_task_recovery_incident_on(self, conn, task_id, *, reason):
+        """Retain an old incident's audit while releasing its execution fence."""
+        raw = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == INCIDENT_KEY,
+        ))
+        incident = _decoded(raw)
+        if not isinstance(incident, dict) or incident.get("decision") == "superseded":
+            return
+        history = list(incident.get("decision_history", []))
+        if incident.get("decision"):
+            history.append({
+                key: incident.get(key)
+                for key in ("decision", "decision_reason", "decided_at", "decided_by")
+            })
+        now = time.time()
+        await self._upsert_meta(task_id, INCIDENT_KEY, {
+            **incident,
+            "decision": "superseded",
+            "decision_reason": reason,
+            "decided_at": now,
+            "decided_by": "system:reconciler",
+            "decision_history": history,
+            "retry_allowed": False,
+        }, conn=conn)
+        if incident.get("id"):
+            await conn.execute(update(messages).where(
+                messages.c.id == "msg-" + incident["id"],
+                messages.c.archived_at.is_(None),
+            ).values(archived_at=now))
 
     async def _queue_task_recovery_notification(self, task_id):
         result = await self._ensure_task_recovery_incident(task_id)
@@ -701,6 +716,7 @@ class TaskRecoveryQueryMixin:
                 "title": task["title"],
                 "session_id": attempt["session_id"] if attempt is not None else None,
                 "attempt_id": attempt["id"] if attempt is not None else None,
+                "claim_epoch": task["claim_epoch"],
                 "reason": reason,
                 "end_reason": attempt["end_reason"] if attempt is not None else None,
                 "runtime_seconds": (
