@@ -8659,6 +8659,15 @@
     },
     "src/database/additive_migrations.py::check_range": {
       "reason": "Conservative nonexecuting migration-range checker used by versioned promotion admission; validates the exact before/after revision graph and reports changed historical or non-additive new migrations."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim and integration schema imports; adds the batch repair operations read to identify active train-repair delegates for shared-pool claim priority and sizing."
+    },
+    "src/database/queries/claim_queries.py::active_train_repair_bindings": {
+      "reason": "Reads the active stage of active or escalated batch repair operations to identify current train-repair delegate tasks, independent of titles. Read-only: claim ordering, pool sizing and stall diagnostics prioritize them; no new storage, delivery or replay authority."
+    },
+    "src/doctor/stall_checks.py::_waiting_train_repairs": {
+      "reason": "Stall-sweep adapter that reads the active train-repair delegate bindings once for aged READY candidates, so a waiting repair names its operation and batch. Read-only diagnostics; no storage or delivery authority."
     }
   },
   "exclusions": {
