@@ -125,6 +125,7 @@ areas:
     match:
       - tests/test_claim_*.py
       - tests/test_cli_claim_restart.py
+      - tests/test_preparation_failure.py
       - tests/perf/test_claim_statements.py
       - tests/test_import_cycles.py
   - id: worker-pools
