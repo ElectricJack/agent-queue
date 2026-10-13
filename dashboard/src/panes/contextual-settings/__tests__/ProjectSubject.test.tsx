@@ -206,8 +206,8 @@ describe("ProjectSubject", () => {
     await waitFor(() => expect(toolbar.find((a) => a.id === "save")).toBeDefined());
     toolbar.find((a) => a.id === "save")!.onClick();
 
-    // An untouched identity sends no git_identity_* keys, so a save of other
-    // fields never clobbers it.
+    // An untouched identity or supervisor switch sends no key, so a save of
+    // other fields never clobbers a value changed elsewhere since load.
     await waitFor(() =>
       expect(mutateAsync).toHaveBeenCalledWith({
         project_id: "demo",

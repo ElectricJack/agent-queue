@@ -113,10 +113,7 @@ export default function ProjectConfig() {
         max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
         credit_weight: parseOptionalFloat(form.credit_weight),
         budget_limit: parseOptionalFloat(form.budget_limit),
-        // A stale form must not undo a supervisor decision made elsewhere.
-        ...(form.supervisor_enabled !== (project.supervisor_enabled ?? false)
-          ? { supervisor_enabled: form.supervisor_enabled }
-          : {}),
+        ...supervisorEnabledPayload(project, form),
         ...identity,
       };
       await editProject.mutateAsync(body);
@@ -427,6 +424,21 @@ export function projectToForm(p: ProjectData): FormState {
     supervisor_enabled: p.supervisor_enabled ?? false,
     ...gitIdentityFormFields(p),
   };
+}
+
+/**
+ * The supervisor switch part of an edit_project body. It is sent only when
+ * the form differs from the server's current value, so saving another field
+ * from a form opened before the switch changed elsewhere (a CLI disable, the
+ * global supervisor) cannot silently flip it back.
+ */
+export function supervisorEnabledPayload(
+  saved: Pick<ProjectData, "supervisor_enabled">,
+  form: Pick<FormState, "supervisor_enabled">,
+): { supervisor_enabled?: boolean } {
+  return form.supervisor_enabled === (saved.supervisor_enabled ?? false)
+    ? {}
+    : { supervisor_enabled: form.supervisor_enabled };
 }
 
 export function parseOptionalInt(v: string): number | null {
