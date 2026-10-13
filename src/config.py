@@ -1909,6 +1909,8 @@ class WorktreesConfig:
     merge_slot_ttl_seconds: int = 600
     prune_remote_branches: bool = False
     setup_timeout_seconds: int = 900
+    slot_reset_git_timeout_seconds: int = 600
+    slot_reset_git_timeouts: dict[str, int] = field(default_factory=dict)
     salvage_dirty: bool = True
     # Upper bound on one archived salvage patch, in bytes.  Past it the patch
     # is replaced by its ``--stat`` summary: a slot can hold an arbitrarily
@@ -1929,6 +1931,20 @@ class WorktreesConfig:
             errors.append(ConfigError("worktrees", "merge_slot_ttl_seconds", "must be > 0"))
         if self.setup_timeout_seconds <= 0:
             errors.append(ConfigError("worktrees", "setup_timeout_seconds", "must be > 0"))
+        if (type(self.slot_reset_git_timeout_seconds) is not int
+                or self.slot_reset_git_timeout_seconds <= 0):
+            errors.append(ConfigError(
+                "worktrees", "slot_reset_git_timeout_seconds", "must be a positive integer",
+            ))
+        if not isinstance(self.slot_reset_git_timeouts, dict) or any(
+            not isinstance(key, str) or not key.strip()
+            or type(value) is not int or value <= 0
+            for key, value in self.slot_reset_git_timeouts.items()
+        ):
+            errors.append(ConfigError(
+                "worktrees", "slot_reset_git_timeouts",
+                "must map non-empty project IDs to positive integers",
+            ))
         return errors
 
 
@@ -5293,6 +5309,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "merge_slot_ttl_seconds": int,
                     "prune_remote_branches": bool,
                     "setup_timeout_seconds": int,
+                    "slot_reset_git_timeout_seconds": int,
+                    "slot_reset_git_timeouts": lambda value: value,
                     "salvage_dirty": bool,
                     "salvage_max_bytes": int,
                     "spawn_conflict_continuation": bool,

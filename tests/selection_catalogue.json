@@ -6895,10 +6895,12 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:f72ec62a5d3362d4a389d3b09efe0395c418325d25b3dbaac8953d738b1b687a",
+      "digest": "sha256:c395ef5e8c7610083db41cabad2a3e7bfa69a61318e7d7c39e0df9361975d649",
       "imports": [
         "src.event_bus",
+        "src.git",
         "src.git.github_contracts",
+        "src.git.locks",
         "src.git.manager",
         "src.models",
         "src.orchestrator.git_ops",

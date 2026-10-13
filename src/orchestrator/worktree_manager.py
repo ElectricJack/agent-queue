@@ -45,6 +45,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
+from functools import wraps
 from pathlib import Path
 
 try:  # POSIX only — the runtime target is WSL2; see ``_exclude_lock``.
@@ -209,6 +210,18 @@ def _norm_path(path: str | Path) -> str:
     except OSError:  # pragma: no cover - defensive
         resolved = os.path.abspath(str(path))
     return os.path.normcase(resolved)
+
+
+def _slot_reset_timeout(method):
+    @wraps(method)
+    async def wrapped(self, slot_ws, *args, **kwargs):
+        seconds = self.config.slot_reset_git_timeouts.get(
+            slot_ws.project_id, self.config.slot_reset_git_timeout_seconds,
+        )
+        with self.git.command_timeout(seconds):
+            return await method(self, slot_ws, *args, **kwargs)
+
+    return wrapped
 
 
 class WorktreeSlotManager:
@@ -526,6 +539,7 @@ class WorktreeSlotManager:
     # ─────────────────────────────── per-task ────────────────────────────
 
     @guard_workspace("slot_ws")
+    @_slot_reset_timeout
     async def reset_slot_for_task(
         self,
         slot_ws: Workspace,
@@ -567,6 +581,7 @@ class WorktreeSlotManager:
             raise GitError("child preparation requires an exact branch and proved parent commit")
         slot_dir = Path(slot_ws.workspace_path)
         await self.ensure_git_exclude(slot_dir)
+        await self.git.aclear_stale_locks(str(slot_dir))
         if operator_handoff:
             dirty_paths = await self.git.aget_dirty_paths(str(slot_dir))
             if dirty_paths is None or dirty_paths:
