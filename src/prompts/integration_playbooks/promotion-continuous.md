@@ -74,6 +74,11 @@ contains all owed heads. Intents beyond request_ttl remain visible in status.
 
 ## Failure handling
 
+Migration refusals (`migrations_not_additive`, `migration_range_invalid`, and
+`breaking_migration_override_forbidden`) notify the operator once and end the
+run. These policies never set `allow_breaking_migration`, retry a refused
+request, or authorize an override; that decision belongs to the local operator.
+
 Every missing fact, daemon refusal, and runtime error ends visibly failed or
 waits and notifies once per event. Message delivery is `message_send` to the
 operator user; durable command replay prevents duplicate messages for that event.
