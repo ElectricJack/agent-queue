@@ -43226,7 +43226,7 @@
     "write_file": "458b181b602087d47fd3718be8a59a8882a394f914052d36a17984534b1f11ca",
     "write_note": "8e0325108bb47b0338c95ab5b5612640a85634b108a929ec507e6fe6b49e1d5d"
   },
-  "cli_catalogue_sha256": "4d32466dd20519b362f1ef5491215084251b48519c3261cb213e7022ff34fe50",
+  "cli_catalogue_sha256": "98da93493310f9012a6d0d972047c42c31d393864c25f80821053f1d1c804d5c",
   "playbook_fixtures": {
     "tests/fixtures/playbooks/v2/agent-queue-parent-integration/artifact.json": "6bac753c97dddfb8683ebab844c1b9af8ed273d00e334d7d29a75e3e5c10042c",
     "tests/fixtures/playbooks/v2/agent-queue-parent-integration/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",

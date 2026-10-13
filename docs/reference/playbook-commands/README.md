@@ -192,6 +192,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`digest_status`](digest_status.md) | Digest Status | Configured schedule, next evaluation and delivery health. |
 | [`discord_purge_channel`](discord_purge_channel.md) | Discord Purge Channel | Delete messages from a Discord channel. |
 | [`doctor`](doctor.md) | Doctor | Run the health-check catalog and summarise the result. |
+| [`doctor_catalog`](doctor_catalog.md) | Doctor Catalog | List doctor observation audits, identity schemas, scope and coverage contracts. |
+| [`doctor_run`](doctor_run.md) | Doctor Run | Observe one audited check or group; never repair or filter a global scan. |
 | [`dry_run_playbook`](dry_run_playbook.md) | Dry Run Playbook | Execute the dry_run_playbook command. |
 | [`edit_agent`](edit_agent.md) | Edit Agent | Execute the edit_agent command. |
 | [`edit_file`](edit_file.md) | Edit File | Execute the edit_file command. |

@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from collections import Counter
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from sqlalchemy import and_, or_, select
@@ -23,7 +24,10 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks as task_table,
 )
-from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
+from src.doctor.models import (
+    CheckResult, DoctorCheck, DoctorContext, ObservationUnavailable, Severity, observation_context,
+)
+from src.doctor.observations import MAX_PRODUCER_BYTES, MAX_ROWS, finding, partition
 from src.models import ProjectStatus, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -106,9 +110,22 @@ class _Explains:
 
     async def _fetch(self, task_id: str) -> dict:
         async with self.limit:
-            result = await self.ctx.handler.execute("explain_task", {"task_id": task_id})
-            if not result.get("success"):
+            token = observation_context.set(self.ctx if self.ctx.read_only else None)
+            try:
+                result = await self.ctx.handler.execute("explain_task", {"task_id": task_id})
+            finally:
+                observation_context.reset(token)
+            if result.get("success") is not True:
                 raise RuntimeError(f"task explain {task_id}: {result.get('error', 'failed')}")
+            if not isinstance(result.get("reasons"), list):
+                raise ObservationUnavailable("task explanation reasons unavailable")
+            if any(reason.get("code") in {"development_snapshot_changed", "delivery_unknown",
+                                         "delivery_evidence_unavailable",
+                                         "development_dependency_delivery"}
+                   for reason in result["reasons"]):
+                # The legacy dependency code combines negative and unavailable
+                # evidence. Conservatively withhold absence authority for it.
+                self.ctx.incomplete("task_explanation_incomplete")
             return result
 
 
@@ -118,11 +135,20 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
         if (t.status is TaskStatus.READY and now - t.updated_at > _READY_AGE)
         or (t.status is TaskStatus.DEFINED and now - t.updated_at > _DEFINED_AGE)
     ]
+    if ctx.read_only and getattr(getattr(ctx.handler, "orchestrator", None),
+                                 "provider_availability", None) is None:
+        ctx.incomplete("provider_availability_unavailable")
     # One daemon round trip per candidate, bounded to eight concurrent calls.
-    explanations = await asyncio.gather(*(explains.get(t.id) for t in candidates))
+    explanations = await asyncio.gather(*(explains.get(t.id) for t in candidates),
+                                        return_exceptions=True)
     findings: list[dict] = []
     completions: dict[str, float | None] = {}
     for task, why in zip(candidates, explanations):
+        if isinstance(why, BaseException):
+            if not ctx.read_only:
+                raise why
+            ctx.incomplete("task_explanation_failed", project_id=task.project_id)
+            continue
         reasons = why.get("reasons") or []
         deps = [r for r in reasons if r.get("code") == "blocked_dependency"]
         completed = [r for r in deps if "status=COMPLETED" in r.get("detail", "")]
@@ -184,8 +210,14 @@ async def _branch_findings(ctx: DoctorContext, active: set[str], explains: _Expl
         if item["project_id"] in active
     ]
     explanations = await asyncio.gather(
-        *(explains.get(item["dependent_task_id"]) for item in candidates)
+        *(explains.get(item["dependent_task_id"]) for item in candidates),
+        return_exceptions=True,
     )
+    for item, why in zip(candidates, explanations):
+        if isinstance(why, BaseException):
+            if not ctx.read_only:
+                raise why
+            ctx.incomplete("task_explanation_failed", project_id=item["project_id"])
     return [
         _finding(
             "restore_branch", item["project_id"],
@@ -194,7 +226,7 @@ async def _branch_findings(ctx: DoctorContext, active: set[str], explains: _Expl
             **{key: value for key, value in item.items() if key != "project_id"},
         )
         for item, why in zip(candidates, explanations)
-        if any(
+        if not isinstance(why, BaseException) and any(
             r.get("code") == "blocked_dependency"
             and r.get("ref") == item["blocker_task_id"]
             for r in why.get("reasons") or []
@@ -243,7 +275,9 @@ async def _session_findings(ctx: DoctorContext, active: set[str], tasks: list, n
 
     async def capture(session):
         async with limit:
-            _, output = await _command("tmux", "capture-pane", "-p", "-t", session.name)
+            code, output = await _command("tmux", "capture-pane", "-p", "-t", session.name)
+            if code:
+                ctx.incomplete("session_pane_unavailable", project_id=session.project_id)
             return session.name, output
 
     panes = dict(await asyncio.gather(*(capture(session) for session in pane_sessions)))
@@ -283,6 +317,8 @@ async def _session_findings(ctx: DoctorContext, active: set[str], tasks: list, n
 def _log_findings(ctx: DoctorContext, active: set[str], tasks: list) -> list[dict]:
     data_dir = Path(ctx.config.data_dir).expanduser()
     publisher_log = Path(ctx.config.logging.log_file).expanduser() if ctx.config.logging.log_file else data_dir / "logs" / "agent-queue.log"
+    # A tail is useful evidence but never proves absence throughout the log.
+    ctx.incomplete("bounded_log_tail")
     lines = _tail(publisher_log).splitlines()
     by_id = {task.id: task for task in tasks}
     skips = {}
@@ -353,6 +389,8 @@ async def _delivery_findings(ctx: DoctorContext, active: set[str], tasks: list, 
         *(last_delivery(repo) for repo in candidates)
     ):
         fields = output.split()
+        if code or len(fields) < 2 or not fields[0].isdigit():
+            ctx.incomplete("repository_probe_unavailable", project_id=repo.project_id)
         if code == 0 and len(fields) >= 2 and fields[0].isdigit():
             age = now - int(fields[0])
             if age > _DELIVERY_AGE:
@@ -367,6 +405,9 @@ async def _delivery_findings(ctx: DoctorContext, active: set[str], tasks: list, 
 
 async def _provider_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
     rows = await ctx.db.list_provider_availability()
+    if rows is None or (not rows and tasks):
+        ctx.incomplete("provider_availability_unavailable")
+        return []
     disabled = {r["provider"] for r in rows if r["state"] == "disabled"}
     if not disabled:
         return []
@@ -409,6 +450,8 @@ async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> l
             )
             .order_by(task_table.c.id).limit(100)
         )
+    if len(rows) >= 100:
+        ctx.incomplete("query_limit")
     return [
         _finding("unmaterialized_train_pr", row["project_id"],
                  f"{row['id']} has a PR but is missing a train checkpoint or live origin; "
@@ -435,14 +478,21 @@ async def _completed_undelivered_findings(
             _COMPLETED_UNDELIVERED_BUDGET_SECONDS,
         )
     except TimeoutError:
+        ctx.incomplete("repository_probe_timeout")
         logger.warning("stall sweep: completed-undelivered read exceeded %ss",
                        _COMPLETED_UNDELIVERED_BUDGET_SECONDS)
         return []
     except Exception:
+        ctx.incomplete("repository_probe_failed")
         # The only sweep line that fetches a repository: its failure is the
         # doctor check's to report, never a reason to lose every other line.
         logger.warning("stall sweep: completed-undelivered read failed", exc_info=True)
         return []
+    for row in inventory.get("unavailable", []):
+        ctx.incomplete("repository_probe_unavailable", project_id=row.get("project_id"))
+    for row in inventory["entries"]:
+        if row["rule"] == "unknown":
+            ctx.incomplete("repository_evidence_unknown", project_id=row["project_id"])
     return [
         _finding(
             "completed_undelivered", entry["project_id"],
@@ -496,69 +546,244 @@ def _sweep_result(ctx: DoctorContext, findings: list[dict], active: int) -> Chec
     )
 
 
-async def _check_sweep(ctx: DoctorContext) -> CheckResult:
-    if ctx.db is None or ctx.handler is None:
-        return CheckResult(CHECK_ID, Severity.INFO, "database and command handler required")
-    now = time.time()
-    projects = await ctx.db.list_projects(status=ProjectStatus.ACTIVE)
-    active = {project.id for project in projects}
-    from src.integration.delivery_engine import project_delivery_issues
+# The producer owns every identity mapping. None denotes a scope aggregate,
+# never a guessed task/project reference hidden somewhere in legacy JSON.
+_SUBJECTS = {
+    "unclaimed_work": ("task", "task_id"),
+    "undelivered_blocker": ("task", "task_id"),
+    "restore_branch": ("task", "dependent_task_id"),
+    "worker_relaunch_loop": ("task", "task_id"),
+    "non_design_expensive_route": ("task", "task_id"),
+    "pool_without_claim": ("session", "session_name"),
+    "idle_worker": ("task", "task_id"), "idle_pool": ("session", "session_name"),
+    "crash_loop": ("session", "session_name"), "publisher_skip": ("task", "task_id"),
+    "publisher_error": None, "delivery_stale": ("repository", "checkout"),
+    "disabled_provider": ("task", "task_id"),
+    "unmaterialized_train_pr": ("task", "task_id"),
+    "completed_undelivered": ("task", "task_id"), "conversation_unowned": None,
+    "delivery_engine_unavailable": None, "flock_untracked": None,
+    "session_authentication": ("session", "session_id"),
+    "container_dependency": ("task", "task_id"), "container_dependencies_truncated": None,
+    "escalation_undelivered": ("escalation", "escalation_id"),
+    "continuous_promotion_lag": ("promotion_step", "step_id"),
+    "continuous_promotion_observation_unavailable": None,
+    "reviewed_file_guard": ("batch", "batch_id"), "orphaned_pr": ("pull_request", "pr_url"),
+    "pr_inventory_failed": None, "unadmitted_parent": ("task", "task_id"),
+    "validation_db": ("container", "container"), "stranded_child": ("task", "task_id"),
+    "integration_unknown_facts": ("integration_subject", "subject_id"),
+    "object_bootstrap_stalled": ("task", "task_id"),
+}
+REQUIRED_TASK_KINDS = ("unclaimed_work", "undelivered_blocker", "restore_branch",
+                       "worker_relaunch_loop")
 
-    delivery_engines = [
-        _finding("delivery_engine_unavailable", severity="error", **issue)
-        for issue in await project_delivery_issues(
-            ctx.db, projects, ctx.config,
-            orchestrator=getattr(ctx.handler, "orchestrator", None),
-        )
-    ]
+
+def _stall_observations(result: CheckResult) -> list[dict]:
+    grouped = {}
+    for row in result.observation_data:
+        kind, pid = row["kind"], row["project_id"]
+        mapping = _SUBJECTS[kind]
+        subject_type, subject_id = ((mapping[0], row.get(mapping[1])) if mapping
+                                    else ("scope", pid or "system"))
+        grouped.setdefault((kind, pid, subject_type, subject_id), []).append(row)
+    observations = []
+    for (kind, pid, subject_type, subject_id), rows in grouped.items():
+        # Multiple blockers (or log entries) describe one subject/kind. Keep all
+        # evidence under one stable identity, independent of producer ordering.
+        rows.sort(key=lambda row: json.dumps(row, sort_keys=True))
+        severity = "error" if any(row.get("severity") == "error" for row in rows) else "warn"
+        observations.append(finding(CHECK_ID, kind, pid, subject_type, subject_id,
+                                    "\n".join(row["detail"] for row in rows),
+                                    rows[0] if len(rows) == 1 else {"evidence": rows}, severity))
+    return observations
+
+
+@dataclass
+class _ProbeResult:
+    findings: list[dict]
+    coverage: list[dict]
+
+
+async def _probe(ctx, active, kinds, run):
+    """A probe failure invalidates only its own project/kind partitions."""
+    probe_ctx = replace(ctx, observation_reasons=[])
+    rows = []
+    try:
+        rows = await run(probe_ctx)
+        if (not isinstance(rows, list) or any(not isinstance(row, dict)
+                or row.get("kind") not in kinds or "project_id" not in row for row in rows)):
+            raise ValueError("invalid probe result")
+        json.dumps(rows, allow_nan=False)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        if not ctx.read_only:
+            raise
+        logger.debug("stall probe %s failed", kinds, exc_info=True)
+        rows = []
+        probe_ctx.incomplete("probe_unavailable" if isinstance(exc, ObservationUnavailable)
+                             else "probe_timeout" if isinstance(exc, TimeoutError)
+                             else "probe_exception")
+    retained, size = [], 0
+    for row in rows:
+        size += len(json.dumps(row, allow_nan=False).encode())
+        if ctx.read_only and (len(retained) >= MAX_ROWS or size > MAX_PRODUCER_BYTES):
+            probe_ctx.incomplete("producer_limit")
+            break
+        retained.append(row)
+    projects = set(active) | {row["project_id"] for row in retained}
+    global_kinds = {kind for kind in kinds if _SUBJECTS[kind] is None
+                    or kind in {"validation_db", "session_authentication"}}
+    if global_kinds:
+        projects.add(None)
+    if not projects:
+        projects = {None}
+    coverage = []
+    for pid in sorted(projects, key=lambda pid: pid or ""):
+        reasons = sorted({r["reason"] for r in probe_ctx.observation_reasons
+                          if r["project_id"] in (None, pid)})
+        for kind in kinds:
+            if pid is None and active and kind not in global_kinds:
+                continue
+            observed = sum(row["kind"] == kind and row["project_id"] == pid for row in retained)
+            coverage.append(partition(CHECK_ID, kind, pid, complete=not reasons,
+                                      observed=observed, total=None if reasons else observed,
+                                      reasons=reasons))
+    return _ProbeResult(retained, coverage)
+
+
+async def _flock_findings(ctx, now):
     from src.doctor.session_checks import _check_flock, session_authentication_findings
 
-    flock_findings = [
+    checked = await _check_flock(ctx)
+    if "findings" not in checked.data:
+        ctx.incomplete("session_providers_unavailable")
+    if any(entry.get("kind") == "probe_failed" for entry in checked.data.get("findings", [])):
+        ctx.incomplete("session_provider_probe_failed")
+    return [
         _finding("flock_untracked", entry.get("project_id"), entry["detail"],
-                 evidence=entry, severity="error")
-        for entry in (await _check_flock(ctx)).data.get("findings", [])
-    ]
-    flock_findings.extend(
+                 evidence=entry, severity="error") for entry in checked.data.get("findings", [])
+    ] + [
         _finding("session_authentication", item["project_id"], item["detail"],
                  severity="error", evidence=item, session_id=item["session_id"])
         for item in await session_authentication_findings(ctx, now=now)
-    )
-    # An unowned conversation input is a stall whether or not a project is
-    # active, so this line is read before the empty-install return.
-    conversation = await _conversation_findings(ctx, now)
+    ]
+
+
+async def _check_sweep(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None or ctx.handler is None:
+        return CheckResult(CHECK_ID, Severity.INFO, "database and command handler required",
+                           execution_status="unavailable", reasons=["dependency_unavailable"])
+    now = ctx.reference_time if ctx.reference_time is not None else time.time()
+    projects = await ctx.db.list_projects(status=ProjectStatus.ACTIVE)
+    if projects is None or any(not getattr(project, "id", None) for project in projects):
+        raise ObservationUnavailable("active project inventory unavailable")
+    active = {project.id for project in projects}
+    from src.integration.delivery_engine import project_delivery_issues
+
+    async def engines(probe_ctx):
+        return [_finding("delivery_engine_unavailable", severity="error", **issue)
+                for issue in await project_delivery_issues(
+                    probe_ctx.db, projects, probe_ctx.config,
+                    orchestrator=getattr(probe_ctx.handler, "orchestrator", None))]
+
+    # Each project's inventory failure leaves other projects usable.
+    inventories = await asyncio.gather(
+        *(ctx.db.list_tasks(project_id=pid) for pid in sorted(active)), return_exceptions=True)
+    tasks, failed_projects = [], set()
+    for pid, inventory in zip(sorted(active), inventories):
+        if isinstance(inventory, BaseException) or not isinstance(inventory, list):
+            if not ctx.read_only:
+                raise inventory if isinstance(inventory, BaseException) else ValueError(
+                    "invalid task inventory")
+            failed_projects.add(pid)
+        else:
+            tasks.extend(inventory)
+    if ctx.read_only and len(tasks) > MAX_ROWS:
+        failed_projects.update(active)
+        tasks = tasks[:MAX_ROWS]
+    runs = [
+        _probe(ctx, active, ("flock_untracked", "session_authentication"),
+               lambda c: _flock_findings(c, now)),
+        _probe(ctx, active, ("conversation_unowned",), lambda c: _conversation_findings(c, now)),
+        _probe(ctx, active, ("delivery_engine_unavailable",), engines),
+    ]
+    if active:
+        runs.extend([
+            _probe(ctx, active, ("unclaimed_work", "undelivered_blocker"),
+                   lambda c: _work_findings(c, tasks, now, _Explains(c))),
+            _probe(ctx, active, ("container_dependency", "container_dependencies_truncated"),
+                   lambda c: _container_dependency_findings(c, active)),
+            _probe(ctx, active, ("restore_branch",),
+                   lambda c: _branch_findings(c, active, _Explains(c))),
+            _probe(ctx, active, ("pool_without_claim", "idle_worker", "idle_pool", "crash_loop"),
+                   lambda c: _session_findings(c, active, tasks, now)),
+            _probe(ctx, active, ("delivery_stale",),
+                   lambda c: _delivery_findings(c, active, tasks, now)),
+            _probe(ctx, active, ("disabled_provider",), lambda c: _provider_findings(c, tasks)),
+            _probe(ctx, active, ("unmaterialized_train_pr",),
+                   lambda c: _unmaterialized_pr_findings(c, active)),
+            _probe(ctx, active, ("completed_undelivered",),
+                   lambda c: _completed_undelivered_findings(c, active, now)),
+            _probe(ctx, active, ("unadmitted_parent",),
+                   lambda c: _unadmitted_parent_findings(c, active)),
+            _probe(ctx, active, ("stranded_child",), lambda c: _stranded_child_findings(c, now)),
+            _probe(ctx, active, ("reviewed_file_guard",),
+                   lambda c: _reviewed_file_guard_findings(c, active)),
+            _probe(ctx, active, ("orphaned_pr", "pr_inventory_failed"),
+                   lambda c: _orphaned_pr_findings(c, active, now)),
+            _probe(ctx, active, ("publisher_skip", "publisher_error"),
+                   lambda c: asyncio.to_thread(_log_findings, c, active, tasks)),
+            _probe(ctx, active, ("validation_db",),
+                   lambda c: _validation_findings(c) if c.read_only else _validation_findings()),
+            _probe(ctx, active, ("integration_unknown_facts",),
+                   lambda c: _subject_unknown_findings(c, active, now)),
+            _probe(ctx, active, ("object_bootstrap_stalled",),
+                   lambda c: _object_bootstrap_findings(c, active, now)),
+            _probe(ctx, active, ("worker_relaunch_loop",),
+                   lambda c: _worker_relaunch_findings(c, tasks)),
+            _probe(ctx, active, ("continuous_promotion_lag",
+                                 "continuous_promotion_observation_unavailable"),
+                   lambda c: _continuous_promotion_findings(c, active, now)),
+            _probe(ctx, active, ("escalation_undelivered",),
+                   lambda c: _escalation_delivery_findings(c, active, now)),
+        ])
+    probes = await asyncio.gather(*runs)
+    findings = [row for probe in probes for row in probe.findings] + _route_findings(tasks)
+    coverage = [part for probe in probes for part in probe.coverage]
     if not active:
-        return _sweep_result(ctx, flock_findings + conversation, 0)
-    tasks_by_project = await asyncio.gather(
-        *(ctx.db.list_tasks(project_id=pid) for pid in sorted(active))
-    )
-    tasks = [task for group in tasks_by_project for task in group]
-    explains = _Explains(ctx)
-    # Independent reads run together.  The explanation calls within them are
-    # additionally capped at eight to keep the complete sweep under a minute.
-    groups = await asyncio.gather(
-        _work_findings(ctx, tasks, now, explains),
-        _container_dependency_findings(ctx, active),
-        _branch_findings(ctx, active, explains),
-        _session_findings(ctx, active, tasks, now),
-        _delivery_findings(ctx, active, tasks, now),
-        _provider_findings(ctx, tasks),
-        _unmaterialized_pr_findings(ctx, active),
-        _completed_undelivered_findings(ctx, active, now),
-        _unadmitted_parent_findings(ctx, active),
-        _stranded_child_findings(ctx, now),
-        _reviewed_file_guard_findings(ctx, active),
-        _orphaned_pr_findings(ctx, active, now),
-        asyncio.to_thread(_log_findings, ctx, active, tasks),
-        _validation_findings(),
-        _subject_unknown_findings(ctx, active, now),
-        _object_bootstrap_findings(ctx, active, now),
-        _worker_relaunch_findings(ctx, tasks),
-        _continuous_promotion_findings(ctx, active, now),
-        _escalation_delivery_findings(ctx, active, now),
-    )
-    findings = [item for group in groups for item in group]
-    findings.extend(_route_findings(tasks) + flock_findings + conversation + delivery_engines)
-    return _sweep_result(ctx, findings, len(active))
+        coverage.extend(partition(CHECK_ID, kind, None, complete=True, total=0)
+                        for kind in _SUBJECTS if kind not in {p["kind"] for p in coverage})
+    inventory_kinds = {"unclaimed_work", "undelivered_blocker", "worker_relaunch_loop",
+                       "pool_without_claim", "idle_worker", "idle_pool", "delivery_stale",
+                       "disabled_provider", "publisher_skip", "non_design_expensive_route"}
+    coverage.extend(partition(CHECK_ID, "non_design_expensive_route", pid, complete=True)
+                    for pid in active)
+    if ctx.read_only:
+        retained, size = [], 0
+        limited = set()
+        for row in findings:
+            row_size = len(json.dumps(row, allow_nan=False).encode())
+            if len(retained) >= MAX_ROWS or size + row_size > MAX_PRODUCER_BYTES:
+                limited.add((row["kind"], row["project_id"]))
+            else:
+                retained.append(row)
+                size += row_size
+        findings = retained
+        for part in coverage:
+            if (part["kind"], part["project_id"]) in limited:
+                part["complete"] = False
+                part["reasons"].append("producer_limit")
+    for part in coverage:
+        if part["project_id"] in failed_projects and part["kind"] in inventory_kinds:
+            part["complete"] = False
+            part["reasons"].append("task_inventory_unavailable_or_limited")
+    result = _sweep_result(ctx, findings, len(active))
+    result.coverage = coverage
+    result.complete = all(part["complete"] for part in coverage)
+    result.execution_status = "succeeded" if result.complete else "partial"
+    result.reasons = sorted({reason for part in coverage for reason in part["reasons"]})
+    result.observation_data = findings
+    return result
 
 
 async def _container_dependency_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
@@ -575,6 +800,7 @@ async def _container_dependency_findings(ctx: DoctorContext, active: set[str]) -
         for edge in report["edges"]
     ]
     if report["truncated"]:
+        ctx.incomplete("query_limit")
         findings.append(_finding(
             "container_dependencies_truncated", None,
             "container dependency report capped at 50 edges; resolve findings and rerun",
@@ -599,9 +825,12 @@ async def _continuous_promotion_findings(ctx, active, now):
         async with asyncio.timeout(_CONTINUOUS_PROMOTION_BUDGET_SECONDS):
             report = await continuous_promotion_lag(ctx, project_ids=active, now=now)
     except Exception as exc:
+        ctx.incomplete("repository_probe_failed")
         return [_finding("continuous_promotion_observation_unavailable", None,
                          f"continuous promotion branch read unavailable: {type(exc).__name__}; "
                          "run aq doctor --check integration.continuous_promotion_lag")]
+    for row in report["unavailable"]:
+        ctx.incomplete("repository_probe_unavailable", project_id=row.get("project_id"))
     return [
         _finding("continuous_promotion_lag", item["project_id"], item["detail"],
                  **{key: value for key, value in item.items() if key not in {"project_id", "detail"}})
@@ -618,7 +847,11 @@ async def _worker_relaunch_findings(ctx: DoctorContext, tasks: list) -> list[dic
     from src.sessions.worker_recovery import STREAK_KEY
 
     read = getattr(ctx.db, "get_task_meta_bulk", None)
+    if not callable(read):
+        ctx.incomplete("recovery_metadata_unavailable")
     records = await read([task.id for task in tasks], STREAK_KEY) if callable(read) else {}
+    if not isinstance(records, dict):
+        raise ObservationUnavailable("recovery metadata unavailable")
     findings = []
     for task in tasks:
         record = records.get(task.id)
@@ -656,6 +889,8 @@ async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) ->
 async def _orphaned_pr_findings(ctx: DoctorContext, active: set[str], now: float) -> list[dict]:
 
     pulls, errors = await _find_orphaned_prs(ctx, active, now=now)
+    for row in errors:
+        ctx.incomplete("pr_inventory_unavailable", project_id=row["project_id"])
     return [
         _finding("orphaned_pr", pull["project_id"],
                  f"{pull['pr_url']} ({pull['branch']}) is {int(pull['age_seconds'] / 3600)}h "
@@ -680,10 +915,12 @@ async def _unadmitted_parent_findings(ctx: DoctorContext, active: set[str]) -> l
     ]
 
 
-async def _validation_findings() -> list[dict]:
+async def _validation_findings(ctx: DoctorContext | None = None) -> list[dict]:
     code, output = await _command(
         "docker", "inspect", "-f", "{{.State.Status}}", _VALIDATION_CONTAINER,
     )
+    if code in {124, 127} and ctx is not None:
+        ctx.incomplete("container_probe_unavailable")
     state = output.strip() if code == 0 else "missing"
     if state == "running":
         return []
@@ -737,13 +974,22 @@ def _row(row, key: str) -> str:
 
 
 def stall_checks() -> list[DoctorCheck]:
-    return [DoctorCheck(id=CHECK_ID, run=_check_sweep, owner="operations", timeout_s=55)]
+    return [DoctorCheck(
+        id=CHECK_ID, run=_check_sweep, owner="operations", timeout_s=55,
+        supported_scopes=("system",), read_only_audited=True,
+        finding_schema={"version": 1, "kinds": sorted(_SUBJECTS),
+                        "required_task_kinds": list(REQUIRED_TASK_KINDS)},
+        identity_adapter=_stall_observations,
+        completeness_contract="independent per-project per-probe kind coverage v1",
+        groups=("task_observations_v1",),
+    )]
 
 
 async def _parent_pr_observation(ctx: DoctorContext, row: dict) -> dict:
     """Use the configured repository credential; unavailable reads stay unknown."""
     git = getattr(getattr(ctx.handler, "orchestrator", None), "git", None)
     if git is None or not row["repo_url"]:
+        ctx.incomplete("github_unavailable", project_id=row["project_id"])
         return {"pr_open": None, "pr_head": None}
     try:
         binding = await git.bind_github_repository(row["repo_url"])
@@ -759,6 +1005,7 @@ async def _parent_pr_observation(ctx: DoctorContext, row: dict) -> dict:
         return {"pr_open": pull.get("state") == "open", "pr_head": head.get("sha"),
                 "pr_canonical": canonical}
     except Exception:
+        ctx.incomplete("github_read_failed", project_id=row["project_id"])
         return {"pr_open": None, "pr_head": None}
 
 
@@ -794,7 +1041,7 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
         t.projects.c.integration_repository_id == t.tasks.c.repo_id,
         t.tasks.c.parent_task_id.is_(None), t.tasks.c.status == "COMPLETED",
         t.tasks.c.pr_url.is_not(None), t.tasks.c.pr_url != "",
-        t.tasks.c.updated_at < time.time() - _STUCK_CHILD_AFTER_SECONDS,
+        t.tasks.c.updated_at < (ctx.reference_time if ctx.reference_time is not None else time.time()) - _STUCK_CHILD_AFTER_SECONDS,
         or_(exists(select(child.c.id).where(child.c.parent_task_id == t.tasks.c.id)),
             exists(select(archived.c.id).where(archived.c.parent_task_id == t.tasks.c.id))),
         ~exists(select(t.integration_batch_members.c.task_id).join(
@@ -811,7 +1058,10 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
     probe_deadline = time.monotonic() + _PARENT_PR_PROBE_BUDGET_SECONDS
     async with ctx.db._engine.connect() as conn:
         rows = (await conn.execute(statement)).mappings().all()
-    view = (await observer.observe([row["task_id"] for row in rows], max_age=observer.READ_MAX_AGE)
+    if len(rows) >= 100:
+        ctx.incomplete("query_limit")
+    view = (await observer.observe([row["task_id"] for row in rows], max_age=observer.READ_MAX_AGE,
+                                   **({"cached_only": True} if ctx.read_only else {}))
             if observer is not None and rows else None)
     fresh = view is not None and await view.fresh()
     async with ctx.db._engine.connect() as conn:
@@ -830,7 +1080,9 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
                     async with asyncio.timeout(min(_PARENT_PR_PROBE_SECONDS, remaining)):
                         observed = await _parent_pr_observation(ctx, row)
                 except TimeoutError:
-                    pass  # Local findings remain visible when GitHub cannot answer.
+                    ctx.incomplete("github_timeout", project_id=row["project_id"])
+            else:
+                ctx.incomplete("github_probe_budget", project_id=row["project_id"])
             if observed["pr_open"] is False:
                 continue
             source = await producer._pull_request_source_on(conn, row["task_id"])
@@ -959,7 +1211,12 @@ async def _find_stranded_dependents(
     if observer is not None and dependents:
         from src.integration.delivery_truth import DeliveryState
 
-        view = await observer.observe(dependents)
+        view = await observer.observe(dependents, **({"cached_only": True} if ctx.read_only else {}))
+        if ctx.read_only:
+            for item in stranded.values():
+                evidence = view.get(item["dependent_task_id"])
+                if evidence is None or evidence.state is DeliveryState.UNKNOWN:
+                    ctx.incomplete("repository_evidence_unknown", project_id=item["project_id"])
         stranded = {
             key: item for key, item in stranded.items()
             if not (
@@ -967,6 +1224,9 @@ async def _find_stranded_dependents(
                 and evidence.state is DeliveryState.CONTAINED
             )
         }
+    elif ctx.read_only and dependents:
+        for item in stranded.values():
+            ctx.incomplete("repository_observer_unavailable", project_id=item["project_id"])
     return sorted(stranded.values(), key=lambda item: (item["project_id"], item["dependent_task_id"]))
 
 
@@ -1022,6 +1282,7 @@ async def _find_orphaned_prs(ctx, project_ids=None, *, now=None):
     from src.integration.pr_cleanup import orphaned_pull_requests
 
     if ctx.db is None or not hasattr(ctx.db, "_engine"):
+        ctx.incomplete("database_unavailable")
         return [], []
     factory = getattr(ctx.handler, "_integration_repository_git", None)
     if factory is not None:
@@ -1076,6 +1337,7 @@ async def _subject_unknown_findings(ctx, active, now):
     from src.database.tables import integration_subject_journal as j, integration_subjects as s
 
     if not getattr(ctx.db, "_engine", None):
+        ctx.incomplete("database_unavailable")
         return []
     async with ctx.db._engine.connect() as conn:
         rows = (await conn.execute(
@@ -1086,6 +1348,8 @@ async def _subject_unknown_findings(ctx, active, now):
                     and_(j.c.primitive == "integration_observe_subject", j.c.outcome == "unknown")),
             ).order_by(j.c.recorded_at.desc(), j.c.seq.desc()).limit(10000)
         )).mappings().all()
+    if len(rows) >= 10000:
+        ctx.incomplete("query_limit")
     return _unknown_subject_streaks(rows, now)
 
 
@@ -1097,6 +1361,7 @@ async def _object_bootstrap_findings(ctx, active, now):
     from src.database.tables import gates, object_loops, task_metadata, tasks
 
     if not getattr(ctx.db, "_engine", None):
+        ctx.incomplete("database_unavailable")
         return []
     refusal = cast(task_metadata.c.value, JSONB)
     async with ctx.db._engine.connect() as conn:

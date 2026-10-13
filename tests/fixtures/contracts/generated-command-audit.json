@@ -2725,6 +2725,96 @@
     "helper_producers": {},
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
   },
+  "doctor_catalog": {
+    "mode": "json_object",
+    "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_doctor_catalog",
+    "source_digest": "sha256:d96dbc5d1b5a1f6d2c45c8ed2eb936385652c42d71bbfd3db79d6177ee9debbb",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [],
+    "effect": "read",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "catalogue_only"
+    ],
+    "denial_reason": null,
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "return_branches": [
+      {
+        "return": "catalog(self.doctor_registry)",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "failure('doctor.invalid_arguments')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "failure('doctor.subsystem_unavailable')",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_doctor_observations.py"
+    ],
+    "helper_producers": {},
+    "review_notes": "Read-only system observations preserve nested principal and capabilities. Audited producer adapters own identities and explicit per-project/kind coverage. Legacy health severity is independent of execution status. Snapshot arguments fail explicitly until C2 installs its transport. Catalogue contains only static registry metadata."
+  },
+  "doctor_run": {
+    "mode": "json_object",
+    "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_doctor_run",
+    "source_digest": "sha256:2c8a95e5305ba216bf429cd2684c6c8e60674f0a7c1dfb089838482d39956d0e",
+    "input_schema_source": "fallback",
+    "schema_quality": "declared",
+    "argument_reads_diagnostic_only": [
+      "check_id",
+      "group",
+      "now",
+      "page_size",
+      "page_token",
+      "pagination",
+      "project_id",
+      "snapshot_id",
+      "timeout_s"
+    ],
+    "effect": "read",
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "denial_reason": null,
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "return_branches": [
+      {
+        "return": "bounded_inline(await collect_observations(self.doctor_registry, DoctorContext(config=self.config, db=self.db, handler=self, project_id=args.get('project_id'), reference_time=args.get('now'), read_only=True), check_id=args.get('check_id'), group=args.get('group'), timeout_s=args.get('timeout_s')))",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "failure('doctor.invalid_arguments')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "failure('resource_scope_denied')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "failure('doctor.subsystem_unavailable')",
+        "protocol": "delegated_producer"
+      },
+      {
+        "return": "failure('doctor.snapshot_unavailable')",
+        "protocol": "delegated_producer"
+      }
+    ],
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_doctor_observations.py"
+    ],
+    "helper_producers": {},
+    "review_notes": "Read-only system observations preserve nested principal and capabilities. Audited producer adapters own identities and explicit per-project/kind coverage. Legacy health severity is independent of execution status. Snapshot arguments fail explicitly until C2 installs its transport. Catalogue contains only static registry metadata."
+  },
   "dry_run_playbook": {
     "mode": "json_object",
     "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_dry_run_playbook",
@@ -3924,7 +4014,7 @@
   "explain_task": {
     "mode": "json_object",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_explain_task",
-    "source_digest": "sha256:bf8c50f384810451148a9ec9a5b20176899f28d36f31e871368423c133b0e5af",
+    "source_digest": "sha256:5b7049f078100b7ae3243a584f4d84dbc7724f7d60ca490932572a06ddd9aa8f",
     "input_schema_source": "fallback",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -3965,7 +4055,8 @@
       "tests/test_checkpoint_c3.py",
       "tests/test_claim_commands.py",
       "tests/test_delivery_consumers.py",
-      "tests/test_explain.py"
+      "tests/test_explain.py",
+      "tests/test_doctor_observations.py"
     ],
     "helper_producers": {
       "_assert_task_in_scope": "sha256:a66da16b3047ca2247a1e612e6aede543b65effd65666764c031e5465d7d23d7"
