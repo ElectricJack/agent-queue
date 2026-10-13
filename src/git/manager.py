@@ -75,7 +75,7 @@ import signal
 import subprocess
 import tempfile
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -98,6 +98,7 @@ from src.git.github_contracts import (
     GitHubRepositoryBinding,
 )
 from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
+from src.git.locks import remove_stale_locks
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -110,6 +111,8 @@ logger = logging.getLogger(__name__)
 # transport contract instead of maintaining an independent timeout literal.
 APP_AUTH_PUSH_TIMEOUT_SECONDS = 120.0
 APP_AUTH_PUSH_CLEANUP_MARGIN_SECONDS = 5.0
+
+_COMMAND_TIMEOUT: ContextVar[int | None] = ContextVar("git_command_timeout", default=None)
 
 
 @contextmanager
@@ -655,6 +658,18 @@ class GitManager:
         """
         self._lock_provider = provider
 
+    @contextmanager
+    def command_timeout(self, seconds: int) -> Iterator[None]:
+        """Scope default local-command budgets to this coroutine, never the manager."""
+        token = _COMMAND_TIMEOUT.set(seconds)
+        try:
+            yield
+        finally:
+            _COMMAND_TIMEOUT.reset(token)
+
+    def _command_timeout(self, timeout: int | None = None) -> int:
+        return timeout or _COMMAND_TIMEOUT.get() or self._GIT_TIMEOUT
+
     def _run(self, args: list[str], cwd: str | None = None, timeout: int | None = None) -> str:
         try:
             result = subprocess.run(
@@ -663,12 +678,12 @@ class GitManager:
                 capture_output=True,
                 text=True,
                 env=self._env_for(args),
-                timeout=timeout or self._GIT_TIMEOUT,
+                timeout=self._command_timeout(timeout),
             )
         except subprocess.TimeoutExpired:
             raise GitError(
                 f"git {' '.join(args)} timed out after "
-                f"{timeout or self._GIT_TIMEOUT}s (possible credential prompt)"
+                f"{self._command_timeout(timeout)}s"
             )
         if result.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
@@ -708,7 +723,7 @@ class GitManager:
         acquired the appropriate lock (e.g. for compound operations that need
         a single lock scope spanning multiple git commands).
         """
-        effective_timeout = timeout or self._GIT_TIMEOUT
+        effective_timeout = self._command_timeout(timeout)
         try:
             proc = await asyncio.create_subprocess_exec(
                 "git",
@@ -735,7 +750,7 @@ class GitManager:
                     raise
                 raise GitError(
                     f"git {' '.join(args)} timed out after "
-                    f"{effective_timeout}s (possible credential prompt)"
+                    f"{effective_timeout}s"
                 )
         except FileNotFoundError as exc:
             if cwd is not None and not Path(cwd).is_dir():
@@ -794,7 +809,7 @@ class GitManager:
         env: dict[str, str],
         timeout: int | None,
     ) -> subprocess.CompletedProcess:
-        effective_timeout = timeout or self._GIT_TIMEOUT
+        effective_timeout = self._command_timeout(timeout)
         command = ["git", *args]
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -817,8 +832,7 @@ class GitManager:
                     pass
                 await proc.wait()
                 raise GitError(
-                    f"git {' '.join(args)} timed out after {effective_timeout}s "
-                    "(possible credential prompt)"
+                    f"git {' '.join(args)} timed out after {effective_timeout}s"
                 )
         except FileNotFoundError as exc:
             if not Path(cwd).is_dir():
@@ -852,7 +866,7 @@ class GitManager:
         Returns a :class:`subprocess.CompletedProcess`-compatible object so
         callers can inspect ``returncode``, ``stdout``, and ``stderr``.
         """
-        effective_timeout = timeout or self._GIT_TIMEOUT
+        effective_timeout = self._command_timeout(timeout)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -5713,12 +5727,16 @@ class GitManager:
             pass
         return dot_git
 
+    async def aclear_stale_locks(self, checkout_path: str) -> None:
+        """Recover abandoned locks without changing checkout or operation state."""
+        git_dir = Path(self._resolve_git_dir(checkout_path))
+        await asyncio.to_thread(remove_stale_locks, git_dir)
+
     async def aabort_in_progress_operations(self, checkout_path: str) -> None:
         """Abort any in-progress merge, rebase, or cherry-pick.
 
-        Also removes stale ``.git/index.lock`` files left by crashed
-        processes (e.g. a killed agent) that would block all subsequent
-        git operations.
+        Also removes abandoned worktree and common-directory Git locks after
+        checking for live owners. Unknown ownership preserves the lock.
 
         This is a best-effort method — individual failures are silently
         ignored because not all operations may be in progress.
@@ -5727,14 +5745,7 @@ class GitManager:
         # worktree ``.git`` is a *file* holding ``gitdir: <path>``, and the
         # index lives under ``<base>/.git/worktrees/<name>/`` — resolving it
         # is what makes this work for slot worktrees and not only clones.
-        git_dir = self._resolve_git_dir(checkout_path)
-        for lock_name in ("index.lock", "shallow.lock", "refs/heads.lock"):
-            lock_path = os.path.join(git_dir, lock_name)
-            try:
-                if os.path.exists(lock_path):
-                    os.remove(lock_path)
-            except OSError:
-                pass
+        await self.aclear_stale_locks(checkout_path)
 
         # Abort in-progress merge
         try:

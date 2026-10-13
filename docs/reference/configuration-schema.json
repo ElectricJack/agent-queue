@@ -3462,6 +3462,8 @@
         "salvage_dirty": true,
         "salvage_max_bytes": 5242880,
         "setup_timeout_seconds": 900,
+        "slot_reset_git_timeout_seconds": 600,
+        "slot_reset_git_timeouts": {},
         "spawn_conflict_continuation": false
       },
       "properties": {
@@ -3492,6 +3494,17 @@
         "setup_timeout_seconds": {
           "default": 900,
           "type": "integer"
+        },
+        "slot_reset_git_timeout_seconds": {
+          "default": 600,
+          "type": "integer"
+        },
+        "slot_reset_git_timeouts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "default": {},
+          "type": "object"
         },
         "spawn_conflict_continuation": {
           "default": false,

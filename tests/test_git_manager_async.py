@@ -170,8 +170,57 @@ class TestArun:
             return proc
 
         with mock.patch("asyncio.create_subprocess_exec", side_effect=mock_create):
-            with pytest.raises(GitError, match="timed out"):
+            with pytest.raises(GitError, match="timed out after 1s") as error:
                 await mgr._arun(["status"], cwd=clone, timeout=1)
+            assert "credential" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_local_command_budgets_are_isolated_and_explicit_timeouts_win(
+    clone, mgr, monkeypatch,
+):
+    original_wait = asyncio.wait_for
+    budgets = {}
+
+    async def record_wait(awaitable, timeout):
+        budgets.setdefault(asyncio.current_task().get_name(), []).append(timeout)
+        return await original_wait(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", record_wait)
+    ready = asyncio.Event()
+
+    async def run(seconds):
+        with mgr.command_timeout(seconds):
+            await ready.wait()
+            await mgr._arun(["status", "--porcelain"], cwd=clone)
+            await mgr.arun_git_result(["rev-parse", "HEAD"], cwd=clone, timeout=25)
+            await mgr._arun_subprocess(["git", "rev-parse", "HEAD"], cwd=clone)
+        await mgr._arun(["rev-parse", "HEAD"], cwd=clone)
+
+    first = asyncio.create_task(run(600), name="first")
+    second = asyncio.create_task(run(1800), name="second")
+    ready.set()
+    await asyncio.gather(first, second)
+    assert budgets == {"first": [600, 25, 600, 120], "second": [1800, 25, 1800, 120]}
+
+
+@pytest.mark.asyncio
+async def test_command_budget_restored_after_cancellation(mgr):
+    started = asyncio.Event()
+
+    async def cancelled():
+        try:
+            with mgr.command_timeout(1800):
+                started.set()
+                await asyncio.Event().wait()
+        finally:
+            assert mgr._command_timeout() == 120
+
+    worker = asyncio.create_task(cancelled())
+    await started.wait()
+    worker.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
 
 
 @pytest.mark.asyncio
@@ -1830,6 +1879,139 @@ async def test_async_abort_operations_removes_linked_worktree_lock(
     assert not stale_lock.exists()
     # The worktree's gitdir pointer file itself is untouched.
     assert pathlib.Path(wt_path, ".git").is_file()
+
+
+@pytest.mark.asyncio
+async def test_stale_lock_cleanup_resolves_shared_store_and_preserves_live_locks(
+    tmp_path, clone, mgr, monkeypatch,
+):
+    from src.git import locks
+
+    wt_path = str(tmp_path / "maintenance-wt")
+    _git(["worktree", "add", "--detach", wt_path, "HEAD"], cwd=clone)
+    git_dir = pathlib.Path(mgr._resolve_git_dir(wt_path))
+    maintenance = pathlib.Path(clone, ".git", "objects", "maintenance.lock")
+    index = git_dir / "index.lock"
+    maintenance.write_text("abandoned maintenance")
+    index.write_text("abandoned index")
+
+    monkeypatch.setattr(locks, "_live_lock_owner", lambda *args: True)
+    await mgr.aclear_stale_locks(wt_path)
+    assert maintenance.exists() and index.exists()
+
+    inspected = []
+
+    def no_owner(common, identities):
+        inspected.append(common)
+        assert len(identities) == 2
+        return False
+
+    monkeypatch.setattr(locks, "_live_lock_owner", no_owner)
+    await mgr.aclear_stale_locks(wt_path)
+    assert inspected == [pathlib.Path(clone, ".git").resolve()]
+    assert not maintenance.exists() and not index.exists()
+    assert (git_dir / "commondir").exists()
+
+
+def _lock_process(proc_root, *, name="git", cwd=None):
+    process = proc_root / "123"
+    process.mkdir(parents=True)
+    (process / "comm").write_text(name)
+    (process / "stat").write_text(f"123 ({name}) S 1 2 3")
+    (process / "cmdline").write_bytes(name.encode() + b"\0maintenance\0run\0")
+    (process / "environ").write_bytes(b"")
+    (process / "fd").mkdir()
+    if cwd:
+        (process / "cwd").symlink_to(cwd, target_is_directory=True)
+    return process
+
+
+def test_live_git_in_sibling_worktree_preserves_shared_lock(tmp_path, clone):
+    from src.git.locks import _live_lock_owner
+
+    sibling = tmp_path / "live-maintenance-wt"
+    _git(["worktree", "add", "--detach", str(sibling), "HEAD"], cwd=clone)
+    proc_root = tmp_path / "proc"
+    _lock_process(proc_root, cwd=sibling)
+    # No open FD: maintenance can own a pathname after closing the lock FD.
+    assert _live_lock_owner(pathlib.Path(clone, ".git").resolve(), set(), proc_root=proc_root)
+
+
+@pytest.mark.parametrize("override", ["flag", "env"])
+def test_work_tree_override_does_not_hide_a_live_git_owner(tmp_path, clone, override):
+    from src.git.locks import _live_lock_owner
+
+    proc_root = tmp_path / "proc"
+    process = _lock_process(proc_root, cwd=clone)
+    if override == "flag":
+        (process / "cmdline").write_bytes(b"git\0--work-tree=/another/tree\0status\0")
+    else:
+        (process / "environ").write_bytes(b"GIT_WORK_TREE=/another/tree\0")
+    assert _live_lock_owner(pathlib.Path(clone, ".git").resolve(), set(), proc_root=proc_root)
+
+
+@pytest.mark.parametrize("override", ["cwd", "dash_c", "git_dir", "env_git_dir"])
+def test_git_in_other_repository_does_not_prevent_lock_recovery(tmp_path, clone, override):
+    from src.git.locks import _live_lock_owner
+
+    other = tmp_path / "unrelated"
+    _git(["init", str(other)], cwd=tmp_path)
+    proc_root = tmp_path / "proc"
+    process = _lock_process(proc_root, cwd=other if override == "cwd" else tmp_path)
+    if override == "dash_c":
+        (process / "cmdline").write_bytes(b"git\0-C\0unrelated\0maintenance\0run\0")
+    elif override == "git_dir":
+        (process / "cmdline").write_bytes(
+            b"git\0--git-dir=unrelated/.git\0maintenance\0run\0",
+        )
+    elif override == "env_git_dir":
+        (process / "environ").write_bytes(b"GIT_DIR=unrelated/.git\0")
+    assert not _live_lock_owner(
+        pathlib.Path(clone, ".git").resolve(), set(), proc_root=proc_root,
+    )
+
+
+def test_open_lock_owned_by_non_git_process_is_preserved(tmp_path):
+    from src.git.locks import _live_lock_owner
+
+    lock = tmp_path / "index.lock"
+    lock.write_text("")
+    info = lock.stat()
+    proc_root = tmp_path / "proc"
+    process = _lock_process(proc_root, name="editor")
+    (process / "fd" / "5").symlink_to(lock)
+    assert _live_lock_owner(
+        tmp_path, {(info.st_dev, info.st_ino)}, proc_root=proc_root,
+    )
+
+
+@pytest.mark.parametrize("unknown", ["missing_proc", "incomplete_git", "explicit_git_dir"])
+def test_unknown_lock_ownership_preserves_locks(tmp_path, unknown):
+    from src.git.locks import _live_lock_owner
+
+    proc_root = tmp_path / "proc"
+    if unknown != "missing_proc":
+        process = _lock_process(proc_root)
+        if unknown == "explicit_git_dir":
+            (process / "environ").write_bytes(b"GIT_DIR=/another/store\0")
+    assert _live_lock_owner(tmp_path, set(), proc_root=proc_root)
+
+
+def test_lock_replaced_during_owner_inspection_is_preserved(tmp_path, monkeypatch):
+    from src.git import locks
+
+    index = tmp_path / "index.lock"
+    index.write_text("abandoned")
+
+    def replace_lock(*args):
+        # Keep the old inode alive so the filesystem cannot immediately reuse it.
+        index.rename(tmp_path / "old-index.lock")
+        index.write_text("new owner")
+        return False
+
+    monkeypatch.setattr(locks, "_live_lock_owner", replace_lock)
+    locks.remove_stale_locks(tmp_path)
+    assert index.read_text() == "new owner"
 
 
 @pytest.mark.asyncio

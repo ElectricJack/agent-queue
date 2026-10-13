@@ -1141,10 +1141,31 @@ class TestSubstrateLoaderDefaults:
     def test_worktrees_explicit_values_override_defaults(self, tmp_path):
         cfg = self._load(
             tmp_path,
-            worktrees={"enabled": False, "salvage_max_bytes": 1234},
+            worktrees={"enabled": False, "salvage_max_bytes": 1234,
+                       "slot_reset_git_timeout_seconds": 900,
+                       "slot_reset_git_timeouts": {"matter-engine-cpp": 1800}},
         )
         assert cfg.worktrees.enabled is False
         assert cfg.worktrees.salvage_max_bytes == 1234
+        assert cfg.worktrees.slot_reset_git_timeout_seconds == 900
+        assert cfg.worktrees.slot_reset_git_timeouts == {"matter-engine-cpp": 1800}
+
+
+@pytest.mark.parametrize("seconds", [0, -1, True, "600", 0.5, None])
+def test_slot_reset_git_timeout_requires_positive_integer(seconds):
+    from src.config import WorktreesConfig
+
+    errors = WorktreesConfig(slot_reset_git_timeout_seconds=seconds).validate()
+    assert any(error.field == "slot_reset_git_timeout_seconds" for error in errors)
+
+
+@pytest.mark.parametrize("overrides", [None, [], {"": 600}, {"project": 0},
+                                       {"project": True}, {"project": "1800"}])
+def test_slot_reset_git_overrides_require_project_ids_and_positive_integers(overrides):
+    from src.config import WorktreesConfig
+
+    errors = WorktreesConfig(slot_reset_git_timeouts=overrides).validate()
+    assert any(error.field == "slot_reset_git_timeouts" for error in errors)
 
 
 @pytest.mark.parametrize("compact,checkpoint,cadence", [

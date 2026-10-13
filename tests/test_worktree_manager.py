@@ -754,6 +754,44 @@ class TestResetSlot:
     def _make_slot(self, mgr, base_ws, kind):
         return asyncio.run(mgr.create_slot(base_ws, kind, 0))
 
+    @pytest.mark.parametrize("override", [None, 1800])
+    @pytest.mark.parametrize("preserve", [False, True])
+    def test_reset_and_child_merge_use_project_budget(
+        self, mgr, base_ws, kind, monkeypatch, override, preserve,
+    ):
+        slot = self._make_slot(mgr, base_ws, kind)
+        if override:
+            mgr.config.slot_reset_git_timeouts[slot.project_id] = override
+        parent = _git(["rev-parse", "HEAD"], cwd=slot.workspace_path)
+        calls = []
+        original = mgr.git._arun_unlocked
+
+        async def record(args, cwd=None, timeout=None):
+            calls.append((args[0], mgr.git._command_timeout(timeout)))
+            return await original(args, cwd=cwd, timeout=timeout)
+
+        monkeypatch.setattr(mgr.git, "_arun_unlocked", record)
+        kwargs = dict(base_branch=parent, target_branch="aq/tsk-1", preserve_branch=True) \
+            if preserve else {}
+        asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(), **kwargs))
+        assert ("reset", override or 600) in calls
+        if preserve:
+            assert ("merge", override or 600) in calls
+        assert all(budget == (override or 600) for _, budget in calls)
+        assert mgr.git._command_timeout() == 120
+
+    def test_failed_reset_restores_default_budget(self, mgr, base_ws, kind, monkeypatch):
+        slot = self._make_slot(mgr, base_ws, kind)
+
+        async def fail(*args, **kwargs):
+            assert mgr.git._command_timeout() == 600
+            raise GitError("simulated I/O failure")
+
+        monkeypatch.setattr(mgr, "ensure_git_exclude", fail)
+        with pytest.raises(GitError, match="simulated I/O failure"):
+            asyncio.run(mgr.reset_slot_for_task(slot, FakeTask()))
+        assert mgr.git._command_timeout() == 120
+
     def test_creates_the_task_branch(self, mgr, base_ws, kind, base_repo):
         slot = self._make_slot(mgr, base_ws, kind)
         branch = asyncio.run(mgr.reset_slot_for_task(slot, FakeTask(id="tsk-1")))
