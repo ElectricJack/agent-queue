@@ -841,6 +841,38 @@ class GitManager:
         async with lock:
             yield
 
+    async def aread_blob(self, cwd: str, oid: str, *, max_bytes: int) -> bytes:
+        """Read a pinned Git blob without text decoding or an unbounded pipe.
+
+        Script proposal inputs may contain binary supporting files. Callers
+        first resolve a regular-file tree entry at an approved commit; neither
+        revision expressions nor working-tree filters are accepted here.
+        """
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", oid) is None or max_bytes < 0:
+            raise GitError("invalid bounded blob request")
+        proc = await asyncio.create_subprocess_exec(
+            "git", "--no-replace-objects", "cat-file", "blob", oid,
+            cwd=cwd, env=self._SUBPROCESS_ENV,
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            async with asyncio.timeout(self._GIT_TIMEOUT):
+                chunks = bytearray()
+                while chunk := await proc.stdout.read(min(65536, max_bytes + 1 - len(chunks))):
+                    chunks.extend(chunk)
+                    if len(chunks) > max_bytes:
+                        raise GitError("blob exceeds input limit")
+                if await proc.wait() != 0:
+                    raise GitError("pinned blob unavailable")
+                return bytes(chunks)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            # Reap while draining the now-dead producer's pipe. Waiting without
+            # draining can hang on asyncio's paused transport after overflow.
+            await proc.communicate()
+
     async def _arun_subprocess(
         self,
         cmd: list[str],

@@ -2717,6 +2717,34 @@
         "max_concurrent_agents": 8,
         "max_pytest_processes": 24,
         "per_session_cpu_share": null,
+        "scripts": {
+          "bwrap": "/usr/bin/bwrap",
+          "cgroup_root": "",
+          "cpu_seconds": 30,
+          "enabled": false,
+          "env_allowlist": [],
+          "execution_gid": null,
+          "execution_uid": null,
+          "fds": 128,
+          "input_bytes": 67108864,
+          "input_root": "",
+          "input_storage_bytes": 2147483648,
+          "launcher": "",
+          "memory_bytes": 268435456,
+          "network": "none",
+          "output_storage_bytes": 2147483648,
+          "per_run_storage_bytes": 67108864,
+          "pids": 32,
+          "queue_seconds": 300,
+          "runtime_bytes": 1073741824,
+          "runtime_manifest": "",
+          "runtime_root": "",
+          "scratch_bytes": 16777216,
+          "state_root": "",
+          "stderr_bytes": 1048576,
+          "stdout_bytes": 1048576,
+          "wall_seconds": 60
+        },
         "session_nice": 10,
         "test_deselect_markers": "not perf and not migration and not slow and not tmux and not integration",
         "test_interpreters": {},
@@ -2876,6 +2904,153 @@
             "integer",
             "null"
           ]
+        },
+        "scripts": {
+          "additionalProperties": false,
+          "default": {
+            "bwrap": "/usr/bin/bwrap",
+            "cgroup_root": "",
+            "cpu_seconds": 30,
+            "enabled": false,
+            "env_allowlist": [],
+            "execution_gid": null,
+            "execution_uid": null,
+            "fds": 128,
+            "input_bytes": 67108864,
+            "input_root": "",
+            "input_storage_bytes": 2147483648,
+            "launcher": "",
+            "memory_bytes": 268435456,
+            "network": "none",
+            "output_storage_bytes": 2147483648,
+            "per_run_storage_bytes": 67108864,
+            "pids": 32,
+            "queue_seconds": 300,
+            "runtime_bytes": 1073741824,
+            "runtime_manifest": "",
+            "runtime_root": "",
+            "scratch_bytes": 16777216,
+            "state_root": "",
+            "stderr_bytes": 1048576,
+            "stdout_bytes": 1048576,
+            "wall_seconds": 60
+          },
+          "properties": {
+            "bwrap": {
+              "default": "/usr/bin/bwrap",
+              "type": "string"
+            },
+            "cgroup_root": {
+              "default": "",
+              "type": "string"
+            },
+            "cpu_seconds": {
+              "default": 30,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "env_allowlist": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "execution_gid": {
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "execution_uid": {
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "fds": {
+              "default": 128,
+              "type": "integer"
+            },
+            "input_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "input_root": {
+              "default": "",
+              "type": "string"
+            },
+            "input_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "launcher": {
+              "default": "",
+              "type": "string"
+            },
+            "memory_bytes": {
+              "default": 268435456,
+              "type": "integer"
+            },
+            "network": {
+              "default": "none",
+              "type": "string"
+            },
+            "output_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "per_run_storage_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "pids": {
+              "default": 32,
+              "type": "integer"
+            },
+            "queue_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "runtime_bytes": {
+              "default": 1073741824,
+              "type": "integer"
+            },
+            "runtime_manifest": {
+              "default": "",
+              "type": "string"
+            },
+            "runtime_root": {
+              "default": "",
+              "type": "string"
+            },
+            "scratch_bytes": {
+              "default": 16777216,
+              "type": "integer"
+            },
+            "state_root": {
+              "default": "",
+              "type": "string"
+            },
+            "stderr_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "stdout_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "wall_seconds": {
+              "default": 60,
+              "type": "integer"
+            }
+          },
+          "type": "object"
         },
         "session_nice": {
           "default": 10,

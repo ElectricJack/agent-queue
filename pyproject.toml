@@ -212,6 +212,7 @@ test-selection-dynamic = [
 # API, so ``agent-queue`` is the only way to start it.
 agent-queue = "src.main:main"
 aq = "src.cli.app:main"
+aq-script-launcher = "src.jobs.script_launcher:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

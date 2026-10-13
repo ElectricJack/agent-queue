@@ -2760,6 +2760,80 @@ class ResourceCgroupConfig:
 
 
 @dataclass
+class ScriptsConfig:
+    """Optional Linux script backend. Operator provisioning never happens here."""
+
+    enabled: bool = False
+    launcher: str = ""
+    bwrap: str = "/usr/bin/bwrap"
+    runtime_root: str = ""
+    runtime_manifest: str = ""
+    input_root: str = ""
+    state_root: str = ""
+    cgroup_root: str = ""
+    execution_uid: int | None = None
+    execution_gid: int | None = None
+    env_allowlist: list[str] = field(default_factory=list)
+    network: str = "none"
+    queue_seconds: int = 300
+    wall_seconds: int = 60
+    cpu_seconds: int = 30
+    memory_bytes: int = 256 * 1024**2
+    pids: int = 32
+    fds: int = 128
+    scratch_bytes: int = 16 * 1024**2
+    stdout_bytes: int = 1024**2
+    stderr_bytes: int = 1024**2
+    input_bytes: int = 64 * 1024**2
+    input_storage_bytes: int = 2 * 1024**3
+    output_storage_bytes: int = 2 * 1024**3
+    per_run_storage_bytes: int = 64 * 1024**2
+    runtime_bytes: int = 1024**3
+
+    def validate(self) -> list[ConfigError]:
+        from src.playbooks.script_policy import ScriptLimits, environment_name
+
+        errors = []
+        def error(name, message):
+            errors.append(ConfigError("resources.scripts", name, message))
+
+        if not isinstance(self.enabled, bool):
+            error("enabled", "must be a boolean")
+        for name in ("launcher", "bwrap", "runtime_root", "runtime_manifest", "input_root",
+                     "state_root", "cgroup_root"):
+            value = getattr(self, name)
+            if (not isinstance(value, str) or "\0" in value
+                    or (value and not value.startswith("/")) or (self.enabled and not value)):
+                error(name, "must be an absolute operator path (required when enabled)")
+        for name in ("execution_uid", "execution_gid"):
+            value = getattr(self, name)
+            if value is None and not self.enabled:
+                continue
+            if type(value) is not int or value <= 0:
+                error(name, "must identify a dedicated non-root identity")
+        if self.network != "none":
+            error("network", "only none is supported")
+        if not isinstance(self.env_allowlist, list):
+            error("env_allowlist", "must be a list of permitted environment names")
+        else:
+            for name in self.env_allowlist:
+                try:
+                    environment_name(name)
+                except (ValueError, TypeError):
+                    error("env_allowlist", "contains a forbidden environment name")
+        try:
+            ScriptLimits(**{name: getattr(self, name) for name in ScriptLimits.model_fields})
+        except ValueError:
+            error("limits", "invalid script resource ceiling (wall maximum 900s)")
+        for name in ("queue_seconds", "input_bytes", "input_storage_bytes", "output_storage_bytes",
+                     "per_run_storage_bytes", "runtime_bytes"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                error(name, "must be a positive integer")
+        return errors
+
+
+@dataclass
 class JobsConfig:
     """Managed execution rollout; admission remains opt-in during phase 2."""
 
@@ -2939,6 +3013,7 @@ class ResourcesConfig:
     max_pytest_processes: int = 24
     cgroups: ResourceCgroupConfig = field(default_factory=ResourceCgroupConfig)
     jobs: JobsConfig = field(default_factory=JobsConfig)
+    scripts: ScriptsConfig = field(default_factory=ScriptsConfig)
 
     def core_count(self) -> int:
         """The core budget: configured ``cores``, else the machine's."""
@@ -3001,6 +3076,7 @@ class ResourcesConfig:
                     )
         errors.extend(self.cgroups.validate())
         errors.extend(self.jobs.validate())
+        errors.extend(self.scripts.validate())
         return errors
 
 
@@ -5491,6 +5567,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             test_interpreters=_test_interpreters(res.get("test_interpreters")),
             cgroups=cgroups,
             jobs=JobsConfig(**_dataclass_kwargs(JobsConfig, res.get("jobs"))),
+            scripts=ScriptsConfig(**_dataclass_kwargs(ScriptsConfig, res.get("scripts"))),
         )
 
     if "test_selection" in raw:

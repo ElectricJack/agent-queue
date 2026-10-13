@@ -93,6 +93,7 @@ class TestRegistry:
         from src.doctor.resource_checks import resource_checks
         from src.doctor.review_checks import review_checks
         from src.doctor.routing_checks import routing_checks
+        from src.doctor.script_checks import script_checks
         from src.doctor.service_checks import service_checks
         from src.doctor.session_checks import session_checks
         from src.doctor.skill_checks import skill_checks
@@ -111,6 +112,7 @@ class TestRegistry:
             | {c.id for c in skill_checks()}
             | {c.id for c in stall_checks()}
             | {c.id for c in resource_checks()}
+            | {c.id for c in script_checks()}
             | {c.id for c in session_checks()}
             | {c.id for c in integration_checks()}
             | {c.id for c in git_checks()}

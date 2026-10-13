@@ -399,3 +399,32 @@ def propose(
         diff,
         artifact_sha256(artifact),
     )
+
+
+async def pin_source_scripts(source, *, source_root, source_revision, store, runtimes, max_bytes):
+    """Pin source-authored programs for E3's trusted-execution metadata assembly.
+
+    No compiler body or authored digest supplies execution authority. E3 embeds
+    these typed pins in B3's metadata envelope and compares its ScriptSteps with
+    the corresponding source programs before producing an activatable artifact.
+    This seam alone neither adds a step type nor advertises script_v1 support.
+    """
+    from src.playbooks.script_inputs import pin_script_inputs
+    from src.playbooks.script_policy import ScriptError, ScriptProgram
+
+    raw = source.frontmatter.get("scripts", {})
+    if not isinstance(raw, dict) or len(raw) > 500:
+        raise ScriptError("script_source_metadata_invalid")
+    pinned = {}
+    for step_id, program_body in raw.items():
+        if not isinstance(step_id, str) or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", step_id) is None:
+            raise ScriptError("script_source_metadata_invalid")
+        program = ScriptProgram.model_validate(program_body)
+        runtime = runtimes.get(program.runtime)
+        if runtime is None:
+            raise ScriptError("script_runtime_unavailable")
+        pinned[step_id] = await pin_script_inputs(
+            program, store=store, source_root=source_root, source_revision=source_revision,
+            runtime=runtime, max_bytes=max_bytes,
+        )
+    return pinned
