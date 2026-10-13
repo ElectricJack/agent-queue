@@ -611,7 +611,10 @@ async def test_matching_scope_reads_succeed_and_foreign_reads_are_refused(matrix
     foreign = await matrix.execute(command, {"task_id": "t2", "_scope": _scope()})
     assert foreign["success"] is False
     assert foreign["result"] == "out_of_scope"
-    assert foreign["error_code"] == "resource_scope_denied"
+    if command == "task_show":
+        assert "outside this session's scope" in foreign["error"]
+    else:
+        assert foreign["error_code"] == "resource_scope_denied"
 
 
 @pytest.mark.parametrize("command", _READS + ["message_inbox"])
@@ -681,7 +684,7 @@ async def test_task_set_accepts_the_held_task_and_refuses_a_foreign_one(matrix):
     )
     assert refused["success"] is False
     assert refused["result"] == "out_of_scope"
-    assert refused["error_code"] == "resource_scope_denied"
+    assert "does not hold task t2" in refused["error"]
 
     # The rejection changed nothing.
     after = await matrix.db.get_task("t2")

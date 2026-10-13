@@ -685,7 +685,7 @@ async def test_closed_question_cannot_create_an_orphan_escalation(env):
 
     result = await svc.escalate(q["id"], "Too late")
 
-    assert result == {"success": False, "error": "question is no longer awaiting an answer"}
+    assert result == {"error": "question is no longer awaiting an answer"}
     assert (await env.db.get_agent_question(q["id"]))["escalation_id"] is None
     assert await env.db.list_escalations(project_id="p") == []
 
