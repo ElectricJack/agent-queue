@@ -2728,7 +2728,7 @@
   "doctor_catalog": {
     "mode": "json_object",
     "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_doctor_catalog",
-    "source_digest": "sha256:d96dbc5d1b5a1f6d2c45c8ed2eb936385652c42d71bbfd3db79d6177ee9debbb",
+    "source_digest": "sha256:2c9fd40bc986054a53d1d75b22665b74804f6a91175835420d8ac433ae4dd72f",
     "input_schema_source": "fallback",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [],
@@ -2759,12 +2759,12 @@
       "tests/test_doctor_observations.py"
     ],
     "helper_producers": {},
-    "review_notes": "Read-only system observations preserve nested principal and capabilities. Audited producer adapters own identities and explicit per-project/kind coverage. Legacy health severity is independent of execution status. Snapshot arguments fail explicitly until C2 installs its transport. Catalogue contains only static registry metadata."
+    "review_notes": "Read-only system observations preserve nested principal and capabilities. Audited producer adapters own identities and explicit per-project/kind coverage. Legacy health severity is independent of execution status. Snapshot arguments fail explicitly until C2 installs its transport. Catalogue contains only static registry metadata. Re-audited after lazy imports moved into the handler for CLI startup isolation; producer return branches and authority gates are unchanged."
   },
   "doctor_run": {
     "mode": "json_object",
     "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_doctor_run",
-    "source_digest": "sha256:072f7e484557dae930c5c161e9adfdccf22f55453184e2c9fd03f91699b4474b",
+    "source_digest": "sha256:ef43ccf2f01aa2ef931e2389e7efc6d0d48b579f9bccda1924c414e57cbcc951",
     "input_schema_source": "fallback",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -2813,7 +2813,7 @@
       "tests/test_observation_snapshots.py"
     ],
     "helper_producers": {},
-    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows."
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows. Re-audited after lazy imports moved into the handler for CLI startup isolation; producer return branches and authority gates are unchanged."
   },
   "dry_run_playbook": {
     "mode": "json_object",
