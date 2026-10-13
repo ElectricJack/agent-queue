@@ -634,6 +634,11 @@ class TaskCommandsMixin:
             ``depends_on`` and ``blocks`` lists and include a pre-formatted
             ``formatted`` key with the dependency-aware text representation.
         """
+        from src.observations.commands import snapshot_command
+        from src.observations.snapshots import requested
+
+        if requested(args):
+            return await snapshot_command(self, "list_tasks", args)
         # Normalize show_all → include_completed so all downstream helpers
         # only need to check include_completed.
         if args.get("show_all") and not args.get("include_completed"):

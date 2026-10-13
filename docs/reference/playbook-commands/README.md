@@ -333,6 +333,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`object_loop_reconcile`](object_loop_reconcile.md) | Object Loop Reconcile | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_start`](object_loop_start.md) | Object Loop Start | Coordinate a bounded, durable object evaluation round. |
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |
+| [`observation_snapshot_cleanup`](observation_snapshot_cleanup.md) | Observation Snapshot Cleanup | Collect at most 100 expired snapshots; daemon/operator maintenance only. |
 | [`observe_integration_source_ci`](observe_integration_source_ci.md) | Observe Integration Source Ci | Daemon-only adapter for trusted CI observations, never a raw tool input. |
 | [`onboard_project`](onboard_project.md) | Onboard Project | Link, initialise or clone a repository beneath a configured root and register it. |
 | [`operator_execute`](operator_execute.md) | Operator Execute | Execute the operator_execute command. |

@@ -2764,7 +2764,7 @@
   "doctor_run": {
     "mode": "json_object",
     "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_doctor_run",
-    "source_digest": "sha256:2c8a95e5305ba216bf429cd2684c6c8e60674f0a7c1dfb089838482d39956d0e",
+    "source_digest": "sha256:072f7e484557dae930c5c161e9adfdccf22f55453184e2c9fd03f91699b4474b",
     "input_schema_source": "fallback",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -2804,16 +2804,16 @@
         "protocol": "delegated_producer"
       },
       {
-        "return": "failure('doctor.snapshot_unavailable')",
+        "return": "await snapshot_command(self, 'doctor_run', args)",
         "protocol": "delegated_producer"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
-      "tests/test_doctor_observations.py"
+      "tests/test_observation_snapshots.py"
     ],
     "helper_producers": {},
-    "review_notes": "Read-only system observations preserve nested principal and capabilities. Audited producer adapters own identities and explicit per-project/kind coverage. Legacy health severity is independent of execution status. Snapshot arguments fail explicitly until C2 installs its transport. Catalogue contains only static registry metadata."
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows."
   },
   "dry_run_playbook": {
     "mode": "json_object",
@@ -5360,7 +5360,7 @@
   "get_stuck_tasks": {
     "mode": "typed",
     "producer": "src/commands/system_commands.py:SystemCommandsMixin._cmd_get_stuck_tasks",
-    "source_digest": "sha256:1d3dd4790ee369548514be75d3f86f453ee623f59d979a9ab2b4b3a974610ae1",
+    "source_digest": "sha256:86259a1c10c3cb79d27873ad3adcab2e363fa08f33d192e89955afde8e053423",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -5379,23 +5379,22 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "{'success': False, 'error': 'out of scope: project_id'}",
-        "protocol": "explicit_boolean: False"
+        "protocol": "delegated_producer",
+        "return": "await self._get_stuck_tasks_observation(args)"
       },
       {
-        "return": "{'success': False, 'error': f'Stall watch explain failed: {result}'}",
-        "protocol": "explicit_boolean: False"
-      },
-      {
-        "return": "{'success': True, 'stuck': stuck, 'summary': format_summary(stuck), 'now_used': now, 'thresholds': {'assigned': assigned, 'in_progress': in_progress}}",
-        "protocol": "explicit_boolean: True"
+        "protocol": "delegated_producer",
+        "return": "await snapshot_command(self, 'get_stuck_tasks', args)"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
-      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_observation_snapshots.py"
+    ],
+    "helper_producers": {
+      "_get_stuck_tasks_observation": "sha256:c28e10dd18e3d94cad2fb43131cc7ea7fbc5e6fa27969f85c22df2e3d4e36c2e"
+    },
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows."
   },
   "get_task": {
     "mode": "typed",
@@ -9874,7 +9873,7 @@
   "list_projects": {
     "mode": "typed",
     "producer": "src/commands/project_commands.py:ProjectCommandsMixin._cmd_list_projects",
-    "source_digest": "sha256:b11f56ced89cb0f20f2be1dfee8f50f25b832607e047be79337e859b288a1049",
+    "source_digest": "sha256:632423daecb937026fb2078c720a1c0117edbbe55bf2d3acfccf858eabff7c21",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [],
@@ -9888,15 +9887,19 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "{'projects': result}",
-        "protocol": "delegated_producer"
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'projects': result}"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await snapshot_command(self, 'list_projects', args)"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
-      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_observation_snapshots.py"
+    ],
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows."
   },
   "list_prompts": {
     "mode": "json_object",
@@ -9942,7 +9945,7 @@
   "list_tasks": {
     "mode": "typed",
     "producer": "src/commands/task_commands.py:TaskCommandsMixin._cmd_list_tasks",
-    "source_digest": "sha256:3030c17c34accd4fc6ea90d0a9a17ff34534a38d66c77940e1f9c1e6cfe8fa40",
+    "source_digest": "sha256:66d1a75b107933c2a75d5d9f48536e78c8cf324fdb4fd2bc97653d85ed643914",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -9965,19 +9968,23 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "await self._list_tasks_flat(args, kwargs, explicit_status, show_dependencies=show_dependencies)",
-        "protocol": "delegated_producer"
+        "protocol": "delegated_producer",
+        "return": "await self._list_tasks_hierarchical(args, kwargs, explicit_status, compact=display_mode == 'compact', show_dependencies=show_dependencies)"
       },
       {
-        "return": "await self._list_tasks_hierarchical(args, kwargs, explicit_status, compact=display_mode == 'compact', show_dependencies=show_dependencies)",
-        "protocol": "delegated_producer"
+        "protocol": "delegated_producer",
+        "return": "await snapshot_command(self, 'list_tasks', args)"
+      },
+      {
+        "protocol": "delegated_producer",
+        "return": "await self._list_tasks_flat(args, kwargs, explicit_status, show_dependencies=show_dependencies)"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
-      "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
-    ]
+      "tests/test_observation_snapshots.py"
+    ],
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows."
   },
   "list_workflows": {
     "mode": "json_object",
@@ -21555,5 +21562,41 @@
     ],
     "helper_producers": {},
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+  },
+  "observation_snapshot_cleanup": {
+    "argument_reads_diagnostic_only": [],
+    "denial_reason": null,
+    "effect": "destructive",
+    "helper_producers": {},
+    "input_schema_source": "fallback",
+    "mode": "json_object",
+    "principal_requirement": "original_principal",
+    "producer": "src/commands/doctor_observation_commands.py:DoctorObservationCommandsMixin._cmd_observation_snapshot_cleanup",
+    "resource_gates": [
+      "system_scope"
+    ],
+    "result_policy": "strict boolean success at producer; no inferred outcome",
+    "retry_safe": false,
+    "return_branches": [
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'success': True, 'removed': removed}"
+      },
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'success': False, 'error_code': 'operator_only', 'error': 'operator_only'}"
+      },
+      {
+        "protocol": "explicit_boolean_or_legacy_typed",
+        "return": "{'success': False, 'error_code': 'invalid_arguments', 'error': 'invalid_arguments'}"
+      }
+    ],
+    "review_notes": "Opt-in snapshots authorize current caller and effective scope before scans. Stored encrypted pages never rerun producers; explicit incomplete/refusal outcomes. Maintenance admits only LOCAL/SERVICE and deletes bounded expired rows.",
+    "schema_quality": "declared",
+    "source_digest": "sha256:438a2d237e6fdbd8d40187a5da7436a820632d028a11db7f0dbfc2bec3c4760b",
+    "tests": [
+      "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
+      "tests/test_observation_snapshots.py"
+    ]
   }
 }

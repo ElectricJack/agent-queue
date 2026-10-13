@@ -46,3 +46,39 @@ async def test_private_values_upgrade_from_prior_schema_and_current_metadata():
             await conn.run_sync(verify)
     finally:
         await db.close()
+
+
+async def test_observation_snapshots_upgrade_prior_and_current_metadata():
+    revision = importlib.import_module("migrations.versions.a00000000096_observation_snapshots")
+    db = Database(lease_dsn("observation_snapshots_migration"))
+    await db.initialize()
+    try:
+        async with db.immediate() as conn:
+            await conn.exec_driver_sql("DROP TABLE observation_snapshot_pages")
+            await conn.exec_driver_sql("DROP TABLE observation_snapshots")
+            await conn.exec_driver_sql(
+                "ALTER TABLE playbook_private_values DROP CONSTRAINT "
+                "ck_playbook_private_values_owner_kind")
+            await conn.exec_driver_sql(
+                "ALTER TABLE playbook_private_values ADD CONSTRAINT "
+                "ck_playbook_private_values_owner_kind CHECK (owner_kind IN ('run', 'namespace'))")
+
+            def verify(bind):
+                names = {"observation_snapshots", "observation_snapshot_pages",
+                         "playbook_private_values"}
+                context = MigrationContext.configure(bind, opts={
+                    "include_object": lambda obj, name, kind, reflected, compare_to: (
+                        name in names if kind == "table" else True),
+                })
+                with Operations.context(context):
+                    revision.upgrade()
+                    revision.upgrade()
+                    assert not compare_metadata(context, metadata)
+                    for name in names:
+                        assert all(c["name"] for c in inspect(bind).get_check_constraints(name))
+                    revision.downgrade()
+                    assert names <= set(inspect(bind).get_table_names())
+
+            await conn.run_sync(verify)
+    finally:
+        await db.close()

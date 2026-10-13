@@ -63,6 +63,11 @@ class ProjectCommandsMixin:
         }
 
     async def _cmd_list_projects(self, args: dict) -> dict:
+        from src.observations.commands import snapshot_command
+        from src.observations.snapshots import requested
+
+        if requested(args):
+            return await snapshot_command(self, "list_projects", args)
         projects = await self.db.list_projects()
         result = []
         for p in projects:
