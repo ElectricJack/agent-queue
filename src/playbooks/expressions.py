@@ -238,6 +238,8 @@ ENGINE_CONTEXT_SCHEMA: Final[dict[str, str]] = {
     "now": "string",
     "attempt": "integer",
     "iteration_index": "integer",
+    "observed_at": "number",
+    "observation_id": "string",
 }
 
 #: ``iteration_index`` exists only inside a loop body; §6.3 rejects it elsewhere.

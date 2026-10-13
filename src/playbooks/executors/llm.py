@@ -37,7 +37,8 @@ from src.routing.filing import routing_choice_refusal
 
 def _attempt_key(ctx: StepContext) -> str:
     return idempotency_key(
-        ctx.run_id, ctx.step_id, -1 if ctx.iteration_index is None else ctx.iteration_index, ctx.attempt
+        ctx.run_id, ctx.step_id, -1 if ctx.iteration_index is None else ctx.iteration_index, ctx.attempt,
+        ctx.iteration_path,
     )
 
 
@@ -170,6 +171,7 @@ def _resume_state(
             for turn in ctx.llm_turns
             if turn.get("step_id") == ctx.step_id
             and int(turn.get("iteration", -1)) == iteration
+            and turn.get("iteration_path", "") == ctx.iteration_path
             and int(turn.get("attempt", 1)) == ctx.attempt
         ),
         key=lambda turn: int(turn["turn_index"]),

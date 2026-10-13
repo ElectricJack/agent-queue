@@ -73,7 +73,7 @@ The UI is therefore exposing storage structure rather than author or operator in
 - Keeping V1 artifacts executable indefinitely.
 - Automatically rebuilding or activating a playbook after a command contract changes.
 - Treating a model-visible tool list, a prompt, or a harness flag as an authorization boundary.
-- Supporting parallel or nested `ForEachStep` execution in the initial V2 release.
+- Supporting parallel `ForEachStep` execution. Nested sequential execution is specified below.
 
 ## Terminology
 
@@ -248,7 +248,7 @@ This preserves dynamic behavior while making references statically validatable a
 
 A missing or type-invalid value fails before the command or AI call with reserved outcome `input_resolution_failed`. The engine never injects an `UNRESOLVED` marker and never coerces a missing value to an empty string.
 
-Loop item bindings are lexical, cannot shadow event, context, result, or outer loop names, and are not visible after the loop. Initial V2 forbids nested `ForEachStep`, making definite assignment and persisted loop state finite and inspectable.
+Loop item bindings are lexical, cannot shadow event, context, result, or outer loop names, and are not visible after the loop. The October 12 reusable-building-blocks amendment permits properly nested, single-entry `ForEachStep` bodies up to depth four. Step-level item names remain distinct from enclosing item names. Body result bindings are cleared at iteration entry; an empty or failed inner body cannot make an earlier iteration's result definitely assigned.
 
 Conditions use a typed expression tree for comparisons, boolean composition, existence, and collection predicates. A condition cannot contain undeclared natural-language LLM behavior.
 
@@ -324,7 +324,7 @@ The engine atomically persists the run snapshot, wait registration, correlation 
 
 Iterates a declared body sequentially over a typed collection with an explicit item binding, completion behavior, failure policy, and continuation. The allowed failure policies are `halt`, `continue`, and `collect`. The aggregate result contains ordered item results, outcomes, and collected errors.
 
-A `WaitStep` or `AgentTaskStep` is legal inside the body. Because execution is sequential, at most one iteration is active. The run snapshot stores the loop step, current index, item binding, partial aggregate, and resume step. Nested and parallel loops are rejected in initial V2. The run overlay shows a traversal count on the node and exposes individual iterations in the inspector rather than drawing forty copies of the same node.
+A `WaitStep` or `AgentTaskStep` is legal inside the body. Execution is sequential within each of at most four durable `loop_stack` frames. A frame pins its resolved collection (encrypted when private), digest, body membership, current index, item binding and aggregation state. Rebinding the collection source does not alter an active frame. Completion pops only the owning frame; authored failure exits unwind exited frames. Unbound loops retain counters and bounded failure diagnostics. Bound aggregates retain the result-size limit. A durable run-wide counter permits at most 100,000 iteration entries across restarts; exhaustion fails the run without taking a successful continuation. Legacy snapshots containing one `loop` load as one frame. Parallel loops remain unsupported. The run overlay shows a traversal count on the node and exposes individual iterations in the inspector rather than drawing forty copies of the same node.
 
 ### TerminalStep
 
@@ -500,6 +500,10 @@ Every run pins the artifact hash and records structured receipts containing the 
 Receipt redaction is driven by contracts and is default-deny. Unmarked inputs and results are redacted; fields appear only when explicitly classified as safe, summarized, or represented by an opaque identifier. The internal run snapshot and user-visible receipt have different projections.
 
 Receipts drive historical run inspection and graph path overlays.
+
+Nested artifacts carry `iteration_path` as canonical compact JSON pairs of loop step ID and zero-based index, for example `[["outer",1],["inner",0]]`. Receipts, waits, attempt counters, LLM turns, child-task effects and operator decisions use the full path. Effect keys hash the run, step, path and attempt; legacy artifacts keep the empty path and their historical keys. Revision `a00000000096` adds non-null Text path columns and extends receipt/wait uniqueness and lookup indexes without rewriting historical keys. The integer iteration remains for display and legacy identity.
+
+Each durable event also freezes `context.observed_at` as a finite UTC epoch and `context.observation_id` as its event ID (or durable dispatch ID). Timer and cron `tick_time` values must be ISO-8601 strings with an explicit timezone; invalid supplied values fail before execution. Other events use the persisted dispatch timestamp. Replays and resumed runs reuse these values; the existing string `context.now` remains available.
 
 ## Graph and node experience
 

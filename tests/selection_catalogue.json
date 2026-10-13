@@ -946,6 +946,7 @@
         "tests/test_llm_executor.py",
         "tests/test_manual_playbook_runs.py",
         "tests/test_pkg5_scenarios.py",
+        "tests/test_playbook_nested_loops.py",
         "tests/test_playbook_pending_events_commands.py",
         "tests/test_playbook_pending_events_policy.py",
         "tests/test_playbook_private_values.py",
@@ -11283,7 +11284,7 @@
         "migrations"
       ],
       "default_arm": false,
-      "digest": "sha256:c8be8c21daf9daee49fca1c488c569dfde5fcfa0c46c560f04ea9d9223a66b13",
+      "digest": "sha256:33793d1176e20f495ca3a332cce406b81aca642c9fb10fc7854cc1c5b808b4a7",
       "imports": [
         "src.database",
         "src.database.tables"
@@ -11291,7 +11292,7 @@
       "markers": [
         "migration"
       ],
-      "summary": "A3's additive encrypted-value migration on disposable PostgreSQL."
+      "summary": "Additive encrypted-value and iteration-path migrations on disposable PostgreSQL."
     },
     "tests/test_migration_playbook_v2.py": {
       "areas": [
@@ -12247,6 +12248,30 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_playbook_nested_loops.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f9e56c397272144d3468c5def69b2c7742b8db6df57228af10ac0acadcbd9b21",
+      "imports": [
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.executors.foreach",
+        "src.playbooks.executors.llm",
+        "src.playbooks.expressions",
+        "src.playbooks.invocation",
+        "src.playbooks.receipts",
+        "src.playbooks.run_state"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Durable nested traversal, identities, bounded state and observation context."
     },
     "tests/test_playbook_pending_events_commands.py": {
       "areas": [

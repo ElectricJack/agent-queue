@@ -342,6 +342,7 @@ areas:
     match:
       - tests/test_v2_*.py
       - tests/test_playbook_run_*.py
+      - tests/test_playbook_nested_loops.py
       - tests/test_playbook_wait_repository.py
       - tests/test_playbook_receipts.py
       - tests/test_playbook_private_values.py

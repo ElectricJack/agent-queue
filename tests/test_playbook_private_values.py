@@ -394,3 +394,23 @@ async def test_namespace_read_requires_server_membership_and_current_scope(db, s
         assert await authorized.read(ref, owner=owner, principal=caller) == SECRET
         with pytest.raises(PrivateValueError, match="unauthorized"):
             await authorized.read(ref, owner=owner, principal=replace(caller, project_id="other"))
+
+
+async def test_private_pinned_collection_stays_encrypted_after_source_binding_is_reused(db, service):
+    snapshot = make_snapshot(loop_stack=(
+        LoopFrame("outer", "row", "digest", 0, 1, collection=[[SECRET]], private=True),
+        LoopFrame("inner", "cell", "digest", 0, 1, collection=[SECRET], private=True),
+    ), iteration_paths=True, iteration_entries=2)
+    await db.create_run(snapshot)
+    loaded = await db.load_run(snapshot.run_id)
+    assert all(is_reference(frame.collection) for frame in loaded.loop_stack)
+    assert SECRET not in json.dumps(loaded.to_body())
+    assert await db.resolve_private_snapshot(loaded, TRUSTED_LOCAL) == snapshot
+    wait = WaitSpec("private-loop-wait", snapshot.run_id, "body", kind="event",
+                    event_type="reply", match={"body": SECRET}, created_at=100,
+                    iteration_path=snapshot.iteration_path)
+    await db.register(wait, snapshot.version + 1)
+    await db.claim_for_event(Event("reply", "nested-arrival", {"body": SECRET}), now=101)
+    async with db._engine.connect() as conn:
+        assert SECRET not in str((await conn.execute(select(playbook_waits))).all())
+        assert SECRET not in str((await conn.execute(select(playbook_pending_events))).all())

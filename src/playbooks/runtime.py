@@ -659,8 +659,11 @@ class V2PlaybookRuntime:
                     row["event_id"], row["activation_id"], row["artifact_sha256"]
                 ).encode()
             ).hexdigest()[:12]
+            payload = dict(row["event"])
+            payload.setdefault("_received_at", row["received_at"])
+            payload.setdefault("event_id", row["event_id"])
             result = await self._engine.dispatch_event(
-                dict(row["event"]),
+                payload,
                 ExecutionPrincipal.service("integration-outbox"),
                 playbook_ids=[row["playbook_id"]],
                 dispatch_id=dispatch_id,

@@ -50,7 +50,7 @@ def _attempt_key(ctx: StepContext) -> str:
     second iteration's side effect as a duplicate.
     """
     iteration = -1 if ctx.iteration_index is None else ctx.iteration_index
-    return idempotency_key(ctx.run_id, ctx.step_id, iteration, ctx.attempt)
+    return idempotency_key(ctx.run_id, ctx.step_id, iteration, ctx.attempt, ctx.iteration_path)
 
 
 def _fail(

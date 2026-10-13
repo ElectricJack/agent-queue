@@ -901,3 +901,22 @@ async def test_purge_receipts_collects_an_old_terminal_run(db):
     assert await db.purge_receipts(NOW - 1) == 0
     assert await db.purge_receipts(NOW + 1) == 1
     assert await db.list_receipts("run-1") == []
+
+
+async def test_nested_receipts_are_unique_and_queryable_by_full_path(db):
+    snapshot = await db.create_run(make_snapshot())
+    paths = ['[["outer",0],["inner",0]]', '[["outer",1],["inner",0]]']
+    for i, path in enumerate(paths):
+        snapshot = await db.commit_boundary(snapshot, make_receipt(
+            snapshot, receipt_id=f"nested-{i}", iteration=0, iteration_path=path,
+        ))
+    receipts = await db.list_receipts(snapshot.run_id)
+    assert [r.iteration_path for r in receipts] == paths
+    assert len({r.idempotency_key for r in receipts}) == 2
+    [second] = await db.list_receipts(snapshot.run_id, step_id="ensure-task",
+                                     iteration=0, iteration_path=paths[1])
+    assert second.receipt_id == "nested-1"
+    with pytest.raises(DuplicateAttempt):
+        await db.commit_boundary(snapshot, make_receipt(
+            snapshot, receipt_id="duplicate", iteration=0, iteration_path=paths[1],
+        ))

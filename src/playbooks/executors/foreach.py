@@ -1,7 +1,6 @@
 """Sequential loops — Package 4 child plan §4.7 and T-7.
 
-One active iteration, nesting rejected at compile time, so the loop frame is
-finite and inspectable.  The executor is a **pure state transition over the
+One active iteration per frame, with at most four nested frames.  The executor is a **pure state transition over the
 frame**: it reads the frame off the context, computes the next one, and hands
 it back for the engine to persist.  It writes nothing, which is what keeps
 "the frame is committed on both sides of every body transition" a property of
@@ -25,11 +24,12 @@ does not:
 
 from __future__ import annotations
 
+import copy
 import hashlib
 from dataclasses import replace
 from typing import Any, ClassVar
 
-from src.playbooks.definition import ForEachStep
+from src.playbooks.definition import ForEachStep, loop_body
 from src.playbooks.executors.base import (
     ExecutionMode,
     ExecutorResult,
@@ -37,7 +37,13 @@ from src.playbooks.executors.base import (
     StepControl,
 )
 from src.playbooks.expressions import ValueResolutionError, resolve_value
-from src.playbooks.run_state import LoopFrame, canonical_json
+from src.playbooks.run_state import (
+    MAX_ITERATION_ENTRIES,
+    MAX_LOOP_DEPTH,
+    LoopFrame,
+    canonical_json,
+    check_result_size,
+)
 
 #: The outcome of a boundary that enters or re-enters the body.  It is not a
 #: declared business outcome — ``business_outcomes`` for a foreach is
@@ -85,17 +91,16 @@ class ForEachExecutor:
         operation = f"foreach:{ctx.step_id}"
         frame = ctx.loop_frame
         if frame is not None and frame.step_id != ctx.step_id:
-            # Package 2 rejects a *nested* loop statically.  A second loop
-            # reached while another frame is live is the dynamic form of the
-            # same thing — two frames, one snapshot field — and V2 has no
-            # parallel loops either, so it stops here rather than overwriting
-            # the frame it cannot see.
+            frame = None
+        if frame is None and len(ctx.loop_stack) >= MAX_LOOP_DEPTH:
             return ExecutorResult(
                 control=StepControl.ADVANCE,
-                outcome="contract_violation",
+                outcome="state_limit_exceeded",
                 operation=operation,
-                diagnostics=(f"loop {frame.step_id} is already active",),
+                diagnostics=("loop depth exceeds 4",),
             )
+        if frame is not None and frame.collection is not None:
+            return self._advance(step, frame, frame.total, operation, ctx)
 
         try:
             collection = resolve_value(step.collection, ctx.scope, ctx.evaluation_budget)
@@ -111,15 +116,13 @@ class ForEachExecutor:
                 control=StepControl.ADVANCE,
                 outcome="input_resolution_failed",
                 operation=operation,
-                diagnostics=(
-                    f"collection resolved to {type(collection).__name__}, not a list",
-                ),
+                diagnostics=(f"collection resolved to {type(collection).__name__}, not a list",),
             )
 
         digest = collection_digest(collection)
         total = len(collection)
         if frame is None:
-            return self._enter(step, ctx, total, digest, operation)
+            return self._enter(step, ctx, collection, digest, operation)
         if frame.collection_digest != digest:
             return ExecutorResult(
                 control=StepControl.ADVANCE,
@@ -127,13 +130,30 @@ class ForEachExecutor:
                 operation=operation,
                 diagnostics=("the collection changed under an active loop",),
             )
-        return self._advance(step, frame, total, operation)
+        return self._advance(
+            step,
+            replace(
+                frame,
+                collection=copy.deepcopy(collection),
+                body_step_ids=tuple(sorted(loop_body(ctx.artifact, ctx.step_id))),
+            ),
+            total,
+            operation,
+            ctx,
+        )
 
     # ------------------------------------------------------------------
 
     def _enter(
-        self, step: ForEachStep, ctx: StepContext, total: int, digest: str, operation: str
+        self,
+        step: ForEachStep,
+        ctx: StepContext,
+        collection: list[Any],
+        digest: str,
+        operation: str,
     ) -> ExecutorResult:
+        total = len(collection)
+        check_result_size(ctx.run_id, ctx.step_id, collection)
         if total > step.max_iterations:
             return ExecutorResult(
                 control=StepControl.ADVANCE,
@@ -153,6 +173,8 @@ class ForEachExecutor:
                 operation=operation,
                 diagnostics=("empty collection",),
             )
+        if ctx.iteration_entries >= MAX_ITERATION_ENTRIES:
+            return self._budget_failure(operation)
         return ExecutorResult(
             control=StepControl.GOTO,
             outcome=ITERATING_OUTCOME,
@@ -163,12 +185,15 @@ class ForEachExecutor:
                 collection_digest=digest,
                 index=0,
                 total=total,
+                collection=copy.deepcopy(collection),
+                private=ctx.private_inputs,
+                body_step_ids=tuple(sorted(loop_body(ctx.artifact, ctx.step_id))),
             ),
             operation=operation,
         )
 
     def _advance(
-        self, step: ForEachStep, frame: LoopFrame, total: int, operation: str
+        self, step: ForEachStep, frame: LoopFrame, total: int, operation: str, ctx: StepContext
     ) -> ExecutorResult:
         failed = bool(frame.last_failed)
         entry: dict[str, Any] = {
@@ -177,26 +202,36 @@ class ForEachExecutor:
             "value": None,
             "error": None,
         }
-        if failed:
-            if step.failure_policy == "halt":
-                # The whole loop fails, and the aggregate still reports every
-                # iteration that did run — a halted loop that reported nothing
-                # would make the partial side effects invisible.
-                entry["error"] = frame.last_outcome
-                return ExecutorResult(
-                    control=StepControl.ADVANCE,
-                    outcome="failed",
-                    value=aggregate(frame.partial + (entry,), total),
-                    clear_loop=True,
-                    operation=operation,
-                    diagnostics=(f"iteration {frame.index} failed: {frame.last_outcome}",),
-                )
-            if step.failure_policy == "collect":
-                entry["error"] = frame.last_outcome
-
-        partial = frame.partial + (entry,)
+        if failed and step.failure_policy in {"halt", "collect"}:
+            entry["error"] = frame.last_outcome
+        succeeded = frame.succeeded + int(entry["error"] is None)
+        failures = frame.failed + int(entry["error"] is not None)
+        # Unbound loops retain counters and at most one failure diagnostic.
+        partial = (
+            (frame.partial + (entry,))
+            if step.save_result_as
+            else ((entry,) if failed else frame.partial)
+        )
+        if step.save_result_as:
+            check_result_size(ctx.run_id, ctx.step_id, partial)
+        value = (
+            aggregate(partial, total)
+            if step.save_result_as
+            else {"total": total, "succeeded": succeeded, "failed": failures, "items": []}
+        )
+        if failed and step.failure_policy == "halt":
+            return ExecutorResult(
+                control=StepControl.ADVANCE,
+                outcome="failed",
+                value=value,
+                clear_loop=True,
+                operation=operation,
+                diagnostics=(f"iteration {frame.index} failed: {frame.last_outcome}",),
+            )
         next_index = frame.index + 1
         if next_index < total:
+            if ctx.iteration_entries >= MAX_ITERATION_ENTRIES:
+                return self._budget_failure(operation)
             return ExecutorResult(
                 control=StepControl.GOTO,
                 outcome=ITERATING_OUTCOME,
@@ -205,6 +240,8 @@ class ForEachExecutor:
                     frame,
                     index=next_index,
                     partial=partial,
+                    succeeded=succeeded,
+                    failed=failures,
                     last_step_id=None,
                     last_outcome=None,
                     last_failed=None,
@@ -216,9 +253,20 @@ class ForEachExecutor:
         return ExecutorResult(
             control=StepControl.ADVANCE,
             outcome="completed",
-            value=aggregate(partial, total),
+            value=value,
             clear_loop=True,
             operation=operation,
+        )
+
+    @staticmethod
+    def _budget_failure(operation: str) -> ExecutorResult:
+        return ExecutorResult(
+            control=StepControl.TERMINATE,
+            terminal_outcome="failed",
+            outcome="state_limit_exceeded",
+            clear_loop=True,
+            operation=operation,
+            diagnostics=("run iteration-entry budget exhausted",),
         )
 
 
