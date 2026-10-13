@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `get_chain_health` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:37eb98a9727ab91a3fecb5468fd3505a2d757a48b0f57444091201475c2d04cd` |
+| Contract fingerprint | `sha256:45d2e3c0469f1ae792c7d1e1fafc1040cfe49ac691eccfe1e2aaef56b1c85b74` |
 
 ## Parameters
 
@@ -24,7 +24,7 @@
 | `project_id` | `string` | no | — | (Optional) Check all blocked chains in a project |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -46,7 +46,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using task_id, project_id | — | always |
+| Read using task_id, project_id | — | always |
 
 <!-- aq:generated:end -->
 

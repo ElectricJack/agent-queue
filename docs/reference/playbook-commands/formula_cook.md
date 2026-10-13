@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:47cb87d2f8e1d6eaf816607e6ba9d4a6bfa78e7c62fafe89cffe10f03cc16052` |
+| Contract fingerprint | `sha256:cc76929678bd05bc7fe349b39ba0e155e0422d8f032690b3dd230a3aafeac301` |
 
 ## Parameters
 

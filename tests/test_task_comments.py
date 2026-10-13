@@ -140,7 +140,7 @@ async def test_comments_are_authored_append_only_paginated_and_deleted_with_task
     assert second["comment"]["author_id"] == "agent"
     assert second["comment"]["created_at"] >= first["comment"]["created_at"]
     page = await run(env, "task_comments", {"task_id": "t", "limit": 1, "offset": 1})
-    assert page == {"comments": [first["comment"]], "total": 2, "limit": 1, "offset": 1}
+    assert page == {"success": True, "comments": [first["comment"]], "total": 2, "limit": 1, "offset": 1}
     events = [
         call.args for call in env.orch.bus.emit.await_args_list if call.args[0] == "task.updated"
     ]
@@ -503,7 +503,7 @@ async def seed_cross_project_collision(env):
 async def test_existing_collision_supports_comments_and_description_without_leaking(env):
     original = await seed_cross_project_collision(env)
     page = await run(env, "task_comments", {"task_id": "peer"})
-    assert page == {"comments": [], "total": 0, "limit": 50, "offset": 0}
+    assert page == {"success": True, "comments": [], "total": 0, "limit": 50, "offset": 0}
     added = await run(env, "task_comment", {"task_id": "peer", "body": "Active project feedback"})
     assert "error" not in added, added
     updated = await run(
@@ -832,9 +832,9 @@ async def test_operator_can_edit_and_delete_comments_and_agents_cannot(env):
     assert page["comments"][0]["author_kind"] == "agent"
 
     deleted = await run(env, "task_comment_delete", {"task_id": "t", "comment_id": cid})
-    assert deleted == {"deleted": cid, "task_id": "t"}
+    assert deleted == {"success": True, "deleted": cid, "task_id": "t"}
     page = await run(env, "task_comments", {"task_id": "t"})
-    assert page == {"comments": [first["comment"]], "total": 1, "limit": 50, "offset": 0}
+    assert page == {"success": True, "comments": [first["comment"]], "total": 1, "limit": 50, "offset": 0}
 
     events = [
         call.args for call in env.orch.bus.emit.await_args_list if call.args[0] == "task.updated"

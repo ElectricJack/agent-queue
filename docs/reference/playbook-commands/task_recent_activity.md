@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `task_recent_activity` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:57f5c0ead71a53daafd333ef3822d5882c93b258f020e5e3164eb1b470fef004` |
+| Contract fingerprint | `sha256:7ecf9139597681a030a5d226fe4145d3699e542f5d1a134bf6de5b4bc1f06a7c` |
 
 ## Parameters
 
@@ -25,7 +25,7 @@
 | `limit` | `integer` | no | — | Maximum tasks to return, most recently active first. Default 200, maximum 1000. 'truncated' is true when more tasks matched than were returned. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -47,7 +47,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using hours, project_id, limit | — | always |
+| Read using hours, project_id, limit | — | always |
 
 <!-- aq:generated:end -->
 

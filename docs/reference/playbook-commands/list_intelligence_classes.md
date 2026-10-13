@@ -8,20 +8,20 @@
 | Property | Value |
 |---|---|
 | Capability | `list_intelligence_classes` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:3496d2576f9b79db51a54827955f2371c4197599b2977c5067d106c7109fe2fd` |
+| Contract fingerprint | `sha256:184a2263c2096e5ff0f5ae8a4364592068e117cf3d8336c99aaa8ac548d36359` |
 
 ## Parameters
 
 Arguments are a JSON object validated against the descriptor's full schema.
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -43,7 +43,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using a JSON object | — | always |
+| Read using a JSON object | — | always |
 
 <!-- aq:generated:end -->
 

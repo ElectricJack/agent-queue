@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `get_task_tree` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:a44d6cf3847fad5b9ce04a1245236651ed71059dab786e4b4518fe13f7b4015c` |
+| Contract fingerprint | `sha256:b7568cb542f89253517665bb24bfbda206112eb29f7999f2bf7e450168113eb4` |
 
 ## Parameters
 
@@ -25,7 +25,7 @@
 | `max_depth` | `integer` | no | — | Maximum nesting depth to render (default 4). Deeper subtasks are collapsed into a summary. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -47,7 +47,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using task_id, compact, max_depth | — | always |
+| Read using task_id, compact, max_depth | — | always |
 
 <!-- aq:generated:end -->
 

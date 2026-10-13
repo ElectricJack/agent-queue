@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `list_workspace_kinds` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:f17dc0673a1daa57a1a13988d794731fb65f35d64de510de8b99c1b8d64c43ca` |
+| Contract fingerprint | `sha256:34e15ee31b4874edde18a7be0f6abd04c05915b91b0702cab279be1c7b10cea5` |
 
 ## Parameters
 
@@ -23,7 +23,7 @@
 | `project_id` | `string` | no | — | Project ID (optional — defaults to active project; system-only when none) |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -45,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id | — | always |
+| Read using project_id | — | always |
 
 <!-- aq:generated:end -->
 

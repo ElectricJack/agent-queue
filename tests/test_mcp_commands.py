@@ -126,7 +126,7 @@ async def test_create_http_server_rejects_missing_url_and_bad_headers(
     args = {"name": "remote", "transport": "http", **patch}
     result = await handler._cmd_create_mcp_server(args)
 
-    assert result == {"error": expected_error}
+    assert result == {"success": False, "error": expected_error}
     # No vault file, no registry entry, no probe for a rejected create.
     assert not os.path.exists(_vault(handler) / "mcp-servers" / "remote.md")
     assert handler.orchestrator.mcp_registry.get("remote") is None
@@ -153,7 +153,7 @@ async def test_create_stdio_server_rejects_missing_command_and_nonstring_env(
     args = {"name": "local", "transport": "stdio", **patch}
     result = await handler._cmd_create_mcp_server(args)
 
-    assert result == {"error": expected_error}
+    assert result == {"success": False, "error": expected_error}
     assert not os.path.exists(_vault(handler) / "mcp-servers" / "local.md")
     assert handler.orchestrator.mcp_registry.get("local") is None
     assert probe_recorder == []
@@ -227,8 +227,9 @@ async def test_get_and_list_mcp_servers_honor_project_then_system_scope(
     system_got = await handler._cmd_get_mcp_server({"name": "override"})
     assert system_got["adapter_config"] == {"command": "system-bin", "args": []}
 
-    assert await handler._cmd_get_mcp_server({"name": ""}) == {"error": "name is required"}
+    assert await handler._cmd_get_mcp_server({"name": ""}) == {"success": False, "error": "name is required"}
     assert await handler._cmd_get_mcp_server({"name": "nope"}) == {
+        "success": False,
         "error": "MCP server 'nope' not found"
     }
 
@@ -245,21 +246,24 @@ async def test_probe_mcp_server_requires_registry_catalog_and_existing_name(
     orch = handler.orchestrator
     registry, catalog = orch.mcp_registry, orch.mcp_tool_catalog
 
-    assert await handler._cmd_probe_mcp_server({"name": " "}) == {"error": "name is required"}
+    assert await handler._cmd_probe_mcp_server({"name": " "}) == {"success": False, "error": "name is required"}
 
     orch.mcp_registry = None
     assert await handler._cmd_probe_mcp_server({"name": "files"}) == {
+        "success": False,
         "error": "MCP registry/catalog not initialised"
     }
     orch.mcp_registry = registry
 
     orch.mcp_tool_catalog = None
     assert await handler._cmd_probe_mcp_server({"name": "files"}) == {
+        "success": False,
         "error": "MCP registry/catalog not initialised"
     }
     orch.mcp_tool_catalog = catalog
 
     assert await handler._cmd_probe_mcp_server({"name": "files"}) == {
+        "success": False,
         "error": "MCP server 'files' not found"
     }
     assert probe_recorder == []
@@ -288,8 +292,9 @@ async def test_edit_mcp_server_merges_patch_and_rejects_malformed_existing_markd
     handler = await command_handler_factory()
     registry = handler.orchestrator.mcp_registry
 
-    assert await handler._cmd_edit_mcp_server({"name": ""}) == {"error": "name is required"}
+    assert await handler._cmd_edit_mcp_server({"name": ""}) == {"success": False, "error": "name is required"}
     assert await handler._cmd_edit_mcp_server({"name": "ghost"}) == {
+        "success": False,
         "error": "MCP server 'ghost' not found in vault (scope=system)"
     }
 
@@ -326,7 +331,7 @@ async def test_edit_mcp_server_merges_patch_and_rejects_malformed_existing_markd
     # A patch that breaks validation is rejected and does not rewrite the file.
     before = path.read_text(encoding="utf-8")
     bad = await handler._cmd_edit_mcp_server({"name": "files", "command": ""})
-    assert bad == {"error": "stdio transport requires 'command'"}
+    assert bad == {"success": False, "error": "stdio transport requires 'command'"}
     assert path.read_text(encoding="utf-8") == before
 
     # Malformed existing markdown is reported, not silently overwritten.
@@ -347,7 +352,7 @@ async def test_delete_mcp_server_refuses_builtin_and_referenced_profiles(
     handler = await command_handler_factory()
     registry = handler.orchestrator.mcp_registry
 
-    assert await handler._cmd_delete_mcp_server({"name": ""}) == {"error": "name is required"}
+    assert await handler._cmd_delete_mcp_server({"name": ""}) == {"success": False, "error": "name is required"}
 
     # Builtin: refused before anything is touched.
     registry.set_builtin(McpServerConfig(name="agent-queue", transport="stdio", command="aq"))
@@ -424,7 +429,7 @@ async def test_delete_mcp_server_removes_vault_registry_and_catalog(
 
     # Second delete: file is gone.
     again = await handler._cmd_delete_mcp_server({"name": "files", "project_id": "alpha"})
-    assert again == {"error": "MCP server 'files' not found"}
+    assert again == {"success": False, "error": "MCP server 'files' not found"}
 
 
 # ---------------------------------------------------------------------------

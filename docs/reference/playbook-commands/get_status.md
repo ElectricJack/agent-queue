@@ -8,20 +8,20 @@
 | Property | Value |
 |---|---|
 | Capability | `get_status` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:a78b639967db7af42b9c3a6e20dd51c6a333f3ff5b7b92096100395d6a2d73ef` |
+| Contract fingerprint | `sha256:19997d6e7d88c1b9be9174e0c75b6ffc0398ff9d3f8540ac1d21143d936775e9` |
 
 ## Parameters
 
 Arguments are a JSON object validated against the descriptor's full schema.
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -43,7 +43,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using a JSON object | — | always |
+| Read using a JSON object | — | always |
 
 <!-- aq:generated:end -->
 

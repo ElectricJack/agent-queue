@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `get_config` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:4f1b1f467aef464f5b6d268018d6a71546b2196fbbfe2440f6de4d1d9e8cc8ec` |
+| Contract fingerprint | `sha256:635029b8d2240e33b50ff8e0db54c0d92bd7ce2339c2f98a0f74d72aac0a441c` |
 
 ## Parameters
 
@@ -23,7 +23,7 @@
 | `section` | `string` | no | — | Top-level config section to return (e.g. 'scheduling'). Omit for full config. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -45,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using section | — | always |
+| Read using section | — | always |
 
 <!-- aq:generated:end -->
 

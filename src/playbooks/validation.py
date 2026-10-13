@@ -1582,6 +1582,15 @@ def _contracts_and_outcomes(context: _Context) -> None:
         resolved = True
 
         if isinstance(step, CommandStep):
+            from src.commands.descriptors import PLAYBOOK_DENIALS
+            from src.commands.principal import SERVER_OWNED_ARG_KEYS
+
+            if step.command in PLAYBOOK_DENIALS:
+                context.emit("unauthorized", "command is forbidden in playbooks",
+                             rule_id=step.rule, step_id=step_id, field="/command")
+            if set(step.inputs).intersection(SERVER_OWNED_ARG_KEYS):
+                context.emit("invalid_argument", "server-owned arguments are forbidden",
+                             rule_id=step.rule, step_id=step_id, field="/inputs")
             info = context.contracts.get(step.command)
             if info is None:
                 resolved = False
@@ -1610,6 +1619,11 @@ def _contracts_and_outcomes(context: _Context) -> None:
             _check_output_schema(context, step_id, step)
             _check_llm_outcomes(context, step_id, step)
             for tool_name in (*step.tool_use.aq_commands, *step.tool_use.plugin_tools):
+                from src.commands.descriptors import PLAYBOOK_DENIALS
+
+                if tool_name in PLAYBOOK_DENIALS:
+                    context.emit("unauthorized", "LLM tool is forbidden in playbooks",
+                                 rule_id=step.rule, step_id=step_id, field="/tool_use")
                 tool_contract = context.contracts.get(tool_name)
                 if tool_contract is None:
                     context.emit(

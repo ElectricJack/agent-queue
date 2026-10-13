@@ -658,16 +658,22 @@ class CommandHandler(
         and any registered workspace path.
         """
         real = os.path.realpath(path)
+        principal = current_principal()
+        scoped_project = principal.project_id if principal and principal.enforced else None
         from src.task_templates import editable_task_template_path
 
         template_path = editable_task_template_path(path, self.config.data_dir)
-        if template_path is not None:
+        if template_path is not None and scoped_project is None:
             return template_path
         workspace_real = os.path.realpath(self.config.workspace_dir)
-        if real.startswith(workspace_real + os.sep) or real == workspace_real:
+        if scoped_project is None and (
+            real.startswith(workspace_real + os.sep) or real == workspace_real
+        ):
             return real
         repos = await self.db.list_repos()
         for repo in repos:
+            if scoped_project is not None and repo.project_id != scoped_project:
+                continue
             if repo.source_path:
                 repo_real = os.path.realpath(repo.source_path)
                 if real.startswith(repo_real + os.sep) or real == repo_real:
@@ -675,6 +681,8 @@ class CommandHandler(
         # Also allow paths within any registered workspace
         workspaces = await self.db.list_workspaces()
         for ws in workspaces:
+            if scoped_project is not None and ws.project_id != scoped_project:
+                continue
             ws_real = os.path.realpath(ws.workspace_path)
             if real.startswith(ws_real + os.sep) or real == ws_real:
                 return real
@@ -955,10 +963,16 @@ class CommandHandler(
             # ``args`` unless it explicitly reads ``self._current_scope``.
             # Belt-and-braces defense — /api/execute already strips any
             # client-supplied ``_scope`` before forwarding the trusted one.
-            scope = None
+            scope = self._current_scope
+            inherited_principal = current_principal()
             if isinstance(args, dict) and any(k in args for k in SERVER_OWNED_ARG_KEYS):
+                if inherited_principal is not None and inherited_principal.kind.value == "playbook":
+                    return {"success": False, "error_code": "server_owned_argument",
+                            "error": "Server-owned arguments are forbidden in playbooks"}
                 args = dict(args)
-                scope = args.pop("_scope", None)
+                supplied_scope = args.pop("_scope", None)
+                if inherited_principal is None:
+                    scope = supplied_scope
                 # Belt-and-braces defense, mirroring the ``_scope`` comment
                 # above: /api/execute and the generated typed routes already
                 # strip every server-owned key before forwarding the trusted
@@ -973,7 +987,6 @@ class CommandHandler(
             # re-enter ``execute`` outright), and an unconditional clear in
             # the ``finally`` would strip the outer command's identity the
             # moment the inner one returned.
-            _scope_token = _current_scope_var.set(scope)
             # The principal follows the same save/restore discipline, and for
             # the same reason: ``execute`` is re-entrant.  An already-bound
             # principal (the playbook runner, an orchestrator service call)
@@ -981,6 +994,11 @@ class CommandHandler(
             principal = current_principal()
             if principal is None:
                 principal = await self._principal_from_scope(scope)
+            from src.commands.resource_authorization import principal_scope
+
+            if inherited_principal is not None:
+                scope = principal_scope(principal)
+            _scope_token = _current_scope_var.set(scope)
             _principal_token = _principal_var.set(principal)
             operator_session, _operator_token, operator_refusal = bind_operator_dispatch(
                 principal, name, args)
@@ -1112,6 +1130,18 @@ class CommandHandler(
                 # ahead of every handler, so the answer is the same for every
                 # principal and nothing is written.  Project commands refuse a
                 # project default the same way (§8).
+                from src.commands.resource_authorization import authorize_resources
+
+                descriptor = self.command_descriptors.commands.get(name)
+                refusal = await authorize_resources(
+                    name, args, principal, db=self.db,
+                    generated=descriptor is not None and descriptor.result_mode == "json_object",
+                    descriptor=descriptor,
+                )
+                if refusal is not None:
+                    _emit_ok, _emit_error = _classify_result(refusal)
+                    return refusal
+
                 if name in GUARDED_COMMANDS:
                     refusal = routing_choice_refusal(name, args, principal)
                     if refusal is not None:
@@ -1178,14 +1208,16 @@ class CommandHandler(
                                 str(e) if isinstance(e, GitHubAccessError) else e.__class__.__name__
                             )
                             _emit_error = f"Plugin command failed: {detail}"
-                            return {"error": f"Plugin command failed: {e}"}
+                            return {"success": False, "error_code": "command_runtime_error",
+                                    "error": "Plugin command failed"}
 
                 logger.warning(
                     "Unknown command requested: %s args=%s", name, self._preview(log_args)
                 )
                 _emit_ok = False
                 _emit_error = f"Unknown command: {name}"
-                return {"error": f"Unknown command: {name}"}
+                return {"success": False, "error_code": "unknown_command",
+                        "error": f"Unknown command: {name}"}
             except Exception as e:
                 logger.error(
                     "Command %s failed: args=%s err=%s",
@@ -1196,7 +1228,8 @@ class CommandHandler(
                 )
                 _emit_ok = False
                 _emit_error = f"{e.__class__.__name__}: {e}"[:200]
-                return {"error": str(e)}
+                return {"success": False, "error_code": "command_runtime_error",
+                        "error": "Command execution failed"}
             finally:
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)

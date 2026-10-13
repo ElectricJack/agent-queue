@@ -523,11 +523,13 @@ class ProviderCommandsMixin:
     def _caller_project_id(self) -> str | None:
         """The project a per-project supervisor's token confines it to.
 
-        ``None`` for the operator, the global supervisor and a playbook step,
-        which act across projects.
+        ``None`` for the operator and system-scoped callers. Playbook steps
+        retain the project of the invoking run.
         """
         scope = self._current_scope or {}
-        if scope.get("kind") == "session" and scope.get("elevated"):
+        if scope.get("kind") == "playbook" or (
+            scope.get("kind") == "session" and scope.get("elevated")
+        ):
             return scope.get("project_id") or None
         return None
 

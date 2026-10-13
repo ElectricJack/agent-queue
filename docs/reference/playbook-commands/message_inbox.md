@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `message_inbox` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:2d660281df6491afd1f033453023012f90518831b855012d8ba141a583572c43` |
+| Contract fingerprint | `sha256:3641bd91b737a6eb7f744834b7aaee3b167306434da1c9ed9e359ab9d86d49a2` |
 
 ## Parameters
 
@@ -27,7 +27,7 @@
 | `limit` | `integer` | no | — | Max rows (default 50, or max_inject_per_prompt when injecting) |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -49,7 +49,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using to_kind, to_id, inject, include_consumed, limit | — | always |
+| Read using to_kind, to_id, inject, include_consumed, limit | — | always |
 
 <!-- aq:generated:end -->
 

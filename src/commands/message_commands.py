@@ -87,7 +87,7 @@ class MessageCommandsMixin:
         """Return the refusal dict when ``messages.enabled`` is false."""
         messages_cfg = getattr(self.config, "messages", None)
         if messages_cfg is None or not messages_cfg.enabled:
-            return {"error": MESSAGES_DISABLED_ERROR}
+            return {"success": False, "error": MESSAGES_DISABLED_ERROR}
         return None
 
     def _system_message_scope_error(self) -> dict | None:
@@ -95,7 +95,7 @@ class MessageCommandsMixin:
         scope = self._current_scope
         if scope and scope.get("kind") != "local":
             if not scope.get("elevated") or scope.get("project_id") is not None:
-                return {"error": "out of scope: system messages require global admin"}
+                return {"success": False, "error": "out of scope: system messages require global admin"}
         return None
 
     async def _inbox_mailbox_scope_error(self, to_kind: str, to_id: str) -> dict | None:
@@ -122,6 +122,7 @@ class MessageCommandsMixin:
         if not scope or scope.get("kind") != "session" or scope.get("elevated"):
             return None
         error = {
+            "success": False,
             "error": (
                 f"out of scope: a session may only read its own mailboxes, "
                 f"not {to_kind}:{to_id}"
@@ -221,21 +222,23 @@ class MessageCommandsMixin:
         to_id = (args.get("to_id") or "").strip()
         if to_kind not in MESSAGE_TO_KINDS:
             return {
+                "success": False,
                 "error": f"Invalid to_kind '{to_kind}'. "
                 f"Allowed: {', '.join(sorted(MESSAGE_TO_KINDS))}"
             }
         if not to_id:
-            return {"error": "to_id is required"}
+            return {"success": False, "error": "to_id is required"}
 
         from_kind = (args.get("from_kind") or "user").strip()
         if from_kind not in MESSAGE_FROM_KINDS:
             return {
+                "success": False,
                 "error": f"Invalid from_kind '{from_kind}'. "
                 f"Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}"
             }
         from_id = (args.get("from_id") or "").strip()
         if not from_id:
-            return {"error": "from_id is required"}
+            return {"success": False, "error": "from_id is required"}
 
         # A task, or a session addressed by id, belongs to one project, and its
         # readers are fenced to that project: a durable message wait matches
@@ -269,15 +272,16 @@ class MessageCommandsMixin:
         else:
             project_id = requested_project_id or self._active_project_id
             if not project_id:
-                return {"error": "project_id is required (no active project set)"}
+                return {"success": False, "error": "project_id is required (no active project set)"}
             project = await self.db.get_project(project_id)
             if not project:
-                return {"error": f"Project '{project_id}' not found"}
+                return {"success": False, "error": f"Project '{project_id}' not found"}
 
         if to_kind == "session" and to_id.startswith(_SUPERVISOR_ADDRESS_PREFIX):
             mailbox = await self._supervisor_mailbox(to_id, project_id)
             if mailbox is None:
                 return {
+                    "success": False,
                     "error": (
                         f"session:{to_id} names no project and the message has no "
                         f"project to resolve it to; send to "
@@ -289,19 +293,20 @@ class MessageCommandsMixin:
 
         body = args.get("body")
         if not body or not str(body).strip():
-            return {"error": "body is required"}
+            return {"success": False, "error": "body is required"}
 
         priority = args.get("priority", 100)
         if isinstance(priority, bool) or not isinstance(priority, int):
-            return {"error": "priority must be an integer"}
+            return {"success": False, "error": "priority must be an integer"}
 
         reply_to_id = args.get("reply_to_id")
         if reply_to_id:
             parent = await self.db.get_message(reply_to_id)
             if parent is None:
-                return {"error": f"Message '{reply_to_id}' not found (reply_to_id)"}
+                return {"success": False, "error": f"Message '{reply_to_id}' not found (reply_to_id)"}
             if is_collaboration_thread(parent.thread_id):
                 return {
+                    "success": False,
                     "error": "Collaboration replies must use their collaboration thread",
                     "error_code": "collaboration.invalid",
                 }
@@ -311,24 +316,24 @@ class MessageCommandsMixin:
         # without exposing a new public message-send option.
         body_kind = args.get("_body_kind")
         if body_kind not in {None, "task_comment"}:
-            return {"error": "invalid internal message body kind"}
+            return {"success": False, "error": "invalid internal message body kind"}
         pane_open_json: str | None = None
         if pane_open is not None:
             if not isinstance(pane_open, dict):
-                return {"error": "pane_open must be an object"}
+                return {"success": False, "error": "pane_open must be an object"}
             view_id = pane_open.get("view")
             if not view_id or not isinstance(view_id, str):
-                return {"error": "pane_open.view is required"}
+                return {"success": False, "error": "pane_open.view is required"}
             from src.panes.registry import SERVER_PANE_REGISTRY
 
             entry = SERVER_PANE_REGISTRY.get(view_id)
             if entry is None:
-                return {"error": f"unknown pane view '{view_id}'"}
+                return {"success": False, "error": f"unknown pane view '{view_id}'"}
             if not entry.agent_pushable:
-                return {"error": f"pane view '{view_id}' is not agent-pushable"}
+                return {"success": False, "error": f"pane view '{view_id}' is not agent-pushable"}
             pane_args = pane_open.get("args", {})
             if not isinstance(pane_args, dict):
-                return {"error": "pane_open.args must be an object"}
+                return {"success": False, "error": "pane_open.args must be an object"}
             import json as _json
 
             pane_open_json = _json.dumps({"view": view_id, "args": pane_args})
@@ -369,6 +374,7 @@ class MessageCommandsMixin:
         # "queued" is the only state Phase 1 can honestly report: nothing
         # delivers a message until the Phase 3 engine exists.
         return {
+            "success": True,
             "message_id": msg.id,
             "state": "queued",
             "message": message_to_dict(msg),
@@ -433,6 +439,7 @@ class MessageCommandsMixin:
                         },
                     )
             return {
+                "success": True,
                 "message_id": result["message_id"],
                 "message_ids": result["message_ids"],
                 "seq": result["seq"],
@@ -440,7 +447,7 @@ class MessageCommandsMixin:
                 "state": "queued",
             }
         except CollaborationError as exc:
-            result = {"error": str(exc), "error_code": exc.code}
+            result = {"success": False, "error": str(exc), "error_code": exc.code}
             if exc.retry_after is not None:
                 result["retry_after"] = exc.retry_after
             return result
@@ -453,18 +460,18 @@ class MessageCommandsMixin:
 
         message_id = (args.get("message_id") or "").strip()
         if not message_id:
-            return {"error": "message_id is required"}
+            return {"success": False, "error": "message_id is required"}
         original = await self.db.get_message(message_id)
         if original is None:
-            return {"error": f"Message '{message_id}' not found"}
+            return {"success": False, "error": f"Message '{message_id}' not found"}
 
         if original.body_kind == "conversation_input":
             item = await self.db.find_conversation_input_by_supervisor_message(message_id)
             if item is None:
-                return {"error": "conversation input no longer exists"}
+                return {"success": False, "error": "conversation input no longer exists"}
             forbidden = {"from_kind", "from_id", "to_kind", "to_id"}.intersection(args)
             if forbidden:
-                return {"error": "conversation reply identity is server-derived"}
+                return {"success": False, "error": "conversation reply identity is server-derived"}
             result = await self._cmd_supervisor_inbox_reply(
                 {
                     "conversation_id": item["conversation_id"],
@@ -509,7 +516,7 @@ class MessageCommandsMixin:
 
         body = args.get("body")
         if not body or not str(body).strip():
-            return {"error": "body is required"}
+            return {"success": False, "error": "body is required"}
 
         # A reply is addressed to the original's *sender*, so that sender has
         # to be an addressable recipient.  ``system`` is in MESSAGE_FROM_KINDS
@@ -520,6 +527,7 @@ class MessageCommandsMixin:
         # parameters.  Fail cleanly before the insert instead.
         if original.from_kind not in MESSAGE_TO_KINDS:
             return {
+                "success": False,
                 "error": (
                     f"cannot reply to a '{original.from_kind}' message — "
                     f"'{original.from_kind}' is not an addressable recipient "
@@ -537,6 +545,7 @@ class MessageCommandsMixin:
             from_kind = original.to_kind if original.to_kind in MESSAGE_FROM_KINDS else "session"
         if from_kind not in MESSAGE_FROM_KINDS:
             return {
+                "success": False,
                 "error": f"Invalid from_kind '{from_kind}'. "
                 f"Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}"
             }
@@ -571,6 +580,7 @@ class MessageCommandsMixin:
         await self._emit_message_event("message.replied", payload)
 
         return {
+            "success": True,
             "message_id": original.id,
             "reply_id": reply.id,
             "reply": message_to_dict(reply),
@@ -593,11 +603,12 @@ class MessageCommandsMixin:
         to_id = (args.get("to_id") or "").strip()
         if to_kind not in MESSAGE_TO_KINDS:
             return {
+                "success": False,
                 "error": f"Invalid to_kind '{to_kind}'. "
                 f"Allowed: {', '.join(sorted(MESSAGE_TO_KINDS))}"
             }
         if not to_id:
-            return {"error": "to_id is required"}
+            return {"success": False, "error": "to_id is required"}
 
         if to_kind == "session" and to_id == "supervisor-global":
             scope_error = self._system_message_scope_error()
@@ -618,7 +629,7 @@ class MessageCommandsMixin:
         if limit is None:
             limit = self.config.messages.max_inject_per_prompt if inject else 50
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
-            return {"error": "limit must be a non-negative integer"}
+            return {"success": False, "error": "limit must be a non-negative integer"}
 
         recipients = [to_id]
         scope = self._current_scope
@@ -671,6 +682,7 @@ class MessageCommandsMixin:
 
         if not inject:
             return {
+                "success": True,
                 "to_kind": to_kind,
                 "to_id": to_id,
                 "count": len(pending),
@@ -711,6 +723,7 @@ class MessageCommandsMixin:
             rendered.append(message_to_dict(fresh or msg))
 
         return {
+            "success": True,
             "to_kind": to_kind,
             "to_id": to_id,
             "count": len(rendered),
@@ -736,20 +749,21 @@ class MessageCommandsMixin:
         to_kind = args.get("to_kind")
         if to_kind and to_kind not in MESSAGE_TO_KINDS:
             return {
+                "success": False,
                 "error": f"Invalid to_kind '{to_kind}'. "
                 f"Allowed: {', '.join(sorted(MESSAGE_TO_KINDS))}"
             }
 
         limit = args.get("limit", 100)
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
-            return {"error": "limit must be a non-negative integer"}
+            return {"success": False, "error": "limit must be a non-negative integer"}
 
         since = args.get("since")
         if since is not None:
             try:
                 since = float(since)
             except (TypeError, ValueError):
-                return {"error": "since must be an epoch timestamp (number)"}
+                return {"success": False, "error": "since must be an epoch timestamp (number)"}
 
         system_only = bool(args.get("system_only", False))
         if system_only:
@@ -769,6 +783,7 @@ class MessageCommandsMixin:
             session_addresses=args.get("session_addresses"),
         )
         return {
+            "success": True,
             "count": len(rows),
             "messages": [message_to_dict(m) for m in rows],
         }
@@ -780,7 +795,7 @@ class MessageCommandsMixin:
             return disabled
         message_id = (args.get("message_id") or "").strip()
         if not message_id:
-            return {"error": "message_id is required"}
+            return {"success": False, "error": "message_id is required"}
         message = await self.db.get_message(message_id)
         project_id = args.get("project_id")
         if (
@@ -791,7 +806,7 @@ class MessageCommandsMixin:
             # fence does not confirm another recipient's id exists.
             or await self._inbox_mailbox_scope_error(message.to_kind, message.to_id)
         ):
-            return {"error": f"Message '{message_id}' not found"}
+            return {"success": False, "error": f"Message '{message_id}' not found"}
         # Reading a pointer as its actual recipient consumes the durable body.
         # Operator diagnostics and another supervisor's inspection stay read-only.
         await self._acknowledge_message_read(message)
@@ -800,6 +815,7 @@ class MessageCommandsMixin:
             "delivered" if message.delivered_at is not None else "queued"
         )
         return {
+            "success": True,
             "message_id": message.id,
             "state": state,
             "via": message.via,
