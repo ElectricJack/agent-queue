@@ -15332,6 +15332,7 @@
     "src/commands/collaboration_commands.py::CollaborationCommandsMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/collaboration_lifecycle.py::CollaborationLifecycleMixin": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/collaboration_lifecycle.py::CollaborationReconciler": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/commands/command_inventory.py::offline_snapshot": "Generic offline command-descriptor composition for every transport and playbook; imports the shared CommandHandler without integration policy, delivery authority or storage. Integration-specific handler definitions are charged independently.",
     "src/commands/contracts/builtin.py::_handler": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/contracts/collaboration.py::register_collaboration_contracts": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/contracts/digest.py::register_digest_contracts": "Generic dependency; integration-specific definitions in this file are charged independently.",

@@ -4280,9 +4280,10 @@
         "docs-guards"
       ],
       "default_arm": true,
-      "digest": "sha256:aa0c74c8e99d3b454424d6bdcdce5716095eeb034362f262829ca37530ec9f52",
+      "digest": "sha256:3992005f69a7a4ef781c76778c99b3d4b661dae117abfbb90f76e2daea39aad3",
       "imports": [
-        "src.commands.contracts"
+        "src.commands.contracts",
+        "src.commands.contracts.registry"
       ],
       "markers": [],
       "summary": "Drift guards for ``docs/reference/playbook-commands``."
