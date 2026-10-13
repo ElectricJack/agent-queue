@@ -20,14 +20,16 @@ No LLM, no CLI.
 
 from __future__ import annotations
 
+import asyncio
 import random
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from src.config import ProviderFailoverConfig
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, Project, Task, TaskStatus
+from src.models import Agent, AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.providers.availability import AVAILABLE, DEGRADED, DISABLED, EXHAUSTED, UNAUTHENTICATED
 from src.providers.intent import CLASS_ONLY, PINNED, PREFERRED
 from src.providers.reroute import (
@@ -768,6 +770,81 @@ async def test_worker_token_is_out_of_scope(orch):
     finally:
         handler._current_scope = None
     assert result["success"] is False and result["error"].startswith("out of scope")
+
+
+async def test_blocked_failover_preserves_stop_and_graph_blockers(orch):
+    await _task(orch, "stopped", "standard-high-codex")
+    await orch.db.transition_task("stopped", TaskStatus.BLOCKED, context="stop_task")
+    await orch.db.update_task("stopped", retry_count=2, route_source="router", route={
+        "candidates": [
+            {"profile_id": "standard-high-codex", "intelligence_class": "standard-high"},
+            {"profile_id": "standard-high-claude", "intelligence_class": "standard-high"},
+        ],
+    })
+    gate_id, _ = await orch.db.create_gate(
+        "p-1", "human", "Keep stopped", waiter_task_ids=["stopped"],
+    )
+    await _task(orch, "pin", "standard-high-codex", status=TaskStatus.BLOCKED, intent=PINNED)
+    await _codex_down(orch)
+    handler = _handler(orch)
+    plan = await handler.execute("provider_reroute", {"provider": "codex", "dry_run": True})
+    assert [d["task_id"] for d in plan["moved"]] == ["stopped"], plan
+    assert (await orch.db.get_task("stopped")).profile_id == "standard-high-codex"
+    assert await orch.db.list_task_reroutes(task_id="stopped") == []
+    result = await handler.execute("provider_reroute", {"provider": "codex"})
+    assert [d["task_id"] for d in result["moved"]] == ["stopped"], result
+    assert result["resumed"] == []
+    assert {d["task_id"]: d["kind"] for d in result["held"]} == {"pin": "provider_pinned"}
+    task = await orch.db.get_task("stopped")
+    assert (task.status, task.profile_id, task.route_source, task.retry_count, task.is_blocked) == (
+        TaskStatus.BLOCKED, "standard-high-claude", "router", 2, 1,
+    )
+    assert await orch.db.get_task_meta("stopped", "blocked_terminal") == "stop_task"
+    assert (await orch.db.get_gate(gate_id))["status"] == "open"
+    [audit] = await orch.db.list_task_reroutes(task_id="stopped")
+    assert audit["reason_code"] == "provider_unavailable"
+
+
+@pytest.mark.parametrize("state", ["starting", "running", "draining"])
+async def test_failover_preview_excludes_blocked_tasks_with_live_sessions(orch, state):
+    await _task(orch, "live", "standard-high-codex", status=TaskStatus.BLOCKED)
+    await orch.db.create_session(SessionRecord(
+        id="writer", project_id="p-1", task_id="live", profile_id="standard-high-codex",
+        harness="codex", provider="fake", name="writer", lifecycle="pool", work_dir="/tmp",
+        epoch="test", instance_token="exact-token", state=state, desired_state="stopped",
+        started_at=time.time(),
+    ))
+    await _codex_down(orch)
+    result = await _handler(orch).execute("provider_reroute", {"dry_run": True})
+    assert result["moved"] == result["held"] == result["lost"] == [], result
+
+
+async def test_failover_guard_rejects_a_claim_that_wins_after_preview(orch, monkeypatch):
+    await _task(orch, "stopped", "standard-high-codex", status=TaskStatus.BLOCKED)
+    await _codex_down(orch)
+    apply = orch.db.apply_task_reroute
+
+    async def claim_before_apply(task_id, **kwargs):
+        await orch.db.update_task(task_id, status=TaskStatus.IN_PROGRESS)
+        return await apply(task_id, **kwargs)
+
+    monkeypatch.setattr(orch.db, "apply_task_reroute", claim_before_apply)
+    result = await _handler(orch).execute("provider_reroute", {})
+    assert result["moved"] == [] and result["lost"] == ["stopped"], result
+    assert (await orch.db.get_task("stopped")).profile_id == "standard-high-codex"
+    assert await orch.db.list_task_reroutes(task_id="stopped") == []
+
+
+async def test_failover_preview_does_not_wait_for_an_applying_sweep(orch):
+    await _task(orch, "stopped", "standard-high-codex", status=TaskStatus.BLOCKED)
+    await _codex_down(orch)
+    service = _handler(orch)._reroute_service()
+    async with service._lock:
+        plan = await asyncio.wait_for(service.sweep(dry_run=True), timeout=5)
+        assert service._lock.locked()
+    assert [d["task_id"] for d in plan["moved"]] == ["stopped"]
+    assert plan["applied"] is False
+    assert (await orch.db.get_task("stopped")).profile_id == "standard-high-codex"
 
 
 # --- A per-project supervisor names only its own tasks (quick-crest-28) ------------

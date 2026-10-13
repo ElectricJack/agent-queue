@@ -40,6 +40,7 @@ import math
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any
@@ -870,7 +871,9 @@ class ProviderRerouteService:
             and self._pool_measure is not None
             and bool(getattr(getattr(cfg, "spill", None), "enabled", False))
         )
-        async with self._lock:
+        # A preview is observational and writes nothing. Do not queue it behind
+        # a fleet-wide applying sweep; guarded mutations remain serialized.
+        async with nullcontext() if dry_run else self._lock:
             ctx = await self.context()
             providers = [provider] if provider else None
             candidates = await self._candidates(ctx, providers=providers, task_ids=task_ids)

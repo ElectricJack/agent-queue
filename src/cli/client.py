@@ -96,6 +96,8 @@ _COMMAND_TIMEOUTS: dict[str, float] = {
     # has its own 10s bound, so a busy fleet can outlast the default 30s read.
     "pool_status": 120.0,
     "explain_task": 120.0,
+    # Fleet-wide failover/spill snapshots, including observational dry runs.
+    "provider_reroute": 120.0,
     "session_cleanup": 600.0,
     # Both long-poll (clamped to swarm.claim_wait_max, default well under
     # this) — see src/cli/agent_surface.py's task_claim/task_close commands.
