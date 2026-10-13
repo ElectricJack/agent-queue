@@ -98,7 +98,11 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
 
 def test_legacy_playbook_fixtures_are_unchanged():
     changes = _observation_changes()["playbook_fixtures"]
-    assert all("/stuck-task-watch/" in path for path in changes)
+    assert set(changes) == {
+        "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json",
+        "tests/fixtures/playbooks/v2/review-pipeline.artifact.json",
+        "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json",
+    }
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
