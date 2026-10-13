@@ -302,6 +302,20 @@ class ReviewQueriesMixin:
             rows = (await conn.execute(stmt)).mappings().fetchall()
         return [dict(r) for r in rows]
 
+    async def has_review_response_submission(
+        self, task_id: str, review_id: str, after_revision: int
+    ) -> bool:
+        """Whether this task published an answer to its assigned review revision."""
+        stmt = select(exists().where(
+            doc_review_revisions.c.review_id == review_id,
+            doc_review_revisions.c.submitted_task_id == task_id,
+            doc_review_revisions.c.revision > after_revision,
+            doc_reviews.c.id == doc_review_revisions.c.review_id,
+            doc_reviews.c.state != "withdrawn",
+        ))
+        async with self._engine.begin() as conn:
+            return bool((await conn.execute(stmt)).scalar_one())
+
     async def transition_review(
         self,
         review_id: str,

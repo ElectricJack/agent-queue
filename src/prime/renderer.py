@@ -171,6 +171,7 @@ class PrimeRenderer:
                 bounded_worker=bounded_worker,
                 deliverables=await resolve_task_deliverables(self.db, task),
                 review_deliverables=await _sections.build_review_deliverable_summary(self.db, task),
+                review_revision=await _sections.build_review_revision_summary(self.db, task),
                 integration_delivery=await _sections.build_integration_delivery_summary(
                     self.db, task
                 ),
