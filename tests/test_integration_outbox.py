@@ -944,7 +944,10 @@ async def test_partial_destination_acceptance_is_completed_before_ack(db, tmp_pa
     assert await _accepted_activation_count(db, "event-1") == 2
 
 
-async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(db, tmp_path):
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(
+    db, tmp_path, supplied_time
+):
     activation_id, artifact_sha256 = await _activate(
         db, tmp_path / "compiled", "integration-train", "integration.sealed"
     )
@@ -965,13 +968,15 @@ async def test_pending_row_stays_protected_until_every_selected_rule_has_a_run(d
             "event_id": "event-1",
             "project_id": "p",
             "operation_id": "operation-1",
+            "_received_at": supplied_time,
         },
         event_id="event-1",
         now=NOW,
     )
     [row] = await db.get_pending_events([pending_id])
 
-    async def partial_dispatch(*_args, **_kwargs):
+    async def partial_dispatch(event, *_args, **_kwargs):
+        assert event["_received_at"] == NOW
         return SimpleNamespace(
             rules_selected=("accepted", "crashed-before-run"),
             run_ids=("run-1",),

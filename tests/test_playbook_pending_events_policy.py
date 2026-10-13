@@ -44,6 +44,7 @@ from src.database.queries.playbook_run_queries import (
     PENDING_EVENT_OVERFLOW_ACTOR,
 )
 from src.playbooks.run_state import PendingEventQuotaExceeded
+from src.playbooks.runtime import V2PlaybookRuntime
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
 
@@ -54,6 +55,21 @@ DAY = 86_400.0
 
 
 # -- fixtures ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_live_arrival_overwrites_publisher_timestamp(monkeypatch, supplied_time):
+    runtime = object.__new__(V2PlaybookRuntime)
+    runtime._tasks = set()
+    runtime._dispatch = AsyncMock()
+    monkeypatch.setattr("src.playbooks.runtime.time.time", lambda: NOW)
+    event = {"event_type": "task.completed", "_received_at": supplied_time}
+
+    runtime._on_event(event)
+    await asyncio.gather(*runtime._tasks)
+
+    assert runtime._dispatch.await_args.args[0]["_received_at"] == NOW
+    assert event["_received_at"] == supplied_time
 
 
 @pytest.fixture
@@ -450,7 +466,8 @@ async def test_replay_re_evaluates_guards():
     assert rebuilt_runs.create_calls == 0
 
 
-async def test_replay_strips_principal_fields():
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_replay_strips_principal_fields(supplied_time):
     """A held payload cannot carry principal fields into its replay (§4.3)."""
     row = {
         "pending_event_id": "event-1",
@@ -464,6 +481,7 @@ async def test_replay_strips_principal_fields():
             "_scope": "system",
             "_policy": "allow-all",
             "_profile_id": "root",
+            "_received_at": supplied_time,
         },
     }
     handler, engine = _command_handler(row)
@@ -761,7 +779,8 @@ async def test_automatic_policy_consumes_the_backlog_on_activation():
     assert engine.dispatch_event.await_count == 2
 
 
-async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload(supplied_time):
     """The activation replay re-enters the same guarded path as the manual one."""
     handler, engine, definition, ref = _activation_handler(
         policy="automatic",
@@ -773,6 +792,7 @@ async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
                     "task_id": "t1",
                     "_principal": {"kind": "trusted_local"},
                     "_capabilities": {"aq_commands": ["*"]},
+                    "_received_at": supplied_time,
                 },
             )
         ],

@@ -2861,6 +2861,15 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     task_id = create_task("S18 supervisor failure triage", profile=POOL_PROFILE)
     claim_fixture(worker, task_id, what=f"S18 worker to claim fixture {task_id}")
 
+    def triage_runs() -> list[dict]:
+        return collection_rows(
+            api_checked("list_playbook_runs", {
+                "playbook_id": "supervisor-failure-triage", "limit": 10,
+            }),
+            "runs",
+        )
+
+    previous_runs = {row["run_id"] for row in triage_runs()}
     failed = worker.aq(
         "task",
         "close",
@@ -2880,18 +2889,15 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     worker.drain_ack()
 
     def triage_run() -> dict | None:
-        rows = collection_rows(
-            api_checked("list_playbook_runs", {
-                "playbook_id": "supervisor-failure-triage", "limit": 10,
-            }),
-            "runs",
-        )
+        # This isolated world emits one failure here. Event inputs are private;
+        # correlate by the new public run id, then verify the task-specific notice.
+        rows = [row for row in triage_runs() if row["run_id"] not in previous_runs]
+        check(len(rows) <= 1, f"S18 expected one new triage run: {rows}")
         for row in rows:
             detail = api_checked("inspect_playbook_run", {"run_id": row["run_id"]})["run"]
             # The run row appears as soon as dispatch starts it; judge it only
             # once it has left ``running`` (its command steps take a moment).
-            if (detail.get("event", {}).get("task_id") == task_id
-                    and detail.get("lifecycle") not in ("running", "cancelling")):
+            if detail.get("lifecycle") not in ("running", "cancelling"):
                 return detail
         return None
 

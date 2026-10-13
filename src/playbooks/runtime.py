@@ -265,7 +265,9 @@ class V2PlaybookRuntime:
 
     def _on_event(self, event: dict[str, Any]) -> None:
         payload = dict(event)
-        payload.setdefault("_received_at", time.time())
+        # The live publisher cannot choose its own backlog age or observation
+        # time. Replay restores the trusted timestamp from the stored row.
+        payload["_received_at"] = time.time()
         # A run triggered by an event emitted inside a project's commit
         # identity scope must not keep that identity (git identity spec §4).
         from src.git.manager import detached_commit_context
@@ -660,7 +662,7 @@ class V2PlaybookRuntime:
                 ).encode()
             ).hexdigest()[:12]
             payload = dict(row["event"])
-            payload.setdefault("_received_at", row["received_at"])
+            payload["_received_at"] = row["received_at"]
             payload.setdefault("event_id", row["event_id"])
             result = await self._engine.dispatch_event(
                 payload,

@@ -12356,7 +12356,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:72682a82b88c2ccc44bd25d31dbbc304005998df6c50bc55ced40ce3b14c6dbc",
+      "digest": "sha256:724d28214f83a995c4e457f56949c9aef298b4bb48bd7d6f7faa96ca92ece52f",
       "imports": [
         "src.commands.playbook_v2_commands",
         "src.commands.principal",
@@ -12371,6 +12371,7 @@
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.playbooks.run_state",
+        "src.playbooks.runtime",
         "src.playbooks.services"
       ],
       "markers": [
@@ -12383,7 +12384,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:d4a4254c9bb37bc5d89de904631ea36a50a0ea1e671a4e5981f9de70fc62d326",
+      "digest": "sha256:b8e10dddb696754b22618098edd0a3ad3378b5a2085af129d7f3206fb2b95ebe",
       "imports": [
         "src.commands.contracts.generated",
         "src.commands.contracts.registry",
@@ -12391,6 +12392,7 @@
         "src.commands.principal",
         "src.config",
         "src.database.tables",
+        "src.models",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.playbooks.executors.command",

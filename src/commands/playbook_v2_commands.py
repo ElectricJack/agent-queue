@@ -2016,7 +2016,7 @@ class PlaybookV2CommandsMixin:
             f"v2-pending|{pending_event_id}".encode()
         ).hexdigest()[:12]
         payload = self._v2_replayable_event(row["event"])
-        payload.setdefault("_received_at", row["received_at"])
+        payload["_received_at"] = row["received_at"]
         if row.get("event_id"):
             payload.setdefault("event_id", row["event_id"])
         dispatch = asyncio.create_task(
