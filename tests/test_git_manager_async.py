@@ -17,6 +17,7 @@ from src.git.manager import ChildPreparationConflict, GitError, GitManager, Remo
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 REPOSITORY = GitHubRepositoryBinding(1, "org/repo")
@@ -45,9 +46,7 @@ def _empty_repo_seed(tmp_path_factory):
     """Create a bare repo to act as 'origin'."""
     tmp_path = tmp_path_factory.mktemp("empty-git-seed")
     bare = str(tmp_path / "origin.git")
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", bare], check=True, capture_output=True
-    )
+    init_bare_seed(bare)
     return bare
 
 
@@ -66,7 +65,7 @@ def _clone_seed(tmp_path_factory, _empty_repo_seed):
     bare_repo = str(tmp_path / "origin.git")
     shutil.copytree(_empty_repo_seed, bare_repo)
     clone_path = str(tmp_path / "clone")
-    subprocess.run(["git", "clone", bare_repo, clone_path], check=True, capture_output=True)
+    clone_seed(bare_repo, clone_path)
     _git(["config", "user.name", "Test"], cwd=clone_path)
     _git(["config", "user.email", "t@t.com"], cwd=clone_path)
     pathlib.Path(clone_path, "README.md").write_text("init")

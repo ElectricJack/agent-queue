@@ -30,6 +30,7 @@ from src.integration.development import DevelopmentPrimitives
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from tests.db_fixtures import lease_dsn
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 CHILDREN = ("done", "wrong", "missing", "reopened")
 
@@ -49,8 +50,8 @@ class Origin:
             shutil.copytree(template.clone, self.clone)
             git(self.clone, "remote", "set-url", "origin", self.url)
             return
-        git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
-        git(tmp_path, "clone", self.url, str(self.clone))
+        init_bare_seed(self.url)
+        clone_seed(self.url, self.clone)
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
         (self.clone / "base.txt").write_text("base\n")

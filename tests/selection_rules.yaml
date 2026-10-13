@@ -136,6 +136,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/assignment_routing_helpers.py"], areas: ["orchestrator", "task-lifecycle", "task-routing"] }
   - { paths: ["tests/dashboard_server_helpers.py"], areas: ["dashboard-server", "install"] }
   - { paths: ["tests/git_mock_helpers.py"], areas: ["workspaces", "git-manager"] }
+  - { paths: ["tests/git_seed_helpers.py"], areas: ["git-manager", "worktree-slots", "integration-trains", "epic-trains"] }
   - { paths: ["tests/installer_machine.py"], areas: ["install"] }
   - { paths: ["tests/llm/**"], areas: ["llm-client"] }
   - { paths: ["tests/perf/__init__.py"], areas: ["claims", "formulas", "task-hierarchy", "graph-layout"] }

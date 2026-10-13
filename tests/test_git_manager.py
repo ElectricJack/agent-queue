@@ -2,7 +2,9 @@ import pathlib
 import subprocess
 import shutil
 import pytest
+
 from src.git.manager import GitManager, GitError
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -41,28 +43,14 @@ def _head_sha(cwd: str) -> str:
     return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
-def _disable_auto_maintenance(repo: str) -> None:
-    # Each seed must stay immutable while per-test copytree walks it. Local
-    # receive-pack does not inherit command-line -c settings from the sender.
-    for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"),
-                       ("receive.autogc", "false")):
-        _git(["config", key, value], cwd=repo)
-
-
 @pytest.fixture(scope="session")
 def _git_repo_seed(tmp_path_factory):
     """Create a bare remote + working clone for testing."""
     tmp_path = tmp_path_factory.mktemp("git-seed")
     remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True,
-        capture_output=True,
-    )
-    _disable_auto_maintenance(str(remote))
+    init_bare_seed(str(remote))
     clone = tmp_path / "clone"
-    subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
-    _disable_auto_maintenance(str(clone))
+    clone_seed(str(remote), str(clone))
     # Create initial commit
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
