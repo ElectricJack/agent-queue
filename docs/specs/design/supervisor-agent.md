@@ -345,13 +345,36 @@ shows a completed assistant turn since delivery, the relay tails that turn and p
 the reply, marked `via=transcript_tail`. The fallback keeps chat usable with harnesses or
 prompts that forget the protocol; the profile Rules make the CLI path the norm.
 
-The tail is only a recovery, never an invention, so the turn it posts must pass three
+The tail is only a recovery, never an invention, so the turn it posts must pass four
 tests: it carries assistant *prose* (a `[tool_use: …]` transcript placeholder is a tool
 call, not an answer), it is the first such turn after delivery and inside
-`delivered_at + reply_window_multiplier × reply_timeout`, and the request came from someone
-awaiting an answer (`system:*` senders are excluded). The window is what stops a resumed
+`delivered_at + reply_window_multiplier × reply_timeout`, the request came from a human
+(`from_kind=user`), and the attribution is unambiguous. The window is what stops a resumed
 session from replying to its whole backlog at once; without it, every
 delivered-but-unreplied row ever written would qualify forever.
+
+A transcript turn names no message it answers, so the relay never guesses which request a
+turn was about. It fails closed instead:
+
+- **Agent senders are never swept.** A reply addressed to a session or task lands in a
+  mailbox that satisfies that agent's durable message waits and reads as the recipient's
+  answer. On 2026-10-12 a supervisor's general progress about another task was posted as
+  the reply to two workers' requests and cleared one worker's wait. Agents receive only
+  explicit replies (`aq message reply`, `aq agent message --reply-to`).
+- **One turn binds to at most one conversation.** If any row from another conversation
+  (a different project, thread or sender, of any kind and including archived rows) was
+  delivered to the same recipient within one window length either side of the request's
+  `delivered_at`, the turn may be about that one, and the request gets no tail reply.
+- **The insert re-checks under the request's row lock.** The reply row is written already
+  delivered, in one transaction that locks the request, confirms it is unarchived with the
+  same `delivered_at`, and repeats the explicit-reply and competing-delivery checks. A
+  native reply also locks its parent while inserting, so a reply that wins the race leaves
+  no tail row behind, and concurrent sweeps create one reply at most.
+
+There is no correlated-prose path. Harness transcripts carry no message id, so prose that
+does answer a worker counts only if the recipient sends it with an explicit reply. A quiet
+human chat still receives the recipient's next prose turn. That is the intended fallback;
+it is human-facing, marked `via=transcript_tail`, and cannot satisfy an agent wait.
 
 ### 6.3 Events
 

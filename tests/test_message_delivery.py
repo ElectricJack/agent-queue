@@ -687,18 +687,11 @@ class TestReplyTimeouts:
         assert await engine.check_reply_timeouts() == 0
         assert len(await db.list_messages(project_id="p1", to_kind="user")) == 1
 
-    async def test_tail_reply_to_session_sender_is_not_fanned_out_as_platform_message(self, db):
-        """Redesign of the approved plan's item 7: the requested
-        "profile-originated timed-out message" cannot exist — ``messages.
-        from_kind`` is CHECK-constrained (``ck_messages_from_kind``) to
-        ``{session, user, system}``, so ``from_kind="profile"`` is
-        unrepresentable.  The contract the item was after is the general
-        one: a transcript-tail reply addressed back to a *non-user*
-        sender must emit ``message.replied`` only — ``message.sent`` is
-        the platform fan-out envelope and firing it here would make
-        Discord render an agent-to-agent reply as if it were addressed
-        to the user.
-        """
+    async def test_agent_sender_never_receives_a_transcript_tail_reply(self, db):
+        """A reply addressed to an agent satisfies its durable message wait
+        and reads as an answer, so the fallback never fabricates one: the
+        2026-10-12 supervisor's progress about another task cleared a
+        worker's wait. Agents are answered explicitly."""
         sessions = FakeSessionManager(tail_map={("task", "review", "p1"): "worker tail reply"})
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
@@ -713,19 +706,11 @@ class TestReplyTimeouts:
         await db.mark_delivered(original.id, via="prime")
         await _age_delivery(db, [original.id])
 
-        assert await engine.check_reply_timeouts() == 1
+        assert await engine.check_reply_timeouts() == 0
 
-        replies = await db.list_messages(project_id="p1", to_kind="session")
-        assert len(replies) == 1
-        reply = replies[0]
-        assert reply.reply_to_id == original.id
-        assert reply.to_kind == "session"
-        assert reply.to_id == "s-owner"
-        assert reply.via == "transcript_tail"
-        # message.replied only — never the platform message.sent envelope.
-        assert [e.event for e in bus.events] == ["message.replied"]
-        assert bus.events[0].payload["reply_id"] == reply.id
-        assert await db.list_messages(project_id="p1", to_kind="user") == []
+        assert await db.list_messages(project_id="p1", to_kind="session") == []
+        assert bus.events == []
+        assert sessions.tail_windows == []  # the transcript is not even read
 
     async def test_transcript_tail_creates_reply(self, db):
         sessions = FakeSessionManager()
@@ -934,12 +919,8 @@ class TestTranscriptTailDeduplication:
         replies = await db.list_messages(to_kind="user")
         assert {r.reply_to_id for r in replies} == {first.id, later.id}
 
-    @pytest.mark.parametrize("different", [
-        {"from_id": "discord:2"}, {"thread_id": "discord:other"},
-        {"to_id": "other-worker"}, {"project_id": "p2"},
-    ])
-    async def test_fallback_does_not_suppress_other_conversations(self, db, different):
-        await db.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
+    @pytest.mark.parametrize("different", [{"to_id": "other-worker"}, {"to_kind": "session"}])
+    async def test_fallback_does_not_suppress_other_recipients(self, db, different):
         sessions = FakeSessionManager()
         first = await _send(db, to_kind="task", to_id="review", thread_id="discord:channel")
         other = await _send(db, **({"to_kind": "task", "to_id": "review",
@@ -950,6 +931,152 @@ class TestTranscriptTailDeduplication:
         assert await make_engine(db, sessions).check_reply_timeouts() == 2
         replies = await db.list_messages(to_kind="user")
         assert {r.reply_to_id for r in replies} == {first.id, other.id}
+
+    @pytest.mark.parametrize("different", [
+        {"from_id": "discord:2"}, {"thread_id": "discord:other"}, {"project_id": "p2"},
+    ])
+    async def test_one_turn_is_never_replayed_to_two_conversations(self, db, different):
+        """Two conversations in flight on one recipient: its transcript turn
+        names neither, so neither gets it (fail closed, no fan-out)."""
+        await db.create_project(Project(id="p2", name="p2", supervisor_enabled=True))
+        sessions = FakeSessionManager()
+        bus = RecordingBus()
+        first = await _send(db, to_kind="task", to_id="review", thread_id="discord:channel")
+        other = await _send(db, **({"to_kind": "task", "to_id": "review",
+                                   "thread_id": "discord:channel"} | different))
+        await _age_delivery(db, [first.id, other.id], seconds=121.0)
+        for msg in [first, other]:
+            sessions.tail_map[(msg.to_kind, msg.to_id, msg.project_id)] = "Same reply text."
+        for _ in range(2):
+            assert await make_engine(db, sessions, bus=bus).check_reply_timeouts() == 0
+        assert await db.list_messages(to_kind="user") == []
+        assert bus.events == []
+
+
+class TestTranscriptTailCausalBinding:
+    """2026-10-12: a supervisor's general progress about another task was
+    materialised as the transcript-tail reply to two workers' requests and
+    satisfied one worker's durable message wait. A transcript turn names no
+    message, so the fallback binds a turn only when nothing else could have
+    prompted it."""
+
+    SUPERVISOR = ("session", "supervisor-p1", "p1")
+
+    async def test_two_worker_requests_get_no_reply_from_general_progress(self, db):
+        sessions = FakeSessionManager(
+            tail_map={self.SUPERVISOR: "Progress: clear-stone merged; patrol continues."}
+        )
+        bus = RecordingBus()
+        requests = [
+            await _send(db, from_kind="session", from_id=session, thread_id=thread,
+                        body="Blocked: which schema?")
+            for session, thread in (("s-smart", "smart-journey"), ("s-keen", "keen-thread"))
+        ]
+        for msg in requests:
+            await db.mark_delivered(msg.id, via="read")
+        await _age_delivery(db, [m.id for m in requests])
+
+        for _ in range(2):
+            assert await make_engine(db, sessions, bus=bus).check_reply_timeouts() == 0
+        assert await db.list_messages(to_kind="session", to_id="s-smart") == []
+        assert await db.list_messages(to_kind="session", to_id="s-keen") == []
+        assert bus.events == []
+        for msg in requests:
+            assert not await db.has_reply_covering_message(await db.get_message(msg.id))
+
+    @pytest.mark.parametrize("other", [
+        {"from_kind": "session", "from_id": "s-keen", "thread_id": "keen-thread"},
+        {"from_kind": "system", "from_id": "task-notices", "thread_id": None},
+        {"from_kind": "user", "from_id": "discord:2", "thread_id": "discord:t2"},
+    ])
+    @pytest.mark.parametrize("other_offset", [-200.0, 0.0, 200.0])
+    async def test_other_delivery_inside_the_window_leaves_chat_unanswered(
+        self, db, other, other_offset,
+    ):
+        """Whatever reached the supervisor around the chat — a worker request,
+        an engine notice, another human — may be what its next turn is
+        about, before or after the chat's own delivery."""
+        sessions = FakeSessionManager(tail_map={self.SUPERVISOR: "Status update."})
+        chat = await _send(db, thread_id="discord:t1")
+        competing = await _send(db, **other)
+        await db.mark_delivered(chat.id, via="read")
+        await db.mark_delivered(competing.id, via="read")
+        await _age_delivery(db, [chat.id], seconds=200.0)
+        await _age_delivery(db, [competing.id], seconds=200.0 - other_offset)
+
+        assert await make_engine(db, sessions).check_reply_timeouts() == 0
+        assert await db.list_messages(to_kind="user") == []
+
+    async def test_chat_is_answered_when_other_traffic_is_outside_its_window(self, db):
+        """The intended fallback survives: a human chat on a supervisor whose
+        other mail arrived more than one reply window earlier."""
+        sessions = FakeSessionManager(tail_map={self.SUPERVISOR: "Yes, proceed."})
+        old = await _send(db, from_kind="session", from_id="s-keen", thread_id="keen-thread")
+        chat = await _send(db, thread_id="discord:t1")
+        await db.mark_delivered(old.id, via="read")
+        await db.mark_delivered(chat.id, via="read")
+        await _age_delivery(db, [chat.id])
+        await _age_delivery(db, [old.id], seconds=121.0 + 360.0 + 1.0)
+
+        assert await make_engine(db, sessions).check_reply_timeouts() == 1
+        (reply,) = await db.list_messages(to_kind="user")
+        assert (reply.reply_to_id, reply.to_id, reply.thread_id) == (
+            chat.id, "discord:1", "discord:t1",
+        )
+        assert reply.delivered_at is not None and reply.via == "transcript_tail"
+        assert await db.list_messages(to_kind="session", to_id="s-keen") == []
+
+    async def test_concurrent_sweeps_create_one_reply(self, db):
+        sessions = FakeSessionManager(tail_map={self.SUPERVISOR: "Done."})
+        chat = await _send(db, thread_id="discord:t1")
+        await db.mark_delivered(chat.id, via="read")
+        await _age_delivery(db, [chat.id])
+        engines = [make_engine(db, sessions) for _ in range(4)]
+
+        counts = await asyncio.gather(*(e.check_reply_timeouts() for e in engines))
+
+        assert sum(counts) == 1
+        assert len(await db.list_messages(to_kind="user")) == 1
+
+    async def test_tail_insert_waits_for_an_in_flight_native_reply(self, db):
+        """A native reply holding the request's lock commits first; the tail
+        insert, blocked on that lock, then sees it and inserts nothing."""
+        chat = await _send(db, thread_id="discord:t1")
+        await db.mark_delivered(chat.id, via="read")
+        chat = await db.get_message(chat.id)
+        async with db._engine.connect() as conn:
+            txn = await conn.begin()
+            await conn.execute(
+                messages.select().where(messages.c.id == chat.id).with_for_update()
+            )
+            pending = asyncio.ensure_future(
+                db.create_transcript_tail_reply(chat, body="tail", attribution_window=360.0)
+            )
+            await asyncio.sleep(0.3)
+            assert not pending.done()
+            await conn.execute(insert(messages).values(
+                id="msg-native", project_id="p1", from_kind="session",
+                from_id="supervisor-p1", to_kind="user", to_id="discord:1",
+                thread_id="discord:t1", body="native", priority=100,
+                created_at=time.time(), archive_after_inject=0, reply_to_id=chat.id,
+            ))
+            await txn.commit()
+        assert await pending is None
+        assert [r.id for r in await db.list_messages(to_kind="user")] == ["msg-native"]
+
+    @pytest.mark.parametrize("change", ["archived", "redelivered"])
+    async def test_request_changed_since_the_sweep_read_it_is_not_answered(self, db, change):
+        chat = await _send(db, thread_id="discord:t1")
+        await db.mark_delivered(chat.id, via="read")
+        seen = await db.get_message(chat.id)
+        if change == "archived":
+            await db.archive_messages([chat.id])
+        else:
+            await _age_delivery(db, [chat.id], seconds=5.0)
+        assert await db.create_transcript_tail_reply(
+            seen, body="tail", attribution_window=360.0,
+        ) is None
+        assert await db.list_messages(to_kind="user", include_archived=True) == []
 
 
 class TestTranscriptTailFanout:
@@ -992,38 +1119,32 @@ class TestTranscriptTailFanout:
         replies = await db.list_messages(project_id="p1", to_kind="user")
         assert p["message_id"] == replies[0].id
 
-    async def test_tail_reply_no_message_sent_when_cas_loses(self, db, monkeypatch):
+    async def test_native_reply_racing_the_sweep_leaves_no_tail_row(self, db, monkeypatch):
+        """The native reply commits after the sweep's pre-check: the guarded
+        insert re-checks under the request's lock, so no fabricated row and
+        no event survive (the old CAS left the reply row behind)."""
         sessions = FakeSessionManager()
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
-        msg = await _send(
-            db,
-            from_kind="user",
-            from_id="discord:1",
-            to_kind="session",
-            to_id="supervisor-p1",
-            thread_id="t-x",
-        )
-        sessions.activity_map[("session", "supervisor-p1", "p1")] = "idle"
-        await engine.run_delivery_pass()
+        msg = await _send(db, thread_id="t-x")
+        await db.mark_delivered(msg.id, via="read")
         await _age_delivery(db, [msg.id])
         sessions.tail_map[("session", "supervisor-p1", "p1")] = "tail body"
-        bus.events.clear()
 
-        # Force the CAS on the newly-created reply to lose.
-        original_mark = db.mark_delivered
+        async def tail_then_native_reply(**kwargs):
+            await db.create_message(
+                project_id="p1", from_kind="session", from_id="supervisor-p1",
+                to_kind="user", to_id="discord:1", body="native answer",
+                thread_id="t-x", reply_to_id=msg.id,
+            )
+            return "tail body"
 
-        async def losing_mark(message_id, via):
-            if via == "transcript_tail":
-                return False
-            return await original_mark(message_id, via=via)
+        monkeypatch.setattr(sessions, "tail_assistant_turn", tail_then_native_reply)
 
-        monkeypatch.setattr(db, "mark_delivered", losing_mark)
-
-        resolved = await engine.check_reply_timeouts()
-
-        assert resolved == 0
-        assert [e.event for e in bus.events] == []  # no replied, no sent
+        assert await engine.check_reply_timeouts() == 0
+        replies = await db.list_messages(project_id="p1", to_kind="user")
+        assert [r.body for r in replies] == ["native answer"]
+        assert bus.events == []
 
     async def test_tail_dedupe_key_distinguishes_projects(self, db):
         # Two projects, same thread_id — both tails should be recovered.
