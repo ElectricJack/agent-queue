@@ -9724,6 +9724,24 @@
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.transition_task": {
       "reason": "Public lifecycle transition observes current Git delivery outside the transaction and passes request-scoped evidence to the locked mutation guard; no persisted delivery projection or ref replay authority."
+    },
+    "src/api/target_scope.py::_target_project": {
+      "reason": "Shared resource ownership lookup used by integration target checks; read-only, without publication or lifecycle state."
+    },
+    "src/api/target_scope.py::target_references": {
+      "reason": "Shared command reference discovery including integration targets; no storage or authority mutation."
+    },
+    "src/commands/resource_authorization.py::SYSTEM_COMMANDS": {
+      "reason": "Audited system resource commands including integration service controls; declares authorization requirements only."
+    },
+    "src/commands/resource_authorization.py::SESSION_HANDLER_RESOURCE_GATES": {
+      "reason": "Session commands retaining independent domain resource checks, including operator repository binding; declares no publication authority."
+    },
+    "src/commands/resource_authorization.py::authorize_resources": {
+      "reason": "Shared principal resource authorization for integration and other commands; consults owners and exact operator grants without modifying branch state or lifecycle."
+    },
+    "src/commands/resource_authorization.py::principal_scope": {
+      "reason": "Derives the scope compatibility view used by integration controls from the original principal; never creates trusted operator authority."
     }
   },
   "shared_state": {

@@ -157,7 +157,7 @@ async def test_manual_task_event_refuses_mismatched_project_before_effects(manua
             },
         },
     )
-    assert result == {"error": "event.project_id does not match event.task_id"}
+    assert result == {"success": False, "error": "event.project_id does not match event.task_id"}
     assert await db.find_task_by_dedup_key(PROJECT_ID, f"review:task:{source.id}") is None
 
 
@@ -183,7 +183,7 @@ async def test_manual_task_event_refuses_a_principal_from_another_project(manual
             "run_playbook",
             {"playbook_id": "default-pipeline", "event": {"type": "task.completed", "task_id": source.id}},
         )
-    assert result == {"error": "out of scope: project_id mismatch"}
+    assert result == {"success": False, "error": "out of scope: project_id mismatch"}
 
 
 def test_manual_result_surfaces_a_handled_step_failure_with_a_completed_lifecycle():

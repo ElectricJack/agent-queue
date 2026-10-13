@@ -1240,10 +1240,12 @@ async def test_a_worker_filing_may_name_a_preference(handler, orch):
     )
     from src.profiles.capabilities import CapabilityPolicy
 
+    await _create(orch.db, "held", status=TaskStatus.IN_PROGRESS)
+    await _session(orch.db, "worker-1", task_id="held")
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
         policy=CapabilityPolicy.from_namespaces(aq_commands=["create_task"]),
-        session_id="worker-1", project_id="p",
+        session_id="worker-1", project_id="p", task_id="held",
     )
     with principal_context(principal):
         result = await handler.execute("create_task", {

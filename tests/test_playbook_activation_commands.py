@@ -122,7 +122,7 @@ async def test_project_activation_refuses_a_different_project_principal():
             }
         )
 
-    assert result == {"error": "out of scope: project_id mismatch"}
+    assert result == {"success": False, "error": "out of scope: project_id mismatch"}
     handler.db.set_playbook_activation.assert_not_awaited()
 
 
@@ -273,14 +273,17 @@ async def test_set_playbook_enabled_validates_its_arguments():
     handler.db.list_playbook_activations.return_value = []
 
     assert await handler._cmd_set_playbook_enabled({"enabled": True}) == {
+        "success": False,
         "error": "playbook_id is required"
     }
     assert await handler._cmd_set_playbook_enabled({"playbook_id": "p"}) == {
+        "success": False,
         "error": "enabled is required"
     }
     assert await handler._cmd_set_playbook_enabled(
         {"playbook_id": "p", "enabled": "yes"}
-    ) == {"error": "enabled must be a boolean"}
+    ) == {"success": False, "error": "enabled must be a boolean"}
     assert await handler._cmd_set_playbook_enabled({"playbook_id": "p", "enabled": True}) == {
+        "success": False,
         "error": "Playbook 'p' not found"
     }

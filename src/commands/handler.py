@@ -963,7 +963,7 @@ class CommandHandler(
             # ``args`` unless it explicitly reads ``self._current_scope``.
             # Belt-and-braces defense — /api/execute already strips any
             # client-supplied ``_scope`` before forwarding the trusted one.
-            scope = self._current_scope
+            scope = None
             inherited_principal = current_principal()
             if isinstance(args, dict) and any(k in args for k in SERVER_OWNED_ARG_KEYS):
                 if inherited_principal is not None and inherited_principal.kind.value == "playbook":
@@ -1209,7 +1209,9 @@ class CommandHandler(
                             )
                             _emit_error = f"Plugin command failed: {detail}"
                             return {"success": False, "error_code": "command_runtime_error",
-                                    "error": "Plugin command failed"}
+                                    "error": (f"Plugin command failed: {e}"
+                                              if not principal.enforced
+                                              else "Plugin command failed")}
 
                 logger.warning(
                     "Unknown command requested: %s args=%s", name, self._preview(log_args)
@@ -1229,7 +1231,7 @@ class CommandHandler(
                 _emit_ok = False
                 _emit_error = f"{e.__class__.__name__}: {e}"[:200]
                 return {"success": False, "error_code": "command_runtime_error",
-                        "error": "Command execution failed"}
+                        "error": str(e) if not principal.enforced else "Command execution failed"}
             finally:
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)

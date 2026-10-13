@@ -95,6 +95,21 @@ review_withdraw create_task_graph formula_cook task_batch_propose task_batch_upd
 dashboard_state_get dashboard_state_list dashboard_state_put dashboard_state_reset
 """.split())
 
+# Session callers retain the independently verified domain gates. These
+# commands use live claims, tagged recipients, project selections or operator
+# grants that cannot be replaced by a generic argument-to-row ownership test.
+SESSION_HANDLER_RESOURCE_GATES = frozenset("""
+task_show task_route task_handoff create_task provider_allocation_apply
+provider_allocation_preview object_loop_inputs test_selection_show test_selection_list
+supervisor_inbox_status supervisor_inbox_history escalation_create escalation_get
+escalation_list escalation_reply escalation_update escalation_apply_reply
+job_get job_cancel job_result job_logs message_send message_reply message_status
+run_playbook dry_run_playbook playbook_activate
+digest_facts digest_preview digest_status bind_project_repository
+edit_intelligence_class delete_intelligence_class list_profiles list_intelligence_classes
+test_selection_policy_show
+""".split()) | PUBLIC_COMMANDS | SESSION_COMMANDS | HELD_COMMANDS
+
 # Explicit read audit, not a command-name heuristic. Unannotated effects remain
 # destructive and non-retryable; a read observation may still report unhealthy.
 AUDITED_READS = frozenset("""
@@ -176,6 +191,26 @@ async def authorize_resources(
         return deny("playbook_command_denied")
     if not principal.enforced:
         return None
+    if principal.kind is PrincipalKind.SESSION and command in SESSION_HANDLER_RESOURCE_GATES:
+        return None
+    if principal.kind is PrincipalKind.SESSION:
+        from src.commands.operator_authority import operator_grant
+
+        if operator_grant(command) is not None:
+            return None
+        from src.api.auth import RequestScope
+        from src.api.scope import (
+            _PLAYBOOK_COMPILER_COMMANDS, _has_live_playbook_compiler_assignment,
+        )
+
+        if command in _PLAYBOOK_COMPILER_COMMANDS:
+            scope = RequestScope(
+                kind="session", session_id=principal.session_id, task_id=principal.task_id,
+                project_id=principal.project_id, elevated=principal.elevated,
+                session_instance_token=principal.session_instance_token,
+            )
+            if await _has_live_playbook_compiler_assignment(db, scope):
+                return None
     if principal.kind is PrincipalKind.PLAYBOOK and command in {
         "review_decide", "review_delegate", "review_import_edits", "approve_pull_request",
         "promote_approve", "operator_execute", "operator_preflight",
@@ -183,6 +218,14 @@ async def authorize_resources(
         return deny("unauthorized")
     if command in SESSION_COMMANDS | HELD_COMMANDS and principal.kind is PrincipalKind.PLAYBOOK:
         return deny("session_required")
+    # Typed adapters already implement their domain's ownership language and
+    # outcome protocol. In particular, stale repair inputs, tagged message
+    # recipients and operator preflights must reach those independent gates.
+    if not generated:
+        from src.commands.contracts import CONTRACTS
+
+        if command in CONTRACTS.typed_contracts():
+            return None
     project = principal.project_id
     if project is not None and args.get("project_id") not in (None, project):
         return deny()

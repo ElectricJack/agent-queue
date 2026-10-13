@@ -475,7 +475,7 @@ async def test_answer_nudge_is_one_line_pointing_at_a_body_the_worker_can_read(e
     assert read["message"]["body"] == stored.body
     other = {**worker, "session_id": "other-session", "elevated": False}
     refused = await handler.execute("message_status", {"message_id": message_id, "_scope": other})
-    assert refused == {"error": f"Message '{message_id}' not found"}
+    assert refused == {"success": False, "error": f"Message '{message_id}' not found"}
 
     await service(env).tick()
     assert len(env.provider.sent_nudges) == 1
@@ -685,7 +685,7 @@ async def test_closed_question_cannot_create_an_orphan_escalation(env):
 
     result = await svc.escalate(q["id"], "Too late")
 
-    assert result == {"error": "question is no longer awaiting an answer"}
+    assert result == {"success": False, "error": "question is no longer awaiting an answer"}
     assert (await env.db.get_agent_question(q["id"]))["escalation_id"] is None
     assert await env.db.list_escalations(project_id="p") == []
 

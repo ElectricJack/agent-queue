@@ -352,6 +352,13 @@ project's repository and workspace roots. All server-owned input keys are
 rejected for playbook callers. `run_command`, `shutdown`, `restart_daemon` and
 `update_and_restart` are denied in validation, invocation and LLM tools.
 
+Existing typed commands retain their independent domain resource gates and
+refusal outcomes. Session commands with claim, recipient, digest-selection or
+administrative scope rules also retain those gates. Exact operator grants and
+live compiler assignments are verified before admitting their delegated commands;
+they do not grant access to other system resources. Untrusted dispatch exceptions
+return safe diagnostics, while the local operator retains the actionable error.
+
 Generated entries remain protected and non-retryable without preview or receipt
 projection. Only explicitly audited reads receive a read effect; other entries
 retain the conservative destructive effect. Catalogue membership grants no
