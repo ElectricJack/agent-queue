@@ -90,14 +90,15 @@ def load_invalid(code: str) -> PlaybookDefinition:
 
 
 class TestDiagnosticSet:
-    """§6.8 — the closed 48-code set.
+    """§6.8 — the closed 49-code set.
 
     47 in the child plan; ``narrowing_not_subset`` is the 48th, added with the
     authoring surface for ``AgentTaskStep.capability_narrowing``.
+    B3 adds ``unsupported_feature`` for artifact/executor compatibility.
     """
 
     def test_the_set_is_closed_and_partitioned(self):
-        assert len(DIAGNOSTIC_CODES) == 48
+        assert len(DIAGNOSTIC_CODES) == 49
         assert VALIDATOR_CODES | MODEL_CODES | COMPILER_ONLY_CODES == DIAGNOSTIC_CODES
         assert not VALIDATOR_CODES & MODEL_CODES
         assert not VALIDATOR_CODES & COMPILER_ONLY_CODES

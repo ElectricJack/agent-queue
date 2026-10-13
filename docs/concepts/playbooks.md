@@ -52,6 +52,39 @@ Options:
 
 ## Inputs and outputs
 
+Artifact compatibility is pinned per definition in optional `required_features`.
+Proposal assembly derives the pins from the typed graph and live command
+contracts: generated command contracts, collection expressions, nested foreach
+graphs, and reads of frozen `context.observed_at` or `context.observation_id`
+require `generated_commands_v1`, `collections_v1`, `nested_foreach_v1`, and
+`observation_context_v1`, respectively. Command steps and LLM tool exposure both
+count. Compiler-supplied pins and `trusted_execution` metadata are discarded.
+Command authorization and private-value policy still come from the server's
+execution contracts; feature support grants no capabilities.
+
+`trusted_execution.state_schema_version` is a strict positive integer derived
+from source frontmatter, defaulting to 1 for state command users. The `state_v1`
+and `script_v1` hooks reserve those requirements, but this engine revision refuses
+them until their executors are implemented. Future state/script owners extend
+the strict metadata model with reviewed execution pins and add support alongside
+their execution acceptance checks. They must not enable a feature merely because
+its name is recognized.
+
+Empty feature and execution metadata are omitted without removing any legacy
+defaults: existing canonical artifact bytes and hashes remain unchanged. Unknown
+or unsupported features produce `unsupported_feature` during validation/import,
+activation, and execution (including pinned dispatch, dry-run, shadow, and resume).
+An affected activation is `invalid` with named feature reasons;
+`playbooks.activation_invalid` explains the upgrade remedy. Compatible sibling
+activations stay ready. Inspection can still load the strict definition.
+
+Upgrade every intended executor before deliberately activating a new-feature
+artifact: older engines reject the additive fields under their strict schema.
+Restart does not refresh installed artifacts. Before rollback, disable affected
+activations and settle or pause their runs, then explicitly restore compatible
+reviewed artifacts; retain additive storage and state. Removing feature pins is
+not a compatibility migration.
+
 A rule has one event trigger, an optional typed guard, and an entry step. Triggers can use an equality/membership filter. Within a run, values resolve from the triggering event, the durable run context, prior declared bindings, and a `foreach` item. Validation rejects unavailable names, invalid event paths, incompatible values, unreachable steps, unsafe loops, undeclared outputs, unsupported command outcomes, excessive schemas, and capability violations rather than guessing that they are safe. [Expressions](../../src/playbooks/expressions.py) and [validation](../../src/playbooks/validation.py) implement these checks.
 
 Collection values compose inside inputs, guards, decisions, prompts, and loop

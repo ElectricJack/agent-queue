@@ -25,7 +25,7 @@ from datetime import datetime
 from types import UnionType
 from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel, Field, StringConstraints, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 from src.playbooks.expressions import (
     Condition,
@@ -689,6 +689,16 @@ class CompiledAgainst(V2Base):
     profiles: dict[QualifiedName, Sha256] = Field(default_factory=dict)
 
 
+class TrustedExecutionMetadata(V2Base):
+    """Source-derived execution pins; never caller authority or compiler output.
+
+    State and script owners extend this strict model with reviewed pins. Command
+    security policy remains in the execution contracts, not in author assertions.
+    """
+
+    state_schema_version: Annotated[int, Field(strict=True, ge=1)] | None = None
+
+
 class PlaybookDefinition(V2Base):
     schema_version: Literal[2] = 2
     id: QualifiedName
@@ -702,6 +712,17 @@ class PlaybookDefinition(V2Base):
     steps: Annotated[dict[Identifier, Step], Field(min_length=1, max_length=MAX_STEPS)]
     compiled_against: CompiledAgainst = Field(default_factory=CompiledAgainst)
     integration_policy: IntegrationPolicy | None = None
+    # Omit only new empty fields; legacy defaults remain part of artifact bytes.
+    required_features: tuple[QualifiedName, ...] = Field(default=(), exclude_if=lambda value: not value)
+    trusted_execution: TrustedExecutionMetadata | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None or not value.model_dump(exclude_none=True),
+    )
+
+    @field_validator("required_features")
+    @classmethod
+    def _feature_set(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(sorted(set(value)))
 
     @model_validator(mode="after")
     def _bounded(self) -> PlaybookDefinition:
@@ -1022,6 +1043,7 @@ __all__ = [
     "TerminalOutcome",
     "TerminalStep",
     "ToolUsePolicy",
+    "TrustedExecutionMetadata",
     "Trigger",
     "V2Base",
     "WaitKind",

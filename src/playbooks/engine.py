@@ -587,9 +587,17 @@ class PlaybookEngine:
             try:
                 artifact = self._load(ref)
             except Exception as exc:  # noqa: BLE001 - a load failure queues, never drops
+                from src.playbooks.features import UnsupportedArtifactFeatures
+
                 logger.warning("V2 dispatch: artifact %s unavailable: %s", ref.artifact_sha256, exc)
                 pending.append(
-                    PendingEventRef(ref.playbook_id, hydrated.get("event_id"), "unavailable")
+                    PendingEventRef(
+                        ref.playbook_id,
+                        hydrated.get("event_id"),
+                        "unsupported_feature"
+                        if isinstance(exc, UnsupportedArtifactFeatures)
+                        else "unavailable",
+                    )
                 )
                 await self._queue_pending(ref.playbook_id, hydrated)
                 continue
@@ -3523,10 +3531,17 @@ class PlaybookEngine:
         return InMemoryRunRecorder()
 
     def _load(self, ref: ArtifactRef) -> PlaybookDefinition:
+        from src.playbooks.features import require_supported_features
+        from src.playbooks.validation import RegistryContractLookup
+
         store = self.services.artifact_store
         if store is None:
             raise RuntimeError("the engine requires an artifact store")
-        return store.load(ref.artifact_sha256)
+        definition = store.load(ref.artifact_sha256)
+        require_supported_features(
+            definition, contracts=RegistryContractLookup(self.services.contracts)
+        )
+        return definition
 
     def _step_of(self, ref: ArtifactRef, step_id: str) -> Any:
         try:

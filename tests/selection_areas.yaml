@@ -316,6 +316,7 @@ areas:
       - tests/test_playbook_v2_integration_policy.py
       - tests/test_playbook_v2_expressions.py
       - tests/test_playbook_collections.py
+      - tests/test_playbook_features.py
       - tests/test_playbook_v2_validation.py
       - tests/test_playbook_v2_resolution.py
       - tests/test_playbook_explanation.py

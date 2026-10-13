@@ -388,6 +388,7 @@ ownership:                      # path globs -> areas whose modules join M
 
   - { paths: ["src/panes/**"], areas: ["panes-streams"] }
   - { paths: ["src/playbooks/**"], areas: ["playbook-engine"] }
+  - { paths: ["src/playbooks/features.py"], areas: ["playbook-definition", "playbook-authoring"] }
   - { paths: ["src/playbooks/definition.py", "src/playbooks/expressions.py", "src/playbooks/validation.py", "src/playbooks/explanation.py", "src/playbooks/graph_projection.py", "src/playbooks/artifact_*.py", "src/playbooks/semantic_diff.py", "src/playbooks/pipeline_lowering.py"], areas: ["playbook-definition"] }
   - { paths: ["src/playbooks/authoring.py", "src/playbooks/proposal.py", "src/playbooks/activation.py", "src/playbooks/required.py", "src/playbooks/profiles.py"], areas: ["playbook-authoring", "shipped-playbooks"] }
   - { paths: ["src/playbooks/routing.py"], areas: ["task-routing"] }
