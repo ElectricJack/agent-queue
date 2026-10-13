@@ -423,6 +423,7 @@
         "tests/test_git_manager.py",
         "tests/test_git_manager_async.py",
         "tests/test_git_mutex.py",
+        "tests/test_git_seed_helpers.py",
         "tests/test_merge_and_push.py",
         "tests/test_merge_conflict_check.py",
         "tests/test_merge_slot.py",
@@ -6914,6 +6915,18 @@
         "asyncio"
       ],
       "summary": "Tests for git mutex serialization of shared operations."
+    },
+    "tests/test_git_seed_helpers.py": {
+      "areas": [
+        "git-manager"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f3acff7ae8bc485861bea621b8e2f2aad9f84ceb343a930e68c097c9b18156ec",
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared seed construction must finish without launching background Git writers."
     },
     "tests/test_github_access_architecture.py": {
       "areas": [

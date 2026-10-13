@@ -523,6 +523,7 @@ areas:
       - tests/test_git_manager_async.py
       - tests/test_git_events.py
       - tests/test_git_mutex.py
+      - tests/test_git_seed_helpers.py
       - tests/test_git_command_handlers.py
       - tests/test_sync_and_merge.py
       - tests/test_force_with_lease.py

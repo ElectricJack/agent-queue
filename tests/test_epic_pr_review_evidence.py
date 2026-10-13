@@ -40,6 +40,7 @@ from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Ta
 from tests.db_fixtures import lease_dsn
 from src.integration.models import IntegrationBoundaryPolicy, RequiredCheckSet, RepairPolicy, PlaybookRoute
 from src.integration.models import ArtifactSnapshot
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 async def _continuous_policy(case):
@@ -1281,8 +1282,8 @@ def review_git_template(tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp("review-git-template")
     remote = tmp_path / "origin.git"
     work = tmp_path / "work"
-    _git("init", "--bare", "--initial-branch=main", str(remote))
-    _git("clone", str(remote), str(work))
+    init_bare_seed(remote)
+    clone_seed(remote, work)
     _git("config", "user.name", "GitHub Review Test", cwd=work)
     _git("config", "user.email", "review@example.test", cwd=work)
     (work / "source.txt").write_text("base\n")

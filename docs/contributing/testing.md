@@ -113,6 +113,20 @@ configuration must initialize their own adapters. Use a dedicated scratch
 database when testing migrations, and keep separate connections when testing
 locking or concurrent finalization.
 
+### Copying shared Git seeds
+
+Session-scoped Git seeds must be quiescent before per-test `copytree` reads them.
+Use `tests/git_seed_helpers.py` to initialize bare seeds and clone working seeds:
+both persist `maintenance.auto=false`, `gc.auto=0` and `receive.autogc=false`
+before commits, fetches or pushes can start automatic maintenance. Clone settings
+apply before its initial fetch. The bare remote needs its own configuration;
+local receive-pack does not inherit the sender's command-line settings.
+
+Keep these settings local to disposable test repositories. Each test still copies
+the complete repository and rewrites its origin to its private remote. Do not
+ignore lock files, retry a partial copy, or sleep to hide a changing seed. Tests
+that explicitly exercise maintenance can override their private copy's settings.
+
 ## The `aq test` wrapper
 
 [`src/cli/test_runner.py`](../../src/cli/test_runner.py) does five things, in
