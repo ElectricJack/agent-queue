@@ -359,9 +359,15 @@ class TestActivity:
 class TestEnsureStarted:
     async def test_disabled_project_refuses_cold_start_and_existing_wake(self, db, lens, providers):
         await db.update_project("proj1", supervisor_enabled=False)
-        assert not await lens.ensure_started(
-            kind="session", target_id="supervisor-proj1", project_id="proj1",
-        )
+        # Every spelling a message or button can carry, including an alias
+        # that names no project and so resolves to the message's project.
+        for target, project_id in (
+            ("supervisor-proj1", "proj1"), ("supervisor-proj1", None),
+            ("n-supervisor--proj1", "proj1"), ("supervisor-aq", "proj1"),
+        ):
+            assert not await lens.ensure_started(
+                kind="session", target_id=target, project_id=project_id,
+            )
         assert providers.create("fake").starts == []
         assert await lens.activity(
             kind="session", target_id="supervisor-proj1", project_id="proj1",

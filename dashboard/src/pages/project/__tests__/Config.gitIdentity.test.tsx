@@ -107,6 +107,14 @@ describe("Project Settings › Git commit identity", () => {
     ));
   });
 
+  it("saving another field leaves the project supervisor switch out of the body", async () => {
+    const mutateAsync = setup({ ...inheriting, supervisor_enabled: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(mutateAsync.mock.calls[0]![0]).not.toHaveProperty("supervisor_enabled");
+  });
+
   it("stages disabling a project supervisor and Cancel restores its server value", async () => {
     const mutateAsync = setup({ ...inheriting, supervisor_enabled: true });
     const toggle = screen.getByRole("switch", { name: "Project supervisor" });

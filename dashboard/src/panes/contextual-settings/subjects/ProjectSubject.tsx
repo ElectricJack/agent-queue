@@ -7,6 +7,7 @@ import {
   parseOptionalInt,
   parseOptionalFloat,
   projectToForm,
+  supervisorEnabledPayload,
 } from "../../../pages/project/Config";
 import GitIdentitySection from "../../../pages/project/GitIdentitySection";
 import ProjectSupervisorToggle from "../../../pages/project/ProjectSupervisorToggle";
@@ -57,7 +58,7 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
         max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
         credit_weight: parseOptionalFloat(form.credit_weight),
         budget_limit: parseOptionalFloat(form.budget_limit),
-        supervisor_enabled: form.supervisor_enabled,
+        ...supervisorEnabledPayload(project, form),
         ...identity,
       });
     } catch (err) {

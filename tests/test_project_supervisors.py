@@ -111,6 +111,27 @@ async def test_edit_defaults_and_disable_records_stop_intent_and_recovers_unread
     assert bad["success"] is False
 
 
+async def test_session_wake_cannot_revive_a_disabled_project_supervisor(db):
+    # 2026-10-12: supervisors were found running for projects shown as
+    # disabled. The flag is authoritative: an explicit wake is refused rather
+    # than recorded as intent the reconciler would have to undo.
+    command = handler(db)
+    row = SessionRecord(
+        id="project-sup", name="n-supervisor--p1", project_id="p1", profile_id="supervisor",
+        harness="codex", provider="fake", lifecycle="named", work_dir="/tmp", epoch="e",
+        instance_token="token", started_at=1, state="stopped", desired_state="sleeping",
+    )
+    await db.create_session(row)
+    refused = await command._cmd_session_wake({"session_id": row.id})
+    assert refused["success"] is False
+    assert "supervisor disabled" in refused["error"]
+    assert (await db.get_session(row.id)).desired_state == "sleeping"
+    await db.update_project("p1", supervisor_enabled=True)
+    woken = await command._cmd_session_wake({"session_id": row.name})
+    assert woken["success"] is True
+    assert (await db.get_session(row.id)).desired_state == "running"
+
+
 @pytest.mark.parametrize("kind,address", [
     ("session", "supervisor-p1"), ("session", "n-supervisor--p1"),
     ("profile", "supervisor"),
