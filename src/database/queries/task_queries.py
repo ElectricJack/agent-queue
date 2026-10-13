@@ -174,6 +174,7 @@ _PROJECTION_NEUTRAL_STATUSES = frozenset({TaskStatus.READY, TaskStatus.IN_PROGRE
 #: unknown non-``session_`` contexts default to "promoted".
 _READY_REASONS = {
     "promotion": "promoted",
+    "restart_task": "restarted",
     "reopen_with_feedback": "restarted",
     "retry": "released",
     "rate_limit": "resumed",
@@ -1311,6 +1312,7 @@ class TaskQueryMixin:
         _integration_wake_token=None,
         accepted_close: dict | None = None,
         integration_delivery=None,
+        _defer_recovery_supersession: bool = False,
         **kwargs,
     ) -> TransitionResult:
         """Validate and update status on a caller-owned connection (work-graph §4.1).
@@ -1340,6 +1342,8 @@ class TaskQueryMixin:
         only after the guarded write matches, tying close identity to its commit.
         ``_defer_projection`` retains all guards and metadata writes while a change
         set defers projection, settlement and frontier work until all mutations apply.
+        ``_defer_recovery_supersession`` keeps a repair delegate's incident until
+        its branch reservation succeeds; a refused handoff must retain the hold.
         """
         values = self._coerce_task_values(kwargs)
         from src.database.tables import projects
@@ -1362,6 +1366,9 @@ class TaskQueryMixin:
             return _development_mode
 
         result = TransitionResult()
+        explicit_restart = new_status == TaskStatus.READY and context in {
+            "restart_task", "reopen_with_feedback",
+        }
 
         if assume_pre_state is not None:
             current_status, pre_blocked = assume_pre_state
@@ -1497,7 +1504,7 @@ class TaskQueryMixin:
             return True, (dict(out) if out is not None else None)
 
         if current_status == new_status:
-            if values or extra_values:
+            if values or extra_values or explicit_restart:
                 values["updated_at"] = time.time()
                 matched, result.row = await _write(values)
                 if not matched and expect_claim_epoch is not None:
@@ -1800,6 +1807,13 @@ class TaskQueryMixin:
                 task_metadata.c.task_id == task_id,
                 task_metadata.c.key == "worker_failure_streak",
             ))
+        if explicit_restart and not _defer_recovery_supersession:
+            released_hold = await self._supersede_restarted_task_recovery_on(
+                conn, task_id, context=context,
+            )
+            if released_hold and not any(tid == task_id for tid, _ in result.ready):
+                for tid in await self._note_frontier_entry(conn, {task_id}, reason="restarted"):
+                    result.ready.append((tid, "restarted"))
         return result
 
     def set_settlement_listener(self, cb) -> None:

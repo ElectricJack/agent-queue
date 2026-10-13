@@ -62,6 +62,12 @@ superseded specs are evidence, not directives.
   reconciliation preserve it; reopening then failing replaces it. Current `FAILED` incidents,
   including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
   status or counters. Retry requires a stopped attempt on a `BLOCKED` task and all recovery guards.
+- An accepted explicit task restart or reopen supersedes its previous recovery incident in the
+  same transaction as the READY write, including a recorded supervisor hold on an already-READY
+  task. Preserve the hold's diagnosis, decision history and supervisor-recovery budget, and archive
+  its notification. Ordinary status projection does not release a hold. A refused restart retains
+  the incident; integration repair delegates release it only after their branch handoff succeeds.
+  Manual pauses, hold labels, dependencies, human gates and integration ownership remain binding.
 - A known transient failure retries within the existing budget. An unknown cause, an exhausted
   budget or a human-only decision holds with a concrete reason and one durable escalation.
 - An explicitly authorized continuous integration policy may replace an exhausted repair session
