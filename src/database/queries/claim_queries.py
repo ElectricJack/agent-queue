@@ -16,6 +16,7 @@ from collections.abc import Collection, Mapping
 
 from sqlalchemy import (
     Float,
+    String,
     and_,
     case,
     cast,
@@ -93,6 +94,18 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         (recovery.c.key == "supervisor_recovery_incident", recovery.c.value),
         else_=literal("{}"),
     ), JSONB)
+    latest_attempt = (
+        select(task_session_attempts.c.id)
+        .where(
+            task_session_attempts.c.task_id == tasks.c.id,
+            task_session_attempts.c.project_id == tasks.c.project_id,
+            task_session_attempts.c.started_at >= tasks.c.created_at,
+        )
+        .order_by(task_session_attempts.c.started_at.desc(), task_session_attempts.c.id.desc())
+        .limit(1)
+        .correlate(tasks)
+        .scalar_subquery()
+    )
     return {
         # Legacy control-plane profiles stay visible for rerouting but never
         # win a pool worker's claim.
@@ -100,12 +113,21 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         "dependency_blocked": tasks.c.is_blocked == 0,
         "already_assigned": tasks.c.assigned_agent_id.is_(None),
         "plan_subtask": tasks.c.is_plan_subtask == 0,
-        # Recovery decisions outlive status projection and daemon restarts.
+        # Holds outlive status projection, but only fence their recorded
+        # execution identity. Missing fields on legacy incidents fail closed.
         # retry_allowed is false for an accepted retry too; only hold blocks.
         "recovery_hold": ~exists(select(literal(1)).where(
             recovery.c.task_id == tasks.c.id,
             recovery.c.key == "supervisor_recovery_incident",
             incident["decision"].astext == "hold",
+            or_(
+                ~incident.has_key("attempt_id"),  # noqa: W601 - PostgreSQL JSONB operator
+                incident["attempt_id"].astext.is_not_distinct_from(latest_attempt),
+            ),
+            or_(
+                ~incident.has_key("claim_epoch"),  # noqa: W601 - PostgreSQL JSONB operator
+                incident["claim_epoch"].astext == cast(tasks.c.claim_epoch, String),
+            ),
         )),
         "origin_not_materialized": materialized_origin_when_hierarchical(hierarchy_mode),
         "sibling_prerequisite_not_delivered": (
