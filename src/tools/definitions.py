@@ -5348,7 +5348,12 @@ _ALL_TOOL_DEFINITIONS = [
             "With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead "
             "retires superseded work: the task goes to COMPLETED as abandoned and is never "
             "published, its branch owners are released through the release-owner safety proof "
-            "and it is dropped from parked development batches, so it can then be deleted."
+            "and it is dropped from parked development batches, so it can then be deleted. "
+            "`no_change` and `done` are the same one-shot operator close for work that needed "
+            "nothing or already landed: from any non-terminal state, in one call, a live "
+            "writer is stopped (PAUSED, never READY), stale claims, workspace locks and the "
+            "agent binding are cleared, a no-op or shipped completion record is written and "
+            "the task goes to COMPLETED."
         ),
         "input_schema": {
             "type": "object",
@@ -5440,9 +5445,27 @@ _ALL_TOOL_DEFINITIONS = [
                         "(operator or supervisor only; needs task_id and reason, not outcome)."
                     ),
                 },
+                "no_change": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "One-shot operator close: nothing needed doing (work_outcome no-op). "
+                        "Works from any state; operator or supervisor only; needs task_id "
+                        "and reason, not outcome."
+                    ),
+                },
+                "done": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "One-shot operator close: the work already landed (work_outcome "
+                        "shipped). Works from any state; operator or supervisor only; needs "
+                        "task_id and reason, not outcome."
+                    ),
+                },
                 "reason": {
                     "type": "string",
-                    "description": "Why the task is obsolete (required with obsolete).",
+                    "description": "Why the task is closed (required with obsolete, no_change or done).",
                 },
             },
             "required": ["task_id"],

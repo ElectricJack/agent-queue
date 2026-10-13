@@ -8988,9 +8988,6 @@
     "src/sessions/obsolete.py::ReleaseOwner": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
-    "src/sessions/obsolete.py::import from src.database.tables import integration_branch_owners, integration_subjects, projects, sessions, task_metadata, tasks": {
-      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
-    },
     "src/sessions/obsolete.py::import from src.integration.finished_owners import stop_confirmer_for": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing."
     },
@@ -9730,6 +9727,15 @@
     },
     "src/database/additive_migrations.py::check_range": {
       "reason": "Conservative nonexecuting migration-range checker used by versioned promotion admission; validates the exact before/after revision graph and reports changed historical or non-additive new migrations."
+    },
+    "src/sessions/obsolete.py::ObsoleteClose._release_stopped_claim": {
+      "reason": "Operator one-shot close (amber-quest-41): clears the claim record, workspace locks and agent binding a stopped writer left, so a no-change/done/obsolete close needs no resume through READY. Ordinary task lifecycle; adds no delivery state or publication authority."
+    },
+    "src/sessions/obsolete.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "reason": "Claim-record key the operator one-shot close (amber-quest-41) clears for a durably stopped writer; ordinary claim lifecycle."
+    },
+    "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
+      "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
     }
   },
   "shared_state": {
