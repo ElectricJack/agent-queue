@@ -1355,8 +1355,14 @@ class PlaybookRunQueryMixin:
                         "run", wait.run_id, current["scope"],
                         current["scope_identifier"] or "system",
                     ))
-                    values["match"] = _dumps({name: batch.protect(value)
-                                               for name, value in wait.match.items()})
+                    # A child wait's task id stays joinable: settled_child_waits
+                    # finds the run through it, and the snapshot's
+                    # agent_task_ids already records it in plain text.
+                    values["match"] = _dumps({
+                        name: value if wait.kind == "agent_task" and name == "task_id"
+                        else batch.protect(value)
+                        for name, value in wait.match.items()
+                    })
                     values["correlation_key"] = "private:" + uuid.uuid4().hex
                     await batch.persist(active)
                 if playbook_id:

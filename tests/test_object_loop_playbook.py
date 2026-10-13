@@ -31,6 +31,7 @@ from src.playbooks.required import DEFAULT_SYSTEM_PLAYBOOK_IDS, REQUIRED_SYSTEM_
 from src.profiles.capabilities import CapabilityPolicy
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
 from src.vault import ensure_default_formulas
+from tests._private_values_helper import private_value_service
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -127,7 +128,10 @@ async def sweep(handler, *, rule="recover"):
 
         live.register(replace(registration, invoke=invoke))
     engine = PlaybookEngine(
-        services=EngineServices(contracts=live, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=live, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=RecordingRunRepository(),
     )
     event_type = next(r.trigger.event_type for r in definition.rules if r.id == rule)
@@ -150,7 +154,10 @@ async def sweep(handler, *, rule="recover"):
         })
         previews.register(replace(registration, contract=contract, preview=preview))
     dry_engine = PlaybookEngine(
-        services=EngineServices(contracts=previews, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=previews, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=RecordingRunRepository(),
     )
     tree = await dry_engine.dry_run(ref, event, TRUSTED_LOCAL)
@@ -654,7 +661,10 @@ async def test_revised_brief_start_failure_is_visible_and_notified_once(setup):
     store.put(definition)
     repository = RecordingRunRepository()
     engine = PlaybookEngine(
-        services=EngineServices(contracts=CONTRACTS, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=CONTRACTS, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=repository,
     )
     for _ in range(2):

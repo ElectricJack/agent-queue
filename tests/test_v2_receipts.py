@@ -19,6 +19,7 @@ from src.commands.principal import TRUSTED_LOCAL
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.receipts import REDACTED_KEY, SENSITIVE_PREFIX
+from tests._private_values_helper import ReadyPrivateValues
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     GATE_CREATE,
@@ -114,6 +115,7 @@ def build(command: str, contract: Any, *, save_as: str = "bound"):
             clock=lambda: 1_000.0,
             artifact_store=store,
             bus=RecordingBus(),
+            private_values=ReadyPrivateValues(),
         ),
         runs=runs,
         waits=None,
