@@ -1531,6 +1531,9 @@ task_session_attempts = Table(
     Column("outcome", Text, nullable=True),
     Column("session_key", Text, nullable=True),
     Index("idx_task_session_attempts_task", "task_id", "started_at"),
+    # Recovery holds identify the latest attempt with a deterministic ID tie-breaker.
+    # A backward scan covers started_at DESC, id DESC without a per-task sort.
+    Index("idx_task_session_attempts_latest", "task_id", "started_at", "id"),
     Index("idx_task_session_attempts_session", "session_id", "started_at"),
 )
 

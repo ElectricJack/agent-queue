@@ -13481,13 +13481,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1720,
+      "line": 1734,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "b5a445715cef5a08cb3bf6b172163802609677651c3bff228828c37c6626e136",
+      "owner_fingerprint": "9f20ad3fe4a76f4a5b85714d80901460b60c5cc9a35e54c947cbce798a6c62f5",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle metadata cleanup, including failure generation bookkeeping, clearing the worker failure streak on an intentional READY restart, and guarded retry routing. The routing failed-attempt journal records work verdicts for class escalation; integration status, branch reservations and ref replay authority stay in their dedicated records. Current Git delivery evidence is observed outside the transaction and revalidated by the guarded lifecycle writer; the storage disposition remains ordinary."
+      "reason": "Ordinary task lifecycle metadata cleanup, including failure generation bookkeeping, clearing the worker failure streak on an intentional READY restart, and guarded retry routing. The routing failed-attempt journal records work verdicts for class escalation; integration status, branch reservations and ref replay authority stay in their dedicated records. Current Git delivery evidence is observed outside the transaction and revalidated by the guarded lifecycle writer. Re-reviewed accepted restart/reopen supersession: only a matched guarded READY write supersedes the old recovery incident and archives its notice in the same transaction, including same-status restarts; refused transitions retain the incident and supervisor recovery budgets are preserved. No new integration lifecycle or ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2165,
@@ -15155,13 +15155,13 @@
       "reason": "Operator task.delivery_disposition audit for a deliver decision that archives nothing; records the task identity and how many holders wait, not ref mutation, replay or delivery state."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate::422567dd28fcecb1a80d03028773f3ba177b912a1b2e264195e8ad9a0e83101f": {
-      "line": 4495,
+      "line": 4576,
       "owner": "TaskCommandsMixin._restart_repair_delegate",
       "call": "set_task_meta",
-      "owner_fingerprint": "56c3461d62607d7f526db009179e05280f3e2b6c65bca88b9ef03cc697a16441",
+      "owner_fingerprint": "dd2fe97a0a310c6ad5cf106a17d59b77df7e0f74f3457dfb8c81191c7d7cdd28",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary worker failure streak is restored when a fenced repair-delegate restart is refused. Existing reservation guards still decide authority; this metadata is not an integration lifecycle journal."
+      "reason": "Ordinary worker failure streak is restored when a fenced repair-delegate restart is refused. Re-reviewed deferred recovery supersession: the initial READY transition retains the old hold until the existing branch reservation accepts the handoff, then a status-and-claim-epoch guarded READY write supersedes it. A refused reservation retains the incident and restores the failure streak; a concurrent claim is not reset. Existing reservation guards still decide authority; this metadata is not an integration lifecycle journal and grants no ref replay authority."
     },
     "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::9092769dc16180050c1d7a01c5d46256c2cd0383b351f15fadc91645e2ec169a": {
       "line": 1644,

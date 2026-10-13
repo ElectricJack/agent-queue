@@ -2722,6 +2722,9 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db)
     stage_before = await _repair_stage(db, "operation", 0)
     assert await db.is_hierarchy_task_runnable(delegate) is False
     await db.set_task_meta(delegate, "worker_failure_streak", {"cause": "context_thrash", "count": 2})
+    await db.set_task_meta(delegate, "supervisor_recovery_incident", {
+        "id": "held-restart", "decision": "hold", "decision_reason": "Inspect dead writer",
+    })
 
     result = await TaskCommandsMixin._cmd_restart_task(
         _restart_command(db, service), {"task_id": delegate}
@@ -2731,6 +2734,9 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db)
     assert (result["previous_status"], result["reservation"]) == ("BLOCKED", "acquired")
     assert (await db.get_task(delegate)).status is TaskStatus.READY
     assert await db.get_task_meta(delegate, "worker_failure_streak") is None
+    assert (await db.get_task_meta(delegate, "supervisor_recovery_incident"))["decision"] == (
+        "superseded"
+    )
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
@@ -2757,12 +2763,37 @@ async def test_restart_restores_the_dead_repair_delegates_branch_reservation(db)
     assert await service.missing_delegate_reservations() == []
 
 
+async def test_restart_finalization_does_not_reset_a_concurrent_claim(db, monkeypatch):
+    service, delegate = await _continuous_parent_stage(db)
+    await _dead_writer_with_released_fence(db, delegate)
+    reserve = service.reserve_delegate
+    previous = await db.get_task(delegate)
+
+    async def reserve_and_claim(task_id):
+        result = await reserve(task_id)
+        assert result["outcome"] == "acquired"
+        await db.transition_task(task_id, TaskStatus.IN_PROGRESS,
+                                 claim_epoch=previous.claim_epoch + 1)
+        return result
+
+    monkeypatch.setattr(service, "reserve_delegate", reserve_and_claim)
+    result = await TaskCommandsMixin._cmd_restart_task(
+        _restart_command(db, service), {"task_id": delegate},
+    )
+    assert result["restarted"] == delegate
+    task = await db.get_task(delegate)
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.claim_epoch == previous.claim_epoch + 1
+
+
 @pytest.mark.parametrize("fence_state", ["attached", "handoff_pending"])
 async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db, fence_state):
     """A fence no handoff can prove free is refused, naming the control to run."""
     service, delegate = await _continuous_parent_stage(db)
     streak = {"cause": "context_thrash", "count": 2}
     await db.set_task_meta(delegate, "worker_failure_streak", streak)
+    incident = {"id": "held-restart", "decision": "hold", "decision_reason": "Inspect dead writer"}
+    await db.set_task_meta(delegate, "supervisor_recovery_incident", incident)
     await _claimed_writer(db, delegate, epoch=1, live=False, sid="dead")
     await db.create_profile(AgentProfile(
         id="standard-high-codex", name="Standard", harness="codex", default_class="standard-high",
@@ -2791,6 +2822,7 @@ async def test_restart_refuses_while_the_stopped_writer_still_holds_the_fence(db
         {"constraints": {"exclude_providers": ["claude"]}},
     )
     assert await db.get_task_meta(delegate, "worker_failure_streak") == streak
+    assert await db.get_task_meta(delegate, "supervisor_recovery_incident") == incident
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
