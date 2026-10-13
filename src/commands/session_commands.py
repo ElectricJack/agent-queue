@@ -760,6 +760,21 @@ class SessionCommandsMixin:
                 ),
                 "session_id": session.id,
             }
+        if session.project_id is not None and session.name == (
+            "n-supervisor--" + session.project_id
+        ):
+            project = await self.db.get_project(session.project_id)
+            if project is not None and not project.supervisor_enabled:
+                # supervisor_enabled is the authority: its messages route to
+                # supervisor-global and nothing may mark its session wanted.
+                return {
+                    "success": False,
+                    "error": (
+                        f"project '{session.project_id}' has its supervisor disabled; enable "
+                        f"it with `aq project set {session.project_id} supervisor-enabled true`"
+                    ),
+                    "session_id": session.id,
+                }
         # Clear the restart budget: it counts *consecutive* failed starts,
         # and an operator asking for a wake is a fresh intent, not a retry
         # of the one that failed.

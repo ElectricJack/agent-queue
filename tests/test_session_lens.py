@@ -357,11 +357,33 @@ class TestActivity:
 
 
 class TestEnsureStarted:
+    @pytest.mark.parametrize("resume", [False, True])
+    async def test_disabled_project_supervisor_refuses_explicit_restart(
+        self, db, lens, providers, resume,
+    ):
+        row, handle = await _seed_running_supervisor(db, providers, project_id="proj1")
+        await db.update_project("proj1", supervisor_enabled=False)
+        with pytest.raises(ValueError, match="No named supervisor session to restart"):
+            await lens.restart_supervisor(
+                target_id="supervisor-proj1", project_id="proj1", resume=resume,
+                expected_session_id=row.id,
+            )
+        fake = providers.create("fake")
+        assert await fake.is_running(handle)  # the current turn may still finish
+        assert len(fake.starts) == 1
+        assert (await db.get_session(row.id)).desired_state == "stopped"
+
     async def test_disabled_project_refuses_cold_start_and_existing_wake(self, db, lens, providers):
         await db.update_project("proj1", supervisor_enabled=False)
-        assert not await lens.ensure_started(
-            kind="session", target_id="supervisor-proj1", project_id="proj1",
-        )
+        # Every spelling a message or button can carry, including an alias
+        # that names no project and so resolves to the message's project.
+        for target, project_id in (
+            ("supervisor-proj1", "proj1"), ("supervisor-proj1", None),
+            ("n-supervisor--proj1", "proj1"), ("supervisor-aq", "proj1"),
+        ):
+            assert not await lens.ensure_started(
+                kind="session", target_id=target, project_id=project_id,
+            )
         assert providers.create("fake").starts == []
         assert await lens.activity(
             kind="session", target_id="supervisor-proj1", project_id="proj1",
