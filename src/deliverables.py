@@ -16,7 +16,9 @@ reviews in.  Research and design tasks carry one implicitly (see
 
 from __future__ import annotations
 
+import json
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -205,11 +207,25 @@ def _file_exists(root: Path, target: str) -> bool:
 def _test_command_met(target: str, *, root: Path, tests: list[str]) -> bool:
     """A test suite declared as its command line.
 
-    Every path the command names must exist under the worktree.  Then the
-    item is met when a recorded ``--test`` value matches the declared
-    command, or — so a worker who ran the suites one at a time is not
-    refused — when each of those paths is named by some recorded ``--test``.
+    Explicit npm workspace commands resolve paths from that configured
+    workspace and require exact command evidence. For root commands, every
+    named path must exist under the worktree, and a recorded ``--test`` must
+    match the command or name each path across separately run suites.
     """
+    if target.split()[0] == "npm":
+        try:
+            tokens = shlex.split(target)
+        except ValueError:
+            return False
+        prefix = tokens[1 : tokens.index("--")] if "--" in tokens else tokens[1:]
+        if any(token.startswith(("-w", "--workspace")) for token in prefix):
+            workspace_test = _npm_workspace_test(tokens, root=root)
+            if workspace_test is None:
+                return False
+            workspace, paths = workspace_test
+            return all(_path_exists(workspace, path) for path in paths) and any(
+                _squash(target) == _squash(command) for command in tests
+            )
     paths = [token for token in target.split() if _looks_like_path(token)]
     if not all(_path_exists(root, path) for path in paths):
         return False
@@ -218,14 +234,99 @@ def _test_command_met(target: str, *, root: Path, tests: list[str]) -> bool:
     return bool(paths) and all(any(path in command for command in tests) for path in paths)
 
 
+def _npm_workspace_test(tokens: list[str], *, root: Path) -> tuple[Path, list[str]] | None:
+    """Parse one explicit workspace test invocation, never arbitrary shell syntax.
+
+    Only npm's selector and test subcommands are understood before ``--``;
+    options that change its context or permit missing scripts are refused.
+    """
+    if any(any(char in token for char in ";&|<>`$") for token in tokens):
+        return None
+    separator = tokens.index("--") if "--" in tokens else len(tokens)
+    prefix, arguments = tokens[1:separator], tokens[separator + 1 :]
+    selectors: list[str] = []
+    command: list[str] = []
+    index = 0
+    while index < len(prefix):
+        token = prefix[index]
+        if token in ("-w", "--workspace"):
+            index += 1
+            if index == len(prefix):
+                return None
+            selectors.append(prefix[index])
+        elif token.startswith("--workspace="):
+            selectors.append(token.partition("=")[2])
+        elif token.startswith("-w") and token != "-ws":
+            selectors.append(token[2:])
+        else:
+            command.append(token)
+        index += 1
+    if len(selectors) != 1 or command not in (["run", "test"], ["run-script", "test"], ["test"]):
+        return None
+    workspace = _npm_workspace(root, selectors[0])
+    paths = [token for token in arguments if _looks_like_path(token)]
+    if workspace is None or any(not _relative_workspace_path(path) for path in paths):
+        return None
+    return workspace, paths
+
+
+def _relative_workspace_path(value: str) -> bool:
+    """Literal relative paths only; no traversal or wildcard interpretation."""
+    return bool(value) and not (
+        Path(value).is_absolute()
+        or ".." in Path(value).parts
+        or any(char in value for char in "*?[]\\\0")
+    )
+
+
+def _package_json(root: Path) -> dict[str, Any] | None:
+    try:
+        if not _file_exists(root, "package.json"):
+            return None
+        value = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _npm_workspace(root: Path, selector: str) -> Path | None:
+    """Resolve an exact directory or name from literal configured workspaces.
+
+    Do not walk the tree or expand npm globs/parent selectors. Unresolved and
+    ambiguous selectors are unmet rather than guessed relative directories.
+    """
+    if not _relative_workspace_path(selector) or selector.startswith("-"):
+        return None
+    package = _package_json(root)
+    entries = package.get("workspaces") if package is not None else None
+    if not isinstance(entries, list):
+        return None
+    matches: set[Path] = set()
+    for entry in entries:
+        if not isinstance(entry, str) or not _relative_workspace_path(entry):
+            return None
+        try:
+            workspace = (root / entry).resolve()
+        except (OSError, RuntimeError):
+            return None
+        if not workspace.is_relative_to(root.resolve()) or workspace == root.resolve():
+            return None
+        manifest = _package_json(workspace)
+        if manifest is not None and (
+            Path(selector) == Path(entry) or selector == manifest.get("name")
+        ):
+            matches.add(workspace)
+    return matches.pop() if len(matches) == 1 else None
+
+
 def _path_exists(root: Path, token: str) -> bool:
     """``tests/test_x.py::test_a`` and ``tests/`` both count as existing paths."""
-    candidate = (root / token.split("::", 1)[0]).resolve()
     try:
+        candidate = (root / token.split("::", 1)[0]).resolve()
         candidate.relative_to(root.resolve())
-    except ValueError:
+        return candidate.exists()
+    except (OSError, ValueError, RuntimeError):
         return False
-    return candidate.exists()
 
 
 def _looks_like_path(token: str) -> bool:

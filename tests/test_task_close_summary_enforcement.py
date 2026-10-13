@@ -520,6 +520,47 @@ async def test_close_accepts_test_and_command_deliverables_declared_as_shell_com
     ]
 
 
+@pytest.mark.asyncio
+async def test_close_workspace_test_deliverable_checks_files_and_test_evidence(
+    handler, db, tmp_path, monkeypatch
+):
+    """npm's workspace cwd reaches the close gate without weakening its evidence."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "package.json").write_text('{"workspaces": ["dashboard"]}')
+    dashboard = tmp_path / "dashboard"
+    dashboard.mkdir()
+    (dashboard / "package.json").write_text('{"name": "dashboard"}')
+    test_file = dashboard / "src/pages/graph/__tests__/types.test.ts"
+    test_file.parent.mkdir(parents=True)
+    suite = "npm -w dashboard run test -- src/pages/graph/__tests__/types.test.ts"
+    item = {"id": "dashboard-suite", "kind": "test", "target": suite}
+    await db.create_project(Project(id="p", name="P"))
+    created = await handler.execute(
+        "create_task", {"project_id": "p", "title": "t", "deliverables": [item]}
+    )
+    tid = created["created"]
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+
+    missing = await handler.execute(
+        "task_close", {"task_id": tid, "outcome": "pass", "tests": [suite]}
+    )
+    assert missing["code"] == "deliverables.unmet"
+    assert (await db.get_task(tid)).status == TaskStatus.IN_PROGRESS
+    test_file.write_text("// fixture\n")
+    wrong_evidence = await handler.execute(
+        "task_close", {"task_id": tid, "outcome": "pass", "commands": [suite]}
+    )
+    assert wrong_evidence["code"] == "deliverables.unmet"
+    assert (await db.get_task(tid)).status == TaskStatus.IN_PROGRESS
+
+    result = await handler.execute(
+        "task_close", {"task_id": tid, "outcome": "pass", "tests": [suite]}
+    )
+    assert result["success"] is True, result
+    completion = await db.get_task_completion(tid)
+    assert completion.deliverables == [{**item, "met": True, "reason": ""}]
+
+
 # ---------------------------------------------------------------------------
 # Review deliverables: a proposal goes to Reviews, not only a branch
 # (vivid-delta; research task crisp-orbit-37 committed its proposal and was
