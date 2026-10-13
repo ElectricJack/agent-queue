@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `get_profile` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:407f37d9808cded59fa9014a58ffef40a7bdd6a9d36b9a2fca806d44f6891445` |
+| Contract fingerprint | `sha256:a8d27b4968e65ec5d41209ced22d5d58f3ee6e1ede7b5a99285bca1756297551` |
 
 ## Parameters
 
@@ -23,7 +23,7 @@
 | `profile_id` | `string` | yes | — | Profile ID to look up |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -45,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using profile_id | — | always |
+| Read using profile_id | — | always |
 
 <!-- aq:generated:end -->
 

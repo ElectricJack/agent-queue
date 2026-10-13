@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `playbook_run_overlay` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:6d77ebac5d2a7ddf83789b5b328e6b3ee38ccc4780ce6dc8a800579103528b79` |
+| Contract fingerprint | `sha256:4713a486a0e334c5fea00b395559ca869485b3f6a0ae6e36aade36cdc3992a50` |
 
 ## Parameters
 
@@ -24,7 +24,7 @@
 | `receipt_limit` | `integer` | no | `500` | Max receipts returned, newest first (default 500). 'truncated' reports when more exist; receipts are never silently dropped. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -46,7 +46,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using run_id, receipt_limit | — | always |
+| Read using run_id, receipt_limit | — | always |
 
 <!-- aq:generated:end -->
 

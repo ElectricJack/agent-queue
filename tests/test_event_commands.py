@@ -161,14 +161,16 @@ async def test_read_logs_reports_missing_file_and_bad_since(log_handler):
     assert not missing.exists()
 
     result = await log_handler._cmd_read_logs({})
-    assert result == {"error": f"Log file not found: {missing}"}
+    assert result == {"success": False, "error": f"Log file not found: {missing}"}
 
     _write_log(log_handler, [_line(level="error", event="boom")])
 
     assert await log_handler._cmd_read_logs({"since": "5x"}) == {
+        "success": False,
         "error": "Unknown time unit 'x'. Use s, m, h, or d."
     }
     assert await log_handler._cmd_read_logs({"since": "manym"}) == {
+        "success": False,
         "error": "Invalid number in 'manym'"
     }
 
@@ -182,7 +184,7 @@ async def test_read_logs_falls_back_to_the_data_dir_when_no_log_file_configured(
     result = await handler._cmd_read_logs({})
 
     expected = Path(handler.config.data_dir) / "logs" / "agent-queue.log"
-    assert result == {"error": f"Log file not found: {expected}"}
+    assert result == {"success": False, "error": f"Log file not found: {expected}"}
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +229,8 @@ async def test_chat_analyzer_metrics_coerces_window_and_rejects_noninteger(
     call_count = len(calls)
     for bad in ("soon", None, [1]):
         result = await handler._cmd_get_chat_analyzer_metrics({"since_hours": bad})
-        assert set(result) == {"error"}
+        assert set(result) == {"success", "error"}
+        assert result["success"] is False
         assert "since_hours must be an integer" in result["error"]
     assert len(calls) == call_count
 
@@ -260,7 +263,7 @@ async def test_recent_events_converts_relative_since_and_forwards_all_filters(
         }
     )
 
-    assert result == {"events": [{"id": "e1"}]}
+    assert result == {"success": True, "events": [{"id": "e1"}]}
     sent = calls[-1]
     assert sent["limit"] == 5
     assert sent["event_type"] == "task.completed"

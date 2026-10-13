@@ -12,6 +12,8 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from src.commands.authorization import authorize_command, denial_result
+from src.commands.descriptors import PLAYBOOK_DENIALS
+from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.commands.principal import PrincipalKind, check_delegation
 from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.spec import LLMCallSpec
@@ -194,6 +196,8 @@ def _published_tools(step: LlmStep, ctx: StepContext) -> list[dict[str, Any]]:
     # Namespace separation is an authorization property, not a reason to hide
     # contracted plugin tools from the provider catalogue.
     for name in (*step.tool_use.aq_commands, *step.tool_use.plugin_tools):
+        if name in PLAYBOOK_DENIALS:
+            continue
         registration = ctx.services.contracts.get(name)
         resolver = ctx.services.resolver
         if registration is None or resolver is None:
@@ -443,6 +447,9 @@ class LiveLlmExecutor:
 
                 async def dispatch_tool(name: str, args: dict[str, Any]) -> Any:
                     nonlocal denied
+                    if name in PLAYBOOK_DENIALS or set(args).intersection(SERVER_OWNED_ARG_KEYS):
+                        denied = True
+                        return {"success": False, "error_code": "playbook_command_denied"}
                     resolver = ctx.services.resolver
                     if resolver is None or not authorize_command(
                         name,
@@ -464,6 +471,24 @@ class LiveLlmExecutor:
                     try:
                         validated = registration.contract.execution.args_model.model_validate(args)
                         response = await registration.invoke(validated, ctx.principal)
+                        if registration.contract.execution.result_mode == "json_object":
+                            from src.playbooks.definition import CommandStep
+                            from src.playbooks.executors.command import _consume
+
+                            consumed = _consume(
+                                response, registration,
+                                CommandStep(
+                                    rule=step.rule, title=step.title, source=step.source,
+                                    command=name, save_result_as="tool_result",
+                                    transitions={"runtime_error": "done"},
+                                ),
+                                ctx, resolved_inputs=args, key="llm_tool",
+                            )
+                            if consumed.outcome == "unauthorized":
+                                denied = True
+                            if consumed.value is None:
+                                return {"success": False, "error_code": consumed.outcome}
+                            return consumed.value
                         return response.value.model_dump()
                     except Exception as exc:  # noqa: BLE001 - tool loop receives a safe error result
                         return {"success": False, "error": type(exc).__name__}

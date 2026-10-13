@@ -327,14 +327,35 @@ catalogue bytes and existing playbook artifacts. An intentional compatibility
 change must review that evidence; regenerating expected values during a test
 would conceal the change.
 
-**Generated invocation is disabled.** New catalogue entries do not grant
-authority. Authorization, handler-return auditing, private-value storage and
-safe inspection must be completed before an execution adapter is enabled;
-there is no runtime bypass flag in this foundation. Generated entries default
-to protected, destructive, non-retryable behavior without preview or receipt
-projection. `run_command`, `shutdown`, `restart_daemon` and `update_and_restart`
-have explicit playbook denials and no generated registrations. The existing
-memory helpers and typed plugin adapters remain registered unchanged.
+**Generated invocation remains disabled pending private-value storage and safe
+inspection (A3).** There is no runtime bypass flag. The A2 producer audit is
+pinned in `tests/fixtures/contracts/generated-command-audit.json`, keyed by all
+built-in handlers. Adding a handler or changing its return branches requires
+reviewing and updating that evidence. Static argument reads are diagnostic;
+they never silently expand the public schema.
+
+Generated results must be JSON objects with an actual boolean `success` at
+every producer exit, including early refusals and delegated helpers. Only the
+executor's `_consume` boundary interprets this protocol: true means success,
+false means failure, known authority refusals mean unauthorized, and dispatch
+exceptions mean runtime_error. Missing or non-boolean success, non-JSON values,
+non-finite numbers and oversized results are contract violations even without
+a result binding. Other payload keys remain intact. Typed adapters keep their
+existing outcome semantics and generation-1 fingerprints.
+
+`src/commands/resource_authorization.py` provides the dispatch and HTTP resource
+gate. The original principal survives nested dispatch; capability grants do
+not grant ownership, a live session, a held claim or human decision authority.
+Project filters cannot authorize foreign task, session, review, run or artifact
+references. Global reads require system scope, and path access uses only the
+project's repository and workspace roots. All server-owned input keys are
+rejected for playbook callers. `run_command`, `shutdown`, `restart_daemon` and
+`update_and_restart` are denied in validation, invocation and LLM tools.
+
+Generated entries remain protected and non-retryable without preview or receipt
+projection. Only explicitly audited reads receive a read effect; other entries
+retain the conservative destructive effect. Catalogue membership grants no
+authority. Existing memory helpers and typed plugin adapters remain registered.
 
 [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md)
 is half generated and half hand-written, page by page. Everything between

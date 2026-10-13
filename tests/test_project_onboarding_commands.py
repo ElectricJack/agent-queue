@@ -124,6 +124,7 @@ async def test_project_scoped_caller_cannot_browse_roots(command_handler_factory
 
     assert result == {
         "success": False,
-        "error": "out of scope: project onboarding requires global admin",
-        "error_code": "out_of_scope",
+        "error": "out of scope: browse_project_root",
+        "error_code": "resource_scope_denied",
+        "result": "out_of_scope",
     }

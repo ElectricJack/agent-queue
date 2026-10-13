@@ -7447,6 +7447,17 @@
       "parameters": {
         "required": [],
         "optional": [
+          "--name",
+          "--prefix",
+          "--origin",
+          "--plugin",
+          "--schema-quality",
+          "--result-mode",
+          "--available",
+          "--denied",
+          "--include-schema",
+          "--offset",
+          "--limit",
           "--json",
           "--brief",
           "--save-output",

@@ -841,7 +841,7 @@ def _canonicalise_reroute_args(
     return None
 
 
-async def check_request_scope(
+async def _check_request_scope(
     command: str, args: dict, scope: RequestScope, *, db=None,
 ) -> str | None:
     """Apply the normal scope, with narrowly verified triage capabilities.
@@ -1026,3 +1026,23 @@ async def check_request_scope(
     args["project_id"] = project_id
     args["session_id"] = scope.session_id
     return None
+
+
+async def check_request_scope(
+    command: str, args: dict, scope: RequestScope, *, db=None,
+) -> str | None:
+    """Keep transport grants and share resource ownership with every dispatcher."""
+    error = await _check_request_scope(command, args, scope, db=db)
+    if error is not None or scope.kind == "local" or db is None:
+        return error
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.commands.resource_authorization import authorize_resources
+    from src.profiles.capabilities import DENY_ALL
+
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id=scope.session_id,
+        task_id=scope.task_id, project_id=scope.project_id, elevated=scope.elevated,
+        session_instance_token=scope.session_instance_token,
+    )
+    refusal = await authorize_resources(command, args, principal, db=db)
+    return refusal["error"] if refusal is not None else None

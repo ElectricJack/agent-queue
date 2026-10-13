@@ -96,17 +96,18 @@ async def test_plugin_lifecycle_validates_inputs_and_wraps_registry_failures(
     cmd = getattr(plugin_handler, command)
 
     # 1. Missing required argument — rejected before the registry is touched.
-    assert await cmd({}) == {"error": missing_error}
+    assert await cmd({}) == {"success": False, "error": missing_error}
 
     # 2. Registry absent entirely.
     del plugin_handler.orchestrator.plugin_registry
-    assert await cmd(dict(valid_args)) == {"error": "Plugin system not initialized"}
+    assert await cmd(dict(valid_args)) == {"success": False, "error": "Plugin system not initialized"}
     plugin_handler.orchestrator.plugin_registry = _StubRegistry()
 
     # 3. Registry raises — wrapped into the command's error convention, never
-    #    a success key and never an escaping exception.
+    #    a successful result and never an escaping exception.
     result = await cmd(dict(valid_args))
-    assert set(result) == {"error"}
+    assert set(result) == {"success", "error"}
+    assert result["success"] is False
     assert result["error"].startswith(prefix)
     assert "exploded" in result["error"]
 
@@ -138,12 +139,14 @@ async def test_plugin_lifecycle_returns_success_payloads_from_the_registry(plugi
 
     updated = await h._cmd_plugin_update({"name": "demo"})
     assert updated == {
+        "success": True,
         "updated": "demo",
         "rev": "abcdef1234567890",
         "message": "Plugin 'demo' updated to abcdef12",
     }
 
     assert await h._cmd_plugin_remove({"name": "demo"}) == {
+        "success": True,
         "removed": "demo",
         "message": "Plugin 'demo' removed",
     }
@@ -207,13 +210,15 @@ async def test_plugin_list_and_info_merge_runtime_and_database_fallback(plugin_h
 
     # ...then a clean error.
     assert await plugin_handler._cmd_plugin_info({"name": "ghost"}) == {
+        "success": False,
         "error": "Plugin 'ghost' not found"
     }
-    assert await plugin_handler._cmd_plugin_info({}) == {"error": "name is required"}
+    assert await plugin_handler._cmd_plugin_info({}) == {"success": False, "error": "name is required"}
 
     del plugin_handler.orchestrator.plugin_registry
-    assert await plugin_handler._cmd_plugin_list({}) == {"error": "Plugin system not initialized"}
+    assert await plugin_handler._cmd_plugin_list({}) == {"success": False, "error": "Plugin system not initialized"}
     assert await plugin_handler._cmd_plugin_info({"name": "x"}) == {
+        "success": False,
         "error": "Plugin system not initialized"
     }
 
@@ -227,18 +232,20 @@ async def test_plugin_config_reads_db_json_and_updates_loaded_context(plugin_han
     h = plugin_handler
     registry = h.orchestrator.plugin_registry
 
-    assert await h._cmd_plugin_config({}) == {"error": "name is required"}
-    assert await h._cmd_plugin_config({"name": "ghost"}) == {"error": "Plugin 'ghost' not found"}
+    assert await h._cmd_plugin_config({}) == {"success": False, "error": "name is required"}
+    assert await h._cmd_plugin_config({"name": "ghost"}) == {"success": False, "error": "Plugin 'ghost' not found"}
 
     # Unloaded plugin: config comes from the DB, and unparseable stored JSON
     # degrades to {} rather than raising.
     await h.db.create_plugin(plugin_id="stored-bad", config="{not json")
     assert await h._cmd_plugin_config({"name": "stored-bad"}) == {
+        "success": True,
         "name": "stored-bad",
         "config": {},
     }
     await h.db.create_plugin(plugin_id="stored-ok", config=json.dumps({"a": 1}))
     assert await h._cmd_plugin_config({"name": "stored-ok"}) == {
+        "success": True,
         "name": "stored-ok",
         "config": {"a": 1},
     }
@@ -247,13 +254,14 @@ async def test_plugin_config_reads_db_json_and_updates_loaded_context(plugin_han
     context = _StubContext({"threshold": 3})
     registry.add_loaded("live", info={"description": ""}, context=context)
     assert await h._cmd_plugin_config({"name": "live"}) == {
+        "success": True,
         "name": "live",
         "config": {"threshold": 3},
     }
 
     # Loaded plugin: a JSON-string update is parsed and saved.
     updated = await h._cmd_plugin_config({"name": "live", "config": '{"threshold": 9}'})
-    assert updated == {"name": "live", "config": {"threshold": 9}, "message": "Config updated"}
+    assert updated == {"success": True, "name": "live", "config": {"threshold": 9}, "message": "Config updated"}
     assert context.saved == [{"threshold": 9}]
     assert context.get_config() == {"threshold": 9}
 
@@ -264,6 +272,7 @@ async def test_plugin_config_reads_db_json_and_updates_loaded_context(plugin_han
     # A registry entry that reports as loaded but has no _plugins record.
     registry._loaded_info["phantom"] = {"name": "phantom"}
     assert await h._cmd_plugin_config({"name": "phantom"}) == {
+        "success": False,
         "error": "Plugin 'phantom' is not loaded"
     }
 
@@ -277,7 +286,8 @@ async def test_plugin_config_rejects_malformed_caller_json(plugin_handler, bad_j
 
     result = await h._cmd_plugin_config({"name": "live", "config": bad_json})
 
-    assert set(result) == {"error"}
+    assert set(result) == {"success", "error"}
+    assert result["success"] is False
     assert "config" in result["error"] and "JSON" in result["error"]
     # The rejected call changed nothing.
     assert context.saved == []
@@ -293,10 +303,11 @@ async def test_plugin_prompts_and_reset_require_loaded_plugin(plugin_handler, mo
     h = plugin_handler
     registry = h.orchestrator.plugin_registry
 
-    assert await h._cmd_plugin_prompts({}) == {"error": "name is required"}
-    assert await h._cmd_plugin_reset_prompts({}) == {"error": "name is required"}
-    assert await h._cmd_plugin_prompts({"name": "live"}) == {"error": "Plugin 'live' is not loaded"}
+    assert await h._cmd_plugin_prompts({}) == {"success": False, "error": "name is required"}
+    assert await h._cmd_plugin_reset_prompts({}) == {"success": False, "error": "name is required"}
+    assert await h._cmd_plugin_prompts({"name": "live"}) == {"success": False, "error": "Plugin 'live' is not loaded"}
     assert await h._cmd_plugin_reset_prompts({"name": "live"}) == {
+        "success": False,
         "error": "Plugin 'live' is not loaded"
     }
 
@@ -304,6 +315,7 @@ async def test_plugin_prompts_and_reset_require_loaded_plugin(plugin_handler, mo
     registry.add_loaded("live", info={}, context=context, install_path="/opt/live")
 
     assert await h._cmd_plugin_prompts({"name": "live"}) == {
+        "success": True,
         "name": "live",
         "prompts": [{"name": "review", "path": "prompts/review.md"}],
     }
@@ -316,6 +328,7 @@ async def test_plugin_prompts_and_reset_require_loaded_plugin(plugin_handler, mo
 
     monkeypatch.setattr("src.plugins.loader.reset_prompts", _fake_reset)
     assert await h._cmd_plugin_reset_prompts({"name": "live"}) == {
+        "success": True,
         "name": "live",
         "reset_count": 4,
         "message": "Reset 4 prompts",
@@ -324,8 +337,10 @@ async def test_plugin_prompts_and_reset_require_loaded_plugin(plugin_handler, mo
 
     del h.orchestrator.plugin_registry
     assert await h._cmd_plugin_prompts({"name": "live"}) == {
+        "success": False,
         "error": "Plugin system not initialized"
     }
     assert await h._cmd_plugin_reset_prompts({"name": "live"}) == {
+        "success": False,
         "error": "Plugin system not initialized"
     }

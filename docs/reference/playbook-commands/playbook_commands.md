@@ -8,20 +8,32 @@
 | Property | Value |
 |---|---|
 | Capability | `playbook_commands` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:6335cd7b335362f83aac64e93a9bbfa830770caf3d1d99828740e1b826db169b` |
+| Contract fingerprint | `sha256:8578dfcaea636e426d7da374d0443b191627bc88c30e898b9ea82d773df31fdb` |
 
 ## Parameters
 
-Arguments are a JSON object validated against the descriptor's full schema.
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `name` | `string` | no | — | — |
+| `prefix` | `string` | no | — | — |
+| `origin` | `string` | no | — | — |
+| `plugin` | `string` | no | — | — |
+| `schema_quality` | `string` | no | — | — |
+| `result_mode` | `string` | no | — | — |
+| `available` | `boolean` | no | — | — |
+| `denied` | `boolean` | no | — | — |
+| `include_schema` | `boolean` | no | `true` | — |
+| `offset` | `integer` | no | `0` | — |
+| `limit` | `integer` | no | `50` | — |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -43,7 +55,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using a JSON object | — | always |
+| Read using name, prefix, origin, plugin, schema_quality, result_mode, available, denied, include_schema, offset, limit | — | always |
 
 <!-- aq:generated:end -->
 

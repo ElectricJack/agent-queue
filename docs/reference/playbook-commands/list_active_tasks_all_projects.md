@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `list_active_tasks_all_projects` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:7aad8030d15586f867a5c2df6619b4b327400e387612347681f0e3247f2a9a48` |
+| Contract fingerprint | `sha256:8f4592992d754031c039d15c41fa6b6cadf2a48c5787c668267863caaefdd970` |
 
 ## Parameters
 
@@ -23,7 +23,7 @@
 | `include_completed` | `boolean` | no | — | When true, include completed/failed/blocked tasks too. Default false (active tasks only). |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -45,7 +45,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using include_completed | — | always |
+| Read using include_completed | — | always |
 
 <!-- aq:generated:end -->
 

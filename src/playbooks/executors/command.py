@@ -21,6 +21,8 @@ from pydantic import BaseModel, ValidationError
 
 from src.commands.contracts.models import CommandResult, OutcomeClass
 from src.commands.contracts.registry import CommandRegistration, UnknownContract
+from src.commands.descriptors import PLAYBOOK_DENIALS
+from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.playbooks.definition import CommandStep
 from src.playbooks.executors.base import (
     EngineServices,
@@ -84,6 +86,33 @@ def _consume(
     """
     execution = registration.contract.execution
     operation = f"command:{step.command}"
+    generic = execution.result_mode == "json_object"
+    diagnostic = None
+    if generic:
+        # The generic adapter transports the original dictionary unchanged.
+        # Protocol interpretation stays here, including unbound/LLM results.
+        try:
+            value_model = execution.result_model.model_validate(result)
+            dumped = value_model.model_dump()
+            if type(dumped.get("success")) is not bool:
+                raise ValueError("non_boolean_success")
+            if len(canonical_json(dumped)) > DEFAULT_MAX_RESULT_BYTES:
+                raise ValueError("result_too_large")
+        except (ValidationError, ValueError, TypeError, RecursionError, OverflowError):
+            return _fail("contract_violation", operation=operation,
+                         diagnostics=("invalid_command_result",), key=key)
+        outcome = "success" if dumped["success"] is True else "failure"
+        if outcome == "failure":
+            from src.commands.resource_authorization import is_authorization_denial
+
+            code = dumped.get("error_code")
+            if is_authorization_denial(dumped):
+                outcome, diagnostic = "unauthorized", "command_unauthorized"
+            elif code == "command_runtime_error":
+                outcome, diagnostic = "runtime_error", "command_runtime_error"
+            else:
+                diagnostic = "command_failed"
+        result = CommandResult(outcome=outcome, value=value_model, summary="")
 
     # 1. Type.  Package 1's adapter is the only caller of CommandHandler,
     #    so a bare dict cannot normally arrive — but the failure is silent if
@@ -159,6 +188,9 @@ def _consume(
     )
     # Only a contract-projected error may become durable diagnostics; the
     # adapter summary can contain unclassified data and is never a fallback.
+    diagnostics = (diagnostic,) if diagnostic else ()
+    if not generic and result.classification(registration.contract) is OutcomeClass.FAILURE:
+        diagnostics = (str(receipt_result["error"]),) if receipt_result.get("error") else ()
     return ExecutorResult(
         control=StepControl.ADVANCE,
         outcome=result.outcome,
@@ -167,9 +199,7 @@ def _consume(
         receipt_inputs=receipt_inputs,
         receipt_result=receipt_result,
         operation=operation,
-        diagnostics=(str(receipt_result["error"]),)
-        if (result.classification(registration.contract) is OutcomeClass.FAILURE
-            and receipt_result.get("error")) else (),
+        diagnostics=diagnostics,
     )
 
 
@@ -251,6 +281,8 @@ def _build_args(
     """
     execution = registration.contract.execution
     payload = dict(ctx.inputs)
+    if set(payload).intersection(SERVER_OWNED_ARG_KEYS):
+        return None, {}, "server_owned_argument"
     if execution.idempotency.mode == "keyed":
         _keyed_argument(execution, ctx, payload, fallback=key)
     try:
@@ -269,6 +301,9 @@ class LiveCommandExecutor:
     async def execute(self, step: CommandStep, ctx: StepContext) -> ExecutorResult:
         operation = f"command:{step.command}"
         key = _attempt_key(ctx)
+        if step.command in PLAYBOOK_DENIALS:
+            return _fail("unauthorized", operation=operation,
+                         diagnostics=("playbook_command_denied",), key=key)
         registration = _lookup(step, ctx.services)
         if registration is None:
             # The runtime half of "a CommandStep can reference only a

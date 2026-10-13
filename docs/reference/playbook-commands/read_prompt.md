@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `read_prompt` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:5865fc95ba022fabfb7ed519aa85f183d8993ea65ead07fdd84f01e4d26cdadd` |
+| Contract fingerprint | `sha256:1dff5c728e8bcb43082471f32422c8b6c110da79f47938ca0b4cd63d36b4c82e` |
 
 ## Parameters
 
@@ -25,7 +25,7 @@
 | `path` | `string` | no | — | Absolute filesystem path to a bundled template, e.g. '/opt/agent-queue/src/prompts/consolidation_task.md'. In playbook authoring, use aq://prompts/<name>.md instead — the playbook compiler rewrites it to an absolute path. Mutually exclusive with (project_id, name). |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -47,7 +47,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id, name, path | — | always |
+| Read using project_id, name, path | — | always |
 
 <!-- aq:generated:end -->
 

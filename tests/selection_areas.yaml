@@ -597,6 +597,7 @@ areas:
       - tests/test_command_dispatch.py
       - tests/test_command_surface.py
       - tests/test_command_descriptors.py
+      - tests/test_generated_command_contracts.py
       - tests/test_command_scope_*.py
       - tests/test_command_invoked_event.py
       - tests/test_surface_commands.py

@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `playbook_graph_view` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:ccfc1ae0449e4d3e9e6a54f61cf82c9671d7bf867b0d9a06fedea5ba49944e19` |
+| Contract fingerprint | `sha256:eb69173b3cf4d7bc7d95ae15af9293e155cdc1cbcaf647164439f19da284d9b3` |
 
 ## Parameters
 
@@ -30,7 +30,7 @@
 | `history_limit` | `integer` | no | `20` | Max runs in the history timeline (default 20). |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -52,7 +52,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using playbook_id, direction, show_prompts, run_id, include_live_state, include_metrics, include_history, history_limit | — | always |
+| Read using playbook_id, direction, show_prompts, run_id, include_live_state, include_metrics, include_history, history_limit | — | always |
 
 <!-- aq:generated:end -->
 

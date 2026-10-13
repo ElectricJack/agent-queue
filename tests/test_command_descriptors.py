@@ -273,12 +273,15 @@ def test_remote_schema_references_cannot_fetch_resources(monkeypatch):
 
 async def test_generated_invocation_is_disabled_including_unavailable_and_denied():
     descriptor = _snapshot(handlers=discover_handler_inventory(NewHandler)).commands["newly_discovered"]
-    for current in [descriptor, replace(descriptor, available=False),
-                    replace(descriptor, denial_reason="forbidden")]:
+    registration = generated_registration(descriptor)
+    args = registration.contract.execution.args_model.model_validate({})
+    with pytest.raises(GeneratedInvocationDisabled):
+        await registration.invoke(args, None)
+    for current, code in [(replace(descriptor, available=False), "command_unavailable"),
+                          (replace(descriptor, denial_reason="forbidden"), "playbook_command_denied")]:
         registration = generated_registration(current)
         args = registration.contract.execution.args_model.model_validate({})
-        with pytest.raises(GeneratedInvocationDisabled):
-            await registration.invoke(args, None)
+        assert (await registration.invoke(args, None)) == {"success": False, "error_code": code}
 
 
 def test_generated_fingerprint_is_generation_two_and_ignores_inventory_churn():
@@ -340,8 +343,9 @@ async def test_plugin_load_unload_refreshes_live_snapshot_and_retains_unavailabl
         assert not unloaded.commands["probe"].available and loaded.commands["probe"].available
         registration = CONTRACTS.require("probe")
         args = registration.contract.execution.args_model.model_validate({"count": 1, "choice": "yes"})
-        with pytest.raises(GeneratedInvocationDisabled, match="unavailable"):
-            await registration.invoke(args, None)
+        assert await registration.invoke(args, None) == {
+            "success": False, "error_code": "command_unavailable",
+        }
     finally:
         set_handler_provider(None)
 
