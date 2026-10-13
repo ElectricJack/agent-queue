@@ -57,12 +57,15 @@ def proposal(tmp_path, *, body=None, frontmatter="", contracts=None):
 
 
 def test_legacy_golden_digest_and_empty_metadata_are_unchanged():
-    legacy = load_definition_json(GOLDEN.read_text())
+    # Frozen before the live golden acquired the list_tasks observation contract.
+    # Contract refreshes must not replace this evidence of legacy serialization.
+    payload = GOLDEN.with_name("review-pipeline.legacy.artifact.json").read_text()
+    legacy = load_definition_json(payload)
     # A stored, pre-B3 digest, not a freshly generated expectation.
     expected = "sha256:7563817097f26dc9246d6507c25f148b63876c5f387f264944e060ff057fa131"
     for metadata in (None, {}):
         explicit = PlaybookDefinition.model_validate({
-            **json.loads(GOLDEN.read_text()), "required_features": [],
+            **json.loads(payload), "required_features": [],
             "trusted_execution": metadata,
         })
         assert canonical_bytes(explicit) == canonical_bytes(legacy)
