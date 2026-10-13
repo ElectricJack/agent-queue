@@ -302,6 +302,7 @@
         "tests/test_doctor.py",
         "tests/test_doctor_cli_timeout.py",
         "tests/test_doctor_discord_config.py",
+        "tests/test_doctor_observations.py",
         "tests/test_doctor_perf_checks.py",
         "tests/test_doctor_skill_checks.py",
         "tests/test_doctor_stall_checks.py",
@@ -5892,6 +5893,32 @@
         "parametrize"
       ],
       "summary": "Subject schedule/hold diagnostics and the retained App trust check."
+    },
+    "tests/test_doctor_observations.py": {
+      "areas": [
+        "doctor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:38e0f2584cf9a1d626b94157b301e40889b92c52209d3c91447fc7faca624955",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands.command_inventory",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.doctor.models",
+        "src.doctor.observations",
+        "src.doctor.pool_checks",
+        "src.doctor.runner",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Scope-first observation, producer completeness and stable identities."
     },
     "tests/test_doctor_perf_checks.py": {
       "areas": [

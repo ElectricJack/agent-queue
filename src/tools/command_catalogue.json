@@ -10848,6 +10848,94 @@
         "type": "object"
       }
     },
+    "doctor_catalog": {
+      "name": "doctor_catalog",
+      "description": "List doctor observation audits, identity schemas, scope and coverage contracts.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "doctor_run": {
+      "name": "doctor_run",
+      "description": "Observe one audited check or group; never repair or filter a global scan.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "group": {
+            "type": "string",
+            "minLength": 1
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "now": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 253402300799
+          },
+          "timeout_s": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 60
+          },
+          "pagination": {
+            "type": "string",
+            "enum": [
+              "snapshot"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "page_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "check_id"
+            ]
+          },
+          {
+            "required": [
+              "group"
+            ]
+          }
+        ],
+        "dependentRequired": {
+          "page_token": [
+            "snapshot_id",
+            "pagination"
+          ],
+          "snapshot_id": [
+            "page_token",
+            "pagination"
+          ],
+          "page_size": [
+            "pagination"
+          ]
+        }
+      }
+    },
     "explain_task": {
       "name": "explain_task",
       "description": "Return the ordered list of reasons *task_id* isn't running.",

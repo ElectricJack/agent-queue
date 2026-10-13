@@ -6,6 +6,8 @@ These are pure data — no logic.
 
 from __future__ import annotations
 
+from src.commands.doctor_observation_commands import CATALOG_SCHEMA, RUN_SCHEMA
+
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
@@ -8923,3 +8925,7 @@ _ALL_TOOL_DEFINITIONS.extend([
      "description": "Check all planned operator inputs and report every blocker together before mutations.",
      "input_schema": _OperatorPreflightArgs.model_json_schema()},
 ])
+
+# Shared observation schemas feed every descriptor projection; no playbook registration.
+
+_FALLBACK_INPUT_SCHEMAS.update({"doctor_catalog": CATALOG_SCHEMA, "doctor_run": RUN_SCHEMA})
