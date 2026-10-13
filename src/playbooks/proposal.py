@@ -51,6 +51,9 @@ AUTHORITATIVE_FIELDS: Final[frozenset[str]] = frozenset(
         "compiled_at",
         "compiler_build",
         "compiled_against",
+        "required_features",
+        "trusted_execution",
+        "state_schema_version",
         "enabled",
         "triggers",
         "cooldown_seconds",
@@ -374,6 +377,14 @@ def propose(
             steps=semantic.steps,
             integration_policy=policy,
         )
+        from src.playbooks.features import execution_metadata_from_source, infer_required_features
+
+        artifact = artifact.model_copy(update={
+            "trusted_execution": execution_metadata_from_source(source.frontmatter, artifact),
+        })
+        artifact = artifact.model_copy(update={
+            "required_features": infer_required_features(artifact, contracts=contracts),
+        })
     except (KeyError, ValueError, ValidationError) as exc:
         diagnostics.append(Diagnostic("error", "ambiguous_prose", str(exc)))
         digest = source_digest(source.raw)

@@ -149,6 +149,7 @@ VALIDATOR_CODES: Final[frozenset[str]] = frozenset(
         "capability_not_subset",
         "delegation_runtime_checked",
         "stale_contract",
+        "unsupported_feature",
     }
 )
 
@@ -219,6 +220,7 @@ class ContractInfo:
     # Generic JSON-object models expose document properties, never a "root"
     # parameter. Full JSON Schema validation remains the runtime boundary.
     argument_schema: Mapping[str, Any] | None = None
+    required_features: tuple[str, ...] = ()
 
 
 @runtime_checkable
@@ -339,6 +341,7 @@ class RegistryContractLookup:
                 for outcome in execution.outcomes
             },
             argument_schema=argument_schema,
+            required_features=("generated_commands_v1",) if execution.schema_generation == 2 else (),
         )
 
 
@@ -883,6 +886,11 @@ def validate_definition(
         events=events if events is not None else RegisteredEventLookup(),
         inventory=inventory,
     )
+    from src.playbooks.features import unsupported_feature_message, unsupported_features
+
+    for feature in unsupported_features(definition, contracts=context.contracts):
+        context.emit("unsupported_feature", unsupported_feature_message(feature),
+                     field="/required_features")
     _structure_and_closure(context)
     _loops(context)
     _definite_assignment(context)

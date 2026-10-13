@@ -550,6 +550,9 @@ def _invalid_artifacts() -> dict[str, dict[str, Any]]:
         return artifact["rules"][0]
 
     table: dict[str, dict[str, Any]] = {
+        "unsupported_feature": _mutate(
+            twin(), lambda a: a.update(required_features=["future_v9"])
+        ),
         "unknown_identifier": _mutate(
             twin(), lambda a: a["steps"]["act"].update(command="session_kill")
         ),

@@ -928,6 +928,7 @@
         "tests/test_playbook_artifact_store.py",
         "tests/test_playbook_collections.py",
         "tests/test_playbook_explanation.py",
+        "tests/test_playbook_features.py",
         "tests/test_playbook_graph_projection.py",
         "tests/test_playbook_v2_definition.py",
         "tests/test_playbook_v2_expressions.py",
@@ -12202,6 +12203,33 @@
         "parametrize"
       ],
       "summary": "Intent is a pure projection of the contract that a node would invoke."
+    },
+    "tests/test_playbook_features.py": {
+      "areas": [
+        "playbook-definition"
+      ],
+      "default_arm": true,
+      "digest": "sha256:0a7ca10e2e09a86a7e5392ab9805dc87f608fea629444e0f26996b5dffdaadc4",
+      "imports": [
+        "src.commands.principal",
+        "src.doctor.playbook_v2_checks",
+        "src.playbooks",
+        "src.playbooks.activation",
+        "src.playbooks.artifact_diff",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.features",
+        "src.playbooks.proposal",
+        "src.playbooks.run_state",
+        "src.playbooks.semantic_diff",
+        "src.playbooks.validation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Feature pins preserve legacy bytes and refuse unsupported effects independently."
     },
     "tests/test_playbook_graph_projection.py": {
       "areas": [
