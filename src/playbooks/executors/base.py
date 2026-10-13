@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
-from src.playbooks.expressions import ResolutionScope
+from src.playbooks.expressions import EvaluationBudget, ResolutionScope
 from src.playbooks.receipts import project_receipt
 from src.llm.types import TokenUsage
 
@@ -222,6 +222,8 @@ class StepContext:
     #: Engine-owned durable boundary.  Only live tool-enabled LLM execution
     #: receives one; the executor never imports the engine or repository.
     on_tool_turn: Callable[[LLMToolTurn], Awaitable[None]] | None = None
+    evaluation_budget: EvaluationBudget = field(default_factory=EvaluationBudget)
+    rendered_prompts: dict[str, str] = field(default_factory=dict)
 
 
 @runtime_checkable

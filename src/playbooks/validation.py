@@ -21,7 +21,7 @@ import re
 
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from typing import Any, Final, Literal, Protocol, runtime_checkable
 
@@ -50,6 +50,10 @@ from src.playbooks.expressions import (
     LOOP_ONLY_CONTEXT_PATHS,
     BindingRef,
     CoalesceValue,
+    FilterValue,
+    MapValue,
+    LenValue,
+    DiffValue,
     ContextRef,
     EventRef,
     ListValue,
@@ -607,6 +611,8 @@ def event_field_type(schema: Mapping[str, Any], path: str) -> ValueType | None:
     kind = _JSON_TYPE_NAMES.get(str(spec.get("type")))
     if kind is None:
         return UNKNOWN
+    if kind == "array":
+        return type_from_schema(spec)
     if kind == "object":
         nested = spec.get("fields")
         properties = (
@@ -1135,22 +1141,24 @@ def _loops(context: _Context) -> None:
     by_item: dict[str, list[str]] = {}
     for loop_id, loop in loops.items():
         by_item.setdefault(loop.item_binding, []).append(loop_id)
-    for step_id, step in sorted(definition.steps.items()):
-        for value in step_values(step):
-            if not isinstance(value, LoopRef):
+    for rule_id, step_id, values in _expression_sites(definition):
+        for value, binders in values:
+            if not isinstance(value, LoopRef) or any(
+                binder.item_binding == value.binding for binder in binders
+            ):
                 continue
             owners = by_item.get(value.binding, [])
             inside = any(
                 step_id in context.bodies.get(owner, set())
                 for owner in owners
-                if definition.steps[owner].rule == step.rule
+                if definition.steps[owner].rule == rule_id
             )
             if not inside:
                 context.emit(
                     "loop_ref_outside_loop",
                     f"step {step_id!r} reads loop variable {value.binding!r} outside the "
                     f"body of its loop",
-                    rule_id=step.rule,
+                    rule_id=rule_id,
                     step_id=step_id,
                 )
 
@@ -1342,6 +1350,15 @@ def _value_type(context: _Context, scope: _TypeScope, value: Any) -> ValueType:
                 name: _value_type(context, scope, item) for name, item in value.fields.items()
             },
         )
+    if isinstance(value, LenValue):
+        return INTEGER
+    if isinstance(value, (FilterValue, DiffValue)):
+        collection = value.collection if isinstance(value, FilterValue) else value.left
+        kind = _value_type(context, scope, collection)
+        return ValueType("array", item_type=kind.item_type or UNKNOWN)
+    if isinstance(value, MapValue):
+        local = _expression_scope(context, scope, (value,))
+        return ValueType("array", item_type=_value_type(context, local, value.value))
     if isinstance(value, CoalesceValue):
         options = [_value_type(context, scope, option) for option in value.options]
         joined = join_types(options)
@@ -1349,6 +1366,15 @@ def _value_type(context: _Context, scope: _TypeScope, value: Any) -> ValueType:
             return joined.with_nullable(False)
         return joined.with_nullable(True)
     return UNKNOWN
+
+
+def _expression_scope(context: _Context, scope: _TypeScope, binders: tuple) -> _TypeScope:
+    for binder in binders:
+        collection = _value_type(context, scope, binder.collection)
+        scope = replace(scope, loop_items={
+            **scope.loop_items, binder.item_binding: collection.item_type or UNKNOWN,
+        })
+    return scope
 
 
 def _is_total(value: Any, value_type: ValueType) -> bool:
@@ -1360,6 +1386,15 @@ def _is_total(value: Any, value_type: ValueType) -> bool:
     if value_type.is_unknown:
         return False
     return not value_type.nullable and value_type.kind != "null"
+
+
+def _expression_sites(definition: PlaybookDefinition):
+    """Scoped value occurrences in guards and steps, including nested predicates."""
+    for rule in definition.rules:
+        if rule.guard is not None:
+            yield rule.id, None, condition_values(rule.guard, scoped=True)
+    for step_id, step in sorted(definition.steps.items()):
+        yield step.rule, step_id, step_values(step, scoped=True)
 
 
 def _values_and_types(context: _Context) -> None:
@@ -1389,18 +1424,19 @@ def _values_and_types(context: _Context) -> None:
                         field=f"/trigger/filter/{key}",
                     )
 
-    for step_id, step in sorted(definition.steps.items()):
-        scope = scopes.get(step.rule)
-        if scope is None:
+    for rule_id, step_id, values in _expression_sites(definition):
+        outer_scope = scopes.get(rule_id)
+        if outer_scope is None:
             continue
         in_loop = any(step_id in body for body in context.bodies.values())
-        for value in step_values(step):
+        for value, binders in values:
+            scope = _expression_scope(context, outer_scope, binders)
             if isinstance(value, EventRef) and scope.event_schema is not None:
                 if event_field_type(scope.event_schema, value.path) is None:
                     context.emit(
                         "unknown_event_field",
                         f"{value.path!r} is not a field of {scope.rule.trigger.event_type!r}",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
             elif isinstance(value, ContextRef):
@@ -1408,16 +1444,35 @@ def _values_and_types(context: _Context) -> None:
                     context.emit(
                         "unknown_context_path",
                         f"{value.path!r} is not part of the engine context",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
                 elif value.path in LOOP_ONLY_CONTEXT_PATHS and not in_loop:
                     context.emit(
                         "unknown_context_path",
                         f"{value.path!r} exists only inside a loop body",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
+            elif isinstance(value, (FilterValue, MapValue, LenValue, DiffValue)):
+                collections = (
+                    [value.left, value.right] if isinstance(value, DiffValue)
+                    else [value.collection]
+                )
+                for collection in collections:
+                    kind = _value_type(context, scope, collection)
+                    if not kind.is_unknown and (kind.kind != "array" or kind.nullable):
+                        context.emit(
+                            "type_mismatch", f"{value.type} requires a non-null array",
+                            rule_id=rule_id, step_id=step_id,
+                        )
+                    if isinstance(value, DiffValue) and value.key_path and kind.item_type:
+                        identity = walk_type_path(kind.item_type, value.key_path)
+                        if identity.kind in {"array", "object"}:
+                            context.emit(
+                                "type_mismatch", "diff key_path must identify a scalar",
+                                rule_id=rule_id, step_id=step_id,
+                            )
             elif isinstance(value, CoalesceValue):
                 last = value.options[-1]
                 last_type = _value_type(context, scope, last)
@@ -1428,7 +1483,7 @@ def _values_and_types(context: _Context) -> None:
                         "type_unknown",
                         "the last coalesce option has no statically known type, so its "
                         "totality could not be checked",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
                 elif not _is_total(last, last_type):
@@ -1436,7 +1491,7 @@ def _values_and_types(context: _Context) -> None:
                         "coalesce_not_total",
                         "the last coalesce option can still be null, so this chain does "
                         "not make the value total",
-                        rule_id=step.rule,
+                        rule_id=rule_id,
                         step_id=step_id,
                     )
     context.scopes.update(scopes)
@@ -1985,11 +2040,18 @@ def _inventory_names(definition: PlaybookDefinition) -> list[tuple[str, str | No
         binding = getattr(step, "save_result_as", None)
         if binding:
             names.append((binding, step.rule, step_id))
-        for value in step_values(step):
+    for rule_id, step_id, values in _expression_sites(definition):
+        for value, binders in values:
+            if binders and isinstance(value, (BindingRef, LoopRef)) and value.path:
+                names.append((value.path, rule_id, step_id))
+            if isinstance(value, (FilterValue, MapValue)):
+                names.append((value.item_binding, rule_id, step_id))
+            if isinstance(value, DiffValue) and value.key_path:
+                names.append((value.key_path, rule_id, step_id))
             if isinstance(value, (BindingRef, LoopRef)):
-                names.append((value.binding, step.rule, step_id))
+                names.append((value.binding, rule_id, step_id))
             elif isinstance(value, EventRef):
-                names.append((value.path, step.rule, step_id))
+                names.append((value.path, rule_id, step_id))
     return names
 
 

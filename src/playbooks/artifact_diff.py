@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -22,7 +23,7 @@ def _plain_ref(ref: Any) -> dict[str, Any] | None:
 
 
 def _fields(before: Any, after: Any, path: str = "") -> list[dict[str, Any]]:
-    if before == after:
+    if json.dumps(before, sort_keys=True) == json.dumps(after, sort_keys=True):
         return []
     if isinstance(before, Mapping) and isinstance(after, Mapping):
         rows = []
@@ -49,15 +50,21 @@ def _fields(before: Any, after: Any, path: str = "") -> list[dict[str, Any]]:
     return [_field(path or "/", before, after)]
 
 
+def _project_change(value: Any) -> dict:
+    if isinstance(value, Mapping) and value.get("type") in {"filter", "map", "len", "diff"}:
+        return project_value(value)
+    return project_value({"type": "literal", "value": value})
+
+
 def _field(path: str, before: Any, after: Any) -> dict[str, Any]:
     parts = [part for part in path.split("/") if part]
     executable = not bool(parts and (parts[0] in _PRESENTATION_ROOTS or parts[-1] == "label"))
     return {
         "path": path,
-        "before": project_value({"type": "literal", "value": before})
+        "before": _project_change(before)
         if before is not None
         else None,
-        "after": project_value({"type": "literal", "value": after}) if after is not None else None,
+        "after": _project_change(after) if after is not None else None,
         "executable": executable,
     }
 

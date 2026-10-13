@@ -123,7 +123,8 @@ def project_value(value: Any, *, redacted: bool = False, type_name: str | None =
     elif kind in {"binding_ref", "loop_ref"}:
         binding = getattr(value, "binding", raw.get("binding"))
         path = getattr(value, "path", raw.get("path"))
-        display = f"{binding}{'.' + path if path else ''}"
+        index = raw.get("index", False)
+        display = f"{binding}#index" if index else f"{binding}{'.' + path if path else ''}"
         dto_kind = kind
     elif kind == "template":
         parts = getattr(value, "parts", raw.get("parts", ()))
@@ -133,6 +134,24 @@ def project_value(value: Any, *, redacted: bool = False, type_name: str | None =
         path = getattr(value, "path", raw.get("path"))
         display = f"this run's {str(path).replace('.', ' ')}"
         dto_kind = "expression"
+    elif kind in {"filter", "map"}:
+        collection = project_value(raw["collection"])["display"]
+        binding = raw["item_binding"]
+        body = (
+            _condition_text(raw["predicate"]) if kind == "filter"
+            else project_value(raw["value"])["display"]
+        )
+        display = f"{kind}({collection}, {binding} => {body})"
+        dto_kind = kind
+    elif kind == "len":
+        display = f"len({project_value(raw['collection'])['display']})"
+        dto_kind = kind
+    elif kind == "diff":
+        left = project_value(raw["left"])["display"]
+        right = project_value(raw["right"])["display"]
+        key = f", key_path={_json(raw['key_path'])}" if raw.get("key_path") else ""
+        display = f"diff({left}, {right}{key})"
+        dto_kind = kind
     elif kind == "coalesce":
         options = getattr(value, "options", raw.get("options", ()))
         display = " or else ".join(project_value(option)["display"] for option in options)

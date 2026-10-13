@@ -54,6 +54,37 @@ Options:
 
 A rule has one event trigger, an optional typed guard, and an entry step. Triggers can use an equality/membership filter. Within a run, values resolve from the triggering event, the durable run context, prior declared bindings, and a `foreach` item. Validation rejects unavailable names, invalid event paths, incompatible values, unreachable steps, unsafe loops, undeclared outputs, unsupported command outcomes, excessive schemas, and capability violations rather than guessing that they are safe. [Expressions](../../src/playbooks/expressions.py) and [validation](../../src/playbooks/validation.py) implement these checks.
 
+Collection values compose inside inputs, guards, decisions, prompts, and loop
+collections. Each operand must be a list; use `coalesce` with an empty list when
+an absent or null value should mean “no items”.
+
+| Value type | Fields | Result |
+|---|---|---|
+| `filter` | `collection`, `item_binding`, `predicate` | Items whose typed condition is true, in input order. |
+| `map` | `collection`, `item_binding`, `value` | One resolved value per item, in input order. |
+| `len` | `collection` | The nonnegative item count. |
+| `diff` | `left`, `right`, optional `key_path` | First left items whose identities do not occur on the right, deduplicated in left order. |
+
+A `filter` predicate or `map` body reads its item using `loop_ref`. Its binding is
+local to that body and may shadow an outer expression or `foreach` item without
+changing the outer item or any step result. The collection itself resolves in
+the enclosing scope. `loop_ref` with `index: true` reads the local zero-based
+index. Known array schemas carry their item types through these expressions;
+opaque command results are checked against argument types at runtime.
+
+Without `key_path`, `diff` compares canonical JSON identities: object key order
+is irrelevant, equal numbers such as `1` and `1.0` match, and booleans remain
+distinct from numbers. A dotted `key_path` must exist and identify a scalar on
+every item in both operands. Missing paths and non-scalar identities fail.
+
+Evaluation shares a 100,000-visit budget across all inputs of a step or all cases
+of one decision. Expression depth is limited to 10; each intermediate or final
+collection is limited to 10,000 items and 262,144 encoded JSON bytes. Limits are
+checked during construction. Exhaustion produces a named expression diagnostic
+under `input_resolution_failed` before command dispatch. Graph explanations show
+the predicate, mapped value, and diff key; Advanced retains the canonical typed
+expression, subject to the command's redaction policy.
+
 The V2 step vocabulary is deliberately closed:
 
 | Step | Input / output purpose |

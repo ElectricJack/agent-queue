@@ -68,6 +68,7 @@ from src.playbooks.executors.wait import WaitResumption, resolve_wait_result
 from src.playbooks.expressions import (
     ResolutionScope,
     ValueResolutionError,
+    EvaluationBudget,
     evaluate_condition,
     resolve_value,
 )
@@ -431,7 +432,9 @@ class _RunControl:
     receipt: StepReceipt | None = None
 
 
-def _authored_idempotency_key(step: Any, scope: ResolutionScope) -> str | None:
+def _authored_idempotency_key(
+    step: Any, scope: ResolutionScope, budget: EvaluationBudget | None = None
+) -> str | None:
     """Resolve a ``CommandStep``'s step-level idempotency override, if any.
 
     Resolved here rather than in the executor for the same reason
@@ -443,7 +446,7 @@ def _authored_idempotency_key(step: Any, scope: ResolutionScope) -> str | None:
     raw = getattr(step, "idempotency_key", None)
     if raw is None:
         return None
-    value = resolve_value(raw, scope)
+    value = resolve_value(raw, scope, budget)
     return None if value is None else str(value)
 
 
@@ -740,12 +743,13 @@ class PlaybookEngine:
             step = artifact.steps.get(cursor.step_id)
             if step is None:
                 raise UnknownStepType(f"step {cursor.step_id!r} is not in the artifact")
+            budget = EvaluationBudget()
             try:
                 inputs = {
-                    name: resolve_value(value, cursor.scope)
+                    name: resolve_value(value, cursor.scope, budget)
                     for name, value in getattr(step, "inputs", {}).items()
                 }
-                authored_key = _authored_idempotency_key(step, cursor.scope)
+                authored_key = _authored_idempotency_key(step, cursor.scope, budget)
             except ValueResolutionError as exc:
                 paths.append(
                     DryRunPath(
@@ -777,6 +781,7 @@ class PlaybookEngine:
                 result = await self._execute_symbolic(
                     step, cursor, artifact, artifact_ref, principal, inputs,
                     authored_key=authored_key,
+                    budget=budget,
                     mode=mode,
                     dispatch_id=dispatch_id,
                     run_id=run_id_for(cursor.rule_id),
@@ -966,6 +971,7 @@ class PlaybookEngine:
         inputs: Mapping[str, Any],
         *,
         authored_key: str | None = None,
+        budget: EvaluationBudget | None = None,
         mode: ExecutionMode,
         dispatch_id: str,
         run_id: str,
@@ -991,12 +997,18 @@ class PlaybookEngine:
             iteration_index=None if cursor.loop is None else cursor.loop.index,
             inputs=inputs,
             authored_idempotency_key=authored_key,
+            evaluation_budget=budget if budget is not None else EvaluationBudget(),
             loop_frame=cursor.loop,
         )
         try:
             return await executor_for(step.type, executor_mode).execute(step, ctx)
         except asyncio.CancelledError:
             raise
+        except ValueResolutionError as exc:
+            return ExecutorResult(
+                control=StepControl.UNRESOLVED, outcome="input_resolution_failed",
+                diagnostics=(exc.reason,),
+            )
         except Exception as exc:  # noqa: BLE001 - a preview/provider error is an honest boundary
             return ExecutorResult(
                 control=StepControl.UNRESOLVED,
@@ -2267,12 +2279,13 @@ class PlaybookEngine:
 
         # 4. Resolve inputs.  A miss is an outcome *before* the executor
         #    runs; the engine never injects a marker and never coerces to "".
+        budget = EvaluationBudget()
         try:
             inputs = {
-                name: resolve_value(value, scope)
+                name: resolve_value(value, scope, budget)
                 for name, value in getattr(step, "inputs", {}).items()
             }
-            authored_key = _authored_idempotency_key(step, scope)
+            authored_key = _authored_idempotency_key(step, scope, budget)
         except ValueResolutionError as exc:
             attempt.outcome = "input_resolution_failed"
             attempt.error = exc.reason
@@ -2336,6 +2349,7 @@ class PlaybookEngine:
             cancel_event=control.cancel_event if control is not None else None,
             inputs=inputs,
             authored_idempotency_key=authored_key,
+            evaluation_budget=budget,
             loop_frame=snapshot.loop,
             llm_turns=snapshot.llm_turns,
             on_tool_turn=on_tool_turn if isinstance(step, LlmStep) else None,
@@ -2499,6 +2513,11 @@ class PlaybookEngine:
                     outcome="runtime_error",
                     diagnostics=(type(cause).__name__,),
                 )
+        except ValueResolutionError as exc:
+            result = ExecutorResult(
+                control=StepControl.ADVANCE, outcome="input_resolution_failed",
+                diagnostics=(exc.reason,),
+            )
         except Exception as exc:  # noqa: BLE001 - §3.4 step 6
             result = ExecutorResult(
                 control=StepControl.ADVANCE,

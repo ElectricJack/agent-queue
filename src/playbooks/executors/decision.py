@@ -34,7 +34,7 @@ class DecisionExecutor:
     async def execute(self, step: DecisionStep, ctx: StepContext) -> ExecutorResult:
         for index, case in enumerate(step.cases):
             try:
-                matched = evaluate_condition(case.when, ctx.scope)
+                matched = evaluate_condition(case.when, ctx.scope, ctx.evaluation_budget)
             except ValueResolutionError as exc:
                 # A type error the compiler could not see.  It is an outcome,
                 # not an exception, so the artifact can route it.

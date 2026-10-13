@@ -18,6 +18,7 @@ from src.playbooks.definition import (
     step_targets,
 )
 from src.playbooks.expressions import (
+    EvaluationBudget,
     ResolutionScope,
     ValueResolutionError,
     evaluate_condition,
@@ -236,10 +237,11 @@ def _artifact_command_effects(
                         f"rule {rule.id!r} targets missing step {step_id!r}"
                     )
                 if isinstance(step, DecisionStep) and match_filter:
+                    budget = EvaluationBudget()
                     target = step.default
                     try:
                         for case in step.cases:
-                            if evaluate_condition(case.when, ResolutionScope(event=event)):
+                            if evaluate_condition(case.when, ResolutionScope(event=event), budget):
                                 target = case.goto
                                 break
                     except ValueResolutionError as exc:
@@ -249,10 +251,11 @@ def _artifact_command_effects(
                     pending.append(target)
                     continue
                 if isinstance(step, CommandStep):
+                    budget = EvaluationBudget()
                     inputs: dict[str, Any] = {}
                     for name, value in step.inputs.items():
                         try:
-                            inputs[name] = resolve_value(value, ResolutionScope(event=event))
+                            inputs[name] = resolve_value(value, ResolutionScope(event=event), budget)
                         except ValueResolutionError as exc:
                             if match_filter:
                                 raise _RoutingArtifactUnavailable(

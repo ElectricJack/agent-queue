@@ -31,7 +31,7 @@ class TerminalExecutor:
         value = None
         if step.result is not None:
             try:
-                value = resolve_value(step.result, ctx.scope)
+                value = resolve_value(step.result, ctx.scope, ctx.evaluation_budget)
             except ValueResolutionError as exc:
                 return ExecutorResult(
                     control=StepControl.ADVANCE,

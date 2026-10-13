@@ -98,7 +98,7 @@ class ForEachExecutor:
             )
 
         try:
-            collection = resolve_value(step.collection, ctx.scope)
+            collection = resolve_value(step.collection, ctx.scope, ctx.evaluation_budget)
         except ValueResolutionError as exc:
             return ExecutorResult(
                 control=StepControl.ADVANCE,
