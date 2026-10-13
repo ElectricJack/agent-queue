@@ -9,11 +9,105 @@ in is ``place_pool_actions``' problem — see ``tests/test_pool_placement.py``.
 from __future__ import annotations
 
 import pytest
+from hypothesis import given, strategies as st
 
 from src.scheduler import PoolKey, PoolProjectSupply, PoolSupply, size_pools
 
 K = PoolKey("worker")
 K2 = PoolKey("reviewer")
+
+
+@st.composite
+def pool_histories(draw):
+    count = draw(st.integers(1, 4))
+    ceilings = draw(st.lists(st.integers(0, 6), min_size=count, max_size=count))
+    floors = [draw(st.integers(0, ceiling)) for ceiling in ceilings]
+    ticks = draw(st.lists(
+        st.tuples(
+            st.lists(st.integers(0, 10), min_size=count, max_size=count),
+            st.integers(0, 6),  # completions per pool before sizing
+            st.integers(0, 6),  # claims per pool after sizing
+        ), min_size=1, max_size=15,
+    ))
+    return ceilings, floors, ticks
+
+
+@given(history=pool_histories(), global_cap=st.integers(0, 15), budget=st.integers(1, 5))
+def test_property_pool_histories_preserve_fleet_and_profile_caps(history, global_cap, budget):
+    """Apply starts, claims, completions and drains across successive measurements."""
+    ceilings, floors, ticks = history
+    keys = [PoolKey(f"pool-{i}") for i in range(len(ceilings))]
+    bounds = {key: (lo, hi) for key, lo, hi in zip(keys, floors, ceilings)}
+    supply = {key: PoolSupply() for key in keys}
+    surplus = {}
+    next_session = 0
+    for tick, (ready, completions, claims) in enumerate(ticks):
+        booting = {key: sup.starting for key, sup in supply.items()}
+        for key in keys:
+            sup = supply[key]
+            completed = min(completions, sup.running_busy)
+            sup.running_busy -= completed
+            for _ in range(completed):
+                sup.idle_session_ids.append(f"session-{next_session}")
+                next_session += 1
+            sup.running_idle += completed
+        actions, surplus = size_pools(
+            supply=supply, demand=dict(zip(keys, ready)), bounds=bounds,
+            global_cap=global_cap, surplus_since=surplus, now=float(tick * 10),
+            scale_down_grace=10, max_starts_per_tick=budget, max_drains_per_tick=budget,
+        )
+        assert sum(a.count for a in actions if a.kind == "start") <= budget
+        assert sum(a.count for a in actions if a.kind == "drain") <= budget
+        for action in actions:
+            sup = supply[action.key]
+            if action.kind == "start":
+                # A launch remains in flight until the following measurement.
+                sup.starting += action.count
+            else:
+                assert action.count == len(action.session_ids)
+                assert list(action.session_ids) == sup.idle_session_ids[:action.count]
+                assert tick * 10 - surplus[action.key] >= 10
+                del sup.idle_session_ids[:action.count]
+                sup.running_idle -= action.count
+        for key, ceiling in zip(keys, ceilings):
+            sup = supply[key]
+            assert 0 <= sup.running_idle + sup.running_busy + sup.starting <= ceiling
+        assert sum(s.running_idle + s.running_busy + s.starting for s in supply.values()) <= global_cap
+        for key, queued in zip(keys, ready):
+            sup = supply[key]
+            for _ in range(booting[key]):
+                sup.idle_session_ids.append(f"session-{next_session}")
+                next_session += 1
+            sup.running_idle += booting[key]
+            sup.starting -= booting[key]
+            claimed = min(claims, queued, sup.running_idle)
+            del sup.idle_session_ids[:claimed]
+            sup.running_idle -= claimed
+            sup.running_busy += claimed
+
+
+@given(ready=st.integers(1, 10), cap=st.integers(1, 6), budget=st.integers(1, 4))
+def test_property_ready_demand_gets_capacity_without_raising_a_ceiling(ready, cap, budget):
+    supply = PoolSupply()
+    for tick in range(ready):
+        # Finish the previous tick's claims, freeing these same workers.
+        supply.running_idle += supply.running_busy
+        supply.running_busy = 0
+        supply.idle_session_ids = [f"idle-{i}" for i in range(supply.running_idle)]
+        actions, _ = run(
+            supply={K: supply}, demand={K: ready}, bounds={K: (0, cap)},
+            global_cap=cap, max_starts_per_tick=budget, now=float(tick),
+        )
+        supply.running_idle += sum(a.count for a in actions if a.kind == "start")
+        claimed = min(ready, supply.running_idle)
+        assert claimed > 0
+        supply.running_idle -= claimed
+        supply.running_busy += claimed
+        ready -= claimed
+        assert supply.running_idle + supply.running_busy <= cap
+        if ready == 0:
+            break
+    assert ready == 0
 
 
 @pytest.mark.asyncio

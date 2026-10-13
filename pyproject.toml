@@ -176,6 +176,7 @@ dev = [
     "pytest-cov>=6.0",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.5",
+    "hypothesis>=6.100",
     # Keep shard selection reproducible across CI runners and timing refreshes.
     "pytest-split==0.11.0",
     "ruff>=0.4.0",

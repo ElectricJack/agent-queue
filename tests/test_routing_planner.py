@@ -14,6 +14,7 @@ from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
+from hypothesis import given, strategies as st
 
 from src.routing.planner import (
     FALLBACK,
@@ -134,6 +135,76 @@ def _snapshot(profiles=None, *, out=(), degraded=(), usage=None, busy=None, back
         profiles=tuple(_fleet() if profiles is None else profiles),
         providers=providers, busy=dict(busy or {}), backlog=dict(backlog or {}),
     )
+
+
+@st.composite
+def routing_history(draw):
+    profiles = tuple(
+        _rung("standard-high", harness, slots=draw(st.integers(0, 5)),
+              enabled=draw(st.booleans()))
+        for harness in ("codex", "claude")
+    )
+    states = st.sampled_from([
+        "available", "degraded", "exhausted", "unauthenticated", "failing", "disabled",
+    ])
+    transitions = draw(st.lists(
+        st.tuples(st.integers(0, 1), st.booleans(), states, st.integers(0, 10)),
+        min_size=1, max_size=15,
+    ))
+    return profiles, transitions
+
+
+@given(history=routing_history())
+def test_property_routes_and_fresh_apply_never_choose_disabled_capacity(history):
+    profiles, transitions = history
+    providers = {p.provider: ProviderFacts() for p in profiles}
+    busy = {}
+    saved_candidates = []
+    task = _task(task_type="feature", class_hint="standard-high")
+    for index, enabled, state, load in transitions:
+        profiles = tuple(replace(p, enabled=enabled) if i == index else p
+                         for i, p in enumerate(profiles))
+        profile = profiles[index]
+        providers[profile.provider] = ProviderFacts(
+            state=state, launchable=state in {"available", "degraded"},
+        )
+        busy[profile.id] = load
+        snapshot = Snapshot(profiles=profiles, providers=providers, busy=busy)
+        # task_route_apply revalidates a saved plan against the fresh snapshot
+        # before scoring it; a profile/provider can change after planning.
+        selection = reselect(
+            [c for c in saved_candidates if is_candidate(c, snapshot)], snapshot, POLICY.balance,
+        )
+        if selection is not None:
+            chosen = snapshot.profile(selection.chosen.profile_id)
+            assert chosen.enabled and chosen.slots > 0
+            assert providers[chosen.provider].launchable
+            assert providers[chosen.provider].state in {"available", "degraded"}
+        result = _plan(task, snapshot, NARROW_NO)
+        if result.outcome == "planned":
+            chosen = snapshot.profile(result.value["profile_id"])
+            assert chosen is not None and chosen.enabled and chosen.slots > 0
+            assert providers[chosen.provider].state in {"available", "degraded"}
+            saved_candidates = [Candidate.from_dict(c) for c in result.value["candidates"]]
+        else:
+            assert result.outcome in {"held", "no_candidates"}
+            assert not any(p.enabled and p.slots > 0 and providers[p.provider].launchable
+                           for p in profiles)
+
+
+@given(excluded=st.sets(st.sampled_from(["codex", "claude"])),
+       loads=st.tuples(st.integers(0, 20), st.integers(0, 20)))
+def test_property_router_honors_provider_exclusions_at_any_load(excluded, loads):
+    profiles = tuple(_rung("standard-high", h) for h in ("codex", "claude"))
+    snapshot = _snapshot(profiles, busy=dict(zip((p.id for p in profiles), loads)))
+    result = _plan(_task(task_type="feature", exclude_providers=frozenset(excluded)),
+                   snapshot, NARROW_NO)
+    if excluded == {"codex", "claude"}:
+        assert result.outcome == "no_candidates"
+    else:
+        assert result.outcome == "planned"
+        assert result.value["provider"] not in excluded
+        assert all(c["provider"] not in excluded for c in result.value["candidates"])
 
 
 @pytest.mark.parametrize("class_hint", ["standard-high", "deep-high", "fast-high", "deep-low"])
