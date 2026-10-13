@@ -210,6 +210,7 @@ start code work, tests or QA from a digest author turn.
     "integration_reopen_collection",
     "integration_redrive_root",
     "integration_authorize_root",
+    "integration_supersede_completion",
     "integration_release_owner",
     "integration_reserve_owner",
     "integration_release_stale_owners",
