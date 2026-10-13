@@ -97,7 +97,8 @@
         "tests/perf/test_claim_statements.py",
         "tests/test_claim_commands.py",
         "tests/test_cli_claim_restart.py",
-        "tests/test_import_cycles.py"
+        "tests/test_import_cycles.py",
+        "tests/test_preparation_failure.py"
       ]
     },
     "cli-framework": {
@@ -8325,15 +8326,17 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:d8479718de658eddaea2510a0e23dd5ee63c2d03359fb3996cbbaef988591232",
+      "digest": "sha256:de72fddfdd8a6396cf9bec8a23613f9b3786e5d874a2f1c813abbdff1c667a48",
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.lock",
         "src.integration.models",
         "src.integration.ownership",
-        "src.models"
+        "src.models",
+        "src.preparation_failure"
       ],
       "markers": [
         "asyncio",
@@ -12867,6 +12870,22 @@
         "parametrize"
       ],
       "summary": "Tests for pr_merge command (dv2 Phase 2, Task 1)."
+    },
+    "tests/test_preparation_failure.py": {
+      "areas": [
+        "claims"
+      ],
+      "default_arm": true,
+      "digest": "sha256:cf1825d1d8b9a91e8b2ff1a2fc7895a0a33e3a509adcb8f82c842f3cd1963c2b",
+      "imports": [
+        "src.git.manager",
+        "src.llm.providers.errors",
+        "src.preparation_failure"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The bounded, scrubbed description every prepare-failure surface records."
     },
     "tests/test_prime_hook_envelopes.py": {
       "areas": [

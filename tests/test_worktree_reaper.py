@@ -202,7 +202,9 @@ async def test_existing_binding_reconciliation_preserves_source_and_owner(
             assert findings == []
         else:
             assert len(findings) == 1
-            assert findings[0]["kind"] == "slot_binding_retained"
+            assert findings[0]["kind"] == (
+                "slot_binding_preparing" if case == "preparing" else "slot_binding_retained"
+            )
             expected_detail = {
                 "foreign_claim": "foreign or unproved claim",
                 "missing_receipt": "acquisition receipt missing or stale",

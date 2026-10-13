@@ -9745,6 +9745,24 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Claim workspace-lock reconciliation reads integration_branch_owners and job_workspace_pins before moving this agent's idle misplaced lock to its session checkout. Foreign claims, live peer sessions, attached/handoff-pending owners and job pins refuse repair; the session and ordered workspace locks fence the ordinary workspace update. Charge this shared integration ownership guard; no ref publication or duplicate lifecycle."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only integration_branch_owners and job_workspace_pins predicate used before reprovisioning a missing slot. Attached/handoff-pending branch owners or any job pin retain the checkout binding; this helper changes neither fences nor refs. Charge the shared integration ownership guard."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim and integration schema import now also names job_workspace_pins for workspace-lock reconciliation. Retains the branch-owner and repair-operation reads and charges the complete shared import; the job pin is additional retained-writer proof, not ref replay or new lifecycle storage."
+    },
+    "src/orchestrator/workspace_binding_audit.py::_inspect_binding": {
+      "reason": "Read-only reconciliation of existing registered slot bindings against retained integration owner/job pins, current session instance/claim epoch/acquisition receipt and physical source identity. Reports mismatches or unknown evidence; never clears claims, releases locks, changes retry budgets or writes integration lifecycle/ref replay state."
+    },
+    "src/orchestrator/workspace_binding_audit.py::import from src.database.tables import integration_branch_owners, job_workspace_pins, sessions": {
+      "reason": "Read-only ownership/pin/session evidence for historical workspace reconciliation; charges the integration-owned import and probe separately from generic inventory formatting."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reap_slot": {
+      "reason": "Fresh transaction/generation/cap, retained integration owner/session/job pin, claim, process-liveness, sentinel/repository and cleanliness guards for retired inventory deletion. PostgreSQL deletion precedes non-forcing Git removal and successful commit precedes the reaped event; no ref publication/replay or duplicate integration lifecycle authority."
     }
   },
   "shared_state": {
@@ -10442,5 +10460,24 @@
     "refreshed_owner_fingerprints": 12,
     "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
     "reason": "The review-revision completion gate reads existing review-response metadata and persisted review revisions before any completion side effect. All 12 task-close write-call AST identities and ordinary-storage dispositions are unchanged from the parent commit; only source lines and the enclosing handler fingerprint changed. No ref-replay journal, duplicate lifecycle storage or new metadata writer was added. Immutable baseline, landing measurements, allowance and caps remain unchanged."
+  },
+  "combined_preparation_workspace_safety_review": {
+    "preserved_sources": [
+      "55af0ca8c086fbe19f6938fac578f77303c232ff",
+      "fca996b6fbb16900ba358f1e8147837e04247c31",
+      "d77002e4d73b9c7f9a76f3549f53b8b4b1ac44fc"
+    ],
+    "owned_definition_additions": {
+      "src/orchestrator/workspace_binding_audit.py::_inspect_binding": "Read-only reconciliation of existing registered slot bindings against retained integration owner/job pins, current session instance/claim epoch/acquisition receipt and physical source identity. Reports mismatches or unknown evidence; never clears claims, releases locks, changes retry budgets or writes integration lifecycle/ref replay state.",
+      "src/orchestrator/workspace_binding_audit.py::import from src.database.tables import integration_branch_owners, job_workspace_pins, sessions": "Read-only ownership/pin/session evidence for historical workspace reconciliation; charges the integration-owned import and probe separately from generic inventory formatting.",
+      "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reap_slot": "Fresh transaction/generation/cap, retained integration owner/session/job pin, claim, process-liveness, sentinel/repository and cleanliness guards for retired inventory deletion. PostgreSQL deletion precedes non-forcing Git removal and successful commit precedes the reaped event; no ref publication/replay or duplicate integration lifecycle authority."
+    },
+    "reviewed_storage_owners": [
+      "ClaimCommandsMixin._prepare_and_activate_locked",
+      "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "ClaimQueryMixin.activate_claim",
+      "ClaimCommandsMixin._record_prepare_failure"
+    ],
+    "reason": "Exact final-source writer AST calls reviewed against their existing ordinary-state dispositions. One scrubbed formatter and canonical prepare_failure diagnostic retain slot_reset_failure/branch_fenced recovery markers; acquisition receipt and epoch/instance/generation fences precede source mutation/activation. Historical binding audit is read-only and alerts through existing CommandHandler message_send, preserving foreign claims/deferred owners and unknown liveness. Fixed baseline, landing measurements, allowance, storage assertions and caps remain unchanged. Late failure attribution retains the old instance without successor cleanup or failure-streak changes; the canonical insert checks and locks the task epoch in its own transaction. The real-lock test replaces the session only after failed reset rolls back and simulates a newer epoch between the outer observation and the diagnostic transaction."
   }
 }

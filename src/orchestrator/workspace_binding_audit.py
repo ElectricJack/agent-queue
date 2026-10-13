@@ -32,7 +32,8 @@ async def reconcile_slot_bindings(db, mgr, project_id: str) -> list[dict]:
             continue
         if detail is not None:
             findings.append({
-                "kind": "slot_binding_retained", "workspace_id": ws.id,
+                "kind": "slot_binding_preparing" if detail.startswith("preparation in progress")
+                else "slot_binding_retained", "workspace_id": ws.id,
                 "generation": ws.generation, "locked_by_task_id": ws.locked_by_task_id,
                 "locked_by_agent_id": ws.locked_by_agent_id, "detail": detail,
             })

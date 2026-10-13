@@ -8674,6 +8674,24 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Claim workspace-lock reconciliation reads integration_branch_owners and job_workspace_pins before moving this agent's idle misplaced lock to its session checkout. Foreign claims, live peer sessions, attached/handoff-pending owners and job pins refuse repair; the session and ordered workspace locks fence the ordinary workspace update. Charge this shared integration ownership guard; no ref publication or duplicate lifecycle."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only integration_branch_owners and job_workspace_pins predicate used before reprovisioning a missing slot. Attached/handoff-pending branch owners or any job pin retain the checkout binding; this helper changes neither fences nor refs. Charge the shared integration ownership guard."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim and integration schema import now also names job_workspace_pins for workspace-lock reconciliation. Retains the branch-owner and repair-operation reads and charges the complete shared import; the job pin is additional retained-writer proof, not ref replay or new lifecycle storage."
+    },
+    "src/orchestrator/workspace_binding_audit.py::_inspect_binding": {
+      "reason": "Read-only reconciliation of existing registered slot bindings against retained integration owner/job pins, current session instance/claim epoch/acquisition receipt and physical source identity. Reports mismatches or unknown evidence; never clears claims, releases locks, changes retry budgets or writes integration lifecycle/ref replay state."
+    },
+    "src/orchestrator/workspace_binding_audit.py::import from src.database.tables import integration_branch_owners, job_workspace_pins, sessions": {
+      "reason": "Read-only ownership/pin/session evidence for historical workspace reconciliation; charges the integration-owned import and probe separately from generic inventory formatting."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.reap_slot": {
+      "reason": "Fresh transaction/generation/cap, retained integration owner/session/job pin, claim, process-liveness, sentinel/repository and cleanliness guards for retired inventory deletion. PostgreSQL deletion precedes non-forcing Git removal and successful commit precedes the reaped event; no ref publication/replay or duplicate integration lifecycle authority."
     }
   },
   "exclusions": {
@@ -12925,35 +12943,35 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
-    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1376,
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::a013c7a46d34c2c833b5b1129a77bc31978b9ed19c44d76097646187d4fe028d": {
+      "line": 1616,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "705a3a4f057a8f25f34fa9eda4d9eff670ee1fa54a2da5684df2211f802fdb3c",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
+      "reason": "Ordinary slot_reset_failure diagnostic snapshot after non-transient preparation errors: bounded scrubbed reason, error type and stage, observing workspace/session, timestamp, attempt and existing automatic/manual retry disposition. PostgreSQL contention bypasses this write. Re-reviewed after workspace binding, foreign-claim and checkout reconciliation guards changed the owner: the marker does not grant retries, reset budgets, replay refs or duplicate integration lifecycle; guarded release_claim still owns the transition. Re-reviewed against the combined formatter and workspace identity source: expected task, claim epoch and session instance fence release; reset/activation require the registered acquisition receipt. The existing disposition and hold/backoff semantics remain unchanged."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1362,
+      "line": 1587,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "705a3a4f057a8f25f34fa9eda4d9eff670ee1fa54a2da5684df2211f802fdb3c",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
+      "reason": "Ordinary needs_attention=integration_prepare_failed_attached marker, written only when arelease_integration_writer_for_retry cannot prove safe detachment. Re-reviewed after workspace/source guard integration: the existing claim, workspace and branch-owner attachment stay retained. Records no remote OIDs, publication intent, ref replay authority or duplicate lifecycle; the marker itself authorizes no cleanup or retry. Re-reviewed against the combined formatter and workspace identity source: expected task, claim epoch and session instance fence release; reset/activation require the registered acquisition receipt. The existing disposition and hold/backoff semantics remain unchanged."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1315,
+      "line": 1543,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "705a3a4f057a8f25f34fa9eda4d9eff670ee1fa54a2da5684df2211f802fdb3c",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
+      "reason": "Ordinary needs_attention=repair_target_unpublished marker after UnpublishedRepairTarget when BranchLock.release cannot release this managed fence. Re-reviewed after workspace/source guard integration: the marker preserves the retained binding and reports the observed missing repair target; it contains no remote OIDs, publication intent, ref replay authority or separate integration lifecycle. Re-reviewed against the combined formatter and workspace identity source: expected task, claim epoch and session instance fence release; reset/activation require the registered acquisition receipt. The existing disposition and hold/backoff semantics remain unchanged."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
-      "line": 924,
+      "line": 953,
       "owner": "ClaimCommandsMixin._recover_stale_binding",
       "call": "set_task_meta",
       "owner_fingerprint": "99a5abfe960334f70d651bb2d30fb440da856cb1c7bfc6ab0431150d36bead9d",
@@ -12961,14 +12979,14 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
-    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d": {
-      "line": 1036,
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::dafd2c39585871bc43eee31fe328d25d78b2fe580fe7377a7af483d0e3dd123a": {
+      "line": 1089,
       "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
       "call": "set_task_meta",
-      "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
+      "owner_fingerprint": "fcc2a7b6bfc832aa185cf15be06fc4934c9d4f44e0ab4b6d7fb4d398bfa71e60",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
+      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority. Re-reviewed against the combined formatter and workspace identity source: expected task, claim epoch and session instance fence release; reset/activation require the registered acquisition receipt. The existing disposition and hold/backoff semantics remain unchanged."
     },
     "src/commands/dashboard_state_commands.py::DashboardStateCommandsMixin._dashboard_mutate::7082de1161d61e4a5bb9e39c7bafb5ade15fe812419227082e188dc17f7e77ae": {
       "line": 225,
@@ -13394,13 +13412,13 @@
       "reason": "Audit of an exact stopped pool claim release: session id, claim epoch and prior task status only; no git ref replay or duplicate integration lifecycle authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1105,
+      "line": 1224,
       "owner": "ClaimQueryMixin.activate_claim",
       "call": "delete",
-      "owner_fingerprint": "d755f0b9f2b9d90f37419496ea854b1cb57e649db6094e95e5c78a187842aa86",
+      "owner_fingerprint": "d53523cf24693a549e7dca3199565720aa6d3cab69424aa62a12204d9d9e13c4",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary deletion of stale attention and preparation-backoff metadata after guarded PostgreSQL claim activation. Re-reviewed for clearing both session refusal budgets atomically: locks and admission guards remain before writes, with no remote OID, publication intent, ref replay or duplicate delivery lifecycle authority."
+      "reason": "Ordinary deletion of stale attention and preparation-backoff metadata after guarded PostgreSQL claim activation. Re-reviewed for clearing both session refusal budgets atomically: locks and admission guards remain before writes, with no remote OID, publication intent, ref replay or duplicate delivery lifecycle authority. Re-reviewed with byte-exact workspace/acquisition-generation/session-instance guards and obsolete diagnostic-key cleanup: successful activation remains the sole authority for deleting stale preparation records; no acquisition evidence, retained checkpoint or retry budget is erased on failure."
     },
     "src/database/queries/event_queries.py::EventQueryMixin._insert_event_row::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "line": 50,
@@ -14987,13 +15005,13 @@
       "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
-      "line": 1276,
+      "line": 1484,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "705a3a4f057a8f25f34fa9eda4d9eff670ee1fa54a2da5684df2211f802fdb3c",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Records a named preparation hold when a retained attachment cannot be safely released; ordinary claim diagnostic, never Git publication or ref replay authority."
+      "reason": "Ordinary needs_attention marker carrying StackPrerequisitesConflict or StackPreparationChanged.code when an attached writer cannot safely release for retry. Re-reviewed with unified failure diagnostics and workspace/source guards: the attachment and its existing recovery proof remain held; this write stores only the reason code, never retained source heads, ref replay authority or a duplicate integration lifecycle. Re-reviewed against the combined formatter and workspace identity source: expected task, claim epoch and session instance fence release; reset/activation require the registered acquisition receipt. The existing disposition and hold/backoff semantics remain unchanged."
     },
     "src/integration/cutover.py::_Activation.write_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "call": "insert",
@@ -15291,6 +15309,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Deletes the claimed_by_session record a durably stopped writer left on a task the operator closes (azure-beacon-38); ordinary claim lifecycle, no ref replay or duplicate integration lifecycle storage."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._record_prepare_failure::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 1164,
+      "owner": "ClaimCommandsMixin._record_prepare_failure",
+      "call": "insert",
+      "owner_fingerprint": "a7fda27a9d9609bcdb2d1dd69a4cc3a406e071ae64bd925710a5eb5fd6a10f76",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "One bounded, scrubbed canonical prepare_failure diagnostic attributes a permanent failure to the observing session instance and task claim epoch. A task row lock checks that epoch and holds it through this insert-or-update; a late completion cannot replace a newer claim diagnostic. It grants no release/reset authority, consumes no retry budget and stores no Git ref replay or duplicate integration lifecycle."
     }
   },
   "generic_dependencies": {
@@ -16167,7 +16194,8 @@
     "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently.",
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
-    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority."
+    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
+    "src/preparation_failure.py::describe_preparation_failure": "Generic dependency: pure description of a preparation exception (stage, type, scrubbed bounded message, cause chain); no storage, fence or publication authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

@@ -3701,7 +3701,8 @@ class Orchestrator(
             # Diagnose them without confusing a retained owner with a dead one.
             if self._command_handler is not None:
                 try:
-                    findings = await reconcile_slot_bindings(self.db, mgr, project.id)
+                    findings = [f for f in await reconcile_slot_bindings(self.db, mgr, project.id)
+                                if f["kind"] == "slot_binding_retained"]
                     previous = getattr(self, "_workspace_binding_findings", {})
                     accepted = True
                     if findings and previous.get(project.id) != findings:

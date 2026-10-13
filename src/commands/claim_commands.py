@@ -72,6 +72,12 @@ _FRONTIER_EVENTS = ("task.ready", "gate.resolved", "task.restarted", "task.compl
 #: the claim must simply retry (see :meth:`_branch_fenced_prepare_failed`).
 BRANCH_FENCED = "branch_fenced"
 
+#: Task-metadata key holding the last permanent preparation failure's
+#: description and the claim identity that observed it
+#: (:meth:`_record_prepare_failure`).  Diagnostic only; cleared with the rest
+#: of the preparation ladder by the next successful activation.
+PREPARE_FAILURE = "prepare_failure"
+
 
 def _task_block(task) -> dict:
     """The claimed task's own row, field-for-field with ``task_show``'s core.
@@ -1046,7 +1052,7 @@ class ClaimCommandsMixin:
             )
 
     async def _branch_fenced_prepare_failed(
-        self, task, project, *, exc, session, slot, epoch, row, cap
+        self, task, project, *, exc, failure, session, slot, epoch, row, cap
     ) -> bool:
         """Release a claim the branch fence refused, instead of BLOCKING it.
 
@@ -1081,7 +1087,9 @@ class ClaimCommandsMixin:
         ):
             return False
         await self.db.set_task_meta(task.id, BRANCH_FENCED, {
-            "reason": str(exc)[:2000],
+            "reason": failure.reason,
+            "error_type": failure.error_type,
+            "stage": failure.stage,
             "branch": task.branch_name,
             "repository_id": task.repo_id,
             "workspace_id": slot.id if slot else None,
@@ -1090,12 +1098,17 @@ class ClaimCommandsMixin:
         })
         await self.db.release_claim(
             session.id,
+            expected_task_id=task.id, expected_claim_epoch=epoch,
+            expected_instance_token=session.instance_token,
             task_status=TaskStatus.READY,
             context=BRANCH_FENCED,
             now=time.time(),
             result="prepare_failed",
             needs_attention=BRANCH_FENCED,
             prepare_backoff=True,
+        )
+        await self._record_prepare_failure(
+            task, failure, session=session, slot=slot, epoch=epoch, disposition="released"
         )
         await self.orchestrator.bus.emit(
             "pool.prepare_failed",
@@ -1104,11 +1117,56 @@ class ClaimCommandsMixin:
                 "profile_id": session.profile_id,
                 "session_id": session.id,
                 "task_id": task.id,
-                "reason": str(exc),
+                **failure.event_fields(),
             },
         )
         self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
         return True
+
+    async def _record_prepare_failure(
+        self, task, failure, *, session, slot, epoch, disposition, attempt=None
+    ) -> None:
+        """Record what a permanent preparation failure observed, and who saw it.
+
+        The identity (session instance, claim epoch, workspace) makes a late
+        or stale completion attributable; the record decides nothing --
+        retries, budgets and release/retention were settled by the caller.
+        Cleared, like the rest of the ladder, by the next activation.
+        """
+        import json
+
+        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert
+
+        from src.database.tables import task_metadata, tasks
+        from src.preparation_failure import safe_text
+
+        record = {
+            **failure.record(),
+            "task_id": task.id,
+            "session_id": session.id,
+            "instance_token": getattr(session, "instance_token", None),
+            "claim_epoch": epoch,
+            "workspace_id": slot.id if slot else None,
+            "workspace_path": safe_text(slot.workspace_path if slot else session.work_dir),
+            "disposition": disposition,
+            "attempt": attempt,
+            "failed_at": time.time(),
+        }
+        # Hold the task epoch through the metadata write: a late failure
+        # cannot replace the next claim's diagnostic after this read.
+        async with self.db.immediate() as conn:
+            current_epoch = await conn.scalar(
+                select(tasks.c.claim_epoch).where(tasks.c.id == task.id).with_for_update()
+            )
+            if current_epoch != epoch:
+                return
+            stmt = insert(task_metadata).values(
+                task_id=task.id, key=PREPARE_FAILURE, value=json.dumps(record)
+            )
+            await conn.execute(stmt.on_conflict_do_update(
+                index_elements=["task_id", "key"], set_={"value": stmt.excluded.value}
+            ))
 
     async def _prepare_and_activate_locked(
         self, session, row, task, cap=None, *, slot=None, project=_UNSET, admission=None
@@ -1130,7 +1188,11 @@ class ClaimCommandsMixin:
         hierarchy_enabled = False
         fresh = None
         prepared_branch: str | None = None
+        # The preparation step running when an exception escapes; the
+        # failure description names it (src/preparation_failure.py).
+        stage = "workspace_lookup"
         try:
+            stage = "workspace_binding"
             async with self.db.immediate() as identity_conn:
                 registered = await self.db.lock_claim_workspace(
                     identity_conn, session.id, task.id, epoch=epoch,
@@ -1142,6 +1204,7 @@ class ClaimCommandsMixin:
                     f"registered path {row.work_dir}; checkout left unchanged"
                 )
             slot = registered
+            stage = "claim_file_check"
             on_disk = read_claim_file(row.work_dir)
             if on_disk is None and Path(row.work_dir, ".aq", "claim.json").exists():
                 raise RuntimeError(f"workspace {slot.id} retains an unreadable claim; checkout unchanged")
@@ -1159,7 +1222,9 @@ class ClaimCommandsMixin:
             ):
                 raise RuntimeError(f"workspace {slot.id} at {row.work_dir} retains a foreign claim")
             if slot.is_slot:
+                stage = "ensure_slot_checkout"
                 await self.orchestrator._worktree_slots().ensure_slot_checkout(slot, task)
+            stage = "project_lookup"
             if project is _UNSET:
                 project = await self.db.get_project(task.project_id)
             if (admission is None
@@ -1176,13 +1241,14 @@ class ClaimCommandsMixin:
             async def prepare_and_activate(
                 *, conn=None, base_branch=None, target_branch=None, preserve_branch=False
             ):
-                nonlocal prepared_branch
+                nonlocal prepared_branch, stage
                 if conn is None:
                     async with self.db.immediate() as prepare_conn:
                         return await prepare_and_activate(
                             conn=prepare_conn, base_branch=base_branch,
                             target_branch=target_branch, preserve_branch=preserve_branch,
                         )
+                stage = "workspace_binding"
                 registered = await self.db.lock_claim_workspace(
                     conn, session.id, task.id, epoch=epoch,
                     instance_token=session.instance_token, expected_workspace=slot,
@@ -1190,6 +1256,7 @@ class ClaimCommandsMixin:
                 )
                 if registered is None:
                     raise RuntimeError("workspace binding changed before reset; checkout left unchanged")
+                stage = "stack_fetch"
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
                     reset_kwargs["target_branch"] = target_branch
@@ -1206,9 +1273,11 @@ class ClaimCommandsMixin:
                         ["fetch", "--no-tags", inputs["store"], *inputs["heads"]],
                         cwd=slot.workspace_path,
                     )
+                stage = "slot_reset"
                 branch = await self.orchestrator._worktree_slots().reset_slot_for_task(
                     slot, task, **reset_kwargs
                 )
+                stage = "claim_file"
                 prepared_branch = branch if isinstance(branch, str) and branch else None
                 # Writing the claim file joins the same guard as the slot
                 # reset: any failure after ``record_holder`` committed — a slot
@@ -1230,6 +1299,7 @@ class ClaimCommandsMixin:
                 # named on the task row, or neither happens.  Discarding it
                 # here is what left development-mode pool tasks with a NULL
                 # ``branch_name`` and an unclosable completion pipeline.
+                stage = "admission_recheck"
                 if admission is not None and (
                     task.id not in admission.allowed or not await admission.is_fresh(task.id)
                 ):
@@ -1237,7 +1307,9 @@ class ClaimCommandsMixin:
                 if hierarchy_enabled:
                     from src.integration.stacked_branches import verify_preparation
 
+                    stage = "verify_preparation"
                     await verify_preparation(origin, conn=conn)
+                stage = "activate_claim"
                 activated = await self.db.activate_claim(
                     session.id,
                     task.id,
@@ -1256,13 +1328,16 @@ class ClaimCommandsMixin:
                     expected_workspace=slot,
                 )
                 if activated and hierarchy_enabled:
+                    stage = "finalize_preparation"
                     await verify_preparation(origin, conn=conn, finalize=True)
+                stage = "activation_commit"
                 return activated
 
             if hierarchy_enabled:
                 from src.integration.ownership import BranchOwnership
                 from src.integration.repair import RepairService
 
+                stage = "integration_origin"
                 origin, fence, owner_role = await self.orchestrator._hierarchy_origin_and_fence(
                     task, project, preparing_session_id=session.id, preparing_workspace_id=slot.id,
                     preparation_workspace=slot.workspace_path,
@@ -1284,6 +1359,7 @@ class ClaimCommandsMixin:
                     # its own transaction here (before any ownership exclusion,
                     # on the canonical repair lock order) so the pool claim never
                     # holds a row lock ahead of the repair rows it re-arms.
+                    stage = "repair_start"
                     await RepairService(self.db).start_claimed_stage_budget(task.id)
                     async with self.db.immediate() as repair_conn:
                         if await self.db.lock_claim_workspace(
@@ -1299,6 +1375,7 @@ class ClaimCommandsMixin:
                                 slot.workspace_path, origin, fence,
                                 repository_url=project.repo_url or "",
                             )
+                stage = "integration_attach"
                 if not hierarchy_attached:
                     await ownership.attach(
                         fence,
@@ -1308,6 +1385,7 @@ class ClaimCommandsMixin:
                         expected_role=owner_role,
                     )
                 hierarchy_attached = True
+                stage = "activation_lock"
                 if previous_owner and previous_owner.get("fence") is not None:
                     # Managed recovery/filing takes task before ref. Holding
                     # ref while activate_claim locks session/task reverses
@@ -1350,9 +1428,21 @@ class ClaimCommandsMixin:
                     or current.task_id != task.id or current.last_claim_epoch != epoch
                     or current_task is None or current_task.claim_epoch != epoch
                     or current_task.assigned_agent_id != row.agent_id):
+                from src.preparation_failure import describe_preparation_failure
+
+                failure = describe_preparation_failure(exc, stage)
+                logger.warning("Superseded preparation %s/%s: %s",
+                               session.id, task.id, failure.reason)
+                # Diagnostic attribution is safe only while this is still
+                # the same task attempt. It grants no release/reset authority.
+                if current_task is not None and current_task.claim_epoch == epoch:
+                    await self._record_prepare_failure(
+                        task, failure, session=session, slot=slot, epoch=epoch,
+                        disposition="superseded",
+                    )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(
-                    ClaimResult.PREPARE_FAILED, "claim identity changed; holder left unchanged", row, cap
+                    ClaimResult.PREPARE_FAILED, failure.reason, row, cap
                 )
             from src.git.manager import ChildPreparationConflict, GitError
             from src.integration.stacked_branches import (
@@ -1370,6 +1460,13 @@ class ClaimCommandsMixin:
                 except (GitError, StackPreparationChanged) as changed:
                     exc = changed
 
+            from src.preparation_failure import describe_preparation_failure
+
+            failure = describe_preparation_failure(exc, stage)
+            logger.warning(
+                "claim %s/%s (epoch %s, workspace %s): prepare failed: %s",
+                session.id, task.id, epoch, slot.id if slot else None, failure.reason,
+            )
             if isinstance(exc, (StackPrerequisitesConflict, StackPreparationChanged)):
                 if hierarchy_attached and not await (
                     self.orchestrator.arelease_integration_writer_for_retry(
@@ -1385,8 +1482,17 @@ class ClaimCommandsMixin:
                     )
                 ):
                     await self.db.set_task_meta(task.id, "needs_attention", exc.code)
+                    await self._record_prepare_failure(
+                        task, failure, session=session, slot=slot, epoch=epoch,
+                        disposition="retained",
+                    )
+                    await self.orchestrator.bus.emit("pool.prepare_failed", {
+                        "project_id": session.project_id, "profile_id": session.profile_id,
+                        "session_id": session.id, "task_id": task.id,
+                        **failure.event_fields(),
+                    })
                     self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
-                    return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
+                    return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
                 remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
                 await self.db.release_claim(
                     session.id,
@@ -1395,8 +1501,12 @@ class ClaimCommandsMixin:
                     now=time.time(), result="no_ready_work", needs_attention=exc.code,
                     prepare_backoff=True,
                 )
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="released",
+                )
                 self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
-                return self._simple(ClaimResult.NO_READY_WORK, str(exc), row, cap)
+                return self._simple(ClaimResult.NO_READY_WORK, failure.reason, row, cap)
             if isinstance(exc, EpicRefreshPending):
                 remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
                 await self.db.release_claim(
@@ -1405,11 +1515,12 @@ class ClaimCommandsMixin:
                     expected_instance_token=session.instance_token, task_status=TaskStatus.READY, context="epic_refresh_pending",
                     now=time.time(), result="no_ready_work",
                 )
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="released",
+                )
                 self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
-                return self._simple(ClaimResult.NO_READY_WORK, str(exc), row, cap)
-            logger.warning(
-                "claim %s/%s: prepare failed: %s", session.id, task.id, exc, exc_info=True
-            )
+                return self._simple(ClaimResult.NO_READY_WORK, failure.reason, row, cap)
             remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             from src.integration.repair import UnpublishedRepairTarget
 
@@ -1427,18 +1538,24 @@ class ClaimCommandsMixin:
                         context="integration_train_defect", now=time.time(),
                         result="prepare_failed", needs_attention="repair_target_unpublished",
                     )
+                    disposition = "blocked"
                 else:
                     await self.db.set_task_meta(
                         task.id, "needs_attention", "repair_target_unpublished"
                     )
+                    disposition = "retained"
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition=disposition,
+                )
                 await self.orchestrator.bus.emit("pool.prepare_failed", {
                     "project_id": session.project_id, "profile_id": session.profile_id,
                     "session_id": session.id, "task_id": task.id,
-                    "reason": str(exc), "defect": "repair_target_unpublished",
+                    **failure.event_fields(), "defect": "repair_target_unpublished",
                     "target_ref": exc.target_ref,
                 })
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
-                return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
+                return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
             if hierarchy_attached:
                 # The attachment happened before slot reset / claim-file
                 # preparation.  Detach it *before* release_claim erases the
@@ -1463,16 +1580,6 @@ class ClaimCommandsMixin:
                         needs_attention="integration_prepare_failed",
                         prepare_backoff=True,
                     )
-                    await self.orchestrator.bus.emit(
-                        "pool.prepare_failed",
-                        {
-                            "project_id": session.project_id,
-                            "profile_id": session.profile_id,
-                            "session_id": session.id,
-                            "task_id": task.id,
-                            "reason": str(exc),
-                        },
-                    )
                 else:
                     # Never unlock a checkout still named by an attached
                     # fence.  The retained claim is the evidence required by
@@ -1480,19 +1587,35 @@ class ClaimCommandsMixin:
                     await self.db.set_task_meta(
                         task.id, "needs_attention", "integration_prepare_failed_attached"
                     )
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="released" if released else "retained",
+                )
+                await self.orchestrator.bus.emit(
+                    "pool.prepare_failed",
+                    {
+                        "project_id": session.project_id,
+                        "profile_id": session.profile_id,
+                        "session_id": session.id,
+                        "task_id": task.id,
+                        **failure.event_fields(),
+                    },
+                )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
-                return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
+                return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
             if hierarchy_enabled and await self._branch_fenced_prepare_failed(
-                task, project, exc=exc, session=session, slot=slot, epoch=epoch, row=row, cap=cap
+                task, project, exc=exc, failure=failure, session=session, slot=slot,
+                epoch=epoch, row=row, cap=cap,
             ):
-                return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
+                return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
             prior = await self.db.get_task_meta(task.id, "claim_prepare_backoff_attempts")
             try:
                 attempt = max(0, int(prior or 0)) + 1
             except (TypeError, ValueError):
                 attempt = 1
             await self.db.set_task_meta(task.id, "slot_reset_failure", {
-                "reason": str(exc)[:2000], "attempt": attempt,
+                "reason": failure.reason, "error_type": failure.error_type,
+                "stage": failure.stage, "attempt": attempt,
                 "workspace_id": slot.id if slot else None,
                 "session_id": session.id, "failed_at": time.time(),
                 "retry": "manual" if attempt >= 3 else "automatic",
@@ -1508,6 +1631,10 @@ class ClaimCommandsMixin:
                 needs_attention="slot_reset_failed",
                 prepare_backoff=True,
             )
+            await self._record_prepare_failure(
+                task, failure, session=session, slot=slot, epoch=epoch,
+                disposition="blocked" if attempt >= 3 else "released", attempt=attempt,
+            )
             await self.orchestrator.bus.emit(
                 "pool.prepare_failed",
                 {
@@ -1515,11 +1642,11 @@ class ClaimCommandsMixin:
                     "profile_id": session.profile_id,
                     "session_id": session.id,
                     "task_id": task.id,
-                    "reason": str(exc),
+                    **failure.event_fields(),
                 },
             )
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
-            return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
+            return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
             remove_claim_file_if_matches(row.work_dir, task.id, epoch, session_id=session.id)
             if admission is not None:

@@ -457,6 +457,12 @@ CLAIM_PREPARATION_METADATA_KEYS = (
     # for the wait, so it goes stale at exactly the same boundary as the
     # ladder it throttles.
     "branch_fenced",
+    # The last permanent preparation failure's description and identity
+    # (``PREPARE_FAILURE``): diagnosis of the ladder above, never its budget.
+    "prepare_failure",
+    # An older deployment wrote this duplicate diagnostic. Retire it only
+    # after the same guarded successful activation as the canonical record.
+    "claim_preparation_failure",
     "stack_prerequisites_conflict",
     "stack_preparation_changed",
 )
