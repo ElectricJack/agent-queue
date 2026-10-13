@@ -651,6 +651,7 @@ class TestDesiredStateCommands:
         assert not await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
 
     async def test_wake_marks_a_named_session_wanted(self, handler, db, provider):
+        await db.update_project("p1", supervisor_enabled=True)
         await _make_session(
             db,
             provider,
