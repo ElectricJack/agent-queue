@@ -56,7 +56,9 @@ def _task(tid, status, *, age_s=3600, **extra):
 
 def _session(name, project_id, task_id):
     return {
+        "id": f"session-{task_id or name}", "agent_id": f"{task_id}-agent",
         "name": name, "project_id": project_id, "task_id": task_id, "state": "running",
+        "desired_state": "running", "last_activity": time.time() - 3600,
         "stalled": True, "idle_seconds": 3600, "lifecycle": "task", "profile_id": "standard-claude",
         "started_at": time.time() - 7200,
     }
@@ -115,11 +117,23 @@ def _page(data, **pagination):
 
 
 def _scoped_responses(task_response):
-    return {"aq": {
+    responses = {"aq": {
         "task list -p rom": task_response,
         "pool status --project-id rom": [],
         "session list": [],
+        "wait list --project-id rom --limit 100": {"waits": [], "count": 0},
     }}
+    if isinstance(task_response, list):
+        for task in task_response:
+            agent = task.get("assigned_agent")
+            responses["aq"][f"task show {task['id']}"] = task | {
+                "project_id": "rom",
+                "assigned_agent": agent,
+                "children": {"total": 0, "done": 0},
+                "claimed_by": {"session_id": f"session-{task['id']}", "agent_id": agent,
+                               "claim_epoch": 1} if agent else None,
+            }
+    return responses
 
 
 def test_train_repair_capacity_alarm_reaches_timed_patrol(tmp_path):
@@ -140,7 +154,7 @@ def test_orphaned_assignment_without_session_is_reported(tmp_path):
     responses = _scoped_responses([
         _task("lost", "IN_PROGRESS", assigned_agent="idle-agent"),
         _task("fresh", "IN_PROGRESS", assigned_agent="new-agent", age_s=30),
-        _task("container", "IN_PROGRESS"),
+        _task("container", "IN_PROGRESS", is_container=True),
         _task("busy", "IN_PROGRESS", assigned_agent="busy-agent"),
         _task("starting", "IN_PROGRESS", assigned_agent="starting-agent"),
     ])
@@ -167,6 +181,207 @@ def test_orphaned_requires_complete_successful_session_read(tmp_path, failure):
     proc, _ = _run(tmp_path, responses, "--project", "rom")
     assert "SWEEP-ERROR" in proc.stdout
     assert "ORPHANED" not in proc.stdout
+
+
+def _waiting_responses(kind="job"):
+    responses = _scoped_responses([_task("held", "IN_PROGRESS", assigned_agent="held-agent")])
+    responses["aq"]["session list"] = [_session("worker", "rom", "held") | {
+        "lifecycle": "pool", "claim_phase": "active", "harness": "codex",
+    }]
+    row = {
+        "id": "wait-1", "project_id": "rom", "owner_kind": "task", "owner_id": "held",
+        "session_id": "session-held", "session_instance_token": "instance-1", "claim_epoch": 1,
+        "state": "active", "kind": kind, "checked_at": time.time(),
+        "deadline_at": time.time() + 3600,
+    }
+    responses["aq"]["wait list --project-id rom --limit 100"] = {"waits": [row], "count": 1}
+    responses["aq"]["wait show wait-1"] = {
+        "wait": row.copy(),
+        "next_step": "End this turn. The claim, workspace and seat remain held. Do not poll or sleep.",
+    }
+    return responses
+
+
+@pytest.mark.parametrize("kind", ["job", "message"])
+def test_verified_current_wait_is_live_without_heartbeat(tmp_path, kind):
+    responses = _waiting_responses(kind)
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"holds verified {kind} wait wait-1" in proc.stdout
+    assert "ORPHANED" not in proc.stdout and "IDLE-WORKER" not in proc.stdout
+    assert ["aq", "wait", "show", "wait-1"] in calls
+    assert not any(call[:3] == ["aq", "agent", "list"] for call in calls)
+    assert not any(call[0] == "tmux" for call in calls)
+
+
+def test_active_opencode_worker_does_not_need_heartbeat_or_wait(tmp_path):
+    responses = _waiting_responses()
+    responses["aq"]["session list"][0].update(
+        harness="opencode", last_activity=time.time(), stalled=False,
+    )
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
+    assert proc.stdout.strip() == "OK: nothing stalled"
+    assert not any(call[1] in ("wait", "agent") for call in calls)
+
+
+@pytest.mark.parametrize("state,assigned", [("stopped", True), ("absent", True), ("absent", False)])
+def test_stopped_or_unbound_holder_is_an_orphan(tmp_path, state, assigned):
+    task = _task("held", "IN_PROGRESS", **({"assigned_agent": "held-agent"} if assigned else {}))
+    responses = _scoped_responses([task])
+    if state == "stopped":
+        responses["aq"]["session list"] = [_session("worker", "rom", "held") | {
+            "state": "stopped", "desired_state": "stopped",
+        }]
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
+    assert "ORPHANED rom held" in proc.stdout
+    assert "retain branch and checkout" in proc.stdout
+    assert "restart" not in proc.stdout and "--yes" not in proc.stdout
+    assert not any(call[1] == "wait" for call in calls)
+
+
+@pytest.mark.parametrize("change", [
+    {"task_id": "another"}, {"agent_id": "another-agent"}, {"claim_phase": "preparing"},
+    {"id": "another-session"},
+])
+def test_unrelated_session_cannot_clear_a_holder(tmp_path, change):
+    responses = _waiting_responses()
+    responses["aq"]["session list"][0].update(change)
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert "HOLDER-MISMATCH rom held" in proc.stdout
+    assert "ORPHANED" not in proc.stdout and "WAITING-WORKER" not in proc.stdout
+    assert "OK:" not in proc.stdout
+
+
+def test_sleeping_holder_is_reported_as_a_hold(tmp_path):
+    responses = _waiting_responses()
+    responses["aq"]["session list"][0]["desired_state"] = "sleeping"
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
+    assert "SLEEPING-WORKER rom held" in proc.stdout
+    assert "ORPHANED" not in proc.stdout
+    assert not any(call[1] == "wait" for call in calls)
+
+
+@pytest.mark.parametrize("change", [
+    {"state": "cancelled"}, {"state": "expired"}, {"deadline_at": time.time() - 60},
+    {"claim_epoch": 0}, {"session_id": "old-session"},
+])
+def test_historical_or_expired_wait_never_clears_idle_holder(tmp_path, change):
+    responses = _waiting_responses()
+    responses["aq"]["wait list --project-id rom --limit 100"]["waits"][0].update(change)
+    responses["aq"]["wait show wait-1"]["wait"].update(change)
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert "IDLE-WORKER worker holds held" in proc.stdout
+    assert "WAITING-WORKER" not in proc.stdout and "ORPHANED" not in proc.stdout
+
+
+def test_server_rejected_instance_or_producer_never_clears_holder(tmp_path):
+    responses = _waiting_responses()
+    responses["aq"]["wait show wait-1"]["next_step"] = (
+        "This active record has no current inactivity exemption. Check your claim and producer."
+    )
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert "IDLE-WORKER" in proc.stdout and "WAITING-WORKER" not in proc.stdout
+
+
+@pytest.mark.parametrize("change", [
+    {"session_instance_token": "replaced-instance"}, {"claim_epoch": 2},
+    {"checked_at": time.time() - 3600}, {"checked_at": "nan"},
+    {"deadline_at": "broken"}, {"owner_id": "another"},
+])
+def test_changed_or_stale_wait_proof_reports_unknown(tmp_path, change):
+    responses = _waiting_responses()
+    responses["aq"]["wait show wait-1"]["wait"].update(change)
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert "HOLDER-UNKNOWN rom held" in proc.stdout
+    assert all(tag not in proc.stdout for tag in ("ORPHANED", "WAITING-WORKER", "IDLE-WORKER", "OK:"))
+
+
+@pytest.mark.parametrize("command,response", [
+    ("session list", _reply(_page([{}]))),
+    ("task show held", {"_stdout": "unreadable"}),
+    ("task show held", {"id": "another"}),
+    ("wait list --project-id rom --limit 100", {"waits": [{}], "count": 1}),
+    ("wait list --project-id rom --limit 100", {"waits": [], "count": 0, "has_more": True}),
+    ("wait list --project-id rom --limit 100", {"waits": [{}] * 100, "count": 100}),
+    ("wait show wait-1", {"_stdout": "", "_exit": 3}),
+    ("wait show wait-1", {"wait": {}}),
+])
+def test_failed_holder_evidence_neither_orphans_nor_clears(tmp_path, command, response):
+    responses = _waiting_responses()
+    responses["aq"][command] = response
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert "SWEEP-ERROR" in proc.stdout or "HOLDER-UNKNOWN" in proc.stdout
+    assert all(tag not in proc.stdout for tag in ("ORPHANED", "WAITING-WORKER", "IDLE-WORKER", "OK:"))
+
+
+@pytest.mark.parametrize("command", ["session list", "task show held", "wait list --project-id rom --limit 100", "wait show wait-1"])
+@pytest.mark.parametrize("code", ["out_of_scope", "forbidden", "unauthorized"])
+def test_holder_authorization_denial_stops_all_later_reads(tmp_path, command, code):
+    responses = _waiting_responses()
+    responses["aq"][command] = _reply({
+        "schema_version": 1, "data": None, "error": {"code": code, "message": "read denied"},
+    }, exit_code=2)
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 2
+    assert len(proc.stdout.splitlines()) == 1 and "SWEEP-AUTH" in proc.stdout
+    assert calls[-1] == ["aq", *command.split()]
+
+
+def test_pool_gap_does_not_name_capacity_queued_tasks_as_excluded(tmp_path):
+    tasks = [_task(tid, "READY") for tid in ("eligible-a", "eligible-b", "held")]
+    responses = _scoped_responses(tasks)
+    for task in tasks[:2]:
+        responses["aq"][f"task explain --task-id {task['id']}"] = {"reasons": [
+            {"code": "route_waiting_for_compatible_agent", "detail": "all compatible agents busy"},
+            {"code": "shared_capacity", "detail": "fleet at capacity"},
+        ]}
+    responses["aq"]["task explain --task-id held"] = {"reasons": [
+        {"code": "frontier_recovery_hold", "detail": "operator recovery hold"},
+    ]}
+    responses["aq"]["pool status --project-id rom"] = [{
+        "profile_id": "standard-claude", "enabled": True, "ready": 21, "desired": 6,
+        "running_busy": 7, "projects": [{"project_id": "rom", "ready": 2}],
+    }]
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    pool_line = next(line for line in proc.stdout.splitlines() if "POOL-STARVED" in line)
+    assert "ready=2" in pool_line and "aggregate discrepancy" in pool_line
+    assert all(tid not in pool_line for tid in ("eligible-a", "eligible-b", "held"))
+    assert "off the claim frontier" not in proc.stdout
+    assert "STUCK rom held" in proc.stdout and "frontier_recovery_hold" in proc.stdout
+
+
+@pytest.mark.parametrize("counter", [None, -1, "2", True])
+def test_invalid_scoped_ready_count_does_not_prove_a_gap(tmp_path, counter):
+    responses = _scoped_responses([_task("ready", "READY")])
+    responses["aq"]["task explain --task-id ready"] = {"reasons": []}
+    responses["aq"]["pool status --project-id rom"] = [{
+        "profile_id": "standard-claude", "enabled": True, "ready": 21,
+        "projects": [{"project_id": "rom", "ready": counter}],
+    }]
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert "SWEEP-ERROR pool" in proc.stdout
+    assert "POOL-STARVED" not in proc.stdout and "OK:" not in proc.stdout
+
+
+def test_other_project_session_cannot_clear_own_holder(tmp_path):
+    responses = _waiting_responses()
+    responses["aq"]["session list"][0]["project_id"] = "other"
+    proc, calls = _run(tmp_path, responses, "--project", "rom")
+    assert "ORPHANED rom held" in proc.stdout
+    assert not any("other" in call for call in calls)
+    assert not any(call[1] == "wait" for call in calls)
+
+
+@pytest.mark.parametrize("change", [
+    {"children": None}, {"children": {}}, {"claimed_by": {}},
+    {"assigned_agent": "new-holder"},
+])
+def test_partial_or_changed_task_identity_cannot_prove_an_orphan(tmp_path, change):
+    responses = _waiting_responses()
+    responses["aq"]["task show held"].update(change)
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert "HOLDER-UNKNOWN rom held" in proc.stdout
+    assert "ORPHANED" not in proc.stdout and "WAITING-WORKER" not in proc.stdout
 
 
 def test_scoped_sweep_never_reads_or_reports_another_project(tmp_path):
@@ -218,7 +433,7 @@ def test_scoped_sweep_never_reads_or_reports_another_project(tmp_path):
     # Another project's session is neither reported nor captured.
     assert "s-other-1" not in proc.stdout and "o-busy" not in proc.stdout
     assert not any(c[0] == "tmux" and "s-other-1" in c for c in calls)
-    assert "IDLE-WORKER s-matter-1 holds m-busy" in proc.stdout
+    assert "HOLDER-UNKNOWN s-matter-1 holds m-busy" in proc.stdout
     assert "STALE-OPEN matter m-blocked" in proc.stdout
     # Another project's blocker is never read; an undelivered one still reports
     # from the explain row alone instead of hiding.
@@ -228,7 +443,8 @@ def test_scoped_sweep_never_reads_or_reports_another_project(tmp_path):
     # The project's own frontier excludes m-ready even though other projects
     # keep the fleet-wide ``ready`` above zero.
     assert "POOL-STARVED standard-claude: 1 READY" in proc.stdout
-    assert "m-ready" in proc.stdout.split("POOL-STARVED", 1)[1]
+    assert "aggregate discrepancy" in proc.stdout.split("POOL-STARVED", 1)[1]
+    assert "m-ready" not in proc.stdout.split("POOL-STARVED", 1)[1]
 
 
 def test_empty_project_sweep_stays_in_scope_without_health_probe(tmp_path):
@@ -300,9 +516,6 @@ def test_global_empty_queues_distinguish_a_failed_project_read(tmp_path, failed_
                  "malformed list data", id="object-data"),
     pytest.param(_reply({"schema_version": 1, "data": [], "error": "denied"}),
                  "malformed error envelope", id="malformed-error"),
-    pytest.param(_reply({"schema_version": 1, "data": [],
-                         "error": {"code": "forbidden", "message": "read denied"}}),
-                 "forbidden: read denied", id="denied-with-empty-data"),
     pytest.param(_reply(_page([]), exit_code=3), "command failed (exit 3)", id="failed-exit"),
     pytest.param(_reply({"schema_version": 1, "data": []}),
                  "missing or malformed pagination", id="missing-pagination"),
