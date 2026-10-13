@@ -200,22 +200,16 @@ def _frontier_where(
     *,
     router_ready: bool | None = None,
 ):
-    """The frontier predicate, for one project.
+    """The frontier for one project, with optional pre-read hierarchy constants.
 
-    *hierarchy_mode* is this project's already-read
-    ``hierarchical_integration_mode`` / ``integration_repository_id`` pair.
-    Supplying it folds the two hierarchy predicates' ``projects`` lookups
-    into constants instead of re-asking the same one-row question once per
-    candidate row; ``None`` keeps the self-contained correlated form.
-
-    *router_ready* adds :func:`route_claimable` for a project whose router
-    is (not) ready; ``None`` leaves routing out, for the structural reads
-    (development admission's candidates, diagnostics) that are not a claim.
+    A supplied *hierarchy_mode* folds project lookups away; ``None`` keeps
+    correlated lookups. *router_ready* adds :func:`route_claimable`, while
+    ``None`` leaves routing out for structural reads such as diagnostics.
     """
     predicates = [
         tasks.c.project_id == project_id,
         tasks.c.status == TaskStatus.READY.value,
-        *_frontier_predicates(hierarchy_mode).values(),
+        *claim_frontier_predicates(hierarchy_mode=hierarchy_mode).values(),
     ]
     if router_ready is not None:
         predicates.append(route_claimable(router_ready))
@@ -448,27 +442,13 @@ _NUMERIC_TEXT = r"^-?[0-9]+(\.[0-9]+)?$"
 
 
 def numeric_meta_value(column, *, default: str = "0"):
-    """``column`` cast to ``Float``, with non-numeric text read as *default*.
+    """Cast numeric metadata to ``Float``; malformed JSON text uses *default*.
 
-    ``task_metadata.value`` is free-form JSON text: ``json.dumps`` writes a
-    bare ``0`` for the number and ``"0"`` -- quotes included -- for the
-    string, and nothing in the schema stops a caller storing either.  A bare
-    ``cast(value, Float)`` therefore raises
-    ``invalid input syntax for type double precision`` on the *whole
-    statement* the moment one malformed row is scanned.
-
-    That is not a hypothetical.  On 2026-09-07 two rows holding ``"0"`` made
-    every ``select_ready_for_profile`` call in one project raise for ~18
-    hours: no pool worker could claim anything, and because the failure was
-    a database error rather than an empty result, the queue looked idle
-    rather than broken.
-
-    The ``CASE`` is what makes this safe rather than merely likely to work:
-    PostgreSQL does not guarantee evaluation order between a regex guard and
-    a cast sitting in the same ``AND``, so the guard has to be *inside* the
-    expression being cast.  A malformed row then reads as *default* -- for a
-    backoff deadline, "expired", which fails open to claimable rather than
-    silently withholding work.
+    Metadata stores JSON, so a number and a quoted numeric string differ.
+    Guard the cast *inside* CASE: PostgreSQL may evaluate AND terms in any
+    order, making a separate regex predicate unsafe. Non-numeric backoff
+    deadlines read as zero (expired), rather than breaking the entire query.
+    See the numeric-metadata regression tests for the quoted-zero outage.
     """
     return cast(
         case((column.op("~")(_NUMERIC_TEXT), column), else_=literal(default)),
@@ -508,13 +488,17 @@ def _claim_preparation_predicates():
     }
 
 
-def claim_frontier_predicates(hierarchy_modes=None):
+def claim_frontier_predicates(hierarchy_modes=None, *, hierarchy_mode=None):
     """All profile-independent acceptance filters, including candidate preparation."""
     predicates = {
-        **_frontier_predicates(),
+        **_frontier_predicates(hierarchy_mode),
         **_claim_preparation_predicates(),
         "hold_label": apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
     }
+    # Single-project callers already supplied every hierarchy constant. Keep
+    # those predicates; a multi-project CASE would reintroduce correlated fallbacks.
+    if hierarchy_mode is not None:
+        return predicates
     predicates["sibling_prerequisite_not_delivered"] = delivered_prerequisites_for_projects(
         hierarchy_modes, cross_parent=False
     )
@@ -576,6 +560,7 @@ class ClaimQueryMixin:
 
     async def claim_frontier_exclusions(
         self, task_id: str, *, router_ready: bool | None = None, cached_only: bool = False,
+        hierarchy_modes=None,
     ) -> list[dict]:
         """Evaluate the real claim filters for one READY task, without scheduler guesses.
 
@@ -585,7 +570,7 @@ class ClaimQueryMixin:
         from src.integration.delivery_observer import hierarchy_frontier_modes
 
         unavailable = {}
-        modes = await hierarchy_frontier_modes(
+        modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
             self, task_id=task_id, cached_only=cached_only,
             **({"display_unavailable": unavailable} if cached_only else {}),
         )
@@ -794,72 +779,25 @@ class ClaimQueryMixin:
         allowed_task_ids: set[str] | None = None,
         excluded_task_ids: set[str] | None = None,
     ) -> str | None:
-        """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED.
+        """Select the §10 frontier with FOR UPDATE SKIP LOCKED.
 
-        Development callers supply a request-scoped ``allowed_task_ids`` set
-        from async git admission; SQL performs only structural selection.
-        *excluded_task_ids* withholds specific rows a caller has just decided
-        against from a fresh observation outside SQL -- the claim path's
-        source-CI delivery gate (``src/integration/source_delivery.py``).  It
-        is a request-scoped decision like the allow set, never a persisted
-        one: whoever computes it re-proves it on the next attempt.
+        Allow/exclude sets are request-scoped Git admission decisions, re-proven
+        on each attempt. A pre-read *hierarchy_mode* only filters candidates:
+        the task is re-fenced under lock and preparation re-reads the project.
 
-        *hierarchy_mode* is the caller's already-read project row, reduced to
-        the two constants the hierarchy predicates need (see
-        :class:`ProjectIntegrationMode`).  It is only ever a *frontier*
-        filter: whichever candidate this returns is re-fenced under the task
-        lock afterwards, and ``_prepare_and_activate_locked`` re-reads the
-        project before acting on its mode, so a mode edit that lands inside a
-        long ``--wait`` window cannot be acted on from a stale read here.
+        Prefer this agent's affinity rows, then scan all admissible rows. Both
+        scans order by priority/created_at so an index can stop at LIMIT 1.
+        A CASE affinity sort instead evaluated every candidate's frontier
+        subqueries (~10,100 shared buffers versus 10–14 at the §15.2 scale).
+        The second scan must include unpinned work even when all pinned rows
+        are locked; a restricting InitPlan would incorrectly report no work.
+        Targeted claims skip the affinity probe because only one row can match.
 
-        Two statements, not one, and the reason is the ``ORDER BY``.  Affinity
-        is a *soft* preference -- the frontier does not exclude a task pinned
-        to another agent -- and it used to be expressed as the leading sort
-        key, ``CASE WHEN affinity_agent_id = :agent THEN 0 ELSE 1 END``.  The
-        agent id is a runtime parameter, so no index can supply that order:
-        PostgreSQL had to evaluate the whole frontier predicate for every
-        candidate row and top-N sort the result, which at the §15.2 scale
-        (5,000 tasks, 2,499 on the frontier) meant 2,500 rows materialised,
-        the correlated ``NOT EXISTS`` subplans in :func:`_frontier_where`
-        evaluated 2,500 times, and ~10,100 shared buffers per claim -- for a
-        ``LIMIT 1``.
-
-        Sorting by ``priority, created_at`` alone *is* index-orderable, so
-        each half below is an index-ordered scan that stops at the first
-        admissible row (10-14 shared buffers, measured on PostgreSQL 18 at
-        that same scale).  Splitting the preference across two statements
-        preserves it exactly:
-
-        * the first statement is the frontier restricted to tasks pinned to
-          this agent -- if any admissible pinned task exists, the old sort
-          would have returned the best of them, and so does this;
-        * the second is the frontier with no affinity term at all -- reached
-          only when the first found nothing, which is exactly when the old
-          sort's leading key was constant and the answer was the best row
-          overall.
-
-        ``SKIP LOCKED`` falls through the same way it always did: a pinned row
-        another claimer holds is skipped by the first statement, and if every
-        pinned row is held the second statement still considers unpinned work.
-        That fall-through is the reason this is two statements rather than one
-        with the probe hoisted into an ``InitPlan`` and used to *restrict* the
-        frontier -- that shape is a statement cheaper and measures the same,
-        but it answers ``no_ready_work`` when every pinned row is momentarily
-        locked, and the caller then parks on the ``task.ready`` waiter for the
-        rest of its ``--wait`` window rather than taking the unpinned work
-        that was there all along.
-
-        A targeted claim (*task_id* given) skips the probe: with a single
-        candidate row, preferring it over itself is a no-op.
-
-        Only routed work is claimable (mandatory routing §9.1): the task's
-        own ``profile_id`` must be this pool's, and its ``route_source`` one
-        the project accepts -- ``router``, ``override`` or ``role``, plus
-        ``legacy`` while *router_ready* is false.  There is no project
-        default widening an unrouted task onto any pool.
+        Routing requires the task's own profile and an accepted route source
+        (router/override/role, plus legacy before router readiness); no project
+        default admits unrouted work. See :func:`route_claimable`.
         """
         profile_ok = tasks.c.profile_id == profile_id
-        preparation_predicates = _claim_preparation_predicates()
 
         def candidate(*, pinned: bool):
             stmt = (
@@ -867,7 +805,6 @@ class ClaimQueryMixin:
                 .where(
                     _frontier_where(project_id, hierarchy_mode, router_ready=bool(router_ready)),
                     profile_ok,
-                    *preparation_predicates.values(),
                 )
                 .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
                 .limit(1)
@@ -878,7 +815,6 @@ class ClaimQueryMixin:
                 stmt = stmt.where(tasks.c.id.not_in(excluded_task_ids))
             if pinned:
                 stmt = stmt.where(tasks.c.affinity_agent_id == agent_id)
-            stmt = apply_label_filters(stmt, exclude_hold=True)
             stmt = stmt.where(*_pool_routing_predicates(
                 operator=operator, enforce_routing=enforce_routing,
                 intelligence_class=intelligence_class,
@@ -2285,7 +2221,6 @@ class ClaimQueryMixin:
             stmt = stmt.where(tasks.c.id.in_(allowed_task_ids))
         if pool_profiles is not None:
             stmt = stmt.where(_pool_profiles_predicate(pool_profiles))
-        stmt = apply_label_filters(stmt, exclude_hold=True)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).fetchall()
         return {pid: int(n) for pid, n in rows}

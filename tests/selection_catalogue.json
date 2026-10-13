@@ -3988,7 +3988,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:0a02337ee2405c572ef7995c1bba369c1cdb1eef6534c706a0ac2af0752a98e3",
+      "digest": "sha256:75e55f2888d6b0028c17f3b3c7bd08f2b0866def8d61182d22f7759c568ddab4",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -3997,7 +3997,9 @@
         "src.models",
         "src.orchestrator"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "A failing close must never strand commits (``aq task close --outcome fail``)."
     },
     "tests/test_codex_fast_classes.py": {
@@ -12683,13 +12685,15 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:7595e538d07229cc3a9cfbe50e93731dad05b33aac9192a1506378789cfb11f4",
+      "digest": "sha256:116438ec17f55c8eceee236b3af84d5c6b5dd22c29b7929e4280a1a5b77d0691",
       "imports": [
         "src.api.auth",
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.database.queries",
+        "src.database.queries.claim_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.models",

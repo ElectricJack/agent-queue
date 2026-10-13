@@ -2294,6 +2294,23 @@ class TestEndToEndOnFakeProvider:
         await real_orch._execute_task(action)
         return wd
 
+    async def _setup_task_publication(self, db, real_orch, tmp_path, wd, *, publish=True):
+        """Give a successful live close a real task branch and a local bare origin."""
+        from src.git.manager import GitManager
+
+        git = real_orch.git = GitManager()
+        remote = str(tmp_path / "origin.git")
+        await git._arun(["init", "--bare", remote], cwd=str(tmp_path))
+        await git._arun(["init", "-b", "aq/t1"], cwd=wd)
+        await git._arun(["config", "user.name", "Tester"], cwd=wd)
+        await git._arun(["config", "user.email", "test@example.com"], cwd=wd)
+        await git._arun(["commit", "--allow-empty", "-m", "task work"], cwd=wd)
+        await git._arun(["remote", "add", "origin", remote], cwd=wd)
+        await db.update_task("t1", branch_name="aq/t1")
+        if publish:
+            await git.apush_branch(wd, "aq/t1")
+        return git
+
     async def test_routing_rule_needs_both_flag_and_harness(self, real_orch, config):
         profile = AgentProfile(id="x", name="x", harness="claude")
         assert real_orch._is_session_routed(profile) is True
@@ -2348,6 +2365,7 @@ class TestEndToEndOnFakeProvider:
         #    ``platform = None``, workspace prep, then return immediately
         #    with no stream to block on.
         wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
 
         # A session-routed task must never construct a runtime adapter --
         # that is what ``platform = None`` is for, and an adapter registered
@@ -2497,8 +2515,9 @@ class TestEndToEndOnFakeProvider:
         """
         import asyncio
 
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
+        git = await self._setup_task_publication(db, real_orch, tmp_path, wd, publish=False)
 
         async def _stop_with_feedback(ctx):
             assert ctx.close_session_live is True, "the live session must be visible here"
@@ -2535,13 +2554,15 @@ class TestEndToEndOnFakeProvider:
         await real_orch.session_reconciler.tick(now=time.time())
         assert (await db.get_session(session.id)).state == "running"
 
-        # Second close, after the agent fixed the git state, completes.
+        # Second close, after the agent published the exact branch, completes.
+        await git.apush_branch(wd, "aq/t1")
+
         async def _ok(ctx):
             return "https://github.com/org/repo/pull/7", True
 
         monkeypatch.setattr(real_orch, "_run_completion_pipeline", _ok)
         again = await asyncio.wait_for(real_handler.execute("task_close", args), timeout=2)
-        assert again["success"] is True and again["status"] == "COMPLETED"
+        assert again["success"] is True and again["status"] == "COMPLETED", again
 
     async def test_escalated_verification_refusal_does_not_blame_the_workspace(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
@@ -2726,7 +2747,8 @@ class TestEndToEndOnFakeProvider:
         class _Restart(BaseException):
             pass
 
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         real_orch.pipeline_result = (None, pipeline_ok)
         seen: list = []
@@ -4311,7 +4333,8 @@ class TestEndToEndOnFakeProvider:
         """
         import asyncio
 
-        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        wd = await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        await self._setup_task_publication(db, real_orch, tmp_path, wd)
         session = await db.get_session_for_task("t1")
         seen: dict = {}
 

@@ -203,14 +203,14 @@ _READY_REASONS = {
 #: can never be observed out of step with the status.
 TERMINAL_BLOCKED_META_KEY = "blocked_terminal"
 
-#: ``needs_attention`` code the lifecycle sweep raises on a BLOCKED or PAUSED
-#: task that stayed put past ``work_graph.stale_open_after_seconds`` with its
-#: blocker still in place.  Advisory, unlike every other code: it never holds a
+#: ``needs_attention`` code the lifecycle sweep raises on stale BLOCKED/PAUSED
+#: work or a continuously frontier-rejected READY task. Advisory: it never holds a
 #: task out of promotion or opens a recovery incident, and any transition out
-#: of BLOCKED/PAUSED removes it with its detail (see ``_apply_transition``).
+#: of the observed status removes it with its detail (see ``_apply_transition``).
 STALE_OPEN_ATTENTION = "stale_open"
 #: The recorded blockers behind a ``stale_open`` flag, for explain and doctor.
 STALE_OPEN_DETAIL_KEY = "stale_open_detail"
+FRONTIER_REJECTION_KEY = "frontier_rejection_since"
 
 #: Transition contexts that make an entry into BLOCKED terminal: the session
 #: close's three BLOCKED legs, merge conflicts, the execution timeout, an
@@ -1738,29 +1738,26 @@ class TaskQueryMixin:
                     )
                 )
 
-            # A ``stale_open`` flag describes one stale BLOCKED/PAUSED
-            # episode; leaving the status by any path ends it.
-            if current_status in (TaskStatus.BLOCKED, TaskStatus.PAUSED):
-                await conn.execute(
-                    delete(task_metadata).where(
-                        task_metadata.c.task_id == task_id,
-                        (task_metadata.c.key == STALE_OPEN_DETAIL_KEY)
-                        | (
-                            (task_metadata.c.key == "needs_attention")
-                            & (task_metadata.c.value == json.dumps(STALE_OPEN_ATTENTION))
-                        ),
+            # Leaving a stopped or frontier-rejected episode clears its stale
+            # advisory. In flight/completed work also resolves any other
+            # operational incident. Use one delete for both so claiming READY
+            # work does not pay an extra round trip for the episode cleanup.
+            stale_episode_ended = current_status in (
+                TaskStatus.BLOCKED, TaskStatus.PAUSED, TaskStatus.READY,
+            )
+            attention_resolved = new_status in (TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED)
+            if stale_episode_ended or attention_resolved:
+                attention = task_metadata.c.key == "needs_attention"
+                if not attention_resolved:
+                    attention &= task_metadata.c.value == json.dumps(STALE_OPEN_ATTENTION)
+                if stale_episode_ended:
+                    attention |= task_metadata.c.key.in_(
+                        (STALE_OPEN_DETAIL_KEY, FRONTIER_REJECTION_KEY)
                     )
-                )
-
-            # A task in flight or terminally completed has resolved the
-            # previous operational incident.  Centralising this covers both
-            # push and pull execution paths, including callers outside the
-            # pool claim protocol.
-            if new_status in (TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED):
                 await conn.execute(
                     delete(task_metadata).where(
                         task_metadata.c.task_id == task_id,
-                        task_metadata.c.key == "needs_attention",
+                        attention,
                     )
                 )
 

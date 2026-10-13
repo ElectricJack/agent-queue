@@ -381,6 +381,19 @@ predicates; claim retains fresh Git and identity revalidation. The explicit
 
 ### 9.2 Ready frontier
 
+Pool demand and claim selection use the same `claim_frontier_predicates` builder,
+including preparation backoff, prerequisite-stack repair, workspace requirements
+and hold labels. A READY task rejected by that builder contributes no demand.
+The lifecycle sweep tracks continuous frontier rejection; after
+`work_graph.frontier_rejected_after_seconds` (default 600, 0 disables), it raises
+an advisory `needs_attention=stale_open` item and one supervisor message naming
+the exclusion rules. Admission recovery or leaving READY clears that episode.
+This advisory never prevents an otherwise valid claim. Git-first prerequisite
+admission recognises a completed sibling already contained in the shared parent
+branch without requiring a delivery receipt or a PAUSED parent. A live successful
+code close must verify its exact task-branch head on origin before releasing its
+claim, including projects outside the train modes.
+
 `aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.
 
 ## 10. Events: replay and payload registry
