@@ -32,6 +32,7 @@ from src.models import (
 )
 from src.orchestrator import Orchestrator
 from src.orchestrator.worktree_manager import EXCLUDE_BEGIN
+from src.orchestrator.workspace_binding_audit import reconcile_slot_bindings
 from src.runtimes.base import Runtime
 from tests.db_fixtures import lease_dsn
 
@@ -116,6 +117,139 @@ async def _make_slot(o, base_repo, task_id="tsk-1"):
     a = await o.db.get_agent(task_id + "-a")
     slot_path = await o._prepare_workspace(t, a)
     return await o.db.get_workspace_for_task(task_id), Path(slot_path)
+
+
+@pytest.mark.parametrize("case", [
+    "aligned", "foreign_claim", "missing_receipt", "preparing", "stopped",
+    "wrong_branch", "unknown_liveness", "malformed_claim", "changed_generation",
+    "deferred_owner", "stale_receipt",
+])
+async def test_existing_binding_reconciliation_preserves_source_and_owner(
+    tmp_path, base_repo, monkeypatch, case,
+):
+    from src.claim_file import write_claim_file
+    from src.models import SessionRecord
+
+    o = await _orch(tmp_path)
+    try:
+        await _seed(o, base_repo)
+        ws, path = await _make_slot(o, base_repo)
+        branch = _git(["branch", "--show-current"], path)
+        await o.db.update_task("tsk-1", assigned_agent_id="tsk-1-a", claim_epoch=3,
+                               branch_name=branch)
+        await o.db.create_session(SessionRecord(
+            id="audit-holder", task_id="tsk-1", project_id="p1", agent_id="tsk-1-a",
+            profile_id="p", harness="codex", provider="fake", name="audit-holder",
+            lifecycle="pool", work_dir=str(path), epoch="e", instance_token="audit-token",
+            state="stopped" if case == "stopped" else "running",
+            desired_state="stopped" if case == "stopped" else "running",
+            claim_phase="preparing" if case == "preparing" else "active",
+            last_claim_epoch=3, started_at=1,
+        ))
+        write_claim_file(str(path), {"task_id": "tsk-1", "claim_epoch": 3,
+                                    "session_id": "foreign" if case == "foreign_claim"
+                                    else "audit-holder"})
+        if case == "malformed_claim":
+            (path / ".aq" / "claim.json").write_text("{broken")
+        if case != "missing_receipt":
+            await o.db.set_task_meta("tsk-1", "claim_workspace", {
+                "workspace_id": ws.id, "generation": ws.generation + (case == "stale_receipt"),
+                "session_id": "audit-holder", "instance_token": "audit-token", "claim_epoch": 3,
+            })
+        if case == "deferred_owner":
+            from sqlalchemy import insert
+            from src.database.tables import integration_branch_owners
+            async with o.db.immediate() as conn:
+                await conn.execute(insert(integration_branch_owners).values(
+                    id="retained-owner", repository_id="p1", ref=branch,
+                    owner_id="tsk-1", owner_role="integration", fence_token=7,
+                    handoff_state="handoff_pending", session_id="audit-holder",
+                    workspace_id=ws.id, created_at=1, updated_at=1,
+                ))
+        if case == "wrong_branch":
+            _git(["switch", "--detach"], path)
+        (path / "README.md").write_text("retained staged checkpoint\n")
+        _git(["add", "README.md"], path)
+        (path / "untracked-checkpoint").write_bytes(b"retained progress")
+        before = (_git(["rev-parse", "HEAD"], path), _git(["status", "--porcelain"], path),
+                  (path / ".aq" / "claim.json").read_bytes(),
+                  (path / ".aq-worktree.json").read_bytes())
+        meta = await o.db.get_all_task_meta("tsk-1")
+        mgr = o._worktree_slots()
+        monkeypatch.setattr(mgr, "_slot_is_live", AsyncMock(
+            side_effect=PermissionError("process inventory unknown")
+            if case == "unknown_liveness" else None, return_value=True,
+        ))
+        if case == "changed_generation":
+            original = o.db.get_workspace
+            calls = 0
+
+            async def raced(workspace_id):
+                nonlocal calls
+                if workspace_id == ws.id:
+                    calls += 1
+                if workspace_id == ws.id and calls == 2:
+                    from src.database.tables import workspaces
+                    async with o.db.immediate() as conn:
+                        await conn.execute(update(workspaces).where(
+                            workspaces.c.id == workspace_id,
+                        ).values(generation=workspaces.c.generation + 1))
+                return await original(workspace_id)
+
+            monkeypatch.setattr(o.db, "get_workspace", raced)
+        findings = await reconcile_slot_bindings(o.db, mgr, "p1")
+        if case in ("aligned", "changed_generation"):
+            assert findings == []
+        else:
+            assert len(findings) == 1
+            assert findings[0]["kind"] == "slot_binding_retained"
+            expected_detail = {
+                "foreign_claim": "foreign or unproved claim",
+                "missing_receipt": "acquisition receipt missing or stale",
+                "preparing": "preparation in progress",
+                "stopped": "foreign or unproved claim",
+                "wrong_branch": "checkout branch disagrees",
+                "unknown_liveness": "process inventory unverifiable",
+                "malformed_claim": "unreadable or malformed",
+                "deferred_owner": "integration owner or job pin retained",
+                "stale_receipt": "acquisition receipt missing or stale",
+            }
+            assert expected_detail[case] in findings[0]["detail"]
+        if case == "foreign_claim":
+            from types import SimpleNamespace
+            from src.commands.worktree_commands import WorktreeCommandsMixin
+            handler = SimpleNamespace(db=o.db, config=o.config, orchestrator=o,
+                                      _active_project_id="p1", execute=AsyncMock(return_value={
+                                          "success": True,
+                                      }))
+            doctor = await WorktreeCommandsMixin._cmd_workspace_doctor(handler, {})
+            assert findings[0] in doctor["findings"]
+            o._command_handler = handler
+            for _ in range(2):
+                o._last_worktree_reaper = 0
+                await o._reap_worktree_slots()
+            assert handler.execute.await_count == 1
+            assert handler.execute.await_args.args[0] == "message_send"
+        after = (_git(["rev-parse", "HEAD"], path), _git(["status", "--porcelain"], path),
+                 (path / ".aq" / "claim.json").read_bytes(),
+                 (path / ".aq-worktree.json").read_bytes())
+        assert before == after
+        fresh = await o.db.get_workspace(ws.id)
+        assert fresh.locked_by_task_id == "tsk-1"
+        assert fresh.locked_by_agent_id == "tsk-1-a"
+        assert fresh.generation == ws.generation + (case == "changed_generation")
+        assert await o.db.get_all_task_meta("tsk-1") == meta
+        assert (await o.db.get_task("tsk-1")).retry_count == 0
+        if case == "deferred_owner":
+            from sqlalchemy import select
+            async with o.db._engine.connect() as conn:
+                owner = (await conn.execute(select(integration_branch_owners).where(
+                    integration_branch_owners.c.id == "retained-owner",
+                ))).mappings().one()
+            assert owner["fence_token"] == 7
+            assert owner["handoff_state"] == "handoff_pending"
+    finally:
+        await o.db.close()
 
 
 # ── reap_slot ────────────────────────────────────────────────────────────

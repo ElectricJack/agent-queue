@@ -18227,15 +18227,17 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:f7d44b1bbcf168ee5de641035c398e351ba7a36b292a89493de0a83398733c21",
+      "digest": "sha256:3c10ed3b803eb60174c5ac2480b81d5a0867f5fff378518e09cbf8d2e676e2ca",
       "imports": [
         "src.claim_file",
+        "src.commands.worktree_commands",
         "src.config",
         "src.database.tables",
         "src.git.manager",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.slot_restore",
+        "src.orchestrator.workspace_binding_audit",
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
         "src.sessions.proctable",

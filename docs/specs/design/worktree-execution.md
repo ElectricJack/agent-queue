@@ -230,6 +230,22 @@ argument independently violates managed-job path policy. Fixture mechanisms are
 not host incident attribution. Checkpoint capture/restore provenance is a separate
 coordinated correction; reconciliation must preserve evidence for it.
 
+**Existing bindings.** Preparation fencing applies to new and resumed attempts;
+it does not repair locks left by an older daemon. Every five-minute inventory
+pass also reconciles existing locked slots against their registered generation,
+task, source sentinel, actual branch, claim file and retained owner/job pins.
+`workspace_doctor` exposes the same findings on demand. A foreign claim, deferred
+owner, unavailable process inventory or changed snapshot is a retained binding,
+not proof that its writer has disappeared. A preparing session may legitimately
+still hold the predecessor checkout and is reported as preparation in progress.
+Findings go to the project supervisor once per changed evidence set, through
+CommandHandler. This pass never transfers a lock, clears a claim, resets a task,
+changes its retry budget or writes a guessed acquisition receipt. Existing
+mislocked rows require the existing owner-fenced recovery/operator controls;
+reported clean detached HEAD and a missing live-session row alone are insufficient
+authority to release a historical source. This distinction also applies to a
+stopped continuation whose dirty checkpoint or integration owner remains retained.
+
 Three decisions make that a hint rather than a new piece of state:
 
 - **Derived, never recorded.** The holder is read per acquisition from `git worktree list --porcelain` in the base — the same state git consults when it refuses the checkout, so the hint cannot disagree with the refusal it exists to avoid. No column, no field on the task, nothing to migrate, nothing to go stale: a manual `git switch` in a slot, a restarted daemon or a reaped slot all resolve correctly on the next look.

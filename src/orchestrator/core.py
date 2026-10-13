@@ -3689,6 +3689,7 @@ class Orchestrator(
             return
 
         from src.orchestrator.slot_restore import restore_disabled_slots
+        from src.orchestrator.workspace_binding_audit import reconcile_slot_bindings
 
         mgr = self._worktree_slots()
         for project in projects:
@@ -3696,6 +3697,31 @@ class Orchestrator(
                 workspaces = await self.db.list_workspaces(project_id=project.id)
             except Exception:
                 continue
+            # Historical bindings are invisible to the new-preparation fence.
+            # Diagnose them without confusing a retained owner with a dead one.
+            if self._command_handler is not None:
+                try:
+                    findings = await reconcile_slot_bindings(self.db, mgr, project.id)
+                    previous = getattr(self, "_workspace_binding_findings", {})
+                    accepted = True
+                    if findings and previous.get(project.id) != findings:
+                        result = await self._command_handler.execute("message_send", {
+                            "project_id": project.id, "from_kind": "system",
+                            "from_id": "workspace-binding-reconciler", "to_kind": "session",
+                            "to_id": f"supervisor-{project.id}",
+                            "subject": "Existing workspace bindings need fenced recovery",
+                            "body": "\n".join(
+                                f"{f['workspace_id']} generation {f['generation']}: {f['detail']}"
+                                for f in findings[:50]
+                            ), "archive_after_inject": True,
+                        })
+                        if result.get("success") is False or result.get("error"):
+                            accepted = False
+                    if accepted:
+                        previous[project.id] = findings
+                        self._workspace_binding_findings = previous
+                except Exception:
+                    logger.warning("Existing workspace binding audit failed for %s", project.id)
             # Slot rows whose index >= cap are retired (§5).
             cap = project.max_concurrent_agents or 0
             for ws in workspaces:

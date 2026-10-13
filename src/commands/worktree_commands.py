@@ -195,6 +195,10 @@ class WorktreeCommandsMixin:
             if worktrees_cfg is None or not worktrees_cfg.enabled:
                 continue
 
+            from src.orchestrator.workspace_binding_audit import reconcile_slot_bindings
+
+            findings.extend(await reconcile_slot_bindings(self.db, mgr, project.id))
+
             for slot in slots:
                 if slot.locked_by_task_id:
                     continue
