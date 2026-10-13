@@ -19,6 +19,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from src.commands.contracts.models import CommandResult
@@ -119,6 +121,7 @@ def build(
     runs = runs or RecordingRunRepository()
     bus = RecordingBus()
     services = EngineServices(
+        private_values=AsyncMock(),
         contracts=registry,
         clock=lambda: 1_000.0,
         artifact_store=store,
@@ -255,6 +258,7 @@ def build_llm(
     runs = runs or RecordingRunRepository()
     engine = PlaybookEngine(
         services=EngineServices(
+            private_values=AsyncMock(),
             contracts=registry,
             clock=lambda: 1_000.0,
             artifact_store=store,
@@ -1668,6 +1672,7 @@ def wait_build(
     store.put(artifact)
     runs = runs or RecordingRunRepository()
     services = EngineServices(
+        private_values=AsyncMock(),
         contracts=registry,
         clock=clock or (lambda: 1_000.0),
         artifact_store=store,
@@ -1904,18 +1909,18 @@ class TestDurableWaits:
         receipt = [r for r in runs.receipts if r.step_id == "await-review"][-1]
         assert receipt.timed_out is True
         assert receipt.outcome == "timeout"
-        assert receipt.error == "wait deadline fired"
+        assert receipt.error == "private_run_error"
 
     @pytest.mark.parametrize(
-        ("run_deadline", "expected_deadline", "expected_error"),
+        ("run_deadline", "expected_deadline"),
         [
-            (1_000.0 + 60, 1_060.0, "run deadline fired"),
-            (1_000.0 + 9_000, 1_600.0, "wait deadline fired"),
+            (1_000.0 + 60, 1_060.0),
+            (1_000.0 + 9_000, 1_600.0),
         ],
     )
     @pytest.mark.asyncio
     async def test_wait_deadline_and_run_deadline_the_earlier_wins(
-        self, run_deadline, expected_deadline, expected_error
+        self, run_deadline, expected_deadline
     ):
         engine, runs, waits, ref = wait_engine()
         outcome = await engine.run_rule(
@@ -1928,7 +1933,8 @@ class TestDurableWaits:
         assert waits.registered[0].deadline_at == expected_deadline
         await engine.resume(outcome.run_id, TimerFired(wait_id=""), TRUSTED_LOCAL)
         receipt = [r for r in runs.receipts if r.step_id == "await-review"][-1]
-        assert receipt.error == expected_error
+        assert receipt.timed_out is True
+        assert receipt.error == "private_run_error"
 
     @pytest.mark.asyncio
     async def test_wait_does_not_create_a_timer_service_entry(self):
@@ -2094,6 +2100,7 @@ def loop_engine(
     runs = RecordingRunRepository()
     engine = PlaybookEngine(
         services=EngineServices(
+            private_values=AsyncMock(),
             contracts=registry,
             clock=lambda: 1_000.0,
             artifact_store=store,
@@ -2250,6 +2257,7 @@ class TestSequentialLoops:
         runs = RecordingRunRepository()
         engine = PlaybookEngine(
             services=EngineServices(
+                private_values=AsyncMock(),
                 contracts=registry,
                 clock=lambda: 1_000.0,
                 artifact_store=store,
@@ -2265,7 +2273,7 @@ class TestSequentialLoops:
         assert adapter.names == ["list_tasks"]
         loop_receipt = [r for r in runs.receipts if r.step_id == "for-each-task"][-1]
         assert loop_receipt.error_code == "input_resolution_failed"
-        assert "not a list" in (loop_receipt.error or "")
+        assert loop_receipt.error == "private_run_error"
 
     @pytest.mark.asyncio
     async def test_a_collection_over_max_iterations_is_state_limit_exceeded(self):

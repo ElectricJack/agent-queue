@@ -824,6 +824,7 @@
         "tests/test_migration_parent_collection.py",
         "tests/test_migration_parent_subjects.py",
         "tests/test_migration_playbook_blocked_lifecycle.py",
+        "tests/test_migration_playbook_building_blocks.py",
         "tests/test_migration_playbook_v2.py",
         "tests/test_migration_pool_claim_refusal.py",
         "tests/test_migration_pool_claim_refusals.py",
@@ -946,6 +947,7 @@
         "tests/test_pkg5_scenarios.py",
         "tests/test_playbook_pending_events_commands.py",
         "tests/test_playbook_pending_events_policy.py",
+        "tests/test_playbook_private_values.py",
         "tests/test_playbook_receipts.py",
         "tests/test_playbook_run_overlay.py",
         "tests/test_playbook_run_repository.py",
@@ -11249,6 +11251,21 @@
       ],
       "summary": "The current schema admits blocked Playbook V2 runs."
     },
+    "tests/test_migration_playbook_building_blocks.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "digest": "sha256:c8be8c21daf9daee49fca1c488c569dfde5fcfa0c46c560f04ea9d9223a66b13",
+      "imports": [
+        "src.database",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "A3's additive encrypted-value migration on disposable PostgreSQL."
+    },
     "tests/test_migration_playbook_v2.py": {
       "areas": [
         "migrations"
@@ -12244,6 +12261,35 @@
       ],
       "summary": "Pending-event overflow, replay and discard policy — Package 6 T-16."
     },
+    "tests/test_playbook_private_values.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d4a4254c9bb37bc5d89de904631ea36a50a0ea1e671a4e5981f9de70fc62d326",
+      "imports": [
+        "src.commands.contracts.generated",
+        "src.commands.contracts.registry",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.executors.command",
+        "src.playbooks.expressions",
+        "src.playbooks.graph_projection",
+        "src.playbooks.invocation",
+        "src.playbooks.private_values",
+        "src.playbooks.run_state",
+        "src.playbooks.waits",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Confidentiality boundaries exercised against disposable PostgreSQL."
+    },
     "tests/test_playbook_receipts.py": {
       "areas": [
         "playbook-engine"
@@ -12276,11 +12322,12 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:ad9e24b816825df7c4ec6d6a46cb21cbafd86de5f014aa1ec19528dd5b1cc5e2",
+      "digest": "sha256:e2ac5adb686f2adcc81d5e0bdbffa5981cc2473d9b87292f13c85bd6fc0429b1",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.playbooks",
+        "src.playbooks.private_values",
         "src.playbooks.receipts",
         "src.playbooks.run_state",
         "src.playbooks.waits"
@@ -17647,7 +17694,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:9e8236a2efb6c8def86052012e8a19479e29238660d86452a3305c1002d2d994",
+      "digest": "sha256:f43ee3e4613eb9424850494aa8d1b910a0cc20930c5f1493ab640820b1e12198",
       "imports": [
         "src.commands.contracts.models",
         "src.commands.principal",
@@ -17655,6 +17702,7 @@
         "src.database.tables",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
+        "src.playbooks.private_values",
         "src.playbooks.run_state"
       ],
       "markers": [
@@ -17686,7 +17734,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:5efab90b8291602e1e78466c0b94078516e94379ec563261256840f25ee6eddc",
+      "digest": "sha256:7a615fa5a65819a5521a7838957f93413f5a39baf9573cc7fb1a1914ce652463",
       "imports": [
         "src.commands.contracts.models",
         "src.commands.principal",
@@ -17698,6 +17746,7 @@
         "src.playbooks.executors.base",
         "src.playbooks.executors.foreach",
         "src.playbooks.executors.wait",
+        "src.playbooks.private_values",
         "src.playbooks.receipts",
         "src.playbooks.recovery",
         "src.playbooks.run_state",

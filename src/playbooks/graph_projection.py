@@ -102,6 +102,9 @@ def _json(value: Any) -> str:
 
 def project_value(value: Any, *, redacted: bool = False, type_name: str | None = None) -> dict:
     """Project one typed expression without resolving it against run data."""
+    from src.playbooks.private_values import contains_reference
+
+    redacted = redacted or contains_reference(value)
     if redacted:
         return {
             "kind": "redacted",

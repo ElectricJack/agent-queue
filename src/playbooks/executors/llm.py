@@ -28,7 +28,9 @@ from src.playbooks.executors.base import (
     project_step_receipt,
 )
 from src.playbooks.expressions import ValueResolutionError
-from src.playbooks.receipts import idempotency_key
+from src.playbooks.receipts import idempotency_key, sensitive_handle
+from src.playbooks.invocation import _invocation_context
+from src.playbooks.private_values import PrivateValueError
 from src.profiles.capabilities import capability_policy_for
 from src.routing.filing import routing_choice_refusal
 
@@ -117,7 +119,7 @@ def _result(
     diagnostics: tuple[str, ...] = (),
     control: StepControl = StepControl.ADVANCE,
 ) -> ExecutorResult:
-    prompt_digest = hashlib.sha256(_prompt(step, ctx).encode()).hexdigest()
+    prompt_digest = sensitive_handle(ctx.run_id, "prompt", _prompt(step, ctx))
     _ignored_inputs, receipt_result = project_step_receipt(
         {}, value or {}, run_id=ctx.run_id
     )
@@ -125,6 +127,7 @@ def _result(
         control=control,
         outcome=outcome,
         value=value if step.save_result_as else None,
+        private_fields=tuple(value or {}),
         usage=usage,
         llm_calls=llm_calls,
         effective_principal=ctx.principal,
@@ -385,6 +388,13 @@ class LiveLlmExecutor:
             )
         ctx = replace(ctx, principal=resolution.principal)
 
+        try:
+            if ctx.services.private_values is None:
+                raise PrivateValueError("private_storage_unavailable")
+            await ctx.services.private_values.check_ready()
+        except PrivateValueError as exc:
+            return _result(step, ctx, outcome="unavailable", diagnostics=(exc.code,))
+
         if step.transport == "cli":
             return await _execute_cli(step, ctx, resolution)
 
@@ -470,7 +480,8 @@ class LiveLlmExecutor:
                         return refusal
                     try:
                         validated = registration.contract.execution.args_model.model_validate(args)
-                        response = await registration.invoke(validated, ctx.principal)
+                        with _invocation_context(ctx):
+                            response = await registration.invoke(validated, ctx.principal)
                         if registration.contract.execution.result_mode == "json_object":
                             from src.playbooks.definition import CommandStep
                             from src.playbooks.executors.command import _consume

@@ -1032,6 +1032,9 @@ class CommandHandler(
                 }
             if name.startswith("operator_"):
                 log_args = {"command": args.get("command"), "arguments": "<operator inputs>"}
+            private_call = principal.kind.value == "playbook"
+            if private_call:
+                log_args = {key: "(redacted)" for key in args}
             if mutating:
                 logger.info("cmd %s args=%s", name, self._preview(log_args))
             else:
@@ -1042,6 +1045,8 @@ class CommandHandler(
             # never appear on the bus regardless.
             _emit_started_at = time.monotonic()
             _emit_args_snapshot = dict(args) if isinstance(args, dict) else {}
+            if private_call:
+                _emit_args_snapshot = dict(log_args)
             if name in {"bind_project_repository", "create_project", "onboard_project"}:
                 _emit_args_snapshot = dict(log_args)
             _emit_ok: bool = False
@@ -1163,7 +1168,8 @@ class CommandHandler(
                 if handler:
                     result = await handler(args)
                     if mutating:
-                        logger.info("cmd %s result=%s", name, self._preview(result))
+                        logger.info("cmd %s result=%s", name,
+                                    "(protected)" if private_call else self._preview(result))
                     _emit_ok, _emit_error = _classify_result(result)
                     return result
 
@@ -1184,20 +1190,20 @@ class CommandHandler(
                                     "cmd %s (plugin=%s) result=%s",
                                     name,
                                     plugin_name,
-                                    self._preview(result),
+                                    "(protected)" if private_call else self._preview(result),
                                 )
                             _emit_ok, _emit_error = _classify_result(result)
                             return result
                         except Exception as e:
                             await self.orchestrator.plugin_registry.record_failure(
-                                plugin_name, str(e)
+                                plugin_name, type(e).__name__ if private_call else str(e)
                             )
                             logger.error(
                                 "Plugin command %s failed: args=%s err=%s",
                                 name,
                                 self._preview(log_args),
-                                e,
-                                exc_info=True,
+                                type(e).__name__ if private_call else e,
+                                exc_info=not private_call,
                             )
                             _emit_ok = False
                             from src.git.github_contracts import GitHubAccessError
@@ -1225,11 +1231,11 @@ class CommandHandler(
                     "Command %s failed: args=%s err=%s",
                     name,
                     self._preview(log_args),
-                    e,
-                    exc_info=True,
+                    type(e).__name__ if private_call else e,
+                    exc_info=not private_call,
                 )
                 _emit_ok = False
-                _emit_error = f"{e.__class__.__name__}: {e}"[:200]
+                _emit_error = type(e).__name__ if private_call else f"{type(e).__name__}: {e}"[:200]
                 return {"success": False, "error_code": "command_runtime_error",
                         "error": str(e) if not principal.enforced else "Command execution failed"}
             finally:
@@ -1264,7 +1270,8 @@ class CommandHandler(
                                 if isinstance(scope, dict)
                                 else None,
                                 "args_summary": _summarize_args(name, _emit_args_snapshot),
-                                "error": _emit_error,
+                                "error": "command_failed" if private_call and _emit_error
+                                else _emit_error,
                             }
                             await bus.emit("command.invoked", payload)
                 except Exception:  # pragma: no cover -- defensive

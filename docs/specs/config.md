@@ -566,11 +566,30 @@ Maps to `PlaybooksConfig`. The YAML key is `playbooks`.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `bool` | `False` | Whether the playbook/workflow subsystem is active. |
+| `private_value_active_key_id` | `str` | `""` | Active encryption key identifier. Missing key material refuses protected bindings before invocation. |
+| `private_value_key_env` | `dict[str, str]` | `{}` | Key identifier → daemon environment variable name containing a base64-encoded 32-byte key. Retain old keys for existing runs. No keys are generated automatically; key bytes must remain outside the database, vault and script mounts. |
 | `v2_api` | `bool` | `False` | Playbook V2 semantic-graph **read** surface: `playbook_v2_graph`, `playbook_activation_health`, `playbook_artifacts`, `playbook_artifact_diff`, `playbook_pending_events`, `playbook_run_overlay`. Off returns `playbook v2 api is disabled (playbooks.v2_api=false)`. |
 | `v2_activation_writes` | `bool` | `False` | Playbook V2 operator **writes**: `playbook_activate` and `playbook_pending_event_action`. Gated separately from `v2_api` so the whole review surface stays readable with writes disabled. Off returns `playbook v2 activation writes are disabled (playbooks.v2_activation_writes=false)`. |
 | `v2_compiler_enabled` | `bool` | `False` | Review-only Package 2 compiler commands. Compilation, validation and shadow reports never persist or activate an artifact. |
 | `contract_intent` | `bool` | `True` | Add contract-derived intent to V1 graph-view nodes. Removed in Package 5. |
 | `cancellation_grace_seconds` | `int` | `30` | How long `PlaybookEngine.cancel` waits for an in-flight executor to acknowledge before ending the run itself. `0` means "do not wait": the run reaches `cancelled` immediately and the receipt records `grace_expired`. |
+
+Protected playbook data uses authenticated encryption with run/namespace and
+scope ownership bound to every value. Provision a random 32-byte key in the
+daemon's environment, then map its variable name (never its value) through
+`private_value_key_env` and select its identifier with
+`private_value_active_key_id`. Rotation selects a new active identifier and
+retains the previous variable mappings until their encrypted data expires or is
+retired. Missing read keys leave suspended runs intact and return
+`private_storage_key_unavailable`; restoring the key permits authorized resume.
+Do not pass these environment variables to agents or scripts.
+
+The run snapshot stores opaque references for unprojected or sensitive command
+results, derived loop/wait state and LLM transcripts. Audited public result
+fields remain JSON. Receipt, event, error, API and graph projections never resolve
+those references. Generated commands require a live engine context and ready
+private storage; dry-run and shadow do not invoke their live handlers. Removing
+the feature's configuration does not delete encrypted evidence.
 
 > **Temporary — framework overhaul pause.** While `playbooks.enabled` is
 > `false` the `PlaybookManager`, `TimerService`, the playbook and

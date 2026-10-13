@@ -19,7 +19,7 @@ Two properties are load-bearing and easy to lose:
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
@@ -430,6 +430,7 @@ class RunSnapshot:
     context: Mapping[str, Any] = field(default_factory=dict)
     bindings: Mapping[str, Any] = field(default_factory=dict)
     sensitive: Mapping[str, Any] = field(default_factory=dict)
+    private_bindings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     #: ``"<step_id>:<iteration>" -> attempts already receipted``.  Attempt
     #: identity is four-part (§9.1) and the database enforces it through
     #: ``uq_playbook_step_receipts_attempt``, so a step the walk reaches
@@ -474,12 +475,31 @@ class RunSnapshot:
     def is_terminal(self) -> bool:
         return self.lifecycle in TERMINAL_LIFECYCLES
 
+    @property
+    def has_private_data(self) -> bool:
+        return bool(self.private_bindings or self.sensitive or self.llm_turns)
+
     def redacted(self) -> RunSnapshot:
         """Drop plaintext sensitive values.  Any projection must use this."""
-        return replace(self, sensitive={})
+        from src.playbooks.private_values import public_value
 
-    def to_body(self) -> dict[str, Any]:
+        body = self.to_body(protect=public_value)
+        body["sensitive"] = {}
+        return replace(RunSnapshot.from_body(body), private_bindings={})
+
+    def to_body(self, *, protect: Callable[[Any], Any] | None = None) -> dict[str, Any]:
         """The dict persisted as ``playbook_v2_runs.snapshot``."""
+        from src.playbooks.private_values import PrivateValueError, is_reference, canonical_reference
+
+        def private(value: Any) -> Any:
+            if is_reference(value):
+                return canonical_reference(value)
+            if isinstance(value, Mapping) and value == {"__redacted__": True}:
+                return dict(value)
+            if protect is None:
+                raise PrivateValueError("private_storage_required")
+            return protect(value)
+
         body = {
             "run_id": self.run_id,
             "playbook_id": self.playbook_id,
@@ -492,7 +512,7 @@ class RunSnapshot:
             "event": dict(self.event),
             "context": dict(self.context),
             "bindings": dict(self.bindings),
-            "sensitive": dict(self.sensitive),
+            "sensitive": {key: private(value) for key, value in self.sensitive.items()},
             "attempts": dict(self.attempts),
             "loop": asdict(self.loop) if self.loop is not None else None,
             "wait": self.wait.as_dict() if self.wait is not None else None,
@@ -521,6 +541,35 @@ class RunSnapshot:
             body["loop"]["partial"] = list(self.loop.partial)
         if self.operator_decision is not None:
             body["operator_decision"]["options"] = list(self.operator_decision.options)
+        if self.private_bindings:
+            body["private_bindings"] = {key: list(names)
+                                        for key, names in self.private_bindings.items()}
+            for binding, names in self.private_bindings.items():
+                if binding in body["bindings"]:
+                    body["bindings"][binding] = {
+                        key: private(value) if key in names else value
+                        for key, value in body["bindings"][binding].items()
+                    }
+        if self.has_private_data:
+            # Derived execution state cannot launder a protected binding.
+            # Keep the outer structures so inspection/cancellation can work
+            # without keys; only live evaluation resolves their values.
+            for key in ("event", "context"):
+                body[key] = {name: private(value) for name, value in body[key].items()}
+            if body["loop"] is not None:
+                body["loop"]["partial"] = [private(item) for item in body["loop"]["partial"]]
+                body["loop"]["collection_digest"] = private(body["loop"]["collection_digest"])
+            if body["wait"] is not None:
+                body["wait"]["match"] = {key: private(value)
+                                         for key, value in body["wait"]["match"].items()}
+            for claim in body["pending_wait_claims"]:
+                claim["event_fields"] = {key: private(value)
+                                          for key, value in claim["event_fields"].items()}
+            body["llm_turns"] = [private(turn) for turn in body["llm_turns"]]
+            body["summary"] = "(redacted)" if self.summary else ""
+            body["error"] = "private_run_error" if self.error else None
+            if body["operator_decision"] is not None:
+                body["operator_decision"]["reason"] = "(redacted)"
         return body
 
     @classmethod
@@ -541,6 +590,8 @@ class RunSnapshot:
             context=dict(body.get("context") or {}),
             bindings=dict(body.get("bindings") or {}),
             sensitive=dict(body.get("sensitive") or {}),
+            private_bindings={key: tuple(names)
+                              for key, names in (body.get("private_bindings") or {}).items()},
             attempts={str(k): int(v) for k, v in (body.get("attempts") or {}).items()},
             loop=(
                 LoopFrame(
@@ -644,10 +695,11 @@ def check_result_size(
 
 
 def serialize_snapshot(
-    snapshot: RunSnapshot, *, limits: StateLimits = DEFAULT_STATE_LIMITS
+    snapshot: RunSnapshot, *, limits: StateLimits = DEFAULT_STATE_LIMITS,
+    protect: Callable[[Any], Any] | None = None,
 ) -> bytes:
     """Canonical bytes for ``playbook_v2_runs.snapshot``, size-checked."""
-    payload = canonical_json(snapshot.to_body())
+    payload = canonical_json(snapshot.to_body(protect=protect))
     if len(payload) > limits.max_snapshot_bytes:
         raise StateLimitExceeded(
             snapshot.run_id, None, "snapshot", len(payload), limits.max_snapshot_bytes
@@ -666,6 +718,7 @@ def bind_step_output(
     step_id: str,
     value: Mapping[str, Any],
     declared: Collection[str],
+    private_fields: Collection[str] | None = None,
     limits: StateLimits = DEFAULT_STATE_LIMITS,
 ) -> RunSnapshot:
     """Bind one step's validated declared output onto the snapshot.
@@ -683,7 +736,13 @@ def bind_step_output(
     check_result_size(snapshot.run_id, step_id, value, limits=limits)
     bindings = dict(snapshot.bindings)
     bindings[step_id] = dict(value)
-    return replace(snapshot, bindings=bindings)
+    private_bindings = dict(snapshot.private_bindings)
+    # Until expression-level taint analysis exists, every derived binding
+    # from a private run remains private, including loop/terminal outputs.
+    names = tuple(value) if snapshot.has_private_data or private_fields is None else tuple(private_fields)
+    if names:
+        private_bindings[step_id] = names
+    return replace(snapshot, bindings=bindings, private_bindings=private_bindings)
 
 
 # --------------------------------------------------------------------------

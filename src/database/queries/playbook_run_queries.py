@@ -341,8 +341,8 @@ def _run_columns(snapshot: RunSnapshot, payload: bytes) -> dict:
         "parent_step_id": snapshot.parent_step_id,
         "deadline_at": snapshot.deadline_at,
         "cancel_requested_at": snapshot.cancel_requested_at,
-        "summary": snapshot.summary,
-        "error": snapshot.error,
+        "summary": "(redacted)" if snapshot.has_private_data and snapshot.summary else snapshot.summary,
+        "error": "private_run_error" if snapshot.has_private_data and snapshot.error else snapshot.error,
         "error_code": snapshot.error_code,
         "updated_at": snapshot.updated_at,
         "completed_at": snapshot.completed_at,
@@ -367,10 +367,50 @@ class PlaybookRunQueryMixin:
     def set_playbook_state_limits(self, limits: StateLimits) -> None:
         self._playbook_state_limits = limits
 
+    def set_playbook_private_values(self, service: Any) -> None:
+        self._playbook_private_values = service
+
+    def playbook_private_values(self) -> Any:
+        from src.playbooks.private_values import PrivateValueService
+
+        return getattr(self, "_playbook_private_values", None) or PrivateValueService(self._engine)
+
+    async def private_run_owner(self, snapshot: RunSnapshot) -> Any:
+        from src.playbooks.private_values import PrivateOwner, PrivateValueError
+
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(select(playbook_artifacts).where(
+                playbook_artifacts.c.artifact_sha256 == snapshot.artifact_sha256,
+                playbook_artifacts.c.playbook_id == snapshot.playbook_id,
+            ))).mappings().first()
+        if row is None:
+            raise PrivateValueError("private_owner_unavailable")
+        return PrivateOwner("run", snapshot.run_id, row["scope"],
+                            row["scope_identifier"] or "system")
+
+    async def _private_snapshot_payload(self, snapshot: RunSnapshot) -> tuple[bytes, Any]:
+        # Check logical bytes before replacing large values with small handles.
+        serialize_snapshot(snapshot, limits=self.playbook_state_limits(), protect=lambda value: value)
+        from src.playbooks.private_values import PrivateOwner
+
+        owner = (await self.private_run_owner(snapshot) if snapshot.has_private_data
+                 else PrivateOwner("run", snapshot.run_id))
+        batch = self.playbook_private_values().batch(owner)
+        payload = serialize_snapshot(snapshot, limits=self.playbook_state_limits(),
+                                     protect=batch.protect)
+        return payload, batch
+
+    async def resolve_private_snapshot(self, snapshot: RunSnapshot, principal: Any) -> RunSnapshot:
+        body = snapshot.to_body(protect=lambda value: value)
+        resolved = await self.playbook_private_values().resolve(
+            body, owner=await self.private_run_owner(snapshot), principal=principal,
+        )
+        return RunSnapshot.from_body(resolved)
+
     # -- runs ---------------------------------------------------------------
 
     async def create_run(self, snapshot: RunSnapshot) -> RunSnapshot:
-        payload = serialize_snapshot(snapshot, limits=self.playbook_state_limits())
+        payload, private_batch = await self._private_snapshot_payload(snapshot)
         values = {
             "run_id": snapshot.run_id,
             "snapshot_version": snapshot.version,
@@ -379,6 +419,7 @@ class PlaybookRunQueryMixin:
         }
         try:
             async with self.immediate() as conn:
+                await private_batch.persist(conn)
                 await conn.execute(insert(playbook_v2_runs).values(**values))
         except IntegrityError as exc:
             # ``uq_playbook_v2_runs_dispatch_rule``: one matching event
@@ -468,11 +509,13 @@ class PlaybookRunQueryMixin:
         ):
             if want != got:
                 raise RunIdentityMismatch(snapshot.run_id, field, want, got)
-        payload = serialize_snapshot(advanced, limits=limits)
+        if snapshot.has_private_data and receipt.error:
+            receipt = replace(receipt, error="private_run_error")
+        payload, private_batch = await self._private_snapshot_payload(advanced)
 
         try:
             return await self._commit_boundary_txn(
-                snapshot, advanced, receipt, wait_changes, payload, limits
+                snapshot, advanced, receipt, wait_changes, payload, limits, private_batch
             )
         except SnapshotVersionConflict as exc:
             # After the transaction has rolled back, so the audit row is a
@@ -518,9 +561,11 @@ class PlaybookRunQueryMixin:
         wait_changes: WaitChangeSet,
         payload: bytes,
         limits: Any,
+        private_batch: Any,
     ) -> RunSnapshot:
         expected = snapshot.version
         async with self.immediate() as conn:
+            await private_batch.persist(conn)
             current = (
                 (
                     await conn.execute(
@@ -583,7 +628,8 @@ class PlaybookRunQueryMixin:
                     advanced,
                     pending_wait_claims=advanced.pending_wait_claims + immediate_claims,
                 )
-                payload = serialize_snapshot(advanced, limits=limits)
+                payload = serialize_snapshot(advanced, limits=limits, protect=private_batch.protect)
+                await private_batch.persist(conn)
                 await conn.execute(
                     update(playbook_v2_runs)
                     .where(
@@ -703,7 +749,7 @@ class PlaybookRunQueryMixin:
                 .values(
                     snapshot_version=advanced.version,
                     cancel_requested_by=requested_by,
-                    cancel_reason=reason,
+                    cancel_reason="(redacted)" if snapshot.has_private_data else reason,
                     **_run_columns(advanced, payload),
                 )
             )
@@ -1036,6 +1082,19 @@ class PlaybookRunQueryMixin:
             select(func.pg_advisory_xact_lock(func.hashtextextended(route, 0x41515754)))
         )
 
+    async def _private_inbox_event(self, row, conn: AsyncConnection) -> _InboxEvent:
+        from src.commands.principal import ExecutionPrincipal
+        from src.playbooks.private_values import PrivateOwner
+
+        event = _row_to_inbox_event(row)
+        fields = await self.playbook_private_values().resolve(
+            event.fields,
+            owner=PrivateOwner("namespace", "wait-inbox:" + event.playbook_id,
+                               event.scope, event.scope_identifier or "system"),
+            principal=ExecutionPrincipal.service("playbook-wait-delivery"), conn=conn,
+        )
+        return replace(event, fields=fields)
+
     async def _claim_registered_wait_from_inbox(
         self,
         conn: AsyncConnection,
@@ -1072,7 +1131,7 @@ class PlaybookRunQueryMixin:
             .fetchall()
         )
         for row in rows:
-            event = _row_to_inbox_event(row)
+            event = await self._private_inbox_event(row, conn)
             if not matches(wait, event):
                 continue
             claimed_at = event.received_at
@@ -1137,7 +1196,7 @@ class PlaybookRunQueryMixin:
                 .fetchone()
             )
             if existing is not None:
-                return _row_to_inbox_event(existing)
+                return await self._private_inbox_event(existing, conn)
 
         quota = self.playbook_pending_event_quota()
         retained = (
@@ -1159,6 +1218,33 @@ class PlaybookRunQueryMixin:
             _warn_pending_quota(event.playbook_id, quota, now)
             raise PendingEventQuotaExceeded(event.playbook_id, quota)
 
+        # This routed inbox can outlive a wait registration. Once a run has
+        # private data, all arrivals on its route are protected before storage.
+        from src.playbooks.private_values import PrivateOwner
+        from src.event_schemas import event_field_is_sensitive
+
+        body = cast(playbook_v2_runs.c.snapshot, JSONB)
+        protected = bool(await conn.scalar(
+            select(playbook_v2_runs.c.run_id).select_from(
+                playbook_v2_runs.join(playbook_artifacts,
+                    playbook_v2_runs.c.artifact_sha256 == playbook_artifacts.c.artifact_sha256)
+            ).where(
+                playbook_v2_runs.c.playbook_id == event.playbook_id,
+                playbook_artifacts.c.scope == event.scope,
+                playbook_artifacts.c.scope_identifier == event.scope_identifier,
+                or_(body["private_bindings"] != {}, body["sensitive"] != {},
+                    body["llm_turns"] != []),
+            ).limit(1)
+        ))
+        fields = dict(event.fields)
+        batch = self.playbook_private_values().batch(PrivateOwner(
+            "namespace", "wait-inbox:" + event.playbook_id, event.scope,
+            event.scope_identifier or "system",
+        ))
+        fields = {name: batch.protect(value) if protected or
+                  event_field_is_sensitive(event.event_type, name) else value
+                  for name, value in fields.items()}
+        await batch.persist(conn)
         insert_fn = pg_insert
         await conn.execute(
             insert_fn(playbook_pending_events)
@@ -1168,7 +1254,7 @@ class PlaybookRunQueryMixin:
                 scope=event.scope,
                 scope_identifier=event.scope_identifier,
                 event_type=event.event_type,
-                event=_dumps(dict(event.fields)),
+                event=_dumps(fields),
                 event_id=event.event_id,
                 dedup_key="",
                 reason=WAIT_EVENT_REASON,
@@ -1193,7 +1279,7 @@ class PlaybookRunQueryMixin:
             .mappings()
             .one()
         )
-        return _row_to_inbox_event(row)
+        return await self._private_inbox_event(row, conn)
 
     async def register(
         self, wait: WaitSpec, snapshot_version: int, *, conn: AsyncConnection | None = None
@@ -1215,6 +1301,7 @@ class PlaybookRunQueryMixin:
                             select(
                                 playbook_v2_runs.c.snapshot_version,
                                 playbook_v2_runs.c.playbook_id,
+                                playbook_v2_runs.c.snapshot,
                                 playbook_artifacts.c.scope,
                                 playbook_artifacts.c.scope_identifier,
                             )
@@ -1245,6 +1332,17 @@ class PlaybookRunQueryMixin:
                             snapshot_version,
                         )
                 playbook_id = current["playbook_id"] if current is not None else ""
+                if current is not None and any(json.loads(current["snapshot"]).get(key) for key in ("private_bindings", "sensitive", "llm_turns")):
+                    from src.playbooks.private_values import PrivateOwner
+
+                    batch = self.playbook_private_values().batch(PrivateOwner(
+                        "run", wait.run_id, current["scope"],
+                        current["scope_identifier"] or "system",
+                    ))
+                    values["match"] = _dumps({name: batch.protect(value)
+                                               for name, value in wait.match.items()})
+                    values["correlation_key"] = "private:" + uuid.uuid4().hex
+                    await batch.persist(active)
                 if playbook_id:
                     await self._lock_wait_delivery(
                         active,
@@ -1353,7 +1451,17 @@ class PlaybookRunQueryMixin:
                     break
                 for row in rows:
                     cursor = (row["created_at"], row["wait_id"])
-                    if not matches(_row_to_wait(row), canonical):
+                    wait = _row_to_wait(row)
+                    from src.commands.principal import ExecutionPrincipal
+                    from src.playbooks.private_values import PrivateOwner
+
+                    match = await self.playbook_private_values().resolve(
+                        wait.match,
+                        owner=PrivateOwner("run", wait.run_id, canonical.scope,
+                                           canonical.scope_identifier or "system"),
+                        principal=ExecutionPrincipal.service("playbook-wait-delivery"), conn=conn,
+                    )
+                    if not matches(replace(wait, match=match), canonical):
                         continue
                     result = await conn.execute(
                         update(playbook_waits)

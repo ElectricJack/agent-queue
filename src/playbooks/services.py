@@ -367,6 +367,7 @@ def build_v2_engine(
     from src.playbooks.artifact_store import ArtifactStore
     from src.playbooks.engine import PlaybookEngine
     from src.playbooks.executors.base import EngineServices
+    from src.playbooks.private_values import PrivateValueService
 
     cached = getattr(handler, "__dict__", {}).get("_v2_playbook_engine")
     if cached is not None:
@@ -374,6 +375,8 @@ def build_v2_engine(
 
     playbooks = config.playbooks
     bind_pending_event_policy(db, playbooks)
+    private_values = PrivateValueService.from_config(getattr(db, "_engine", None), playbooks)
+    db.set_playbook_private_values(private_values)
     services = EngineServices(
         contracts=CONTRACTS,
         clock=time.time,
@@ -389,6 +392,7 @@ def build_v2_engine(
         authorization_mode=getattr(
             getattr(config, "security", None), "capability_enforcement", "audit"
         ),
+        private_values=private_values,
     )
     engine = PlaybookEngine(
         services=services,
