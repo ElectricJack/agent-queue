@@ -52,14 +52,26 @@ PR_IDENTITY = PullRequestIdentity(
 pytestmark = pytest.mark.asyncio
 
 @pytest.fixture(scope="module")
-def generated_routers():
-    return build_category_routers()
+def api_app():
+    """Share the route tree; authentication and handlers resolve per request.
+
+    Each case still owns its database adapter, tokens, mocks and HTTP client.
+    No lifespan runs here and no loop-bound resources live on this application.
+    """
+    app = FastAPI()
+    app.include_router(execute_router)
+    paths = {}
+    for router in build_category_routers():
+        app.include_router(router)
+        for route in router.routes:
+            paths[route.operation_id] = route.path
+    app.add_middleware(TokenAuthMiddleware)
+    return app, paths
 
 
 @pytest.fixture(params=["execute", "typed"])
-async def api(tmp_path, monkeypatch, request, generated_routers):
-    db = Database(lease_dsn("reviewer-auth.db"))
-    await db.initialize()
+async def api(tmp_path, monkeypatch, request, api_app, reuse_database):
+    db: Database = await reuse_database("reviewer-auth.db")
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(
@@ -163,14 +175,7 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     monkeypatch.setattr(deps, "_orchestrator", orch)
     monkeypatch.setattr(deps, "_token_store", store)
     monkeypatch.setattr(deps, "_require_session_token", True)
-    app = FastAPI()
-    app.include_router(execute_router)
-    paths = {}
-    for router in generated_routers:
-        app.include_router(router)
-        for route in router.routes:
-            paths[route.operation_id] = route.path
-    app.add_middleware(TokenAuthMiddleware)
+    app, paths = api_app
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test",
     ) as client:
@@ -194,7 +199,6 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         yield SimpleNamespace(
             db=db, store=store, tokens=tokens, post=post, result=result, merge_pr=merge_pr,
         )
-    await db.close()
 
 
 # --- the grant ------------------------------------------------------------

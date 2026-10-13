@@ -10,16 +10,13 @@ from sqlalchemy import event
 from src.api.graph import build_graph_router
 from src.database import Database
 from src.models import Agent, AgentState, Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("g.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database: Database = await reuse_database("g.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
