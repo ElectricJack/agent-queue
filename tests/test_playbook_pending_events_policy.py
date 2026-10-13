@@ -455,6 +455,7 @@ async def test_replay_strips_principal_fields():
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {
             "event_type": "task.completed",
             "task_id": "t1",
@@ -473,7 +474,10 @@ async def test_replay_strips_principal_fields():
 
     assert result["success"] is True
     replayed = engine.dispatch_event.await_args.args[0]
-    assert set(replayed) == {"event_type", "task_id"}
+    # The stripped payload plus the row's own arrival time, which the replay
+    # stamps so the run observes when the event was received, not replayed.
+    assert set(replayed) == {"event_type", "task_id", "_received_at"}
+    assert replayed["_received_at"] == 1000.0
     for key in SERVER_OWNED_ARG_KEYS:
         assert key not in replayed
     # The stored row is left as received — stripping is a replay-time decision.
@@ -563,6 +567,7 @@ async def test_dispatch_does_not_require_a_reason():
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"event_type": "task.completed"},
     }
     handler, engine = _command_handler(row)
@@ -667,8 +672,7 @@ def _activation_handler(
     ``health_read_sees_row=False`` is the post-write health read coming back
     without the row that was just activated.
     """
-    from tests.test_api_playbook_v2_commands import _backend_fixture
-    from tests.test_playbook_activation_commands import _Handler
+    from tests.test_playbook_activation_commands import _backend_fixture, _Handler
 
     definition, ref, _activation = _backend_fixture()
     refreshed = _activation_record(ref, health=health, enabled=enabled)
@@ -707,6 +711,7 @@ def _held(event_id, **overrides):
     row = {
         "pending_event_id": event_id,
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"event_type": "task.completed", "event_id": event_id},
     }
     row.update(overrides)
@@ -776,7 +781,10 @@ async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
     await _activate(handler, definition, ref)
 
     replayed = engine.dispatch_event.await_args.args[0]
-    assert set(replayed) == {"event_type", "task_id"}
+    # The stripped payload plus the row's own arrival time, which the replay
+    # stamps so the run observes when the event was received, not replayed.
+    assert set(replayed) == {"event_type", "task_id", "_received_at"}
+    assert replayed["_received_at"] == 1000.0
     for key in SERVER_OWNED_ARG_KEYS:
         assert key not in replayed
     # Matching is re-run against the playbook that was just activated.
