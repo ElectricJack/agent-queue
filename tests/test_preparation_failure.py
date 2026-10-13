@@ -14,6 +14,7 @@ from src.preparation_failure import (
     PreparationFailure,
     describe_preparation_failure,
     safe_message,
+    safe_text,
 )
 
 
@@ -141,6 +142,11 @@ def test_messages_and_reason_are_bounded():
     failure = describe_preparation_failure(exc, "s" * 3000)
     assert len(failure.reason) <= MAX_REASON_CHARS
     assert failure.reason.endswith("...")
+
+
+def test_workspace_identity_text_is_scrubbed_and_bounded():
+    assert safe_text("/workspace/api_key=fixture-secret-value/slot") == "/workspace/api_key=***"
+    assert len(safe_text("/workspace/" + "x" * 1000)) == MAX_MESSAGE_CHARS
 
 
 def test_broken_str_falls_back_to_type_without_failing():

@@ -455,7 +455,7 @@ class WorktreeSlotManager:
         return [by_index[i] for i in sorted(by_index)]
 
     async def _provision_slot_dir(
-        self, base_ws: Workspace, kind: WorkspaceKind, target: Path
+        self, base_ws: Workspace, kind: WorkspaceKind, target: Path, *, prune: bool = True,
     ) -> str:
         """Put a detached worktree at *target* and run the kind's setup.
 
@@ -468,10 +468,11 @@ class WorktreeSlotManager:
 
         async with self._git_mutex(base_path):
             await self.ensure_git_exclude(base_path)
-            try:
-                await self.git.aworktree_prune(base_path)
-            except GitError as e:
-                logger.debug("worktree prune failed in %s: %s", base_path, e)
+            if prune:
+                try:
+                    await self.git.aworktree_prune(base_path)
+                except GitError as e:
+                    logger.debug("worktree prune failed in %s: %s", base_path, e)
 
             start_ref = await self._fetch_and_resolve_start_ref(
                 base_path, default_branch, required=True, project_id=base_ws.project_id
@@ -492,7 +493,9 @@ class WorktreeSlotManager:
         await self._run_setup(target, kind.worktree_setup)
         return setup_hash
 
-    async def reprovision_slot(self, slot_ws: Workspace, kind: WorkspaceKind) -> None:
+    async def reprovision_slot(
+        self, slot_ws: Workspace, kind: WorkspaceKind, *, prune: bool = True,
+    ) -> None:
         """Re-create a slot's missing worktree in place, keeping its row id.
 
         The slot reconciler's repair for a disabled slot whose directory is
@@ -504,7 +507,7 @@ class WorktreeSlotManager:
         if base_ws is None:
             raise OSError(f"slot {slot_ws.id} has no base workspace")
         target = Path(slot_ws.workspace_path)
-        setup_hash = await self._provision_slot_dir(base_ws, kind, target)
+        setup_hash = await self._provision_slot_dir(base_ws, kind, target, prune=prune)
         slot_index = slot_ws.slot_index or 0
         self.write_sentinel(
             target,
@@ -580,6 +583,86 @@ class WorktreeSlotManager:
 
     @guard_workspace("slot_ws")
     @_slot_reset_timeout
+    async def ensure_slot_checkout(self, slot_ws: Workspace, task, *, kind=None) -> None:
+        """Reconcile an acquired slot before checkpoint or origin Git reads.
+
+        Recreate missing managed worktrees in place. A nonempty directory or
+        foreign claim is evidence to preserve, never permission to overwrite.
+        """
+        from src.claim_file import read_claim_file
+
+        if slot_ws.locked_by_task_id not in (None, task.id):
+            raise GitError(f"slot {slot_ws.id} is locked by task {slot_ws.locked_by_task_id}")
+        slot_dir = Path(slot_ws.workspace_path)
+        claim = read_claim_file(slot_dir)
+        if claim is not None and (
+            claim.get("task_id") != task.id
+            or ("claim_epoch" in claim
+                and claim["claim_epoch"] != getattr(task, "claim_epoch", None))
+        ):
+            raise GitError(f"slot {slot_ws.id} at {slot_dir} retains a foreign claim")
+        if slot_dir.exists() and any(slot_dir.iterdir()):
+            sentinel = self.read_sentinel(slot_dir)
+            if sentinel is not None and (
+                sentinel.workspace_id not in ("", slot_ws.id)
+                or sentinel.base_workspace_id != (slot_ws.base_workspace_id or "")
+                or sentinel.project_id != slot_ws.project_id
+            ):
+                raise GitError(f"slot {slot_ws.id} at {slot_dir} has a mismatched sentinel")
+            return
+        for session in await self.db.list_sessions(live_only=True):
+            if session.work_dir and _norm_path(session.work_dir) == _norm_path(slot_dir):
+                if (getattr(session, "task_id", None) != task.id
+                        or getattr(session, "claim_phase", None) != "preparing"
+                        or getattr(session, "agent_id", None) != slot_ws.locked_by_agent_id):
+                    raise GitError(f"missing slot {slot_ws.id} at {slot_dir} has a live holder")
+        if await self._slot_has_retained_binding(slot_ws.id):
+            raise GitError(f"missing slot {slot_ws.id} at {slot_dir} retains an owner or job pin")
+        base_ws = await self._base_of(slot_ws)
+        if base_ws is None:
+            raise GitError(f"missing slot {slot_ws.id} at {slot_dir} has no base workspace")
+        if kind is None:
+            kind = await self.db.resolve_workspace_kind(slot_ws.project_id, slot_ws.kind_id)
+        if kind is None:
+            raise GitError(f"missing slot {slot_ws.id} at {slot_dir} has no workspace kind")
+        async with self._git_mutex(base_ws.workspace_path):
+            await self._remove_missing_slot_registration(base_ws, slot_dir)
+        # Only the proved registration above may be removed during claim
+        # recovery. Other missing worktrees can still have retained owners.
+        await self.reprovision_slot(slot_ws, kind, prune=False)
+        logger.warning("Recreated missing slot %s at %s before preparation", slot_ws.id, slot_dir)
+
+    async def _slot_has_retained_binding(self, workspace_id: str) -> bool:
+        if not hasattr(self.db, "_engine"):
+            return False
+        from sqlalchemy import exists, or_, select
+        from src.database.tables import integration_branch_owners, job_workspace_pins
+
+        async with self.db._engine.connect() as conn:
+            return bool(await conn.scalar(select(or_(
+                exists().where(
+                    integration_branch_owners.c.workspace_id == workspace_id,
+                    integration_branch_owners.c.handoff_state.in_(("attached", "handoff_pending")),
+                ),
+                exists().where(job_workspace_pins.c.workspace_id == workspace_id),
+            ))))
+
+    async def _remove_missing_slot_registration(self, base_ws, slot_dir: Path) -> None:
+        """Caller proves this managed path idle/missing and holds the Git mutex."""
+        for entry in await self.git.aworktree_list(base_ws.workspace_path):
+            if _norm_path(entry["path"]) != _norm_path(slot_dir):
+                continue
+            if entry.get("locked"):
+                await self.git._arun_unlocked(
+                    ["worktree", "unlock", str(slot_dir)], cwd=base_ws.workspace_path,
+                )
+            await self.git._arun_unlocked(
+                ["worktree", "remove", "--force", str(slot_dir)], cwd=base_ws.workspace_path,
+            )
+            return
+
+    @guard_workspace("slot_ws")
+    @_slot_reset_timeout
     async def reset_slot_for_task(
         self,
         slot_ws: Workspace,
@@ -620,6 +703,7 @@ class WorktreeSlotManager:
         if preserve_branch and (target_branch is None or not is_valid_git_oid(base_branch)):
             raise GitError("child preparation requires an exact branch and proved parent commit")
         slot_dir = Path(slot_ws.workspace_path)
+        await self.ensure_slot_checkout(slot_ws, task, kind=kind)
         await self.ensure_git_exclude(slot_dir)
         await self.git.aclear_stale_locks(str(slot_dir))
         if operator_handoff:
@@ -1201,6 +1285,11 @@ class WorktreeSlotManager:
         if base_ws is None:
             return
         entries = await self.git.aworktree_list(base_ws.workspace_path)
+        managed = {
+            _norm_path(ws.workspace_path): ws
+            for ws in await self.db.list_workspaces(project_id=base_ws.project_id)
+            if ws.is_slot and ws.base_workspace_id == base_ws.id
+        }
         live_work_dirs = {
             _norm_path(session.work_dir)
             for session in await self.db.list_sessions(live_only=True)
@@ -1211,11 +1300,21 @@ class WorktreeSlotManager:
             path = entry.get("path")
             if not path or entry.get("branch") != branch or _norm_path(path) == mine:
                 continue
+            holder = managed.get(_norm_path(path))
+            if (holder is None or holder.locked_by_agent_id or holder.locked_by_task_id):
+                raise GitError(f"branch {branch} is already used by worktree at {path}; "
+                               "holder is unmanaged or locked")
+            if await self._slot_has_retained_binding(holder.id):
+                raise GitError(f"branch {branch} is already used by worktree at {path}; "
+                               "holder retains an owner or job pin")
             if _norm_path(path) in live_work_dirs:
                 raise GitError(f"branch {branch} is already used by worktree at {path}")
             if read_claim_file(path) is not None and not await retire_stopped_slot_claim(self.db, path):
                 raise GitError(f"branch {branch} is already used by worktree at {path}")
             logger.warning("Detaching stale worktree %s from %s before claim preparation", path, branch)
+            if not Path(path).exists():
+                await self._remove_missing_slot_registration(base_ws, Path(path))
+                continue
             await self.git._arun_unlocked(["switch", "--detach"], cwd=path)
 
     async def _base_of_slot_dir(self, slot_dir: Path) -> Workspace | None:

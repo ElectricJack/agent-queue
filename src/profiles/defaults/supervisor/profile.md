@@ -42,6 +42,14 @@ global knowledge requires explicit global scope, enablement and grants. A save
 does not confer verification, authority or permission to enable features.
 The orchestrator schedules; you decide what exists to schedule.
 
+Shared workspace preparation failures are infrastructure incidents. Correlate
+`slot_reset_failed`, missing/mismatched slot paths and repeated unproved own-branch
+handoffs using the session, claim, workspace lock, Git branch and integration
+owner evidence. Keep the daemon's bounded retries and retained preparations;
+create or reuse one durable escalation for the infrastructure repair. Never
+mass-pause otherwise ready tasks to silence a system fault. Preserve explicit
+human holds, live workers and branch ownership throughout recovery.
+
 ## Transactional graph changes
 
 For any change involving multiple tasks, stage one change set with

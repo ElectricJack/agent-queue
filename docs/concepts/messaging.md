@@ -229,7 +229,7 @@ prose instead of running `aq reply`; it is deliberately never applied to an
 `agent_question` or `task_recovery` row, because those have explicit commands
 and a fabricated answer would be treated as a decision.
 
-Three things bound the fallback, so it can only ever recover an answer that
+Five things bound the fallback, so it can only ever recover an answer that
 actually answered that message:
 
 - **The turn must be prose.** A turn with no assistant text — the transcript's
@@ -241,9 +241,23 @@ actually answered that message:
   Without the window, a long-lived session that resumed after a restart would
   "answer" every delivered-but-unreplied row in its backlog — including
   messages from days earlier — with whatever it happened to say next.
-- **The sender must be someone waiting for an answer.** Rows from `system:*`
-  senders (review approvals, watchdog pings, delivery-engine notices) are never
-  swept.
+- **The sender must be a human.** Rows from `system:*` senders (review
+  approvals, watchdog pings, delivery-engine notices) are never swept, and
+  neither are rows from agents. A tail reply to a worker would land in its
+  mailbox, satisfy its durable message wait and read as the supervisor's
+  answer, even when the turn was about different work. Agents get only explicit
+  replies (`aq message reply`, `aq agent message --reply-to`).
+- **The turn must be attributable to one conversation.** A transcript turn
+  names no message, so if anything from another conversation (another project,
+  thread or sender) reached the same recipient within one window length of the
+  request's delivery, the turn could be about that one and nothing is posted.
+- **The reply is inserted atomically.** One transaction locks the request,
+  confirms it is unchanged and still unanswered, and writes the reply already
+  delivered. An explicit reply locks the same row, so whichever commits first
+  wins and the other leaves nothing behind.
+
+Prose that answers an agent is never recovered: transcripts carry no message
+correlation, so the recipient must reply explicitly.
 
 ## The hourly digest, in one paragraph
 

@@ -483,17 +483,21 @@ repair target, branch fence) is described once by `src/preparation_failure.py` a
 description is what every surface carries: the response `reason`, the session's
 `claim_failure_reason` (and therefore the identical-refusal count and drain message), the
 `pool.prepare_failed` event, the `prepare_failure` task-metadata record (plus
-`slot_reset_failure` / `branch_fenced` where those apply) and the daemon log line, which also
-carries the traceback. The reason is `<stage>: <ExceptionType>: <message>`, followed by the
+`slot_reset_failure` / `branch_fenced` where those apply) and the daemon log line. Logs use
+the scrubbed causal description, never an additional raw exception traceback that could
+reintroduce credentials. The reason is `<stage>: <ExceptionType>: <message>`, followed by the
 exception's `__cause__`/`__context__` chain (at most three links). `<stage>` names the
 preparation step that was running (`workspace_lookup`, `integration_origin`,
 `repair_start`, `integration_attach`, `stack_fetch`, `slot_reset`, `claim_file`,
-`activate_claim`, ...). Messages are secret-scrubbed (URL user-info, token literals,
+`activate_claim`, `workspace_binding`, `claim_file_check`, `ensure_slot_checkout`, ...).
+Messages are secret-scrubbed (URL user-info, token literals,
 `Authorization` values, private-key blocks), whitespace-collapsed and bounded (500 characters
 each, 2000 in total). An exception with no text is never recorded as an empty reason: it
 reads `<stage>: <Type> (no message)` and names the deepest `src/` frame each link was raised
 at, which is the interrupted operation for a `TimeoutError` raised by `asyncio.timeout`. The
-record says only what was observed; it never infers a missing directory or a lock owner from
+record includes the task id and bounded, scrubbed workspace path in addition to workspace
+id; context stays structured instead of creating a competing failure formatter/record.
+It says only what was observed; it never infers a missing directory or a lock owner from
 an empty message. The description changes no retry, backoff, attempt, stage, token or project
 budget, and no release/retention decision: an attached writer that cannot be released keeps
 every binding and only gains the record. The record carries the session, its instance token,

@@ -81,6 +81,11 @@ def safe_message(exc: BaseException) -> str:
         text = str(exc)
     except Exception:  # noqa: BLE001 - a broken __str__ must not fail the error path
         return ""
+    return safe_text(text)
+
+
+def safe_text(text: str) -> str:
+    """Scrub and bound diagnostic text, including a workspace path."""
     text = scrub_secrets(text)
     for pattern, replacement in _EXTRA_SCRUBBERS:
         text = pattern.sub(replacement, text)

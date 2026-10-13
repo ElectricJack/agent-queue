@@ -1198,7 +1198,9 @@ async def test_prepare_failed_stop_restart_releases_exact_claim(
     )
     reset = AsyncMock(side_effect=RuntimeError("reset failed before task checkout"))
     monkeypatch.setattr(
-        orch, "_worktree_slots", lambda: SimpleNamespace(reset_slot_for_task=reset),
+        orch, "_worktree_slots", lambda: SimpleNamespace(
+            ensure_slot_checkout=AsyncMock(), reset_slot_for_task=reset,
+        ),
     )
     # An unavailable exit-time proof models the retained historical incident.
     # Stop must recover it once proof is available, without a task recovery incident.
