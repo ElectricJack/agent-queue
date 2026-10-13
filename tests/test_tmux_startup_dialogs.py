@@ -31,6 +31,14 @@ from src.sessions.provider import (
     SessionSpec,
 )
 from src.sessions.tmux import TmuxProvider
+from tests.test_session_runtime_units import session_clock as session_clock
+
+
+@pytest.fixture(autouse=True)
+def virtual_time(session_clock):
+    from src.sessions import tmux
+
+    session_clock.patch(tmux)
 
 NBSP = " "
 

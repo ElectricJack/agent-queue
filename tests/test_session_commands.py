@@ -18,7 +18,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
-from src.database import Database
 from src.database.tables import (
     integration_check_evidence,
     playbook_artifacts,
@@ -57,7 +56,6 @@ from src.sessions.harness_registry import HarnessRegistry, load_from_vault
 from src.sessions.reconciler import DRAIN_ACK_KEY, SessionReconciler
 from src.sessions.spec import SessionSpecBuilder
 from src.sessions.provider import SessionHandle
-from tests.db_fixtures import lease_dsn
 
 
 class _Bus:
@@ -258,12 +256,10 @@ def config(tmp_path):
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("t.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("t.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
-    await database.close()
 
 
 @pytest.fixture

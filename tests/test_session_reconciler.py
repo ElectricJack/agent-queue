@@ -20,7 +20,6 @@ import pytest
 from sqlalchemy import update
 
 from src.config import AppConfig, DatabaseConfig
-from src.database import Database
 from src.database.tables import task_branch_origins, tasks
 from src.integration.lock import DEFAULT_TTL_SECONDS, RENEWAL_MARGIN_SECONDS, BranchLock
 from src.integration.models import BranchKey, Fence
@@ -79,12 +78,10 @@ class _Bus:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("t.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("t.db")
     await database.create_project(Project(id="p1", name="P1", supervisor_enabled=True))
     yield database
-    await database.close()
 
 
 @pytest.fixture

@@ -32,13 +32,9 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-async def db():
-    from src.database import Database
-
-    adapter = Database(lease_dsn("prime"))
-    await adapter.initialize()
+async def db(reuse_database):
+    adapter = await reuse_database("prime")
     yield adapter
-    await adapter.close()
 
 
 @pytest.fixture

@@ -13,7 +13,6 @@ import pytest
 from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig
-from src.database import Database
 from src.models import Agent, AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
@@ -24,9 +23,8 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
-async def env(tmp_path, request):
-    db = Database(lease_dsn("comments.db"))
-    await db.initialize()
+async def env(tmp_path, request, reuse_database):
+    db = await reuse_database("comments.db")
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
     await db.create_profile(AgentProfile(id="worker", name="Worker", needs_workspace=False))
@@ -68,7 +66,6 @@ async def env(tmp_path, request):
     handler = CommandHandler(orch, config)
     scope = RequestScope(kind="session", session_id="session", project_id="p")
     yield SimpleNamespace(db=db, handler=handler, scope=scope, orch=orch)
-    await db.close()
 
 
 async def run(env, command, args=None, *, scope=None):

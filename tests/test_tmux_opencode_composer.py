@@ -44,6 +44,7 @@ from src.sessions.tmux import (
     _marker_on_input_line,
     _submit_pending,
 )
+from tests.test_session_runtime_units import session_clock as session_clock
 
 BAR = "┃"
 AGENT = "Build · Qwen3.8 27B (local) Ollama (local)"
@@ -261,10 +262,8 @@ def keys(pane: OpenCodePane) -> list[tuple]:
 
 
 @pytest.fixture(autouse=True)
-def fast_polls(monkeypatch):
-    monkeypatch.setattr(tmux_module, "_SUBMIT_POLLS", ((0.0,),) * 4)
-    monkeypatch.setattr(tmux_module, "_REPAINT_SETTLE_POLLS", (0.0, 0.0))
-    monkeypatch.setattr(tmux_module, "_LANDED_POLL_SECONDS", 0.0)
+def fast_polls(session_clock):
+    session_clock.patch(tmux_module)
 
 
 def render(lines: list[str]) -> str:

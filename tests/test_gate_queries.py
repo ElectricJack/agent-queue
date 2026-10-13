@@ -14,21 +14,17 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.models import DepType, Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 PROJECT = "p-wg"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("wg.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("wg.db")
     await database.create_project(Project(id=PROJECT, name="wg"))
     yield database
-    await database.close()
 
 
 async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
