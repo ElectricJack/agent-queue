@@ -236,6 +236,23 @@ class TestGoldenAssembly:
         assert "## Deliverables" not in body
         assert "aq review submit" not in body
 
+    @pytest.mark.parametrize("bounded", [False, True])
+    async def test_revision_task_gets_publication_guidance_without_a_document_type(
+        self, db, config, task, bounded
+    ):
+        await db.set_task_meta(task.id, "review_response", {"review_id": "rev-assigned", "revision": 2})
+        await db.update_task(task.id, description="Long context. " * 2000)
+        doc = await PrimeRenderer(db, config).render_for_task(task.id, bounded_worker=bounded)
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "## Review revision publication" in body
+        assert "newer than revision 2 before a passing close" in body
+        assert "aq review show --review-id rev-assigned --comments" in body
+        assert "aq review submit --review-id rev-assigned --file <draft.md>" in body
+        assert "do not edit the vault mirror" in body
+        assert "--resolves" in body
+        assert "content hash" in body
+        assert "Do not wait for approval" in body
+
     async def test_task_section_omits_subtasks_block_when_none_exist(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = {s.key: s.body for s in doc.sections}["task"]

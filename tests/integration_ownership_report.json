@@ -10428,5 +10428,19 @@
     "owned_total_after": 155453,
     "transition_cap": 155499,
     "reason": "Consolidated existing supervisor-message writes and dossier projections, preserving recipients, deduplication identities, priorities and evidence history. Reviewed generic notification helpers separately from the charged stall sweep adapter; delivery_status in the overdue notification query is transport, not code delivery. Immutable baseline, landing measurements, storage classifications and caps remain unchanged."
+  },
+  "review_revision_completion_ci_repair": {
+    "source_head": "bd5336c88760cd356ef01db697d5b8396a9a1e6f",
+    "failed_jobs": [
+      "https://github.com/ElectricJack/agent-queue/actions/runs/38469969547/job/115546212373",
+      "https://github.com/ElectricJack/agent-queue/actions/runs/38469969547/job/115546212392"
+    ],
+    "generic_dependencies": {
+      "src/deliverables.py::review_revision_guidance": "Generic document-review publication instructions shared by worker prime and task close; formats guidance only, with no integration state, storage or delivery authority. The task-close adapter remains charged independently."
+    },
+    "storage_owner": "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close",
+    "refreshed_owner_fingerprints": 12,
+    "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
+    "reason": "The review-revision completion gate reads existing review-response metadata and persisted review revisions before any completion side effect. All 12 task-close write-call AST identities and ordinary-storage dispositions are unchanged from the parent commit; only source lines and the enclosing handler fingerprint changed. No ref-replay journal, duplicate lifecycle storage or new metadata writer was added. Immutable baseline, landing measurements, allowance and caps remain unchanged."
   }
 }

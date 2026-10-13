@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from src.aq_uri import path_is_within
-from src.deliverables import review_submit_guidance
+from src.deliverables import review_revision_guidance, review_submit_guidance
 from src.profiles.capabilities import capability_policy_for
 from src.prompt_builder import extract_section
 
@@ -139,6 +139,7 @@ def build_task_section(
     *,
     deliverables: list[dict] | None = None,
     review_deliverables: str = "",
+    review_revision: str = "",
     integration_delivery: str = "",
     subtasks_block: str = "",
     bounded_worker: bool = False,
@@ -182,6 +183,8 @@ def build_task_section(
             lines.extend(["", guidance])
     if review_deliverables:
         lines.extend(["", review_deliverables])
+    if review_revision:
+        lines.extend(["", "## Review revision publication", review_revision])
     if integration_delivery:
         lines.extend(["", integration_delivery])
     if subtasks_block:
@@ -266,6 +269,12 @@ async def build_integration_delivery_summary(db: Any, task: Any) -> str:
         "Required aggregate checks: " + ", ".join(f"`{name}`" for name in checks["names"])
     )
     return "\n".join(lines)
+
+
+async def build_review_revision_summary(db: Any, task: Any) -> str:
+    """Keep revision publication instructions visible even in bounded prime."""
+    response = await db.get_task_meta(task.id, "review_response")
+    return review_revision_guidance(response) if response else ""
 
 
 async def build_review_deliverable_summary(db: Any, task: Any) -> str:

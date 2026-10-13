@@ -542,7 +542,7 @@ contexts. The `creator.py` reach-through is noted as tech debt but was not repli
 | Risk | Mitigation |
 |---|---|
 | Session-runtime slips; delivery engine blocked | Phases 0–2 are independent; queue+prime degraded mode is functional (inbox consumed at session start) |
-| Transcript-tail fallback posts partial/echoed text | Fallback only after `reply_timeout` **and** a completed prose turn inside `delivered_at + reply_window_multiplier x reply_timeout`, never for a `system:*` sender; marked `via=transcript_tail`; disable via config |
+| Transcript-tail fallback posts partial/echoed text | Fallback only after `reply_timeout` **and** a completed prose turn inside `delivered_at + reply_window_multiplier x reply_timeout`, only for a human (`user:*`) sender, never when another conversation reached the recipient within one window of delivery; inserted under the request's row lock; marked `via=transcript_tail`; disable via config |
 | Double delivery (nudge/inject race) | `mark_delivered` compare-and-set; inject path re-checks pending atomically |
 | Prompt injection via message bodies | Bodies are data: envelope clearly frames origin; never interpolated into shell (G.3); slim tool surface bounds blast radius |
 | Undelivered messages to dead/retired sessions accumulate | `check_reply_timeouts` sweep parks stale `to_kind=session` rows to `to_kind=user` after `park_after` (default 24 h) with a `system` note |
