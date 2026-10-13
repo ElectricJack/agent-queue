@@ -15,7 +15,6 @@ from sqlalchemy import insert
 
 from src.commands.claim_commands import CLAIM_FILE, write_claim_file
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
@@ -604,9 +603,8 @@ class _FakeSlotManager:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     # These fixtures model independent clones; slot provisioning has its own tests.
     kind = await database.resolve_workspace_kind("__system__", "project-repo")
     await database.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
@@ -627,7 +625,6 @@ async def db(tmp_path):
             )
         )
     yield database
-    await database.close()
 
 
 @pytest.fixture

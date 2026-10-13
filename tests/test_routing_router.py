@@ -22,7 +22,6 @@ import pytest
 from src.commands.contracts import CONTRACTS
 from src.commands.routing_commands import NOT_ROUTER
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
     Agent,
@@ -70,9 +69,8 @@ def _profiles() -> list[AgentProfile]:
 
 
 @pytest.fixture
-async def orch(tmp_path):
-    db = Database(lease_dsn("router.db"))
-    await db.initialize()
+async def orch(tmp_path, reuse_database):
+    db = await reuse_database("router.db")
     for profile in _profiles():
         await db.create_profile(profile)
     await db.create_project(Project(id="p", name="Project"))
@@ -95,7 +93,6 @@ async def orch(tmp_path):
     orchestrator.session_spec_builder._intelligence_classes = dict(CLASSES)
     orchestrator.intelligence_classes.replace(dict(CLASSES))
     yield orchestrator
-    await db.close()
 
 
 @pytest.fixture

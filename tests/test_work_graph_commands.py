@@ -24,12 +24,10 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -743,7 +741,6 @@ class TestParentKey:
         from unittest.mock import MagicMock
 
         from src.commands.handler import CommandHandler
-        from src.database import Database
         from src.models import Project
         from src.orchestrator import Orchestrator
         from tests.db_fixtures import lease_dsn

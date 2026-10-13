@@ -12,7 +12,6 @@ from sqlalchemy import insert
 
 from src.commands.claim_commands import write_claim_file
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.database.queries.claim_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import (
     integration_branch_owners,
@@ -51,13 +50,11 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", harness="claude"))
     yield database
-    await database.close()
 
 
 @pytest.fixture

@@ -9,7 +9,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.models import AgentProfile, DepType, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.tools import _ALL_TOOL_DEFINITIONS
@@ -20,12 +19,10 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="Test Project"))
     yield database
-    await database.close()
 
 
 @pytest.fixture

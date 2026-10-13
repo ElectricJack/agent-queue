@@ -15,7 +15,6 @@ from sqlalchemy.exc import DBAPIError
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.database.tables import (
     integration_branch_owners,
     integration_repair_stages,
@@ -52,15 +51,13 @@ NOW = time.time()
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(
         AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
     )
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -1451,19 +1448,44 @@ class TestClaim:
         assert res["result"] == "no_ready_work"
         assert (await db.get_session(sid)).claim_phase is None
 
-    async def test_wait_wakes_on_task_ready(self, handler, db, tmp_path):
+    async def test_wait_wakes_on_task_ready(self, handler, db, tmp_path, monkeypatch):
+        from src.event_bus import EventWaiter
+
         sid, _ = await pool_session(db, tmp_path)
+        # SQL/setup latency must not consume the claim deadline. Verify the
+        # actual event delivered to the blocked waiter instead of wall time.
+        monkeypatch.setattr(
+            "src.commands.claim_commands.time",
+            SimpleNamespace(time=time.time, monotonic=lambda: 0.0),
+        )
+        waiting = asyncio.Event()
+        wake_events = []
+        original_wait = EventWaiter.wait
+
+        async def observe_wait(waiter, timeout):
+            assert timeout == 3
+            waiting.set()
+            event = await original_wait(waiter, timeout)
+            wake_events.append(event)
+            return event
+
+        monkeypatch.setattr(EventWaiter, "wait", observe_wait)
 
         async def promote():
-            await asyncio.sleep(0.05)
+            await waiting.wait()
             await mktask(db, "late", status=TaskStatus.DEFINED, profile_id="worker")
             await db.transition_task("late", TaskStatus.READY, context="promotion")
 
-        asyncio.create_task(promote())
-        t0 = time.monotonic()
-        res = await scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 3})
-        assert (res["result"], res["task"]["id"]) == ("claimed", "late")
-        assert time.monotonic() - t0 < 2.0  # woke on the event, not the deadline
+        promotion = asyncio.create_task(promote())
+        try:
+            res = await scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 3})
+            assert (res["result"], res["task"]["id"]) == ("claimed", "late")
+            await promotion
+        finally:
+            promotion.cancel()
+            await asyncio.gather(promotion, return_exceptions=True)
+        assert len(wake_events) == 1
+        assert wake_events[0]["task_id"] == "late"  # Event wake, not timeout/polling.
 
     async def test_wait_clamped_and_times_out(self, handler, db, tmp_path):
         sid, _ = await pool_session(db, tmp_path)

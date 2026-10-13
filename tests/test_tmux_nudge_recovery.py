@@ -31,7 +31,9 @@ from src.sessions import tmux as tmux_module
 from src.sessions.provider import NotSubmitted, NudgeDeferred, SessionHandle
 from src.sessions.reconciler import stall_reminder
 from src.sessions.tmux import _marker_for, _marker_on_input_line, _submit_pending
+from tests.test_session_runtime_units import session_clock as session_clock
 from tests.test_tmux_nudge_drafts import CODEX_PLACEHOLDER, Composer, handle, provider_for
+from tests.test_tmux_nudge_drafts import tmux_clock as tmux_clock
 
 REMINDER = (
     "No progress for 8 min on task stark-journey-63. Close or continue: "
@@ -146,9 +148,9 @@ class FlakyComposer(Composer):
 
 
 @pytest.fixture
-def fast_polls(monkeypatch):
-    """Keep the widening backoff's *shape* but not its wall-clock cost."""
-    monkeypatch.setattr(tmux_module, "_SUBMIT_POLLS", ((0.0,),) * 4)
+def fast_polls(tmux_clock):
+    """Run the production polling schedule on the fake pane's virtual clock."""
+    return tmux_clock
 
 
 def typed_text(composer) -> list[str]:
@@ -798,9 +800,8 @@ DEPLOY_READY = "Handle `aq message status msg-f3d2ec0095a8492e99ac1ad8dbb2abb3 -
 
 
 @pytest.fixture
-def fast_composer(fast_polls, monkeypatch):
-    monkeypatch.setattr(tmux_module, "_LANDED_POLL_SECONDS", 0.0)
-    monkeypatch.setattr(tmux_module, "_CLEAR_SETTLE_SECONDS", 0.0)
+def fast_composer(fast_polls):
+    return fast_polls
 
 
 def test_the_fixtures_reproduce_both_live_shapes():

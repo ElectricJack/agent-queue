@@ -17,7 +17,6 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.database.tables import events, projects, tasks
 from src.git.manager import GitManager
 from src.integration.development import (
@@ -42,12 +41,10 @@ SHA = "c9fe0f80500894c94ecefd2b7dd92d5928e034db"
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     yield database
-    await database.close()
 
 
 @pytest.fixture

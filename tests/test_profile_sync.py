@@ -27,7 +27,6 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.models import AgentProfile
 from src.profiles.parser import ParsedProfile, parse_profile, parsed_profile_to_agent_profile
 from src.profiles.sync import (
@@ -42,7 +41,6 @@ from src.profiles.sync import (
     sync_profile_to_db,
 )
 from src.vault_watcher import VaultChange, VaultWatcher
-from tests.db_fixtures import lease_dsn
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +180,9 @@ class ChangeCollector:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 # ---------------------------------------------------------------------------
