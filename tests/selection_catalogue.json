@@ -2591,10 +2591,9 @@
         "dashboard-state"
       ],
       "default_arm": true,
-      "digest": "sha256:7465874f6970f35720c7106d90488e9b9330bf0f55755ca1dd5ac04ba0570b74",
+      "digest": "sha256:e7830640d932164023019dc9e3b73ab44df2793c36083e13d24d1518f3ec50e3",
       "imports": [
         "src.api.graph",
-        "src.database",
         "src.models"
       ],
       "markers": [],
@@ -2605,13 +2604,12 @@
         "graph-layout"
       ],
       "default_arm": true,
-      "digest": "sha256:cd9a884396a2669e2612fb35651835fd71b3a1d33056c9571148a4c31b10023c",
+      "digest": "sha256:10743992bbdc67c327e41cd4b35e1d3f38e6f5a411d08b5edbac0c782d06cba1",
       "imports": [
         "src.api",
         "src.api.auth",
         "src.api.dependencies",
         "src.api.graph_layout",
-        "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
@@ -2675,13 +2673,12 @@
         "metrics"
       ],
       "default_arm": true,
-      "digest": "sha256:648ab6459c60e74cd2cdb8af3dc3db90e875a72fd0a639ae8ced25263194bed6",
+      "digest": "sha256:83c04f726a640d8c179c3a3f8e5937023835a381ff0e17dec8217b44d1d89ade",
       "imports": [
         "src.api.auth",
         "src.api.metrics",
         "src.api.models.metrics",
         "src.api.websocket",
-        "src.database",
         "src.event_bus",
         "src.event_schemas",
         "src.metrics.histogram",
@@ -2740,12 +2737,11 @@
         "provider-usage"
       ],
       "default_arm": true,
-      "digest": "sha256:53dbf267a06ca71d24965b4ce7b1860495eb13d04e738d61cd264d7de1217392",
+      "digest": "sha256:745cb17a60b35329f3a70b6d52b6db44b2756b39efa6c8868c2316d16878296e",
       "imports": [
         "src.api.providers",
         "src.api.spec",
-        "src.config",
-        "src.database"
+        "src.config"
       ],
       "markers": [],
       "summary": "``GET /api/providers/usage`` --- newest reading per series, staleness included."
@@ -2755,7 +2751,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:92f2d8e32f0363500a898e388c6678ad233e00b058cce85037fc719653fc30da",
+      "digest": "sha256:d90bab6905d95f9ff7c05b58d6618eed30f80936ef427d54440aa3e31c75956d",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2763,7 +2759,6 @@
         "src.api.middleware",
         "src.api.pull_requests",
         "src.commands.review_commands",
-        "src.database",
         "src.database.queries.pull_request_queries",
         "src.database.tables",
         "src.git.github_contracts"
@@ -2794,12 +2789,11 @@
         "file-access"
       ],
       "default_arm": true,
-      "digest": "sha256:79fe1abb6be005f1c6ff2b346e66ef36199ecd7f14cfc4e0ee2feadeae03d393",
+      "digest": "sha256:3f44d46a64ca6e2ec7e0fe4b445d47e25e4dec3ae0395825a2c89e83a6f458ba",
       "imports": [
         "src.api",
         "src.api.dependencies",
         "src.api.task_files",
-        "src.database",
         "src.git.manager",
         "src.models"
       ],
@@ -2811,13 +2805,12 @@
         "file-access"
       ],
       "default_arm": true,
-      "digest": "sha256:e915708231db3d45f3b9c58fb381ebb511a76aba51a3e54a2257bfd17fdf248e",
+      "digest": "sha256:712db658b7e8c5a8e8551314049a680ae75d17a3a85aea45c85630249129746b",
       "imports": [
         "src.api",
         "src.api.auth",
         "src.api.dependencies",
         "src.api.workspace_files",
-        "src.database",
         "src.models"
       ],
       "markers": [],
@@ -5013,9 +5006,8 @@
         "database"
       ],
       "default_arm": true,
-      "digest": "sha256:f372362fd518feffb8c90c0cda8a72b680f334da3e2a567333e91c0a51433ac6",
+      "digest": "sha256:b8181f795c8f55d89dfb8e2da4e9c0edc779530b7f342f807cd8a1004396a93e",
       "imports": [
-        "src.database",
         "src.models"
       ],
       "markers": [],
@@ -6461,11 +6453,10 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:d765811419ed83538eb673cb26674deebbd0f137ecfabe9a01b54c478e2fafc1",
+      "digest": "sha256:d93f104691b83337695ff52e4dd10291fa3a7d0fba60716299e3c8e9ace75545",
       "imports": [
         "src.api.websocket",
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.event_bus",
         "src.event_schemas",
