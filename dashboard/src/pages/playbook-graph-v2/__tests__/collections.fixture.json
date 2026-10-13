@@ -1,0 +1,587 @@
+{
+  "id": "ensure-review-task",
+  "rule_id": "r",
+  "step_kind": "command",
+  "title": "Ensure",
+  "description": null,
+  "entry": true,
+  "terminal_outcome": null,
+  "explanation": {
+    "title": "Ensure",
+    "effect_summary": "Create the task, or reuse the one already keyed by this deduplication key.",
+    "effects": [
+      {
+        "kind": "creates",
+        "subject": "task",
+        "detail": "Create or reuse a task keyed by \"dedup_key\"",
+        "arguments": [],
+        "conditional_on": null
+      }
+    ],
+    "inputs": [
+      {
+        "label": "filter",
+        "value": {
+          "kind": "filter",
+          "display": "filter([1,2,3], item => item > 1)",
+          "canonical": {
+            "type": "filter",
+            "collection": {
+              "type": "literal",
+              "value": [
+                1,
+                2,
+                3
+              ]
+            },
+            "item_binding": "item",
+            "predicate": {
+              "type": "comparison",
+              "op": "gt",
+              "left": {
+                "type": "loop_ref",
+                "binding": "item",
+                "path": null,
+                "index": false
+              },
+              "right": {
+                "type": "literal",
+                "value": 1
+              }
+            }
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "source": "derived",
+        "required": true,
+        "description": null
+      },
+      {
+        "label": "map",
+        "value": {
+          "kind": "map",
+          "display": "map(filter([1,2,3], item => item > 1), item => item#index)",
+          "canonical": {
+            "type": "map",
+            "collection": {
+              "type": "filter",
+              "collection": {
+                "type": "literal",
+                "value": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "item_binding": "item",
+              "predicate": {
+                "type": "comparison",
+                "op": "gt",
+                "left": {
+                  "type": "loop_ref",
+                  "binding": "item",
+                  "path": null,
+                  "index": false
+                },
+                "right": {
+                  "type": "literal",
+                  "value": 1
+                }
+              }
+            },
+            "item_binding": "item",
+            "value": {
+              "type": "loop_ref",
+              "binding": "item",
+              "path": null,
+              "index": true
+            }
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "source": "derived",
+        "required": true,
+        "description": null
+      },
+      {
+        "label": "len",
+        "value": {
+          "kind": "len",
+          "display": "len(filter([1,2,3], item => item > 1))",
+          "canonical": {
+            "type": "len",
+            "collection": {
+              "type": "filter",
+              "collection": {
+                "type": "literal",
+                "value": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "item_binding": "item",
+              "predicate": {
+                "type": "comparison",
+                "op": "gt",
+                "left": {
+                  "type": "loop_ref",
+                  "binding": "item",
+                  "path": null,
+                  "index": false
+                },
+                "right": {
+                  "type": "literal",
+                  "value": 1
+                }
+              }
+            }
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "source": "derived",
+        "required": true,
+        "description": null
+      },
+      {
+        "label": "diff",
+        "value": {
+          "kind": "diff",
+          "display": "diff(left, right, key_path=\"meta.id\")",
+          "canonical": {
+            "type": "diff",
+            "left": {
+              "type": "binding_ref",
+              "binding": "left",
+              "path": null
+            },
+            "right": {
+              "type": "binding_ref",
+              "binding": "right",
+              "path": null
+            },
+            "key_path": "meta.id"
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "source": "derived",
+        "required": true,
+        "description": null
+      }
+    ],
+    "result": {
+      "label": "review",
+      "value": {
+        "kind": "binding_ref",
+        "display": "review",
+        "canonical": {
+          "type": "binding_ref",
+          "binding": "review"
+        },
+        "redacted": false,
+        "type_name": "object"
+      },
+      "source": "derived",
+      "required": true,
+      "description": null
+    },
+    "outcomes": [
+      {
+        "outcome": "created",
+        "label": "Created",
+        "target_step_id": "done",
+        "target_title": "Done",
+        "reserved": false,
+        "terminal_outcome": "completed"
+      },
+      {
+        "outcome": "reused",
+        "label": "Reused",
+        "target_step_id": "done",
+        "target_title": "Done",
+        "reserved": false,
+        "terminal_outcome": "completed"
+      },
+      {
+        "outcome": "rejected",
+        "label": "Rejected",
+        "target_step_id": "bad",
+        "target_title": "Bad",
+        "reserved": false,
+        "terminal_outcome": "failed"
+      }
+    ],
+    "contract_fingerprint": "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5",
+    "docs_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/reference/playbook-commands/ensure_task.md",
+    "renderer": "contract"
+  },
+  "badges": [
+    {
+      "kind": "idempotency",
+      "label": "Idempotent",
+      "value": "keyed on dedup_key"
+    }
+  ],
+  "ai": null,
+  "loop": null,
+  "wait": null,
+  "source": {
+    "path": "x.md",
+    "start_line": 1,
+    "end_line": 1,
+    "heading": null,
+    "excerpt": null
+  },
+  "advanced": {
+    "typed_step": {
+      "rule": "r",
+      "title": "Ensure",
+      "description": null,
+      "source": {
+        "path": "x.md",
+        "start_line": 1,
+        "end_line": 1,
+        "heading": null,
+        "excerpt": null
+      },
+      "type": "command",
+      "command": "ensure_task",
+      "inputs": {
+        "filter": {
+          "type": "filter",
+          "collection": {
+            "type": "literal",
+            "value": [
+              1,
+              2,
+              3
+            ]
+          },
+          "item_binding": "item",
+          "predicate": {
+            "type": "comparison",
+            "op": "gt",
+            "left": {
+              "type": "loop_ref",
+              "binding": "item",
+              "path": null,
+              "index": false
+            },
+            "right": {
+              "type": "literal",
+              "value": 1
+            }
+          }
+        },
+        "map": {
+          "type": "map",
+          "collection": {
+            "type": "filter",
+            "collection": {
+              "type": "literal",
+              "value": [
+                1,
+                2,
+                3
+              ]
+            },
+            "item_binding": "item",
+            "predicate": {
+              "type": "comparison",
+              "op": "gt",
+              "left": {
+                "type": "loop_ref",
+                "binding": "item",
+                "path": null,
+                "index": false
+              },
+              "right": {
+                "type": "literal",
+                "value": 1
+              }
+            }
+          },
+          "item_binding": "item",
+          "value": {
+            "type": "loop_ref",
+            "binding": "item",
+            "path": null,
+            "index": true
+          }
+        },
+        "len": {
+          "type": "len",
+          "collection": {
+            "type": "filter",
+            "collection": {
+              "type": "literal",
+              "value": [
+                1,
+                2,
+                3
+              ]
+            },
+            "item_binding": "item",
+            "predicate": {
+              "type": "comparison",
+              "op": "gt",
+              "left": {
+                "type": "loop_ref",
+                "binding": "item",
+                "path": null,
+                "index": false
+              },
+              "right": {
+                "type": "literal",
+                "value": 1
+              }
+            }
+          }
+        },
+        "diff": {
+          "type": "diff",
+          "left": {
+            "type": "binding_ref",
+            "binding": "left",
+            "path": null
+          },
+          "right": {
+            "type": "binding_ref",
+            "binding": "right",
+            "path": null
+          },
+          "key_path": "meta.id"
+        }
+      },
+      "idempotency_key": null,
+      "retry": null,
+      "save_result_as": "review",
+      "transitions": {
+        "created": "done",
+        "reused": "done",
+        "rejected": "bad"
+      }
+    },
+    "resolved_inputs": [
+      {
+        "label": "filter",
+        "value": {
+          "kind": "filter",
+          "display": "filter([1,2,3], item => item > 1)",
+          "canonical": {
+            "type": "filter",
+            "collection": {
+              "type": "literal",
+              "value": [
+                1,
+                2,
+                3
+              ]
+            },
+            "item_binding": "item",
+            "predicate": {
+              "type": "comparison",
+              "op": "gt",
+              "left": {
+                "type": "loop_ref",
+                "binding": "item",
+                "path": null,
+                "index": false
+              },
+              "right": {
+                "type": "literal",
+                "value": 1
+              }
+            }
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "source": "derived",
+        "required": true,
+        "description": null
+      },
+      {
+        "label": "map",
+        "value": {
+          "kind": "map",
+          "display": "map(filter([1,2,3], item => item > 1), item => item#index)",
+          "canonical": {
+            "type": "map",
+            "collection": {
+              "type": "filter",
+              "collection": {
+                "type": "literal",
+                "value": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "item_binding": "item",
+              "predicate": {
+                "type": "comparison",
+                "op": "gt",
+                "left": {
+                  "type": "loop_ref",
+                  "binding": "item",
+                  "path": null,
+                  "index": false
+                },
+                "right": {
+                  "type": "literal",
+                  "value": 1
+                }
+              }
+            },
+            "item_binding": "item",
+            "value": {
+              "type": "loop_ref",
+              "binding": "item",
+              "path": null,
+              "index": true
+            }
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "source": "derived",
+        "required": true,
+        "description": null
+      },
+      {
+        "label": "len",
+        "value": {
+          "kind": "len",
+          "display": "len(filter([1,2,3], item => item > 1))",
+          "canonical": {
+            "type": "len",
+            "collection": {
+              "type": "filter",
+              "collection": {
+                "type": "literal",
+                "value": [
+                  1,
+                  2,
+                  3
+                ]
+              },
+              "item_binding": "item",
+              "predicate": {
+                "type": "comparison",
+                "op": "gt",
+                "left": {
+                  "type": "loop_ref",
+                  "binding": "item",
+                  "path": null,
+                  "index": false
+                },
+                "right": {
+                  "type": "literal",
+                  "value": 1
+                }
+              }
+            }
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "source": "derived",
+        "required": true,
+        "description": null
+      },
+      {
+        "label": "diff",
+        "value": {
+          "kind": "diff",
+          "display": "diff(left, right, key_path=\"meta.id\")",
+          "canonical": {
+            "type": "diff",
+            "left": {
+              "type": "binding_ref",
+              "binding": "left",
+              "path": null
+            },
+            "right": {
+              "type": "binding_ref",
+              "binding": "right",
+              "path": null
+            },
+            "key_path": "meta.id"
+          },
+          "redacted": false,
+          "type_name": null
+        },
+        "source": "derived",
+        "required": true,
+        "description": null
+      }
+    ],
+    "result_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "task_id": {
+          "title": "Task Id",
+          "type": "string"
+        },
+        "created": {
+          "title": "Created",
+          "type": "boolean"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Id"
+        }
+      },
+      "required": [
+        "task_id",
+        "created"
+      ],
+      "title": "EnsureTaskValue",
+      "type": "object"
+    },
+    "retry": null,
+    "idempotency": {
+      "supported": true,
+      "key_template": null,
+      "retry_safe": true
+    },
+    "redaction": [
+      {
+        "field": "diff",
+        "policy": "safe"
+      },
+      {
+        "field": "filter",
+        "policy": "safe"
+      },
+      {
+        "field": "len",
+        "policy": "safe"
+      },
+      {
+        "field": "map",
+        "policy": "safe"
+      }
+    ],
+    "execution_fingerprint": "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5"
+  },
+  "diagnostics": [],
+  "out_degree": 3,
+  "position": {
+    "x": 0,
+    "y": 0
+  }
+}

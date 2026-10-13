@@ -558,19 +558,19 @@ def step_targets(step: Any) -> dict[str, str]:
     return targets
 
 
-def step_values(step: Any) -> list[Any]:
+def step_values(step: Any, *, scoped: bool = False) -> list[Any]:
     """Every value node a step carries, for the typing and reference passes."""
     values: list[Any] = []
     for attribute in ("prompt", "objective", "collection", "correlation_key", "awaited",
                       "idempotency_key", "result"):
         node = getattr(step, attribute, None)
         if node is not None:
-            values.extend(walk_value(node))
+            values.extend(walk_value(node, scoped=scoped))
     for node in getattr(step, "inputs", {}).values():
-        values.extend(walk_value(node))
+        values.extend(walk_value(node, scoped=scoped))
     if isinstance(step, DecisionStep):
         for case in step.cases:
-            values.extend(condition_values(case.when))
+            values.extend(condition_values(case.when, scoped=scoped))
     return values
 
 

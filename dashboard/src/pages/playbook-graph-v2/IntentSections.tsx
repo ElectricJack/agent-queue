@@ -1,3 +1,4 @@
+import { COLLECTION_EXPRESSION_LABELS } from "./types";
 import type { ReactNode } from "react";
 import type {
   EffectClauseDTO,
@@ -124,6 +125,8 @@ export function Block({ name, children }: { name: string; children: ReactNode })
 export function Value({ value }: { value: ExplanationValueDTO }) {
   return (
     <span
+      data-expression-kind={value.kind}
+      aria-label={COLLECTION_EXPRESSION_LABELS[value.kind]}
       title={value.type_name ? `${value.type_name} (${value.kind})` : value.kind}
       className={`min-w-0 break-words ${value.redacted ? "font-mono text-rose-300" : "text-gray-200"}`}
     >

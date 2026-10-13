@@ -924,6 +924,7 @@
         "tests/test_playbook_artifact_diff.py",
         "tests/test_playbook_artifact_ref.py",
         "tests/test_playbook_artifact_store.py",
+        "tests/test_playbook_collections.py",
         "tests/test_playbook_explanation.py",
         "tests/test_playbook_graph_projection.py",
         "tests/test_playbook_v2_definition.py",
@@ -12063,6 +12064,35 @@
         "parametrize"
       ],
       "summary": "Content-addressed Playbook V2 artifact storage."
+    },
+    "tests/test_playbook_collections.py": {
+      "areas": [
+        "playbook-definition"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c1719ff56ab25154eb3777b6d0bdff1274852890d69c0e5b1dc30e4ca82fddbf",
+      "imports": [
+        "src.api.models.playbook_v2",
+        "src.commands.principal",
+        "src.integration.runtime_contracts",
+        "src.playbooks",
+        "src.playbooks.artifact_diff",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.executors.decision",
+        "src.playbooks.explanation",
+        "src.playbooks.expressions",
+        "src.playbooks.graph_projection",
+        "src.playbooks.integration_policy",
+        "src.playbooks.routing",
+        "src.playbooks.semantic_diff",
+        "src.playbooks.validation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bounded lexical collection expressions, their consumers and review evidence."
     },
     "tests/test_playbook_compiler_scope.py": {
       "areas": [

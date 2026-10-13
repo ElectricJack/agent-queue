@@ -1,6 +1,8 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
+import { collectionNode } from "./projected";
+import { COLLECTION_EXPRESSION_LABELS } from "../types";
 import SemanticNodeInspector from "../SemanticNodeInspector";
 import {
   awaitApproval,
@@ -21,6 +23,16 @@ const overlayFor = (stepId: string) => runOverlay.nodes!.find((node) => node.ste
 afterEach(cleanup);
 
 describe("SemanticNodeInspector", () => {
+  it("renders every collection expression with its full projected semantics", () => {
+    render(<SemanticNodeInspector node={collectionNode} />);
+    const inputs = within(screen.getByRole("group", { name: "Inputs" }));
+    for (const row of collectionNode.explanation.inputs!) {
+      const value = inputs.getByLabelText(COLLECTION_EXPRESSION_LABELS[row.value.kind]!);
+      expect(value).toHaveAttribute("data-expression-kind", row.value.kind);
+      expect(value).toHaveTextContent(row.value.display);
+    }
+  });
+
   it("shows inputs, outputs, outcomes and their targets for a command node", () => {
     render(<SemanticNodeInspector node={ensureReviewTask} />);
     const inputs = within(screen.getByRole("group", { name: "Inputs" }));

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COLLECTION_EXPRESSION_LABELS,
   EDGE_KIND_LABELS,
   EDGE_KIND_STYLES,
   NEUTRAL_EDGE_STYLE,
@@ -37,6 +38,11 @@ const STEP_KINDS: SemanticStepKind[] = [
 ];
 
 describe("semantic graph style maps", () => {
+  it("labels all four collection expressions from the generated DTO union", () => {
+    expect(Object.keys(COLLECTION_EXPRESSION_LABELS)).toEqual(["filter", "map", "len", "diff"]);
+    expect(new Set(Object.values(COLLECTION_EXPRESSION_LABELS)).size).toBe(4);
+  });
+
   it("keeps every edge kind visually distinct without relying on colour", () => {
     const dashes = EDGE_KINDS.map((kind) => String(EDGE_KIND_STYLES[kind]!.strokeDasharray));
     expect(new Set(dashes).size).toBe(EDGE_KINDS.length);

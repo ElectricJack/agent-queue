@@ -372,7 +372,7 @@ class LiveAgentTaskExecutor:
         child_principal = narrow_for_child(step, ctx.principal, profile_policy, ctx.step_id)
 
         try:
-            objective = resolve_value(step.objective, ctx.scope)
+            objective = resolve_value(step.objective, ctx.scope, ctx.evaluation_budget)
         except ValueResolutionError as exc:
             return _fail(
                 "input_resolution_failed",

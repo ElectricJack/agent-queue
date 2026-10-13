@@ -25,6 +25,7 @@ from src.playbooks.executors.base import (
     StepControl,
     project_step_receipt,
 )
+from src.playbooks.expressions import ValueResolutionError
 from src.playbooks.receipts import idempotency_key
 from src.profiles.capabilities import capability_policy_for
 from src.routing.filing import routing_choice_refusal
@@ -137,16 +138,20 @@ def _prompt(step: LlmStep, ctx: StepContext) -> str:
     """Render the prompt, inputs and the exact output contract the model must meet."""
     from src.playbooks.expressions import resolve_value
 
-    prompt = str(resolve_value(step.prompt, ctx.scope))
+    if "prompt" in ctx.rendered_prompts:
+        return ctx.rendered_prompts["prompt"]
+    prompt = str(resolve_value(step.prompt, ctx.scope, ctx.evaluation_budget))
     if ctx.inputs:
         prompt += f"\n\nInputs:\n{json.dumps(dict(ctx.inputs), sort_keys=True, default=str)}"
     # The validator enforces constraints such as maxLength even when the
     # authored prompt does not mention them. Give the model the same contract
     # on its first call, including steps with only one allowed call.
-    return (
+    rendered = (
         f"{prompt}\n\nReturn one JSON object satisfying this output JSON Schema:\n"
         f"{json.dumps(step.output_schema, sort_keys=True)}"
     )
+    ctx.rendered_prompts["prompt"] = rendered
+    return rendered
 
 
 def _resume_state(
@@ -588,6 +593,11 @@ class LiveLlmExecutor:
                     llm_calls=calls,
                     value=value,
                 )
+        except ValueResolutionError as exc:
+            return ExecutorResult(
+                control=StepControl.ADVANCE, outcome="input_resolution_failed",
+                diagnostics=(exc.reason,),
+            )
         except LLMToolTurnBoundaryError:
             raise
         except TimeoutError:

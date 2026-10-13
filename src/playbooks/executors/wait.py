@@ -181,10 +181,10 @@ class LiveWaitExecutor:
         operation = f"wait:{step.wait_kind}"
         try:
             awaited = (
-                resolve_value(step.awaited, ctx.scope) if step.awaited is not None else None
+                resolve_value(step.awaited, ctx.scope, ctx.evaluation_budget) if step.awaited is not None else None
             )
             correlation = (
-                resolve_value(step.correlation_key, ctx.scope)
+                resolve_value(step.correlation_key, ctx.scope, ctx.evaluation_budget)
                 if step.correlation_key is not None
                 else None
             )

@@ -1,5 +1,6 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { collectionNode } from "./projected";
 import AdvancedNodeDetail from "../AdvancedNodeDetail";
 import { classifyRisk, ensureReviewTask, listDownstream } from "./fixtures";
 
@@ -11,6 +12,20 @@ afterEach(cleanup);
  *  not, so the panel's contract branch and its no-contract branch are both
  *  asserted against bytes `project_graph` actually wrote. */
 describe("AdvancedNodeDetail", () => {
+  it("preserves predicates, map bodies and diff keys in canonical collection inputs", () => {
+    render(<AdvancedNodeDetail node={collectionNode} />);
+    const typed = screen.getByRole("group", { name: "Typed step" });
+    const resolved = within(screen.getByRole("group", { name: "Resolved inputs" }));
+    for (const row of collectionNode.explanation.inputs!) {
+      expect(typed).toHaveTextContent(`"type": "${row.value.kind}"`);
+      expect(resolved.getByText(row.value.display)).toBeInTheDocument();
+      expect(resolved.getByText(JSON.stringify(row.value.canonical, null, 2), { exact: true,
+        normalizer: (text) => text })).toBeInTheDocument();
+    }
+    expect(typed).toHaveTextContent('"key_path": "meta.id"');
+    expect(typed).toHaveTextContent('"index": true');
+  });
+
   it("exposes the typed step, its ids and the inputs the projection resolved", () => {
     render(<AdvancedNodeDetail node={ensureReviewTask} />);
     const identity = within(screen.getByRole("group", { name: "Identity" }));

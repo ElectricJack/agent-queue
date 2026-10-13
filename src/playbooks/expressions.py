@@ -1,7 +1,7 @@
 """Typed value and condition expressions for the Playbook V2 artifact.
 
 Child plan ``docs/superpowers/plans/2026-09-01-playbook-v2-typed-model-compiler.md``
-§4.1 (the strict base), §4.2 (the nine-member value union), §4.2.1 (the closed
+§4.1 (the strict base), §4.2 (typed values), §4.2.1 (the closed
 engine context schema) and §4.3 (conditions).
 
 V1 interpolates opaque ``"{{outputs.x.y}}"`` strings and evaluates a permissive
@@ -19,8 +19,11 @@ edges.  ``test_expressions_module_has_no_intra_package_imports`` pins it.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
+from decimal import Decimal
 from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -93,6 +96,10 @@ ValueKind = Literal[
     "object",
     "template",
     "coalesce",
+    "filter",
+    "map",
+    "len",
+    "diff",
 ]
 
 JsonScalar = str | int | float | bool | None
@@ -134,7 +141,7 @@ class BindingRef(V2Base):
 
 
 class LoopRef(V2Base):
-    """A read of the current item of an enclosing ``ForEachStep``."""
+    """The item or index of an enclosing foreach, filter predicate or map body."""
 
     type: Literal["loop_ref"] = "loop_ref"
     binding: Identifier  # == the ForEachStep's item_binding
@@ -171,6 +178,32 @@ class CoalesceValue(V2Base):
     options: Annotated[list[Value], Field(min_length=2)]  # last must be total (§6.5)
 
 
+class FilterValue(V2Base):
+    type: Literal["filter"] = "filter"
+    collection: Value
+    item_binding: Identifier
+    predicate: Condition
+
+
+class MapValue(V2Base):
+    type: Literal["map"] = "map"
+    collection: Value
+    item_binding: Identifier
+    value: Value
+
+
+class LenValue(V2Base):
+    type: Literal["len"] = "len"
+    collection: Value
+
+
+class DiffValue(V2Base):
+    type: Literal["diff"] = "diff"
+    left: Value
+    right: Value
+    key_path: DottedPath | None = None
+
+
 Value = Annotated[
     LiteralValue
     | EventRef
@@ -180,7 +213,11 @@ Value = Annotated[
     | ListValue
     | ObjectValue
     | TemplateValue
-    | CoalesceValue,
+    | CoalesceValue
+    | FilterValue
+    | MapValue
+    | LenValue
+    | DiffValue,
     Field(discriminator="type"),
 ]
 
@@ -258,74 +295,89 @@ Condition = Annotated[Comparison | BooleanExpr | Exists, Field(discriminator="ty
 # --------------------------------------------------------------------------
 
 
-def walk_value(value: Any) -> list[Any]:
-    """Every value node in ``value``, pre-order, including ``value`` itself."""
-    found: list[Any] = []
-    stack: list[Any] = [value]
+def expression_children(node: Any) -> list[Any]:
+    """Direct children, including predicates nested inside collection values."""
+    if isinstance(node, ListValue):
+        return list(node.items)
+    if isinstance(node, ObjectValue):
+        return list(node.fields.values())
+    if isinstance(node, TemplateValue):
+        return list(node.parts)
+    if isinstance(node, CoalesceValue):
+        return list(node.options)
+    if isinstance(node, FilterValue):
+        return [node.collection, node.predicate]
+    if isinstance(node, MapValue):
+        return [node.collection, node.value]
+    if isinstance(node, LenValue):
+        return [node.collection]
+    if isinstance(node, (Comparison, DiffValue)):
+        return [node.left, node.right]
+    if isinstance(node, BooleanExpr):
+        return list(node.operands)
+    if isinstance(node, Exists):
+        return [node.value]
+    return []
+
+
+def walk_expression(node: Any) -> list[tuple[Any, tuple[Any, ...]]]:
+    """Pre-order nodes with enclosing expression binders, outermost first.
+
+    A map/filter collection is evaluated outside its own binding. Only its
+    body gains that binding. Keeping this context on each occurrence also
+    handles the same reference object reused in multiple lexical positions.
+    """
+    found = []
+    stack = [(node, ())]
     while stack:
-        node = stack.pop()
-        if not isinstance(node, V2Base):
+        current, scope = stack.pop()
+        if not isinstance(current, V2Base):
             continue
-        found.append(node)
-        if isinstance(node, ListValue):
-            stack.extend(reversed(node.items))
-        elif isinstance(node, ObjectValue):
-            stack.extend(reversed(list(node.fields.values())))
-        elif isinstance(node, TemplateValue):
-            stack.extend(reversed(node.parts))
-        elif isinstance(node, CoalesceValue):
-            stack.extend(reversed(node.options))
+        found.append((current, scope))
+        children = expression_children(current)
+        for index in range(len(children) - 1, -1, -1):
+            local = scope
+            if isinstance(current, (FilterValue, MapValue)) and index == 1:
+                local = (*scope, current)
+            stack.append((children[index], local))
     return found
+
+
+def walk_value(value: Any, *, scoped: bool = False) -> list[Any]:
+    """Every value node, optionally paired with its lexical binders."""
+    return [
+        (node, scope) if scoped else node
+        for node, scope in walk_expression(value)
+        if not isinstance(node, (Comparison, BooleanExpr, Exists))
+    ]
 
 
 def walk_condition(condition: Any) -> list[Any]:
-    """Every condition node in ``condition``, pre-order."""
-    found: list[Any] = []
-    stack: list[Any] = [condition]
-    while stack:
-        node = stack.pop()
-        if not isinstance(node, V2Base):
-            continue
-        found.append(node)
-        if isinstance(node, BooleanExpr):
-            stack.extend(reversed(node.operands))
-    return found
+    """Every condition, including predicates inside collection operands."""
+    return [
+        node for node, _ in walk_expression(condition)
+        if isinstance(node, (Comparison, BooleanExpr, Exists))
+    ]
 
 
-def condition_values(condition: Any) -> list[Any]:
-    """Every value node reachable from ``condition``."""
-    values: list[Any] = []
-    for node in walk_condition(condition):
-        if isinstance(node, Comparison):
-            values.extend(walk_value(node.left))
-            values.extend(walk_value(node.right))
-        elif isinstance(node, Exists):
-            values.extend(walk_value(node.value))
-    return values
+def condition_values(condition: Any, *, scoped: bool = False) -> list[Any]:
+    """Every value reachable from a condition, retaining lexical scope on request."""
+    if not isinstance(condition, (Comparison, BooleanExpr, Exists)):
+        return []
+    return walk_value(condition, scoped=scoped)
 
 
 def expression_depth(node: Any) -> int:
     """Nesting depth of a value or condition tree; a leaf is depth 1."""
-    if not isinstance(node, V2Base):
-        return 0
-    children: list[Any] = []
-    if isinstance(node, ListValue):
-        children = list(node.items)
-    elif isinstance(node, ObjectValue):
-        children = list(node.fields.values())
-    elif isinstance(node, TemplateValue):
-        children = list(node.parts)
-    elif isinstance(node, CoalesceValue):
-        children = list(node.options)
-    elif isinstance(node, Comparison):
-        children = [node.left, node.right]
-    elif isinstance(node, BooleanExpr):
-        children = list(node.operands)
-    elif isinstance(node, Exists):
-        children = [node.value]
-    if not children:
-        return 1
-    return 1 + max(expression_depth(child) for child in children)
+    depth = 0
+    stack = [(node, 1)]
+    while stack:
+        current, level = stack.pop()
+        if not isinstance(current, V2Base):
+            continue
+        depth = max(depth, level)
+        stack.extend((child, level + 1) for child in expression_children(current))
+    return depth
 
 
 def check_expression_depth(node: Any) -> None:
@@ -357,6 +409,94 @@ class ValueResolutionError(ValueError):
         super().__init__(f"{path}: {reason}")
         self.path = path
         self.reason = reason
+
+
+class ExpressionBudgetExceeded(ValueResolutionError):
+    """A named, non-recoverable expression limit (even inside exists/coalesce)."""
+
+    def __init__(self, code: str, limit: int) -> None:
+        self.code = code
+        super().__init__("expression", f"{code}: limit {limit} exceeded")
+
+
+@dataclass
+class EvaluationBudget:
+    """One aggregate budget for a step's inputs or a decision's cases.
+
+    Expression nodes and inspected JSON members both consume visits. Byte
+    accounting is incremental: an oversized element is rejected before it is
+    appended to a constructed collection, and strings are encoded in chunks.
+    """
+
+    max_visits: int = 100_000
+    max_items: int = 10_000
+    max_bytes: int = 262_144
+    max_depth: int = MAX_EXPRESSION_DEPTH
+    visits: int = 0
+    depth: int = 0
+
+    def visit(self, count: int = 1) -> None:
+        self.visits += count
+        if self.visits > self.max_visits:
+            raise ExpressionBudgetExceeded("expression_visit_limit", self.max_visits)
+
+    def items(self, count: int) -> None:
+        if count > self.max_items:
+            raise ExpressionBudgetExceeded("expression_item_limit", self.max_items)
+
+    def size(self, count: int) -> int:
+        if count > self.max_bytes:
+            raise ExpressionBudgetExceeded("expression_byte_limit", self.max_bytes)
+        return count
+
+    def enter(self) -> None:
+        self.visit()
+        if self.depth >= self.max_depth:
+            raise ExpressionBudgetExceeded("expression_depth_limit", self.max_depth)
+        self.depth += 1
+
+    def string_size(self, value: str) -> int:
+        # JSON quotes plus escaped UTF-8 bytes, with no whole-string allocation.
+        size = 2
+        self.size(len(value) + 2)
+        for start in range(0, len(value), 4096):
+            part = json.dumps(value[start:start + 4096], ensure_ascii=False)[1:-1]
+            size = self.size(size + len(part.encode("utf-8")))
+        return size
+
+    def measure(self, value: Any) -> int:
+        """Validate/measure JSON without constructing its serialized payload."""
+        size = 0
+        stack = [value]
+        while stack:
+            item = stack.pop()
+            self.visit()
+            if isinstance(item, str):
+                size += self.string_size(item)
+            elif item is None:
+                size += 4
+            elif isinstance(item, bool):
+                size += 4 if item else 5
+            elif isinstance(item, (int, float)):
+                if isinstance(item, float) and not math.isfinite(item):
+                    raise ValueResolutionError("expression", "non-finite JSON number")
+                size += len(str(item))
+            elif isinstance(item, (list, dict)):
+                self.items(len(item))
+                size += 2 + max(0, len(item) - 1)
+                if isinstance(item, dict):
+                    size += len(item)  # colons
+                    for key in item:
+                        if not isinstance(key, str):
+                            raise ValueResolutionError("expression", "JSON keys must be strings")
+                        size = self.size(size + self.string_size(key))
+                    stack.extend(item.values())
+                else:
+                    stack.extend(item)
+            else:
+                raise ValueResolutionError("expression", "value is not JSON")
+            self.size(size)
+        return size
 
 
 #: Sentinel distinguishing "resolved to null" from "not present at all".
@@ -428,7 +568,18 @@ def _walk_path(root: Any, path: str | None, *, where: str) -> Any:
     return current
 
 
-def _resolve(value: Any, scope: ResolutionScope) -> Any:
+def _resolve(value: Any, scope: ResolutionScope, budget: EvaluationBudget) -> Any:
+    budget.enter()
+    try:
+        result = _resolve_node(value, scope, budget)
+        if result is not MISSING:
+            budget.measure(result)
+        return result
+    finally:
+        budget.depth -= 1
+
+
+def _resolve_node(value: Any, scope: ResolutionScope, budget: EvaluationBudget) -> Any:
     """Resolve one node, returning :data:`MISSING` for an absent reference."""
     if isinstance(value, LiteralValue):
         return value.value
@@ -451,20 +602,111 @@ def _resolve(value: Any, scope: ResolutionScope) -> Any:
             return item
         return _walk_path(item, value.path, where=f"loop.{value.binding}")
     if isinstance(value, ListValue):
-        return [resolve_value(item, scope) for item in value.items]
+        budget.items(len(value.items))
+        result = []
+        size = 2
+        for item in value.items:
+            resolved = resolve_value(item, scope, budget)
+            size = budget.size(size + budget.measure(resolved) + bool(result))
+            result.append(resolved)
+        return result
     if isinstance(value, ObjectValue):
-        return {name: resolve_value(node, scope) for name, node in value.fields.items()}
+        budget.items(len(value.fields))
+        result = {}
+        size = 2
+        for name, node in value.fields.items():
+            resolved = resolve_value(node, scope, budget)
+            size = budget.size(
+                size + budget.string_size(name) + 1 + budget.measure(resolved) + bool(result)
+            )
+            result[name] = resolved
+        return result
     if isinstance(value, TemplateValue):
-        # §10.4: concatenation, not a format language.  Every part must
-        # resolve, so a template can never silently render a hole.
-        return "".join(_render(resolve_value(part, scope)) for part in value.parts)
+        parts = []
+        size = 2
+        for part in value.parts:
+            rendered = _render(resolve_value(part, scope, budget))
+            size = budget.size(size + budget.string_size(rendered) - 2)
+            parts.append(rendered)
+        return "".join(parts)
     if isinstance(value, CoalesceValue):
         for option in value.options:
-            resolved = _resolve(option, scope)
+            resolved = _resolve(option, scope, budget)
             if resolved is not MISSING and resolved is not None:
                 return resolved
         return MISSING
+    if isinstance(value, (FilterValue, MapValue, LenValue)):
+        collection = _collection(resolve_value(value.collection, scope, budget), value.type)
+        if isinstance(value, LenValue):
+            return len(collection)
+        result = []
+        size = 2
+        for index, item in enumerate(collection):
+            budget.visit()
+            local = scope.with_loop_item(value.item_binding, item, index)
+            if isinstance(value, FilterValue):
+                if not evaluate_condition(value.predicate, local, budget):
+                    continue
+                resolved = item
+            else:
+                resolved = resolve_value(value.value, local, budget)
+            budget.items(len(result) + 1)
+            size = budget.size(size + budget.measure(resolved) + bool(result))
+            result.append(resolved)
+        return result
+    if isinstance(value, DiffValue):
+        left = _collection(resolve_value(value.left, scope, budget), "diff.left")
+        right = _collection(resolve_value(value.right, scope, budget), "diff.right")
+        seen = {_identity(item, value.key_path, budget) for item in right}
+        result = []
+        size = 2
+        for item in left:
+            identity = _identity(item, value.key_path, budget)
+            if identity in seen:
+                continue
+            budget.items(len(result) + 1)
+            size = budget.size(size + budget.measure(item) + bool(result))
+            seen.add(identity)
+            result.append(item)
+        return result
     raise ValueResolutionError(type(value).__name__, "is not a typed value")
+
+
+def _collection(value: Any, where: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValueResolutionError(where, "requires a list (coalesce null explicitly)")
+    return value
+
+
+def _identity(item: Any, key_path: str | None, budget: EvaluationBudget) -> tuple:
+    """Flat tagged canonical JSON tokens, hashable without recursive hashing."""
+    if key_path is not None:
+        item = _walk_path(item, key_path, where="diff.key_path")
+        if item is MISSING or isinstance(item, (list, dict)):
+            raise ValueResolutionError("diff.key_path", "requires an existing scalar identity")
+    tokens = []
+    stack = [item]
+    while stack:
+        value = stack.pop()
+        budget.visit()
+        if value is None:
+            tokens.append(("null",))
+        elif isinstance(value, bool):
+            tokens.append(("boolean", value))
+        elif isinstance(value, (int, float)):
+            tokens.append(("number", Decimal(str(value))))
+        elif isinstance(value, str):
+            tokens.append(("string", value))
+        elif isinstance(value, list):
+            tokens.append(("array", len(value)))
+            stack.extend(reversed(value))
+        elif isinstance(value, dict):
+            tokens.append(("object", len(value)))
+            for key in sorted(value, reverse=True):
+                stack.extend((value[key], key))
+        else:
+            raise ValueResolutionError("diff", "identity is not JSON")
+    return tuple(tokens)
 
 
 def _render(value: Any) -> str:
@@ -486,9 +728,11 @@ def _describe(value: Any) -> str:
     return value.type if isinstance(value, V2Base) else type(value).__name__
 
 
-def resolve_value(value: Any, scope: ResolutionScope) -> Any:
+def resolve_value(
+    value: Any, scope: ResolutionScope, budget: EvaluationBudget | None = None
+) -> Any:
     """Resolve *value* against *scope*, raising on any unresolvable reference."""
-    resolved = _resolve(value, scope)
+    resolved = _resolve(value, scope, budget if budget is not None else EvaluationBudget())
     if resolved is MISSING:
         raise ValueResolutionError(_describe(value), "is not present in this run's scope")
     return resolved
@@ -497,7 +741,20 @@ def resolve_value(value: Any, scope: ResolutionScope) -> Any:
 _ORDERING_OPS: Final[frozenset[str]] = frozenset({"lt", "lte", "gt", "gte"})
 
 
-def evaluate_condition(condition: Any, scope: ResolutionScope) -> bool:
+def evaluate_condition(
+    condition: Any, scope: ResolutionScope, budget: EvaluationBudget | None = None
+) -> bool:
+    budget = budget if budget is not None else EvaluationBudget()
+    budget.enter()
+    try:
+        return _evaluate_condition(condition, scope, budget)
+    finally:
+        budget.depth -= 1
+
+
+def _evaluate_condition(
+    condition: Any, scope: ResolutionScope, budget: EvaluationBudget
+) -> bool:
     """Evaluate a typed condition.  Never defaults to true.
 
     V1's evaluator returned ``True`` for a shape it did not recognise; a
@@ -508,7 +765,9 @@ def evaluate_condition(condition: Any, scope: ResolutionScope) -> bool:
         # The one node that tolerates a miss: asking whether something is
         # present must not fail because it is absent.
         try:
-            resolved = _resolve(condition.value, scope)
+            resolved = _resolve(condition.value, scope, budget)
+        except ExpressionBudgetExceeded:
+            raise
         except ValueResolutionError:
             return False
         if resolved is MISSING or resolved is None:
@@ -517,14 +776,18 @@ def evaluate_condition(condition: Any, scope: ResolutionScope) -> bool:
 
     if isinstance(condition, BooleanExpr):
         if condition.op == "not":
-            return not evaluate_condition(condition.operands[0], scope)
+            return not evaluate_condition(condition.operands[0], scope, budget)
         if condition.op == "and":
-            return all(evaluate_condition(node, scope) for node in condition.operands)
-        return any(evaluate_condition(node, scope) for node in condition.operands)
+            return all(evaluate_condition(node, scope, budget) for node in condition.operands)
+        return any(evaluate_condition(node, scope, budget) for node in condition.operands)
 
     if isinstance(condition, Comparison):
-        left = resolve_value(condition.left, scope)
-        right = resolve_value(condition.right, scope)
+        left = resolve_value(condition.left, scope, budget)
+        right = resolve_value(condition.right, scope, budget)
+        if condition.op in {"in", "not_in", "contains"}:
+            haystack = left if condition.op == "contains" else right
+            if isinstance(haystack, (list, dict)):
+                budget.visit(len(haystack))
         return _compare(condition.op, left, right)
 
     raise ValueResolutionError(type(condition).__name__, "is not a typed condition")
@@ -564,6 +827,10 @@ def _compare(op: str, left: Any, right: Any) -> bool:
     raise ValueResolutionError(op, "is not a comparison operator")
 
 
+FilterValue.model_rebuild()
+MapValue.model_rebuild()
+LenValue.model_rebuild()
+DiffValue.model_rebuild()
 ListValue.model_rebuild()
 ObjectValue.model_rebuild()
 TemplateValue.model_rebuild()
@@ -581,6 +848,14 @@ __all__ = [
     "BooleanExpr",
     "BooleanOp",
     "CoalesceValue",
+    "FilterValue",
+    "MapValue",
+    "LenValue",
+    "DiffValue",
+    "EvaluationBudget",
+    "ExpressionBudgetExceeded",
+    "expression_children",
+    "walk_expression",
     "Comparison",
     "ComparisonOp",
     "Condition",

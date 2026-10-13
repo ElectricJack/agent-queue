@@ -1,10 +1,20 @@
 import type { CSSProperties } from "react";
 import type {
   GraphNodeDTO,
+  ExplanationValueDTO,
   NodeOverlayDTO,
   PlaybookRunOverlayResponse,
   RuleClusterDTO,
 } from "../../api/client";
+
+/** Use the generated discriminator so new expression kinds cannot drift from the API. */
+export type ExpressionKind = ExplanationValueDTO["kind"];
+export const COLLECTION_EXPRESSION_LABELS: Partial<Record<ExpressionKind, string>> = {
+  filter: "Filter collection",
+  map: "Map collection",
+  len: "Collection length",
+  diff: "Collection difference",
+};
 
 /** Fixed card geometry. The backend owns rank and order (`GraphLayoutDTO`);
  *  the frontend owns pixels and nothing else. */

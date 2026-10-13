@@ -75,6 +75,10 @@ ValueKind = Literal[
     "loop_ref",
     "template",
     "expression",
+    "filter",
+    "map",
+    "len",
+    "diff",
     "redacted",
     "unresolved",
 ]

@@ -56,9 +56,9 @@ CONDITIONS = TypeAdapter(Condition)
 
 
 class TestValueUnion:
-    """§4.2 — the nine discriminator strings are the wire contract."""
+    """The original values and B1 collection discriminators form the wire contract."""
 
-    def test_the_union_has_exactly_nine_members(self):
+    def test_the_union_has_exactly_thirteen_members(self):
         assert set(E.ValueKind.__args__) == {
             "literal",
             "event_ref",
@@ -69,6 +69,10 @@ class TestValueUnion:
             "object",
             "template",
             "coalesce",
+            "filter",
+            "map",
+            "len",
+            "diff",
         }
 
     @pytest.mark.parametrize(
@@ -257,6 +261,9 @@ def test_expressions_module_has_no_intra_package_imports():
     assert set(imported) <= {
         "__future__",
         "collections.abc",
+        "dataclasses",
+        "decimal",
+        "math",
         "typing",
         "pydantic",
         "json",
