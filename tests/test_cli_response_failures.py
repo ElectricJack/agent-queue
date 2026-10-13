@@ -268,3 +268,59 @@ async def test_unhealthy_http_response_is_actionable_and_closes_client(monkeypat
         await client.connect()
     assert client._http is None
     assert transport.is_closed
+
+
+@pytest.mark.parametrize("argv", [["--json", "prime"], ["prime", "--json"]])
+def test_prime_json_refusal_preserves_budget_diagnostics(monkeypatch, argv):
+    """A fake daemon refusal passes through the real client and error envelope."""
+    from src.cli.app import cli
+
+    for name in ("AQ_JSON_LEGACY", "AQ_TASK_ID", "AQ_SESSION_ID", "AQ_API_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    details = {
+        "success": False,
+        "error_code": "context.required_over_budget",
+        "context_budget": {
+            "requested": {
+                "input_tokens": 32768, "output_tokens": 4096, "wrapper_tokens": 256,
+                "knowledge_tokens": 4000, "knowledge_bytes": 16384,
+                "discovery_tokens": 1000, "discovery_items": 8,
+                "method": "upper_bound_bytes",
+            },
+            "effective_knowledge_tokens": 0,
+            "required_tokens": 40000, "knowledge_tokens": 0, "knowledge_bytes": 0,
+            "total_tokens": 44352, "method": "upper_bound_bytes", "fits": False,
+            "diagnostic": "context.required_over_budget",
+        },
+        "required_body_bytes": 40000,
+        "required_section_bytes": {"role": 6000, "task": 33000, "context": 0},
+        "source": "default",
+    }
+    calls = []
+
+    def handler(request):
+        assert request.url.path == "/api/execute"
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "ok": False, "error": "context.required_over_budget", "details": details,
+        })
+
+    async def connect(client):
+        client._http = httpx.AsyncClient(
+            base_url="http://test", transport=httpx.MockTransport(handler),
+        )
+
+    monkeypatch.setattr(CLIClient, "connect", connect)
+    result = CliRunner().invoke(cli, [*argv, "--task-id", "test-task"])
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "schema_version": 1,
+        "data": None,
+        "error": {
+            "code": "command_error", "message": "context.required_over_budget",
+            "details": details,
+        },
+    }
+    # No prime body/bundle, delivery receipt, retry, or actual daemon request.
+    assert calls == [{"command": "prime", "args": {"task_id": "test-task"}}]
