@@ -1245,26 +1245,43 @@ def s7_claim_race(state: dict) -> str:
     # Let the task land in the frontier before both callers ask for it.
     wait_for(lambda: task_show(task_id)["status"] == "READY", what=f"{task_id} to be READY")
 
-    procs = []
-    for sid, token in tokens:
-        env = dict(os.environ)
-        env.update({"AQ_API_URL": API_URL, "AQ_API_TOKEN": token, "AQ_SESSION_ID": sid})
-        procs.append(
-            subprocess.Popen(
-                [sys.executable, AQ_LAUNCHER, "--json", "task", "claim", "--next"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-            )
-        )
     outcomes = []
-    for p in procs:
-        out, _err = p.communicate(timeout=120)
-        payload = json.loads(out.strip() or "{}")
-        data = payload.get("data") or {}
-        details = (payload.get("error") or {}).get("details") or {}
-        outcomes.append(data.get("result") or details.get("result") or "unknown")
+
+    def race():
+        nonlocal outcomes
+        procs = []
+        for sid, token in tokens:
+            env = dict(os.environ)
+            env.update({"AQ_API_URL": API_URL, "AQ_API_TOKEN": token, "AQ_SESSION_ID": sid})
+            procs.append(
+                subprocess.Popen(
+                    [sys.executable, AQ_LAUNCHER, "--json", "task", "claim", "--next"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                )
+            )
+        outcomes = []
+        for p in procs:
+            out, _err = p.communicate(timeout=120)
+            payload = json.loads(out.strip() or "{}")
+            data = payload.get("data") or {}
+            details = (payload.get("error") or {}).get("details") or {}
+            result = data.get("result") or details.get("result") or "unknown"
+            if result == "claimed":
+                check(data.get("task", {}).get("id") == task_id,
+                      f"race claimed a different task: {data}")
+            outcomes.append(result)
+        # READY does not mean unlocked: both SKIP LOCKED queries can miss
+        # the task during a scheduler transaction. Race both callers again
+        # only when neither claimed; all other results retain the assertions.
+        return None if outcomes == ["no_ready_work", "no_ready_work"] else outcomes
+
+    wait_for(
+        race, what=f"one concurrent claim of {task_id}", timeout=CONVERGE_TIMEOUT,
+        diagnostic=lambda: f"outcomes={outcomes}; fixture={task_show(task_id)}",
+    )
 
     winners = [o for o in outcomes if o == "claimed"]
     check(

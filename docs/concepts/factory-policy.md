@@ -4,9 +4,8 @@
 `projects/agent-queue/specs/software-factory-policy-simplification-2026-09-11.md`). This page is the
 one statement of how AQ admits, delivers and recovers work. Role instructions — shipped profiles
 (`src/profiles/defaults/`), AQ skills (`src/skills/`), prime templates (`src/prime/templates/`) and
-remembered project guidance — reference this page instead of restating workflow. Where an
-instruction disagrees with this page, the instruction is the bug. Historical reports, reviews and
-superseded specs are evidence, not directives.
+remembered project guidance — reference this page instead of restating workflow. Conflicting instructions
+are bugs. Historical reports, reviews and superseded specs are evidence, not directives.
 
 ## A. Admit authorised, executable work
 
@@ -63,11 +62,10 @@ superseded specs are evidence, not directives.
   including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
   status or counters. Retry requires a stopped attempt on a `BLOCKED` task and all recovery guards.
 - An accepted explicit task restart or reopen supersedes its previous recovery incident in the
-  same transaction as the READY write, including a recorded supervisor hold on an already-READY
-  task. Preserve the hold's diagnosis, decision history and supervisor-recovery budget, and archive
-  its notification. Ordinary status projection does not release a hold. A refused restart retains
-  the incident; integration repair delegates release it only after their branch handoff succeeds.
-  Manual pauses, hold labels, dependencies, human gates and integration ownership remain binding.
+  READY-write transaction, including holds on already-READY tasks; preserve diagnosis, history and
+  recovery budget, and archive the notification. Projection and refused restarts retain holds;
+  repair delegates release them only after branch handoff. Pauses, labels, dependencies, human gates
+  and integration ownership remain binding.
 - A known transient failure retries within the existing budget. An unknown cause, an exhausted
   budget or a human-only decision holds with a concrete reason and one durable escalation.
 - An explicitly authorized continuous integration policy may replace an exhausted repair session
@@ -80,17 +78,13 @@ superseded specs are evidence, not directives.
 
 ## Testing scope
 
-Workers run focused tests for what they change through the resource-governed runner (`aq test`),
-then the related area suite, and record the exact commands. Full-suite runs belong to CI or tasks
-whose subject is the suite. Compare failures against a recorded known-failing baseline; do not
-capture a new one per task. A pre-existing failure neither fails the task nor justifies weakening or
-skipping a test. Task authors specify focused and area checks, not a full-suite close requirement.
-See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
+Workers use `aq test` for focused and related area checks, recording exact commands. Full-suite runs belong to CI
+or tasks about the suite. Compare against a recorded known-failing baseline; do not capture one per task.
+A pre-existing failure neither fails the task nor justifies weakening or skipping tests. Task authors specify
+focused and area checks. See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
 
 ## Keeping instructions in line
 
-Shipped profiles and skills are seeded write-if-absent, so a corrected default does not overwrite an
-installed copy: installed profiles are edited in the vault, and drifted skills are re-copied with
-`aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py` fails
-if a shipped instruction reintroduces a retired stage, sibling-by-default placement or a refusal
-bypass, or if a shipped role stops referencing this page.
+Shipped profiles and skills are seeded write-if-absent: edit installed profiles in the vault and re-copy
+drifted skills with `aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py`
+rejects retired stages, sibling-by-default placement, refusal bypasses and roles that omit this page.

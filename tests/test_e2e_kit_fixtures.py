@@ -549,6 +549,82 @@ def test_s2_empty_claim_timeout_reports_every_fixture(s2_surfaces):
 
 
 @pytest.fixture
+def s7_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    workers = [smoke.Worker(session_id=sid, token=sid + "-token") for sid in ("a", "b")]
+    responses = [["claimed", "no_ready_work"]]
+    launches = []
+    clock = SimpleNamespace(now=0.0)
+
+    def popen(argv, **kwargs):
+        index = len(launches)
+        launches.append((argv, kwargs))
+        result = responses[min(index // 2, len(responses) - 1)][index % 2]
+
+        def communicate(**_kwargs):
+            # Both CLI processes must launch before either response is collected.
+            assert len(launches) == index // 2 * 2 + 2
+            data = {"result": result}
+            if result == "claimed":
+                data["task"] = {"id": "contested"}
+            return json.dumps({"data": data}), ""
+
+        return SimpleNamespace(communicate=communicate)
+
+    monkeypatch.setattr(smoke.subprocess, "Popen", popen)
+    monkeypatch.setattr(smoke, "fresh_workers", lambda _count: workers)
+    monkeypatch.setattr(smoke, "create_task", lambda *_args, **_kwargs: "contested")
+    monkeypatch.setattr(smoke, "task_show", lambda task_id: {"id": task_id, "status": "READY"})
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock.now,
+        sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    monkeypatch.setattr(smoke, "CONVERGE_TIMEOUT", 1)
+    monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.25))
+    return smoke, responses, launches, clock
+
+
+@pytest.mark.parametrize("empty_rounds", [0, 2])
+def test_s7_retries_only_empty_races_with_both_callers(s7_surfaces, empty_rounds):
+    smoke, responses, launches, clock = s7_surfaces
+    responses[:0] = [["no_ready_work", "no_ready_work"]] * empty_rounds
+
+    assert "one winner" in smoke.s7_claim_race({})
+
+    assert len(launches) == 2 * (empty_rounds + 1)
+    assert clock.now == empty_rounds * 0.25
+    assert [kwargs["env"]["AQ_SESSION_ID"] for _, kwargs in launches] == (
+        ["a", "b"] * (empty_rounds + 1)
+    )
+
+
+@pytest.mark.parametrize("outcomes", [
+    ["claimed", "claimed"], ["prepare_failed", "no_ready_work"],
+    ["claimed", "not_admissible"],
+])
+def test_s7_rejects_multiple_winners_and_other_failures(s7_surfaces, outcomes):
+    smoke, responses, launches, clock = s7_surfaces
+    responses[:] = [outcomes]
+
+    with pytest.raises(smoke.Failure):
+        smoke.s7_claim_race({})
+
+    assert len(launches) == 2
+    assert clock.now == 0
+
+
+def test_s7_empty_race_timeout_reports_fixture_and_outcomes(s7_surfaces):
+    smoke, responses, _launches, clock = s7_surfaces
+    responses[:] = [["no_ready_work", "no_ready_work"]]
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.s7_claim_race({})
+
+    assert clock.now == 1
+    assert all(detail in str(error.value) for detail in ("contested", "no_ready_work", "READY"))
+
+
+@pytest.fixture
 def s5_surfaces(monkeypatch):
     smoke = _load_smoke()
     holder = smoke.Worker(session_id="holder", token="holder-token")

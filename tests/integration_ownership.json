@@ -13487,13 +13487,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1720,
+      "line": 1727,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "4e844ba42c664dad7d0e4cf0aee66804082eb0e60c141ce598fe88ddaea782d2",
+      "owner_fingerprint": "2558f39e8c2aa7c967b1907695b71b4704c2ced83295af011a6b518a14c3760e",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle metadata cleanup, including failure generation, guarded retry routing and accepted-close identity. Leaving READY/BLOCKED/PAUSED clears the stale episode; running/completed work also clears operational attention. The failed-attempt journal records work verdicts for class escalation. Current Git delivery evidence is observed outside the transaction and revalidated by the guarded lifecycle writer; integration status, branch reservations and ref replay authority remain in dedicated records."
+      "reason": "Ordinary task lifecycle metadata cleanup, guarded retry routing and accepted-close identity. Explicit restart/reopen supersedes the previous supervisor recovery incident and archives its notification in the READY-write transaction, preserving diagnosis and budget. Ordinary status projection retains holds. Integration status, branch reservations and ref replay authority remain in dedicated records."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2165,
@@ -15161,13 +15161,13 @@
       "reason": "Operator task.delivery_disposition audit for a deliver decision that archives nothing; records the task identity and how many holders wait, not ref mutation, replay or delivery state."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate::422567dd28fcecb1a80d03028773f3ba177b912a1b2e264195e8ad9a0e83101f": {
-      "line": 4495,
+      "line": 4587,
       "owner": "TaskCommandsMixin._restart_repair_delegate",
       "call": "set_task_meta",
-      "owner_fingerprint": "56c3461d62607d7f526db009179e05280f3e2b6c65bca88b9ef03cc697a16441",
+      "owner_fingerprint": "677d2aa12480eb17e7a752ee18b2d68c18f1465e9ae3cf5c1b7738b568c62401",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary worker failure streak is restored when a fenced repair-delegate restart is refused. Existing reservation guards still decide authority; this metadata is not an integration lifecycle journal."
+      "reason": "Ordinary recovery hold supersession only after a guarded repair-delegate branch handoff succeeds; refused reservation restores the worker failure streak and retains the prior incident. Integration reservation guards remain authoritative; no ref replay or duplicate integration lifecycle storage."
     },
     "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::9092769dc16180050c1d7a01c5d46256c2cd0383b351f15fadc91645e2ec169a": {
       "line": 1644,
