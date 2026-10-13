@@ -1029,6 +1029,16 @@ _WORKTREE_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "workspace_id", "slot", "path", "reason"],
         "optional": [],
     },
+    # Slot reconciler (src.orchestrator.slot_restore): a disabled in-cap slot
+    # came back into service, or was held out because it carries changes.
+    "worktree.restored": {
+        "required": ["project_id", "workspace_id", "slot", "path", "action"],
+        "optional": ["previous_reason"],
+    },
+    "worktree.quarantined": {
+        "required": ["project_id", "workspace_id", "slot", "path", "reason"],
+        "optional": ["dirty_paths"],
+    },
 }
 
 # ---------------------------------------------------------------------------

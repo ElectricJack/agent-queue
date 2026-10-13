@@ -16103,6 +16103,8 @@
     "src/vault_manager.py::VaultManager": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/vault_watcher.py::VaultWatcher": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/workflow_stage_resume_handler.py::WorkflowStageResumeHandler": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/workspace_disable.py::WORKTREE_REMOVED": "Generic dependency; workspace disable-reason vocabulary shared by every slot writer.",
+    "src/workspace_disable.py::disable_fields": "Generic dependency; workspace disable-reason vocabulary shared by every slot writer.",
     "src/workspace_spec_watcher.py::WorkspaceSpecWatcher": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/commands/authorization.py::authorize_command": "Generic capability policy for every command; integration command hold enforcement is charged in CommandHandler.execute.",
     "src/commands/authorization.py::denial_result": "Generic capability refusal payload with no integration state or authority.",

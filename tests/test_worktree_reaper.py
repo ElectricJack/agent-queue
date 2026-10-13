@@ -646,3 +646,219 @@ class TestMonitorSafety:
                 merged.assert_not_awaited()
         finally:
             await o.shutdown()
+
+
+# ── restore_disabled_slots — disabled slots must not cap the pool ───────
+
+
+class _Handler:
+    """Records supervisor alerts sent through ``message_send``."""
+
+    def __init__(self):
+        self.sent: list[dict] = []
+
+    async def execute(self, command, args):
+        assert command == "message_send"
+        self.sent.append(args)
+        return {"success": True}
+
+
+async def _disabled_slot(o, base_repo, monkeypatch, *, fields):
+    """One released slot-0, disabled with *fields*, and no live processes."""
+    slot_ws, slot_dir = await _make_slot(o, base_repo)
+    await o.db.release_workspace(slot_ws.id)
+    await o.db.update_workspace(slot_ws.id, **fields)
+
+    async def no_processes(marker_key):
+        return []
+
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", no_processes)
+    return await o.db.get_workspace(slot_ws.id), slot_dir
+
+
+def _record_events(o) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    orig_emit = o.bus.emit
+
+    async def rec(t, p):
+        events.append((t, p))
+        return await orig_emit(t, p)
+
+    o.bus.emit = rec
+    return events
+
+
+async def _restore(o, handler=None, *, now=None):
+    from src.orchestrator.slot_restore import restore_disabled_slots
+
+    project = await o.db.get_project("p1")
+    return await restore_disabled_slots(
+        o.db, o._worktree_slots(), project, command_handler=handler, now=now,
+    )
+
+
+class TestRestoreDisabledSlots:
+    async def test_missing_worktree_is_recreated_in_place_and_enabled(
+        self, tmp_path, base_repo, monkeypatch,
+    ):
+        import shutil
+
+        from src.workspace_disable import WORKTREE_REMOVED, disable_fields
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, slot_dir = await _disabled_slot(
+                o, base_repo, monkeypatch,
+                fields=disable_fields(WORKTREE_REMOVED, "deleting task t removed it"),
+            )
+            shutil.rmtree(slot_dir)
+            events = _record_events(o)
+
+            [action] = await _restore(o)
+
+            assert action.action == "recreated"
+            assert (slot_dir / ".git").exists()
+            row = await o.db.get_workspace(slot_ws.id)
+            assert row.enabled is True
+            assert row.disabled_reason is None and row.disabled_at is None
+            sentinel = o._worktree_slots().read_sentinel(slot_dir)
+            assert sentinel.workspace_id == slot_ws.id
+            [(_, payload)] = [e for e in events if e[0] == "worktree.restored"]
+            assert payload["action"] == "recreated"
+            assert payload["previous_reason"].startswith("worktree_removed")
+        finally:
+            await o.shutdown()
+
+    async def test_clean_slot_disabled_without_a_reason_is_reenabled(
+        self, tmp_path, base_repo, monkeypatch,
+    ):
+        """The incident's slots 0 and 2: clean, disabled, no reason recorded."""
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, _ = await _disabled_slot(
+                o, base_repo, monkeypatch, fields={"enabled": False},
+            )
+            assert await o.db.count_available_workspaces("p1", worktree_slot_cap=2) == 1
+
+            [action] = await _restore(o)
+
+            assert action.action == "reenabled"
+            assert (await o.db.get_workspace(slot_ws.id)).enabled is True
+            assert await o.db.count_available_workspaces("p1", worktree_slot_cap=2) == 2
+        finally:
+            await o.shutdown()
+
+    async def test_dirty_slot_is_quarantined_and_the_supervisor_told_once(
+        self, tmp_path, base_repo, monkeypatch,
+    ):
+        from src.workspace_disable import QUARANTINED_DIRTY, reason_code
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, slot_dir = await _disabled_slot(
+                o, base_repo, monkeypatch, fields={"enabled": False},
+            )
+            (slot_dir / "unsaved.txt").write_text("work in progress\n")
+            events = _record_events(o)
+            handler = _Handler()
+
+            [action] = await _restore(o, handler)
+
+            assert action.action == "quarantined"
+            row = await o.db.get_workspace(slot_ws.id)
+            assert row.enabled is False
+            assert reason_code(row.disabled_reason) == QUARANTINED_DIRTY
+            assert (slot_dir / "unsaved.txt").exists(), "the work is never discarded"
+            [alert] = handler.sent
+            assert alert["to_id"] == "supervisor-p1"
+            assert "unsaved.txt" in alert["body"]
+            [(_, payload)] = [e for e in events if e[0] == "worktree.quarantined"]
+            assert payload["dirty_paths"] == ["unsaved.txt"]
+
+            # Still dirty: held, and not re-announced every pass.
+            [again] = await _restore(o, handler)
+            assert again.action == "skipped"
+            assert len(handler.sent) == 1
+
+            # Salvaged: back in service.
+            (slot_dir / "unsaved.txt").unlink()
+            [restored] = await _restore(o, handler)
+            assert restored.action == "reenabled"
+            assert (await o.db.get_workspace(slot_ws.id)).enabled is True
+        finally:
+            await o.shutdown()
+
+    async def test_operator_disabled_slot_is_left_alone(
+        self, tmp_path, base_repo, monkeypatch,
+    ):
+        from src.workspace_disable import OPERATOR, disable_fields
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, _ = await _disabled_slot(
+                o, base_repo, monkeypatch, fields=disable_fields(OPERATOR),
+            )
+            [action] = await _restore(o)
+            assert action.action == "skipped"
+            assert (await o.db.get_workspace(slot_ws.id)).enabled is False
+        finally:
+            await o.shutdown()
+
+    async def test_claim_failure_quarantine_holds_for_the_cooldown(
+        self, tmp_path, base_repo, monkeypatch,
+    ):
+        from src.workspace_disable import CLAIM_FAILURE_COOLDOWN, CLAIM_FAILURES, disable_fields
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, _ = await _disabled_slot(
+                o, base_repo, monkeypatch,
+                fields=disable_fields(CLAIM_FAILURES, "3 refusals", now=1000.0),
+            )
+            [early] = await _restore(o, now=1000.0 + CLAIM_FAILURE_COOLDOWN - 1)
+            assert early.action == "skipped"
+            assert (await o.db.get_workspace(slot_ws.id)).enabled is False
+
+            [late] = await _restore(o, now=1000.0 + CLAIM_FAILURE_COOLDOWN + 1)
+            assert late.action == "reenabled"
+        finally:
+            await o.shutdown()
+
+    async def test_live_process_blocks_restore(self, tmp_path, base_repo, monkeypatch):
+        from src.sessions.proctable import ProcEntry
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, _ = await _disabled_slot(
+                o, base_repo, monkeypatch, fields={"enabled": False},
+            )
+
+            async def live(marker_key):
+                return [ProcEntry(pid=99999, ppid=1, comm="agent",
+                                  start_ticks=1, marker="tsk-1")]
+
+            monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", live)
+            [action] = await _restore(o)
+            assert action.action == "skipped"
+            assert (await o.db.get_workspace(slot_ws.id)).enabled is False
+        finally:
+            await o.shutdown()
+
+    async def test_reaper_pass_runs_the_reconciler(self, tmp_path, base_repo, monkeypatch):
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            slot_ws, _ = await _disabled_slot(
+                o, base_repo, monkeypatch, fields={"enabled": False},
+            )
+            o._last_worktree_reaper = 0.0
+            await o._reap_worktree_slots()
+            assert (await o.db.get_workspace(slot_ws.id)).enabled is True
+        finally:
+            await o.shutdown()

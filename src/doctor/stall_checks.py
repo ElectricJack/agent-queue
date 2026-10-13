@@ -555,6 +555,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _worker_relaunch_findings(ctx, tasks),
         _continuous_promotion_findings(ctx, active, now),
         _escalation_delivery_findings(ctx, active, now),
+        _slot_capacity_findings(ctx, active),
     )
     findings = [item for group in groups for item in group]
     findings.extend(_route_findings(tasks) + flock_findings + conversation + delivery_engines)
@@ -580,6 +581,20 @@ async def _container_dependency_findings(ctx: DoctorContext, active: set[str]) -
             "container dependency report capped at 50 edges; resolve findings and rerun",
         ))
     return findings
+
+
+async def _slot_capacity_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    """Enabled worktree slots < cap: disabled slots silently cap the pool."""
+    from src.doctor.worktree_checks import describe_shortfall, find_capacity_shortfalls
+
+    return [
+        _finding("slot_capacity_short", entry["project_id"],
+                 f"enabled slots < cap — {describe_shortfall(entry)}; "
+                 "aq doctor --check worktrees.capacity",
+                 **{key: value for key, value in entry.items() if key != "project_id"})
+        for entry in await find_capacity_shortfalls(ctx.db)
+        if entry["project_id"] in active
+    ]
 
 
 async def _escalation_delivery_findings(ctx, active, now):

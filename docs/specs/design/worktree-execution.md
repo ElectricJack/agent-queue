@@ -258,6 +258,8 @@ The reaper is a cascade housekeeping step that acts on **slots**. A slot worktre
 
 Before removal, a **liveness check** against the process table: any process whose environment carries a matching `AQ_TASK_ID` or whose cwd is inside the slot path blocks the reap. If the process table cannot be read, the reaper *skips* — never reap on partial information. Removal sequence, under the base mutex: `git worktree remove <slot>` (`--force` fallback), `git worktree prune`, delete the slot's `workspaces` row, emit `worktree.reaped`.
 
+**Disabled slots are reconciled, not reaped.** A slot inside the cap that is disabled still occupies its index, so it caps the pool without ever being retired. Every disable records `workspaces.disabled_reason` (`<code>: <detail>`, codes in `src/workspace_disable.py`) and `disabled_at`. After its per-workspace pass the reaper runs `restore_disabled_slots` (`src/orchestrator/slot_restore.py`): operator-disabled slots, slots inside the claim-failure cooldown, and live (or unprovable) slots are left alone; a missing worktree is re-provisioned at the slot's path keeping its row id; a clean checkout is re-enabled (`worktree.restored`); a dirty or unprovable checkout is kept disabled as `quarantined_dirty` with `worktree.quarantined` and one message to the project supervisor, and is re-enabled on a later pass once clean. `aq doctor --check worktrees.capacity` and the stall sweep report "enabled slots < cap".
+
 Branch pruning is a separate reaper concern: merged `aq/*` branches (`git branch --merged origin/<default>`, filtered to the `aq/` prefix) are deleted locally; remote deletion per policy; unmerged `aq/*` branches whose tasks are terminal-failed are pruned only after `retain_failed_days`.
 
 ---

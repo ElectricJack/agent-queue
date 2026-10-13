@@ -11,6 +11,7 @@ from src.task_templates import render_task_template
 from src.models import RepoSourceType, Task, TaskStatus, TaskType, Workspace
 from src.task_names import generate_task_id
 from src.workspace_names import generate_workspace_id
+from src.workspace_disable import ENABLE_FIELDS, OPERATOR, disable_fields
 from src.commands.helpers import _run_subprocess
 from src.commands.flock_commands import FlockCommandsMixin
 
@@ -471,7 +472,13 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if "enabled" in args:
             new_enabled = bool(args["enabled"])
             if new_enabled != ws.enabled:
-                updates["enabled"] = new_enabled
+                # Record who turned it off, so a project running below its
+                # cap can say why — and so the slot reconciler leaves an
+                # operator's decision alone.
+                updates.update(
+                    ENABLE_FIELDS if new_enabled
+                    else disable_fields(OPERATOR, "disabled with edit_workspace")
+                )
                 changed_fields.append("enabled")
 
         new_source_type = ws.source_type
