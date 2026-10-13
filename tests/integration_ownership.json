@@ -8674,6 +8674,9 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_supersede_completion']": {
+      "reason": "Handcrafted CLI registration for the fenced operator/supervisor supersession control; integration owns the surface."
     }
   },
   "exclusions": {
@@ -13502,13 +13505,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1727,
+      "line": 1737,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "2558f39e8c2aa7c967b1907695b71b4704c2ced83295af011a6b518a14c3760e",
+      "owner_fingerprint": "8ada88e0dbe5278a1ac63c44446877153eacd6c5011675dace385eb762fba775",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle metadata cleanup, guarded retry routing and accepted-close identity. Explicit restart/reopen supersedes the previous supervisor recovery incident and archives its notification in the READY-write transaction, preserving diagnosis and budget. Ordinary status projection retains holds. Integration status, branch reservations and ref replay authority remain in dedicated records."
+      "reason": "Ordinary task lifecycle metadata cleanup, guarded retry routing and accepted-close identity. Explicit restart/reopen supersedes the previous supervisor recovery incident and archives its notification in the READY-write transaction, preserving diagnosis and budget. Ordinary status projection retains holds. Integration status, branch reservations and ref replay authority remain in dedicated records. Re-reviewed for supersession: only a transaction-bound SupersessionSettlement validated against the existing Subject journal and abandoned obsolete marker admits managed-parent obsolete completion; ordinary verified completion retains its authority guard. No new metadata writer or ref replay."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2165,
@@ -14672,13 +14675,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/sessions/obsolete.py::ObsoleteClose.close::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 256,
+      "line": 261,
       "owner": "ObsoleteClose.close",
       "call": "delete",
-      "owner_fingerprint": "ec49bd5e9066b5c54a2cc0c36d97d1220c7470d21e214d44405b527c9d2c938e",
+      "owner_fingerprint": "4bdca8a150928ea74d62b59371c3ab112116758d9f849a1f6462b56c8302fa0e",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Re-reviewed for supersession: a transaction-local prepare receipt settles the exact Subject before ordinary abandoned close; obsolete writes no new completion and cleanup/audit retain their existing task lifecycle roles. No duplicate integration lifecycle or ref replay storage."
     },
     "src/sessions/questions.py::AgentQuestionService._native_plan::aa6c5d0c1b30091482569a6d39a2770d8640228ff9deb37a3361d0b064977889": {
       "line": 974,
@@ -15275,13 +15278,13 @@
       "reason": "Ordinary pool-progress watchdog audit event, pool.scaler_stalled. Records bounded demand, live supply, ticks and a reconciliation hint; no Git ref replay, delivery state or integration lifecycle authority. Recovery re-measures ordinary scheduling admission through the existing pool reconciler."
     },
     "src/sessions/obsolete.py::ObsoleteClose.close::37df82dbbcf4ce30cc0f9d0951d9e179f7f7f5023c7650af375ece047532cf8d": {
-      "line": 310,
+      "line": 316,
       "owner": "ObsoleteClose.close",
       "call": "log_event",
-      "owner_fingerprint": "ec49bd5e9066b5c54a2cc0c36d97d1220c7470d21e214d44405b527c9d2c938e",
+      "owner_fingerprint": "4bdca8a150928ea74d62b59371c3ab112116758d9f849a1f6462b56c8302fa0e",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Logs the operator close with its disposition (obsolete, no-change or done)."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle. Logs the operator close with its disposition (obsolete, no-change or done). Re-reviewed for supersession: a transaction-local prepare receipt settles the exact Subject before ordinary abandoned close; obsolete writes no new completion and cleanup/audit retain their existing task lifecycle roles. No duplicate integration lifecycle or ref replay storage."
     },
     "src/sessions/obsolete.py::ObsoleteClose._release_stopped_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 352,
@@ -15291,6 +15294,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Deletes the claimed_by_session record a durably stopped writer left on a task the operator closes (azure-beacon-38); ordinary claim lifecycle, no ref replay or duplicate integration lifecycle storage."
+    },
+    "src/integration/superseded_completion.py::SupersededCompletion.run::3269b48f6c87f0167f0f8b51b4cd513461dce8207576390f7135309e684c4cfd": {
+      "line": 170,
+      "owner": "SupersededCompletion.run",
+      "call": "append_integration_subject_journal_on",
+      "owner_fingerprint": "a54b809a67a712b729839e394c1cb94422ef5c15d34a52509ba5d1f7775283ab",
+      "integration_signal": true,
+      "disposition": "retire",
+      "reason": "Supersession appends the exact human directive, retained completion/source and settled Subject proof to the existing Subject phase journal for fenced replay. It adds no task-metadata journal or new storage category; this legacy Subject journal writer must disappear with the other Subject phase/replay writers at s4_modules."
     }
   },
   "generic_dependencies": {
