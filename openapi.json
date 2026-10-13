@@ -12396,8 +12396,8 @@
         "tags": [
           "project"
         ],
-        "summary": "List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each workspace).",
-        "description": "List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each workspace).",
+        "summary": "List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task, claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.",
+        "description": "List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task, claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.",
         "operationId": "list_workspaces",
         "requestBody": {
           "content": {
@@ -46754,6 +46754,30 @@
             ],
             "title": "Project Id",
             "description": "Filter by project ID (optional)"
+          },
+          "git": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git",
+            "description": "Probe each checkout's branch and dirty state with git (default true). False returns lock and owner facts only."
+          },
+          "deadline_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Seconds",
+            "description": "Overall time budget for diagnostics (default 10, clamped to 0.5-20). Unfinished probes report timeout/not_started."
           }
         },
         "type": "object",
@@ -46768,6 +46792,16 @@
             "type": "array",
             "title": "Workspaces",
             "default": []
+          },
+          "diagnostics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceListDiagnostics"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -77344,6 +77378,342 @@
         "type": "object",
         "title": "WorkspaceDoctorRequest"
       },
+      "WorkspaceListDiagnostics": {
+        "properties": {
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          },
+          "deadline_seconds": {
+            "type": "number",
+            "title": "Deadline Seconds"
+          },
+          "elapsed_seconds": {
+            "type": "number",
+            "title": "Elapsed Seconds"
+          },
+          "owner_facts": {
+            "type": "string",
+            "title": "Owner Facts"
+          },
+          "owner_facts_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Facts Error"
+          },
+          "git_requested": {
+            "type": "boolean",
+            "title": "Git Requested"
+          },
+          "git_status_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Git Status Counts",
+            "default": {}
+          },
+          "presence_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Presence Counts",
+            "default": {}
+          },
+          "incomplete_rows": {
+            "type": "integer",
+            "title": "Incomplete Rows",
+            "default": 0
+          },
+          "authority": {
+            "type": "string",
+            "title": "Authority"
+          }
+        },
+        "type": "object",
+        "required": [
+          "complete",
+          "deadline_seconds",
+          "elapsed_seconds",
+          "owner_facts",
+          "git_requested",
+          "authority"
+        ],
+        "title": "WorkspaceListDiagnostics"
+      },
+      "WorkspaceOwner": {
+        "properties": {
+          "lock_state": {
+            "type": "string",
+            "title": "Lock State"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "locked_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked At"
+          },
+          "facts": {
+            "type": "string",
+            "title": "Facts"
+          },
+          "task": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceOwnerTask"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceOwnerSession"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessions_matched": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sessions Matched"
+          },
+          "fence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fence"
+          },
+          "session_matches_claim": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Matches Claim"
+          },
+          "classification": {
+            "type": "string",
+            "title": "Classification"
+          }
+        },
+        "type": "object",
+        "required": [
+          "lock_state",
+          "facts",
+          "classification"
+        ],
+        "title": "WorkspaceOwner",
+        "description": "Owner identity as the database proves it (``src/workspace_listing.py``)."
+      },
+      "WorkspaceOwnerSession": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "claim_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Phase"
+          },
+          "last_claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Claim Epoch"
+          },
+          "last_activity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity"
+          },
+          "work_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Dir"
+          }
+        },
+        "type": "object",
+        "title": "WorkspaceOwnerSession"
+      },
+      "WorkspaceOwnerTask": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "found": {
+            "type": "boolean",
+            "title": "Found"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "claimed_by_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed By Session"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "found"
+        ],
+        "title": "WorkspaceOwnerTask"
+      },
       "WorkspaceReapRequest": {
         "properties": {
           "workspace_id": {
@@ -77416,6 +77786,17 @@
             ],
             "title": "Name"
           },
+          "kind_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind Id"
+          },
           "locked_by_agent_id": {
             "anyOf": [
               {
@@ -77438,10 +77819,130 @@
             ],
             "title": "Locked By Task Id"
           },
+          "lock_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lock Mode"
+          },
           "enabled": {
             "type": "boolean",
             "title": "Enabled",
             "default": true
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "slot_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Index"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "dirty": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dirty"
+          },
+          "presence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Presence"
+          },
+          "git_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Status"
+          },
+          "git_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Error"
+          },
+          "beyond_cap": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beyond Cap"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceOwner"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

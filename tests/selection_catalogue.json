@@ -1438,6 +1438,7 @@
         "tests/test_workspace_kind_parser.py",
         "tests/test_workspace_kind_registry.py",
         "tests/test_workspace_kinds_queries.py",
+        "tests/test_workspace_listing.py",
         "tests/test_workspace_names.py",
         "tests/test_workspace_sentinel_reclaim.py",
         "tests/test_workspace_slot_affinity.py",
@@ -17978,10 +17979,11 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:9cbf9c09ff2a7f4de572a1c5fca3f25e3fd2f6b251f5b877eeb21aa4b1f2799e",
+      "digest": "sha256:a3f558e5efe09d13afbed67337c7ac7fff923e4542b40bbe6916729d0d18dc69",
       "imports": [
         "src.commands.handler",
         "src.config",
+        "src.database.queries.claim_queries",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.task_checkpoint",
@@ -17989,7 +17991,9 @@
         "src.runtimes.base",
         "src.sessions.proctable"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "add_workspace kind_id parameter + list_workspace_kinds. Spec §10."
     },
     "tests/test_workspace_control_file_exclude.py": {
@@ -18045,6 +18049,22 @@
       ],
       "markers": [],
       "summary": "WorkspaceKindQueryMixin — CRUD + resolution. See spec §3.1, §3.5."
+    },
+    "tests/test_workspace_listing.py": {
+      "areas": [
+        "workspaces"
+      ],
+      "default_arm": true,
+      "digest": "sha256:84b51fed3749f61a55f17a016796d4777c94999c77a37ac7c56952e4e2884eff",
+      "imports": [
+        "src.git.manager",
+        "src.models",
+        "src.workspace_listing"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bounded list_workspaces diagnostics (src/workspace_listing.py)."
     },
     "tests/test_workspace_names.py": {
       "areas": [
