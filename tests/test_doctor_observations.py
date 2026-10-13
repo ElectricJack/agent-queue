@@ -162,7 +162,7 @@ async def test_snapshot_arguments_never_fall_back_to_live_scan():
     response = await handler(db, HOLDER).execute("doctor_run", {
         "check_id": HOLDER.id, "pagination": "snapshot", "snapshot_id": "saved", "page_token": "x",
     })
-    assert response["error_code"] == "doctor.snapshot_unavailable"
+    assert response["error_code"] == "snapshot.unavailable"
     db.list_tasks.assert_not_awaited()
 
 

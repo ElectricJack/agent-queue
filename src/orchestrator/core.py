@@ -3259,6 +3259,19 @@ class Orchestrator(
             # failed cleanup must not interrupt scheduling.
             await self._sweep_operational_event_retention()
 
+            # Snapshot expiry is bounded maintenance, independent of whether
+            # playbooks are enabled. Dispatch preserves the single write entry.
+            if (self._command_handler is not None
+                    and now - getattr(self, "_last_observation_cleanup", 0) >= 60):
+                self._last_observation_cleanup = now
+                try:
+                    from src.commands.principal import ExecutionPrincipal, principal_context
+
+                    with principal_context(ExecutionPrincipal.service("observation-retention")):
+                        await self._command_handler.execute("observation_snapshot_cleanup", {})
+                except Exception:
+                    logger.warning("Observation retention sweep failed", exc_info=True)
+
             # Selection records are history, not live state; a failed sweep
             # must not interrupt scheduling.
             await self._sweep_test_selection_retention()

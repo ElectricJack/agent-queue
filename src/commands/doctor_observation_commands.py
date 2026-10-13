@@ -31,6 +31,18 @@ RUN_SCHEMA = {
 
 
 class DoctorObservationCommandsMixin:
+    async def _cmd_observation_snapshot_cleanup(self, args: dict) -> dict:
+        """Collect at most 100 expired snapshots; daemon/operator maintenance only."""
+        from src.database.queries.observation_snapshot_queries import cleanup_expired
+
+        principal = current_principal()
+        if principal is None or principal.kind not in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}:
+            return {"success": False, "error_code": "operator_only", "error": "operator_only"}
+        if args:
+            return {"success": False, "error_code": "invalid_arguments", "error": "invalid_arguments"}
+        removed = await cleanup_expired(self.db._engine)
+        return {"success": True, "removed": removed}
+
     async def _cmd_doctor_catalog(self, args: dict) -> dict:
         """List doctor observation audits, identity schemas, scope and coverage contracts."""
         if not Draft202012Validator(CATALOG_SCHEMA).is_valid(args):
@@ -54,9 +66,9 @@ class DoctorObservationCommandsMixin:
         if self.doctor_registry is None:
             return failure("doctor.subsystem_unavailable")
         if "pagination" in args:
-            # C2 attaches durable materialization here. Never rerun a continuation
-            # as a live query or pretend inline data is an immutable snapshot.
-            return failure("doctor.snapshot_unavailable")
+            from src.observations.commands import snapshot_command
+
+            return await snapshot_command(self, "doctor_run", args)
         return bounded_inline(await collect_observations(
             self.doctor_registry,
             DoctorContext(config=self.config, db=self.db, handler=self,

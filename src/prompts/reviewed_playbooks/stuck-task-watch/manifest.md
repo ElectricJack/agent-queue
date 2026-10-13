@@ -1,8 +1,8 @@
 ---
 playbook_id: stuck-task-watch
-artifact_sha256: sha256:3ea1144f4896607c409e5333dc1ff0ae79babc61b3c03e2af8d42b42f4bab0fa
+artifact_sha256: sha256:1a74993b0b29772a513b4d83275978a9d056e94f818ccc4538054f0705c4c1c0
 source_sha256: sha256:f8bcded1876b0b88ba54f174b584508e041483793cefe451e25bae1f7e6d2f5f
-contract_fingerprint: sha256:d33fa4d0695ff95e51fc0ef7725f3e1f76e967d13f9615779d875308195b68f2
+contract_fingerprint: sha256:564af3103b83d1e1b6f2987477e1a09928fc4532eeaae4b971336ad2e9ba8682
 questions_resolved: 0
 capabilities_granted:
   aq_commands:

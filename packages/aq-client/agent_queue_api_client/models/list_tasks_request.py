@@ -32,6 +32,10 @@ class ListTasksRequest:
             upstream tasks with id and status) and 'blocks' (list of downstream task IDs). Also adds a 'dependency_display'
             field with pre-formatted text showing dependency relationships. Use this when the user asks about task
             dependencies, blocking chains, or why a task is waiting. Default false.
+        pagination (None | str | Unset):
+        snapshot_id (None | str | Unset):
+        page_token (None | str | Unset):
+        page_size (int | None | Unset):
     """
 
     project_id: None | str | Unset = UNSET
@@ -41,6 +45,10 @@ class ListTasksRequest:
     completed_only: bool | None | Unset = UNSET
     display_mode: None | str | Unset = UNSET
     show_dependencies: bool | None | Unset = UNSET
+    pagination: None | str | Unset = UNSET
+    snapshot_id: None | str | Unset = UNSET
+    page_token: None | str | Unset = UNSET
+    page_size: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -86,6 +94,30 @@ class ListTasksRequest:
         else:
             show_dependencies = self.show_dependencies
 
+        pagination: None | str | Unset
+        if isinstance(self.pagination, Unset):
+            pagination = UNSET
+        else:
+            pagination = self.pagination
+
+        snapshot_id: None | str | Unset
+        if isinstance(self.snapshot_id, Unset):
+            snapshot_id = UNSET
+        else:
+            snapshot_id = self.snapshot_id
+
+        page_token: None | str | Unset
+        if isinstance(self.page_token, Unset):
+            page_token = UNSET
+        else:
+            page_token = self.page_token
+
+        page_size: int | None | Unset
+        if isinstance(self.page_size, Unset):
+            page_size = UNSET
+        else:
+            page_size = self.page_size
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -103,6 +135,14 @@ class ListTasksRequest:
             field_dict["display_mode"] = display_mode
         if show_dependencies is not UNSET:
             field_dict["show_dependencies"] = show_dependencies
+        if pagination is not UNSET:
+            field_dict["pagination"] = pagination
+        if snapshot_id is not UNSET:
+            field_dict["snapshot_id"] = snapshot_id
+        if page_token is not UNSET:
+            field_dict["page_token"] = page_token
+        if page_size is not UNSET:
+            field_dict["page_size"] = page_size
 
         return field_dict
 
@@ -173,6 +213,42 @@ class ListTasksRequest:
 
         show_dependencies = _parse_show_dependencies(d.pop("show_dependencies", UNSET))
 
+        def _parse_pagination(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        pagination = _parse_pagination(d.pop("pagination", UNSET))
+
+        def _parse_snapshot_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        snapshot_id = _parse_snapshot_id(d.pop("snapshot_id", UNSET))
+
+        def _parse_page_token(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        page_token = _parse_page_token(d.pop("page_token", UNSET))
+
+        def _parse_page_size(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        page_size = _parse_page_size(d.pop("page_size", UNSET))
+
         list_tasks_request = cls(
             project_id=project_id,
             status=status,
@@ -181,6 +257,10 @@ class ListTasksRequest:
             completed_only=completed_only,
             display_mode=display_mode,
             show_dependencies=show_dependencies,
+            pagination=pagination,
+            snapshot_id=snapshot_id,
+            page_token=page_token,
+            page_size=page_size,
         )
 
         list_tasks_request.additional_properties = d
