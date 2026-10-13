@@ -9745,6 +9745,9 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_supersede_completion']": {
+      "reason": "Handcrafted CLI registration for the fenced operator/supervisor supersession control; integration owns the surface."
     }
   },
   "shared_state": {
