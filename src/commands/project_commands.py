@@ -530,7 +530,11 @@ class ProjectCommandsMixin:
                 return await self._configure_promotion_flow(
                     project, sensitive, args, operator_id=operator_id
                 )
-            return await PolicyActivation(self.db).configure(
+            return await PolicyActivation(
+                self.db, hierarchy_service_factory=self._hierarchy_integration_service
+                if sensitive.get("hierarchical_integration_mode") in {"hierarchy", "train"}
+                else None,
+            ).configure(
                 pid,
                 updates=sensitive,
                 expected_generation=int(args["expected_integration_generation"]),
@@ -673,7 +677,9 @@ class ProjectCommandsMixin:
                     "error": "trust_manifest_unavailable",
                     "message": str(exc),
                 }
-        activation = PolicyActivation(self.db)
+        activation = PolicyActivation(
+            self.db, hierarchy_service_factory=lambda: self._hierarchy_integration_service(),
+        )
         fence = {
             "expected_generation": int(args["expected_integration_generation"]),
             "reason": str(args.get("reason") or "configure promotion flow"),

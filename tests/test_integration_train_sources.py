@@ -177,6 +177,231 @@ async def green_pr(target, member):
     """Other train-mechanism tests supply an already-satisfied PR observer."""
 
 
+def legacy_hierarchy(world):
+    """Real remote observations; no branch writes during adoption."""
+    from src.integration.hierarchy import HierarchyIntegration, materialize_exact_branch
+
+    manager = world.truth.git
+    checkout = str(world.origin.clone)
+
+    async def head(_repo, branch):
+        remote = await manager.als_remote_ref(checkout, branch)
+        from src.git.manager import RemoteRefState
+
+        if remote.state is RemoteRefState.ERROR:
+            raise RuntimeError(remote.error)
+        return remote.oid
+
+    async def base(_repo, tip, parent):
+        await manager.afetch_origin(checkout, repository_url=world.origin.url)
+        return await manager.amerge_base(checkout, tip, parent)
+
+    async def materialize(_repo, branch, oid):
+        return await materialize_exact_branch(
+            manager, checkout, branch, oid, repository_url=world.origin.url,
+        )
+
+    return HierarchyIntegration(world.db, default_head_resolver=head,
+                               branch_head_resolver=head, branch_base_resolver=base,
+                               branch_materializer=materialize)
+
+
+@pytest.mark.parametrize("previous,mode", [("observe", "train"), ("disabled", "hierarchy")])
+async def test_mode_activation_backfills_legacy_frontier_and_completed_sources(world, previous, mode):
+    from src.database.queries.hierarchy_queries import materialized_origin_when_hierarchical
+    from src.database.tables import task_integration_checkpoints
+    from src.integration.hierarchy import missing_origin_tasks_on
+    from src.integration.records import PolicyActivation
+
+    db, origin = world.db, world.origin
+    await db.update_project("p", hierarchical_integration_mode=previous)
+    heads = {}
+    for tid, status in (("ready", TaskStatus.READY), ("working", TaskStatus.IN_PROGRESS),
+                        ("done", TaskStatus.IN_PROGRESS), ("reserved", TaskStatus.READY)):
+        # The last task has never had a branch, the others were published in observe mode.
+        await db.create_task(Task(id=tid, project_id="p", title=tid, description="legacy",
+                                  status=status, branch_name=None if tid == "reserved" else f"aq/{tid}"))
+        if tid != "reserved":
+            heads[tid] = origin.work(tid)
+    await close(db, "done", [heads["done"]], origin=origin)
+    before_refs = git(origin.clone, "ls-remote", "origin")
+    hierarchy = legacy_hierarchy(world)
+    activation = PolicyActivation(db, hierarchy_service_factory=lambda: hierarchy)
+    result = await activation.configure("p", updates={"hierarchical_integration_mode": mode},
+        expected_generation=0, reason="enable delivery", operator_id="operator")
+    assert result["outcome"] == "configured"
+    assert set(result["backfilled_origins"]) == {"ready", "working", "done", "reserved"}
+    assert git(origin.clone, "ls-remote", "origin") == before_refs
+    async with db._engine.connect() as conn:
+        origins = {row["task_id"]: row for row in (await conn.execute(
+            select(task_branch_origins))).mappings()}
+        checkpoints = {row["task_id"]: row for row in (await conn.execute(
+            select(task_integration_checkpoints))).mappings()}
+        assert await missing_origin_tasks_on(conn, "p", "r") == []
+        admitted = set((await conn.execute(select(tasks.c.id).where(
+            materialized_origin_when_hierarchical()))).scalars())
+    assert admitted == {"ready", "working", "done"}
+    for tid, head in heads.items():
+        assert origins[tid]["materialized"] is True
+        assert origins[tid]["base_sha"] == git(origin.clone, "rev-parse", f"{head}^")
+        assert origins[tid]["base_sha"] != head
+        assert checkpoints[tid]["checkpoint_sha"] == head
+    assert origins["reserved"]["reserved"] and not origins["reserved"]["materialized"]
+    await hierarchy.materialize_origin(origins["reserved"]["id"])
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.id).where(
+            tasks.c.id == "reserved", materialized_origin_when_hierarchical())) == "reserved"
+    blockers = []
+    pending = await fixture_batches(db).pending(MAIN, await snapshot(world), blockers=blockers)
+    assert blockers == []
+    assert pending is not None and [(member.task_id, member.source_sha) for member in pending[0]] == [
+        ("done", heads["done"])]
+    again = await activation.configure("p", updates={"hierarchical_integration_mode": mode},
+        expected_generation=1, reason="repeat repair", operator_id="operator")
+    assert again["backfilled_origins"] == []
+    async with db._engine.connect() as conn:
+        assert {row["task_id"]: row["id"] for row in (await conn.execute(
+            select(task_branch_origins))).mappings()} == {tid: row["id"] for tid, row in origins.items()}
+
+
+async def test_origin_backfill_failure_rolls_back_mode_generation_and_every_origin(world):
+    from src.integration.records import PolicyActivation
+
+    db = world.db
+    await db.update_project("p", hierarchical_integration_mode="observe")
+    for tid in ("a", "b"):
+        await db.create_task(Task(id=tid, project_id="p", title=tid, description="legacy"))
+    hierarchy = legacy_hierarchy(world)
+
+    async def head(_repo, branch):
+        if branch == "aq/b":
+            raise RuntimeError("remote branch state is unknown")
+        return None
+
+    hierarchy.branch_head_resolver = head
+    with pytest.raises(RuntimeError, match="state is unknown"):
+        await PolicyActivation(db, hierarchy_service_factory=lambda: hierarchy).configure(
+            "p", updates={"hierarchical_integration_mode": "train"}, expected_generation=0,
+            reason="enable delivery", operator_id="operator")
+    project = await db.get_project("p")
+    assert project.hierarchical_integration_mode == "observe"
+    assert project.hierarchical_integration_generation == 0
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(task_branch_origins))).all() == []
+
+
+async def test_origin_backfill_adopts_ancestors_and_keeps_existing_checkpoint(world):
+    from src.database.tables import task_integration_checkpoints
+    from src.integration.records import PolicyActivation
+
+    db, origin = world.db, world.origin
+    await db.update_project("p", hierarchical_integration_mode="observe")
+    for tid, parent in (("parent", None), ("child", "parent")):
+        await db.create_task(Task(id=tid, project_id="p", title=tid, description="",
+                                  branch_name=f"aq/{tid}", parent_task_id=parent))
+    parent_head = origin.work("parent")
+    git(origin.clone, "checkout", "-q", "-b", "aq/child", parent_head)
+    (origin.clone / "child.txt").write_text("child\n")
+    git(origin.clone, "add", ".")
+    git(origin.clone, "commit", "-qm", "child")
+    git(origin.clone, "push", "-q", "origin", "aq/child")
+    child_head = git(origin.clone, "rev-parse", "HEAD")
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="parent", repository_id="r", branch="aq/parent", checkpoint_sha=parent_head,
+            generation=3, version=4, state="working", updated_at=1))
+    hierarchy = legacy_hierarchy(world)
+    result = await PolicyActivation(db, hierarchy_service_factory=lambda: hierarchy).configure(
+        "p", updates={"hierarchical_integration_mode": "hierarchy"}, expected_generation=0,
+        reason="enable delivery", operator_id="operator")
+    assert result["backfilled_origins"] == ["parent", "child"]
+    async with db._engine.connect() as conn:
+        child = (await conn.execute(select(task_branch_origins).where(
+            task_branch_origins.c.task_id == "child"))).mappings().one()
+        assert (child["parent_task_id"], child["parent_ref"], child["base_sha"]) == (
+            "parent", "aq/parent", parent_head)
+        checkpoints = {row["task_id"]: row for row in (await conn.execute(
+            select(task_integration_checkpoints))).mappings()}
+    assert checkpoints["child"]["checkpoint_sha"] == child_head
+    assert (checkpoints["parent"]["generation"], checkpoints["parent"]["version"]) == (3, 4)
+
+
+async def test_command_origin_resolver_uses_fenced_repo_before_binding_commit(world, tmp_path):
+    from src.commands import CommandHandler
+    from src.config import AppConfig
+
+    config = AppConfig(data_dir=str(tmp_path / "retained"))
+    handler = CommandHandler(SimpleNamespace(db=world.db, git=world.truth.git), config)
+    # This repo is not visible to db.get_repo; activation can insert it in an
+    # uncommitted transaction. The supplied fenced row remains the Git identity.
+    repo = RepoConfig(id="new-binding", project_id="p", source_type=RepoSourceType.CLONE,
+                      url=world.origin.url)
+    service = handler._hierarchy_integration_service()
+    assert await service._resolve_head(repo, "main") == git(world.origin.clone, "rev-parse", "origin/main")
+    head = world.origin.work("adopt")
+    assert await service.branch_head_resolver(repo, "aq/adopt") == head
+    assert await service.branch_head_resolver(repo, "aq/absent") is None
+    assert await service.branch_base_resolver(
+        repo, head, git(world.origin.clone, "rev-parse", "origin/main"),
+    ) == git(world.origin.clone, "rev-parse", head + "^")
+
+
+async def test_origin_backfill_refuses_to_resurrect_retired_ancestor(world):
+    from src.database.queries.hierarchy_queries import HierarchyError
+    from src.integration.records import PolicyActivation
+
+    await world.db.update_project("p", hierarchical_integration_mode="observe")
+    await world.db.create_task(Task(id="parent", project_id="p", title="parent", description="",
+                                    status=TaskStatus.COMPLETED, branch_name="aq/parent"))
+    await world.db.create_task(Task(id="child", project_id="p", title="child", description="",
+                                    parent_task_id="parent"))
+    base = git(world.origin.clone, "rev-parse", "origin/main")
+    async with world.db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="retired", task_id="parent", repository_id="r", branch_name="aq/parent",
+            parent_ref="main", base_sha=base, creation_generation=0, reserved=True,
+            materialized=True, retired_at=1, created_at=1))
+    hierarchy = legacy_hierarchy(world)
+    with pytest.raises(HierarchyError, match="retired ancestor"):
+        await PolicyActivation(world.db, hierarchy_service_factory=lambda: hierarchy).configure(
+            "p", updates={"hierarchical_integration_mode": "train"}, expected_generation=0,
+            reason="enable delivery", operator_id="operator")
+    project = await world.db.get_project("p")
+    assert (project.hierarchical_integration_mode, project.hierarchical_integration_generation) == (
+        "observe", 0)
+    async with world.db._engine.connect() as conn:
+        assert (await conn.execute(select(task_branch_origins.c.id))).scalars().all() == ["retired"]
+    assert (await world.db.get_task("child")).branch_name is None
+
+
+async def test_doctor_origin_backfill_repairs_through_fenced_command(world):
+    from src.doctor.integration_checks import _BY_ID
+    from src.doctor.models import DoctorContext, Severity
+    from src.integration.records import PolicyActivation
+
+    await world.db.create_task(Task(id="legacy", project_id="p", title="legacy", description=""))
+    hierarchy = legacy_hierarchy(world)
+    calls = []
+
+    async def execute(command, args):
+        calls.append((command, args))
+        return await PolicyActivation(world.db, hierarchy_service_factory=lambda: hierarchy).configure(
+            args["project_id"], updates={"hierarchical_integration_mode": args["hierarchical_integration_mode"]},
+            expected_generation=args["expected_integration_generation"], reason=args["reason"],
+            operator_id="doctor")
+
+    ctx = DoctorContext(config=None, db=world.db, handler=SimpleNamespace(execute=execute))
+    check = _BY_ID["integration.branch_origins"]
+    before = await check.run(ctx)
+    assert before.severity == Severity.ERROR
+    assert before.data["projects"][0]["task_ids"] == ["legacy"]
+    after = await check.fix(ctx)
+    assert after.severity == Severity.OK and after.fix_applied
+    assert calls[0][0] == "edit_project" and calls[0][1]["expected_integration_generation"] == 0
+    assert (await check.fix(ctx)).severity == Severity.OK
+    assert len(calls) == 1
+
+
 class SealedBatches(DatabaseBatches):
     """Mechanism tests seal explicitly; cadence tests use DatabaseBatches itself."""
 

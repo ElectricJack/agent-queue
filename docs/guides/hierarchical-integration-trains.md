@@ -537,6 +537,21 @@ disable integration. Enabling a mode without an engine is refused. An active
 train supports `development` as well as `train` and `hierarchy`; `observe` and
 `disabled` intentionally perform no delivery.
 
+Enabling `train` or `hierarchy` also backfills branch origins for existing open
+tasks and completed tasks that carry legacy delivery artifacts. Published task
+branches are adopted at their exact remote tips, with their fork bases recorded
+separately; absent branches receive reservations for ordinary materialization.
+Existing origins, checkpoints and retired completion history are preserved.
+An unknown remote state or conflicting branch ownership refuses the edit and
+rolls back its database changes.
+
+For projects enabled before this backfill existed, run `aq doctor --check
+integration.branch_origins`, then add `--fix` to repair through a generation-fenced
+project mode edit. App verification, functional preflight and cutover all report
+`branch_origins_missing` until the affected tasks have delivery identities.
+Adoption alone does not prove delivery: completed work still needs its exact
+completion provenance and the normal batch admission checks.
+
 COMPLETED therefore does not mean delivered. `aq doctor --check
 integration.completed_undelivered` lists every COMPLETED task, archived ones
 included, whose branch tip the default branch cannot reach, with the rule that

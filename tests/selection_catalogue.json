@@ -7829,7 +7829,7 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:e585f0f03625455a0a83523666d558d8574e46f81fa80a3d2c100f5d90786ace",
+      "digest": "sha256:090e064cbcb38e31002819a151a7a7290f89daceed9e7e7ba4727f7d5c182294",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -7840,12 +7840,14 @@
         "src.commands.contracts.registry",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.database.tables",
         "src.git.github_contracts",
         "src.integration",
         "src.integration.app_mode",
         "src.integration.models",
         "src.integration.preflight",
         "src.integration.trust_manifest",
+        "src.models",
         "src.profiles.capabilities"
       ],
       "markers": [
@@ -9166,12 +9168,14 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:af4258f5703c2b447dc6ac6bee2625e699f2fdf1f9ed060c754216b9c0518ede",
+      "digest": "sha256:f4ed3306b6c5f26af2779c9ed4560c7a348575a8bd1f9652d9f9cc78b0bdd0b1",
       "imports": [
+        "src.commands",
         "src.commands.integration_commands",
         "src.commands.principal",
         "src.commands.surface_commands",
         "src.commands.task_commands",
+        "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.queries.task_queries",
@@ -9191,11 +9195,13 @@
         "src.integration.delivery_truth",
         "src.integration.git_truth",
         "src.integration.gitops",
+        "src.integration.hierarchy",
         "src.integration.lock",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
+        "src.integration.records",
         "src.integration.regeneration",
         "src.integration.repair",
         "src.integration.reviews",

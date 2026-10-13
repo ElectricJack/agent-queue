@@ -1449,11 +1449,20 @@ async def test_reserved_parent_verifier_without_origin_enters_hierarchy_frontier
     assert "verifier" in await _hoisted_ids(db)
     assert "originless" not in await _frontier_ids(db)
 
+    from src.integration.hierarchy import missing_origin_tasks_on
+
+    async with db._engine.connect() as conn:
+        assert await missing_origin_tasks_on(conn, "p", "repo") == ["originless"]
+
     async with db.immediate() as conn:
         await conn.execute(update(integration_repair_operations).where(
             integration_repair_operations.c.parent_task_id == "parent"
         ).values(state="cancelled"))
     assert "verifier" not in await _frontier_ids(db)
+    async with db._engine.connect() as conn:
+        # A cancelled delegate still has its subject's identity, not its own
+        # branch; the origin diagnostic must never propose adopting it.
+        assert await missing_origin_tasks_on(conn, "p", "repo") == ["originless"]
 
 
 @pytest.mark.parametrize("mode_value", ["hierarchy", "disabled"])
