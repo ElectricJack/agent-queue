@@ -5337,7 +5337,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:c04ba82f0703eca94aabe89b6babf86163a4a011d15a7fefa68c6916d37eb9f8",
+      "digest": "sha256:49c889c460076189dc88b98d8b907126fe087ae26ed59a2b6d026c1d419f4d60",
       "imports": [
         "src.database",
         "src.database.queries.task_queries",
@@ -5348,6 +5348,7 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.models",
         "src.integration.provenance",
         "src.integration.status",
         "src.models",

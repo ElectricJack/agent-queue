@@ -59,7 +59,13 @@ from src.integration.green_continuation import (
     enqueue_green_continuation_on,
     promotion_fingerprint,
 )
-from src.integration.models import BranchKey, Fence, HierarchicalIntegrationPolicy, RepairPolicy
+from src.integration.models import (
+    INTEGRATION_REPAIR_PRIORITY,
+    BranchKey,
+    Fence,
+    HierarchicalIntegrationPolicy,
+    RepairPolicy,
+)
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.integration.owner_guards import parent_engine_guard, parent_stage_at_entry
@@ -105,7 +111,7 @@ class OrdinaryRepairService:
     async def allocate(
         self, batch_id: str, *, target_ref: str, head_sha: str,
         green_sha: str | None = None, held: bool = False, review_rejected: bool = False,
-        intelligence_class: str | None = None, priority: int = 100,
+        intelligence_class: str | None = None, priority: int = INTEGRATION_REPAIR_PRIORITY,
         policy: RepairPolicy | None = None,
         brief: str = "", ttl_seconds: float = 480,
         authorize: Callable[[], Awaitable[bool]] | None = None,
@@ -2672,6 +2678,7 @@ class RepairService:
                             conn, operation, repair_stage
                         ),
                         status=TaskStatus.PAUSED,
+                        priority=INTEGRATION_REPAIR_PRIORITY,
                         parent_task_id=None,
                         repo_id=target.repository_id,
                         branch_name=target.branch,

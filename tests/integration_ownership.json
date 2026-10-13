@@ -13802,22 +13802,22 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/development.py::DevelopmentPrimitives.ensure_repair::0c1846cfc9ab97a1a2c4fe90b4fb61c5e5b1a236ffe196eb4d0ae41449f343db": {
-      "line": 1235,
+      "line": 1149,
       "owner": "DevelopmentPrimitives.ensure_repair",
       "call": "set_task_meta",
-      "owner_fingerprint": "94f52ae501c33861533fd7bf2a9b00314ec7fb9be932a02bf1442d173f4b715d",
+      "owner_fingerprint": "ce55b0712e0a21c0300fa40a6a5b2502185225364c0eef8634129691d06066ea",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority. Re-reviewed after filing the repair at INTEGRATION_REPAIR_PRIORITY (bright-stone-28): only the task's priority changed; the metadata write is unchanged."
     },
     "src/integration/development.py::DevelopmentPrimitives.ensure_repair::c2eb96bffbc976f357270cc999eaf773d7a948e8c925a9626e33b21f72eefd70": {
-      "line": 1233,
+      "line": 1147,
       "owner": "DevelopmentPrimitives.ensure_repair",
       "call": "set_task_meta",
-      "owner_fingerprint": "94f52ae501c33861533fd7bf2a9b00314ec7fb9be932a02bf1442d173f4b715d",
+      "owner_fingerprint": "ce55b0712e0a21c0300fa40a6a5b2502185225364c0eef8634129691d06066ea",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority. Re-reviewed after filing the repair at INTEGRATION_REPAIR_PRIORITY (bright-stone-28): only the task's priority changed; the metadata write is unchanged."
     },
     "src/integration/development.py::DevelopmentPrimitives.stale_branches::1a8916f711dc47c080cb0bac5599a46fa61aee803ddea03d9439036c30b321e9": {
       "line": 1028,

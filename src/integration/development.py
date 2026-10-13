@@ -973,6 +973,7 @@ class DevelopmentPrimitives:
         parent-child edge plus this required reverse edge would be a blocking
         cycle.
         """
+        from src.integration.models import INTEGRATION_REPAIR_PRIORITY
         from src.models import DepType, Task, TaskType
         from src.task_names import MAX_STRUCTURAL_DEPTH
 
@@ -1075,6 +1076,7 @@ class DevelopmentPrimitives:
                 branch_name="aq/" + identity,
                 status=TaskStatus.READY,
                 task_type=TaskType.BUGFIX,
+                priority=INTEGRATION_REPAIR_PRIORITY,
                 max_retries=3,
                 # The routing policy names this origin
                 # (``origins.development_repair``) instead of matching the
