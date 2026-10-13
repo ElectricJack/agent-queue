@@ -380,6 +380,7 @@ areas:
       - tests/test_integration_stale_schedule.py
       - tests/test_integration_batch_settlement.py
       - tests/test_integration_batches.py
+      - tests/test_integration_properties.py
       - tests/test_integration_root_noop.py
       - tests/test_integration_record_delivered.py
       - tests/test_integration_operator_decisions.py
@@ -447,6 +448,7 @@ areas:
       - tests/test_promotion_flow.py
       - tests/test_promotion_rulesets.py
       - tests/test_promotion_steps.py
+      - tests/test_integration_properties.py
       - tests/test_promotion_backmerge.py
       - tests/test_promotion_policy.py
       - tests/test_promote_commands.py
@@ -501,6 +503,7 @@ areas:
       - tests/test_delivery_*.py
       - tests/test_branch_discard.py
       - tests/test_branch_retirement.py
+      - tests/test_integration_properties.py
       - tests/test_close_unpushed_work.py
       - tests/test_stranded_work.py
       - tests/test_slot_report.py

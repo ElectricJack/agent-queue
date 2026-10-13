@@ -229,6 +229,7 @@
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
         "tests/test_development_subjects.py",
+        "tests/test_integration_properties.py",
         "tests/test_slot_report.py",
         "tests/test_stranded_work.py"
       ]
@@ -556,6 +557,7 @@
         "tests/test_integration_parent_completion.py",
         "tests/test_integration_parent_source.py",
         "tests/test_integration_pr_delivery.py",
+        "tests/test_integration_properties.py",
         "tests/test_integration_repair.py",
         "tests/test_integration_repair_lineage.py",
         "tests/test_integration_repair_rollover.py",
@@ -601,6 +603,7 @@
         "tests/test_integration_operator_decisions.py",
         "tests/test_integration_outbox.py",
         "tests/test_integration_parent_subjects.py",
+        "tests/test_integration_properties.py",
         "tests/test_integration_record_delivered.py",
         "tests/test_integration_records_and_gates.py",
         "tests/test_integration_replay.py",
@@ -8622,6 +8625,27 @@
         "parametrize"
       ],
       "summary": "An open PR closes only once Git proves its work is on the default branch."
+    },
+    "tests/test_integration_properties.py": {
+      "areas": [
+        "development-delivery",
+        "integration-promotion",
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:8b83ebed900f5893502dd9a5a2fa5539850c65911d7aec7f2eab5cdc7e98644c",
+      "imports": [
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.checks",
+        "src.integration.promotion_steps",
+        "src.integration.train",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Generated train/promotion/retirement histories over real Git and PostgreSQL."
     },
     "tests/test_integration_protection.py": {
       "areas": [
