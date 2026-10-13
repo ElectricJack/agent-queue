@@ -87,6 +87,10 @@ KNOWN_EMPTY_SCHEMA_COMMANDS: frozenset[str] = frozenset(
         # Supervisor-internal navigation meta-tool.  Excluded from MCP, the
         # CLI and the API; its schema is synthesised by ``ToolRegistry``.
         "load_tools",
+        # Receives a server-created SourceCIObservation, never a JSON args
+        # dictionary. The parameter-aware discovery now identifies that use;
+        # pin its MCP exclusion and rejection of client JSON below.
+        "observe_integration_source_ci",
         # Plugin lifecycle.  Hand-crafted in the CLI (``aq plugin *``, which
         # reaches the database directly), so only the MCP registration is left
         # holding an empty schema.
@@ -342,6 +346,14 @@ class TestNoArgumentlessCommandsByAccident:
     (src/tools/definitions.py) is where such a command gets its properties
     without joining the LLM-facing tool list.
     """
+
+    async def test_server_observation_adapter_excludes_mcp_and_refuses_client_json(self):
+        from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
+
+        assert "observe_integration_source_ci" in DEFAULT_EXCLUDED_COMMANDS
+        result = await CommandHandler._cmd_observe_integration_source_ci(None, {})
+        assert result["success"] is False
+        assert result["error"] == "source observation must be server-observed"
 
     def test_no_command_reads_args_without_a_schema_to_pass_them(self):
         from src.mcp_registration import _discover_all_commands, _needs_arguments

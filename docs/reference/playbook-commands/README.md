@@ -125,6 +125,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
+| [`integration_train_tick`](integration_train_tick.md) | Integration Train Tick | Start one level-triggered visit per idle target (git_first: active). |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
 | [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from a full or hosted-check policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
 
@@ -132,33 +133,143 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 | Command | Title | Summary |
 |---|---|---|
+| [`add_workspace`](add_workspace.md) | Add Workspace | Create a workspace for a project. |
+| [`advance_workflow_stage`](advance_workflow_stage.md) | Advance Workflow Stage | Advance a workflow to its next stage. |
+| [`agent_message`](agent_message.md) | Agent Message | Queue supervisor guidance for one live worker or every live worker. |
+| [`append_note`](append_note.md) | Append Note | Execute the append_note command. |
+| [`approve_pull_request`](approve_pull_request.md) | Approve Pull Request | Approve a pinned PR using the host's human gh login, never the App. |
+| [`archive_settings`](archive_settings.md) | Archive Settings | Return the current auto-archive configuration. |
+| [`archive_task`](archive_task.md) | Archive Task | Archive tasks — single task by ID or bulk by project. |
 | [`artifact_verify`](artifact_verify.md) | Artifact Verify | Resolve a durable artifact URI and re-hash the bytes it names. |
+| [`benchmark_stage_record`](benchmark_stage_record.md) | Benchmark Stage Record | Append one measured monotonic stage for the held task. |
+| [`bind_project_repository`](bind_project_repository.md) | Bind Project Repository | Authorize an initialized project's first repository, never a reassignment. |
+| [`browse_project_root`](browse_project_root.md) | Browse Project Root | List the child directories of a root-relative path. |
+| [`cancel_playbook_run`](cancel_playbook_run.md) | Cancel Playbook Run | Execute the cancel_playbook_run command. |
+| [`check_profile`](check_profile.md) | Check Profile | Execute the check_profile command. |
+| [`checkout_branch`](checkout_branch.md) | Checkout Branch | Execute the checkout_branch command. |
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
 | [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
+| [`claude_usage`](claude_usage.md) | Claude Usage | Get Claude Code usage stats from live session data. |
 | [`collaboration_accept`](collaboration_accept.md) | Collaboration Accept | Join a collaboration thread for the held task's live claim. |
 | [`collaboration_close`](collaboration_close.md) | Collaboration Close | Close a thread without changing any member task. |
 | [`collaboration_create`](collaboration_create.md) | Collaboration Create | Create a bounded thread between 2 to 4 tasks and invite each once. |
 | [`collaboration_get`](collaboration_get.md) | Collaboration Get | Read a thread, its members, capacity hold and ordered messages. |
 | [`collaboration_list`](collaboration_list.md) | Collaboration List | List collaboration threads for the held task or a project. |
+| [`commit_changes`](commit_changes.md) | Commit Changes | Execute the commit_changes command. |
+| [`compare_specs_notes`](compare_specs_notes.md) | Compare Specs Notes | Execute the compare_specs_notes command. |
+| [`create_agent`](create_agent.md) | Create Agent | Execute the create_agent command. |
+| [`create_branch`](create_branch.md) | Create Branch | Execute the create_branch command. |
+| [`create_github_repo`](create_github_repo.md) | Create Github Repo | Execute the create_github_repo command. |
+| [`create_mcp_server`](create_mcp_server.md) | Create Mcp Server | Create a new registry entry by writing its vault markdown. |
+| [`create_profile`](create_profile.md) | Create Profile | Execute the create_profile command. |
+| [`create_project`](create_project.md) | Create Project | Execute the create_project command. |
+| [`create_task_graph`](create_task_graph.md) | Create Task Graph | Create a whole task graph in one transaction (supervisor-agent §8). |
+| [`create_workflow`](create_workflow.md) | Create Workflow | Create a new coordination workflow record. |
 | [`cron_cancel`](cron_cancel.md) | Cron Cancel | Cancel this session's recurring prompt and pending delivery. |
+| [`cron_delivery_begin`](cron_delivery_begin.md) | Cron Delivery Begin | Execute the cron_delivery_begin command. |
+| [`cron_delivery_finish`](cron_delivery_finish.md) | Cron Delivery Finish | Execute the cron_delivery_finish command. |
 | [`cron_get`](cron_get.md) | Cron Get | Read a schedule and optionally consume its pending prompt. |
 | [`cron_list`](cron_list.md) | Cron List | List this session instance's schedules and next-fire times. |
 | [`cron_register`](cron_register.md) | Cron Register | Register an idempotent recurring prompt for the caller's session. |
+| [`dashboard_state_get`](dashboard_state_get.md) | Dashboard State Get | Execute the dashboard_state_get command. |
+| [`dashboard_state_list`](dashboard_state_list.md) | Dashboard State List | Execute the dashboard_state_list command. |
+| [`dashboard_state_put`](dashboard_state_put.md) | Dashboard State Put | Execute the dashboard_state_put command. |
+| [`dashboard_state_reset`](dashboard_state_reset.md) | Dashboard State Reset | Execute the dashboard_state_reset command. |
+| [`db_preflight_hierarchy`](db_preflight_hierarchy.md) | Db Preflight Hierarchy | Dry-run hierarchy canonicalisation; commit the rejects report (spec §17). |
 | [`decision_list`](decision_list.md) | Decision List | Record or read durable operator instructions on a task or integration. |
 | [`decision_record`](decision_record.md) | Decision Record | Record or read durable operator instructions on a task or integration. |
+| [`delete_agent`](delete_agent.md) | Delete Agent | Execute the delete_agent command. |
+| [`delete_intelligence_class`](delete_intelligence_class.md) | Delete Intelligence Class | Retire an unused class and update every live class consumer. |
+| [`delete_mcp_server`](delete_mcp_server.md) | Delete Mcp Server | Delete a registry entry's vault file. |
+| [`delete_note`](delete_note.md) | Delete Note | Execute the delete_note command. |
+| [`delete_profile`](delete_profile.md) | Delete Profile | Delete a profile from the vault and the database. |
+| [`delete_project`](delete_project.md) | Delete Project | Execute the delete_project command. |
+| [`delete_task`](delete_task.md) | Delete Task | Execute the delete_task command. |
+| [`digest_facts`](digest_facts.md) | Digest Facts | The frozen facts for one window, exactly as the author is woken. |
+| [`digest_post`](digest_post.md) | Digest Post | Submit the supervisor's three sentences for one held window. |
+| [`digest_preview`](digest_preview.md) | Digest Preview | Dry-run the current digest window. Sends nothing, reserves nothing. |
 | [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
+| [`digest_status`](digest_status.md) | Digest Status | Configured schedule, next evaluation and delivery health. |
+| [`discord_purge_channel`](discord_purge_channel.md) | Discord Purge Channel | Delete messages from a Discord channel. |
+| [`doctor`](doctor.md) | Doctor | Run the health-check catalog and summarise the result. |
+| [`dry_run_playbook`](dry_run_playbook.md) | Dry Run Playbook | Execute the dry_run_playbook command. |
+| [`edit_agent`](edit_agent.md) | Edit Agent | Execute the edit_agent command. |
+| [`edit_file`](edit_file.md) | Edit File | Execute the edit_file command. |
+| [`edit_intelligence_class`](edit_intelligence_class.md) | Edit Intelligence Class | Edit one global class; explicit saves never auto-upgrade its models. |
+| [`edit_mcp_server`](edit_mcp_server.md) | Edit Mcp Server | Update fields on an existing registry entry. |
+| [`edit_profile`](edit_profile.md) | Edit Profile | Execute the edit_profile command. |
+| [`edit_project`](edit_project.md) | Edit Project | Execute the edit_project command. |
+| [`edit_workspace`](edit_workspace.md) | Edit Workspace | Edit a workspace's path / source_type / name / enabled state. |
+| [`explain_task`](explain_task.md) | Explain Task | Return the ordered list of reasons *task_id* isn't running. |
+| [`export_portable_config`](export_portable_config.md) | Export Portable Config | Export the curated preview as a versioned ``.aqbundle`` archive. |
+| [`export_profile`](export_profile.md) | Export Profile | Execute the export_profile command. |
+| [`find_applicable_tool`](find_applicable_tool.md) | Find Applicable Tool | Semantic search over all tool definitions. |
+| [`find_merge_conflict_workspaces`](find_merge_conflict_workspaces.md) | Find Merge Conflict Workspaces | Scan project workspaces for branches with merge conflicts against main. |
+| [`formula_cook`](formula_cook.md) | Formula Cook | Execute the formula_cook command. |
+| [`formula_list`](formula_list.md) | Formula List | Execute the formula_list command. |
+| [`formula_show`](formula_show.md) | Formula Show | Execute the formula_show command. |
+| [`gate_list`](gate_list.md) | Gate List | List gates, optionally filtered by project/status/type/task. |
+| [`gate_show`](gate_show.md) | Gate Show | Return one gate + its waiter task ids. |
+| [`generate_readme`](generate_readme.md) | Generate Readme | Execute the generate_readme command. |
+| [`get_agent`](get_agent.md) | Get Agent | Execute the get_agent command. |
+| [`get_agent_error`](get_agent_error.md) | Get Agent Error | Execute the get_agent_error command. |
+| [`get_benchmark_report`](get_benchmark_report.md) | Get Benchmark Report | Export a frozen, explicit paired task set with observed usage. |
+| [`get_chain_health`](get_chain_health.md) | Get Chain Health | Check dependency chain health for a task or project. |
+| [`get_chat_analyzer_metrics`](get_chat_analyzer_metrics.md) | Get Chat Analyzer Metrics | Return aggregated metrics for chat-analyzer suggestion outcomes. |
+| [`get_config`](get_config.md) | Get Config | Return the raw YAML config from disk for the editor UI. |
+| [`get_config_schema`](get_config_schema.md) | Get Config Schema | Return a JSON Schema describing every AppConfig field. |
+| [`get_costs`](get_costs.md) | Get Costs | Roll the token ledger up into money using ``pricing:`` from config. |
+| [`get_git_identity`](get_git_identity.md) | Get Git Identity | Execute the get_git_identity command. |
+| [`get_git_status`](get_git_status.md) | Get Git Status | Execute the get_git_status command. |
+| [`get_github_auth_status`](get_github_auth_status.md) | Get Github Auth Status | Report whether the daemon host's gh CLI is installed and authenticated. |
+| [`get_mcp_server`](get_mcp_server.md) | Get Mcp Server | Return a single MCP server's full config. |
+| [`get_playbook_source`](get_playbook_source.md) | Get Playbook Source | Execute the get_playbook_source command. |
+| [`get_profile`](get_profile.md) | Get Profile | Execute the get_profile command. |
+| [`get_project`](get_project.md) | Get Project | Return full details for a single project. |
+| [`get_project_onboarding`](get_project_onboarding.md) | Get Project Onboarding | Read the durable status, phase, result or error of an onboarding request. |
+| [`get_recent_events`](get_recent_events.md) | Get Recent Events | Execute the get_recent_events command. |
+| [`get_schema`](get_schema.md) | Get Schema | Return the system's enum catalog so agents never guess magic strings. |
+| [`get_status`](get_status.md) | Get Status | Execute the get_status command. |
 | [`get_stuck_tasks`](get_stuck_tasks.md) | Read stuck tasks | Read aged active tasks, orphaned workers and failed routes in active projects. |
+| [`get_task_dependencies`](get_task_dependencies.md) | Get Task Dependencies | Alias for ``_cmd_task_deps`` — used by the Supervisor tool. |
+| [`get_task_result`](get_task_result.md) | Get Task Result | Execute the get_task_result command. |
+| [`get_task_tree`](get_task_tree.md) | Get Task Tree | Return the full subtask hierarchy for a single parent task. |
+| [`get_token_usage`](get_token_usage.md) | Get Token Usage | Execute the get_token_usage command. |
+| [`get_workflow`](get_workflow.md) | Get Workflow | Fetch a single workflow by ID. |
+| [`git_branch`](git_branch.md) | Git Branch | Execute the git_branch command. |
+| [`git_changed_files`](git_changed_files.md) | Git Changed Files | Execute the git_changed_files command. |
+| [`git_checkout`](git_checkout.md) | Git Checkout | Execute the git_checkout command. |
+| [`git_commit`](git_commit.md) | Git Commit | Execute the git_commit command. |
+| [`git_create_branch`](git_create_branch.md) | Git Create Branch | Execute the git_create_branch command. |
+| [`git_create_pr`](git_create_pr.md) | Git Create Pr | Execute the git_create_pr command. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
+| [`git_log`](git_log.md) | Git Log | Execute the git_log command. |
+| [`git_merge`](git_merge.md) | Git Merge | Execute the git_merge command. |
+| [`git_pull`](git_pull.md) | Git Pull | Execute the git_pull command. |
+| [`git_push`](git_push.md) | Git Push | Execute the git_push command. |
+| [`git_remote_url`](git_remote_url.md) | Git Remote Url | Execute the git_remote_url command. |
+| [`github_issue_close_rejected`](github_issue_close_rejected.md) | Github Issue Close Rejected | Close only for an explicit human rejection asking for closure. |
 | [`github_issue_fix_approved`](github_issue_fix_approved.md) | File an approved issue fix | Create or reuse the fix task for an approved investigation. |
 | [`github_issue_rejection`](github_issue_rejection.md) | Apply an explicit issue closure request | Close an issue only when Jack explicitly asks in a rejected review. |
 | [`github_issue_triage`](github_issue_triage.md) | Triage GitHub issues | File bounded investigations and label the corresponding issues. |
+| [`glob_files`](glob_files.md) | Glob Files | Execute the glob_files command. |
+| [`graph_layout_rebuild`](graph_layout_rebuild.md) | Graph Layout Rebuild | Execute the graph_layout_rebuild command. |
+| [`graph_reflow_status`](graph_reflow_status.md) | Graph Reflow Status | Read deferred active-layout reflow diagnostics without mutating them. |
+| [`graph_tidy`](graph_tidy.md) | Graph Tidy | Execute the graph_tidy command. |
+| [`grep`](grep.md) | Grep | Execute the grep command. |
+| [`import_portable_config`](import_portable_config.md) | Import Portable Config | Preflight and import a portable bundle without overwriting by default. |
+| [`import_profile`](import_profile.md) | Import Profile | Execute the import_profile command. |
+| [`inspect_playbook_run`](inspect_playbook_run.md) | Inspect Playbook Run | Execute the inspect_playbook_run command. |
+| [`install_profile`](install_profile.md) | Install Profile | Execute the install_profile command. |
 | [`job_cancel`](job_cancel.md) | Job Cancel | Cancel a job and verify cleanup before releasing its pin. |
 | [`job_get`](job_get.md) | Job Get | Read a scoped managed job. |
 | [`job_list`](job_list.md) | Job List | List this owner's managed jobs. |
 | [`job_logs`](job_logs.md) | Job Logs | Read retained output ranges with explicit gaps. |
+| [`job_reconcile`](job_reconcile.md) | Job Reconcile | Execute the job_reconcile command. |
 | [`job_result`](job_result.md) | Job Result | Read a job's immutable result and bounded excerpt. |
 | [`job_retain`](job_retain.md) | Job Retain | Retain a completed capture as durable artifact identities, with its candidate artifact and render profile. |
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
+| [`job_submit_integration`](job_submit_integration.md) | Job Submit Integration | Internal only: provision a detached snapshot and submit at band zero. |
 | [`knowledge_authority_grant`](knowledge_authority_grant.md) | Knowledge Authority Grant | Grant policy authority bound to an exact verified revision and review. |
 | [`knowledge_authority_revoke`](knowledge_authority_revoke.md) | Knowledge Authority Revoke | Revoke policy authority without rewriting content history. |
 | [`knowledge_cite`](knowledge_cite.md) | Knowledge Cite | Record an exact revision explicitly read or attached by this execution. |
@@ -185,8 +296,34 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`link_create`](link_create.md) | Link Create | Add, update, or remove typed record links in one batch. |
 | [`link_list`](link_list.md) | Link List | List the typed links on a record. |
 | [`link_remove`](link_remove.md) | Link Remove | Remove one typed record link. |
+| [`list_active_tasks_all_projects`](list_active_tasks_all_projects.md) | List Active Tasks All Projects | List active (non-terminal) tasks across ALL projects, grouped by project. |
+| [`list_agents`](list_agents.md) | List Agents | Execute the list_agents command. |
+| [`list_archived`](list_archived.md) | List Archived | List archived tasks, optionally scoped to a project. |
+| [`list_available_tools`](list_available_tools.md) | List Available Tools | Execute the list_available_tools command. |
+| [`list_directory`](list_directory.md) | List Directory | Execute the list_directory command. |
+| [`list_event_triggers`](list_event_triggers.md) | List Event Triggers | List event types that can trigger a playbook. |
+| [`list_github_owners`](list_github_owners.md) | List Github Owners | List the GitHub owners the authenticated user can create repositories under. |
+| [`list_intelligence_classes`](list_intelligence_classes.md) | List Intelligence Classes | List the intelligence classes seeded under vault/intelligence-classes. |
+| [`list_mcp_servers`](list_mcp_servers.md) | List Mcp Servers | List MCP servers visible to a scope. |
+| [`list_mcp_tool_catalog`](list_mcp_tool_catalog.md) | List Mcp Tool Catalog | Return the cached tool list for one or more servers. |
+| [`list_notes`](list_notes.md) | List Notes | Execute the list_notes command. |
+| [`list_playbook_runs`](list_playbook_runs.md) | List Playbook Runs | Execute the list_playbook_runs command. |
+| [`list_playbooks`](list_playbooks.md) | List Playbooks | Execute the list_playbooks command. |
+| [`list_profiles`](list_profiles.md) | List Profiles | Execute the list_profiles command. |
+| [`list_project_roots`](list_project_roots.md) | List Project Roots | List the configured project roots with readable/writable flags. |
 | [`list_projects`](list_projects.md) | List projects | Read the configured projects without changing them. |
+| [`list_prompts`](list_prompts.md) | List Prompts | List all prompt templates for a project, optionally filtered. |
+| [`list_workflows`](list_workflows.md) | List Workflows | List workflows with optional filters. |
+| [`list_workspace_kinds`](list_workspace_kinds.md) | List Workspace Kinds | List workspace kinds visible to a project (system + project overrides). |
+| [`list_workspaces`](list_workspaces.md) | List Workspaces | List workspaces with lock status. |
+| [`load_tools`](load_tools.md) | Load Tools | Load tools by category or individual name. |
+| [`merge_branch`](merge_branch.md) | Merge Branch | Execute the merge_branch command. |
+| [`message_inbox`](message_inbox.md) | Message Inbox | List a recipient's pending messages, optionally marking them delivered. |
+| [`message_list`](message_list.md) | Message List | List messages with project/thread/recipient filters. |
+| [`message_reply`](message_reply.md) | Message Reply | Reply to a message: marks it read and writes the linked reply row. |
+| [`message_status`](message_status.md) | Message Status | Return the durable delivery state of one message. |
 | [`message_wait`](message_wait.md) | Message Wait | Wait up to 60 seconds for collaboration messages on a durable wait. |
+| [`migrate_profiles`](migrate_profiles.md) | Migrate Profiles | Migrate DB-only profiles to vault markdown files. |
 | [`morning_report_preview`](morning_report_preview.md) | Morning Report Preview | Read bounded overnight evidence without writes or model calls. |
 | [`morning_report_tick`](morning_report_tick.md) | Morning Report Tick | Reserve and recover the zoned daily report and deadline fallback. |
 | [`object_checkpoint_read`](object_checkpoint_read.md) | Object Checkpoint Read | Coordinate a bounded, durable object evaluation round. |
@@ -194,10 +331,65 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`object_loop_reconcile`](object_loop_reconcile.md) | Object Loop Reconcile | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_start`](object_loop_start.md) | Object Loop Start | Coordinate a bounded, durable object evaluation round. |
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |
+| [`observe_integration_source_ci`](observe_integration_source_ci.md) | Observe Integration Source Ci | Daemon-only adapter for trusted CI observations, never a raw tool input. |
+| [`onboard_project`](onboard_project.md) | Onboard Project | Link, initialise or clone a repository beneath a configured root and register it. |
+| [`operator_execute`](operator_execute.md) | Operator Execute | Execute the operator_execute command. |
+| [`operator_preflight`](operator_preflight.md) | Operator Preflight | Execute the operator_preflight command. |
+| [`orchestrator_control`](orchestrator_control.md) | Orchestrator Control | Execute the orchestrator_control command. |
+| [`pause_project`](pause_project.md) | Pause Project | Execute the pause_project command. |
+| [`pause_task`](pause_task.md) | Pause Task | Execute the pause_task command. |
+| [`phase_create`](phase_create.md) | Phase Create | Create the next phase under a project root or an epic. |
+| [`phase_list`](phase_list.md) | Phase List | Every phase under a project root (or under ``parent_id``), in order. |
+| [`playbook_activate`](playbook_activate.md) | Playbook Activate | Activate one validated artifact hash for a playbook. |
+| [`playbook_activation_health`](playbook_activation_health.md) | Playbook Activation Health | List playbook activations with their computed health. |
+| [`playbook_artifact_diff`](playbook_artifact_diff.md) | Playbook Artifact Diff | Diff two playbook artifacts semantically, before activation. |
+| [`playbook_artifacts`](playbook_artifacts.md) | Playbook Artifacts | List the stored artifacts of one playbook, active flagged. |
+| [`playbook_commands`](playbook_commands.md) | Playbook Commands | List every registered playbook command and its typed input schema. |
+| [`playbook_delete`](playbook_delete.md) | Playbook Delete | Delete an exact disabled playbook entry from the installed catalog. |
+| [`playbook_graph_layout_save`](playbook_graph_layout_save.md) | Playbook Graph Layout Save | Persist user-arranged node coordinates for one immutable artifact. |
+| [`playbook_graph_view`](playbook_graph_view.md) | Playbook Graph View | Execute the playbook_graph_view command. |
+| [`playbook_health`](playbook_health.md) | Playbook Health | Execute the playbook_health command. |
+| [`playbook_pending_event_action`](playbook_pending_event_action.md) | Playbook Pending Event Action | Dispatch or discard held pending events. |
+| [`playbook_pending_events`](playbook_pending_events.md) | Playbook Pending Events | List events held because no artifact could run them. |
+| [`playbook_run_overlay`](playbook_run_overlay.md) | Playbook Run Overlay | Return one run's execution overlay, pinned to the artifact it ran. |
+| [`playbook_v2_graph`](playbook_v2_graph.md) | Playbook V2 Graph | Return the event-grouped semantic graph of one playbook artifact. |
+| [`playbook_v2_import`](playbook_v2_import.md) | Playbook V2 Import | Persist one mechanically validated V2 artifact bundle without activation. |
+| [`playbook_v2_propose`](playbook_v2_propose.md) | Playbook V2 Propose | Execute the playbook_v2_propose command. |
+| [`playbook_v2_shadow_compile`](playbook_v2_shadow_compile.md) | Playbook V2 Shadow Compile | Execute the playbook_v2_shadow_compile command. |
+| [`playbook_v2_validate`](playbook_v2_validate.md) | Playbook V2 Validate | Execute the playbook_v2_validate command. |
+| [`plugin_config`](plugin_config.md) | Plugin Config | Get or set plugin configuration. |
+| [`plugin_disable`](plugin_disable.md) | Plugin Disable | Disable a plugin (keeps it installed). |
+| [`plugin_enable`](plugin_enable.md) | Plugin Enable | Enable a disabled plugin. |
+| [`plugin_info`](plugin_info.md) | Plugin Info | Get detailed info for a specific plugin. |
+| [`plugin_install`](plugin_install.md) | Plugin Install | Install a plugin from a git repository. |
+| [`plugin_list`](plugin_list.md) | Plugin List | List installed plugins. |
+| [`plugin_prompts`](plugin_prompts.md) | Plugin Prompts | List a plugin's prompt templates. |
+| [`plugin_reload`](plugin_reload.md) | Plugin Reload | Reload a plugin (shutdown -> load -> initialize). |
+| [`plugin_remove`](plugin_remove.md) | Plugin Remove | Remove an installed plugin. |
+| [`plugin_reset_prompts`](plugin_reset_prompts.md) | Plugin Reset Prompts | Re-copy all default prompts from plugin source. |
+| [`plugin_update`](plugin_update.md) | Plugin Update | Update an installed plugin. |
+| [`policy_apply`](policy_apply.md) | Policy Apply | Execute the policy_apply command. |
+| [`policy_diff`](policy_diff.md) | Policy Diff | Execute the policy_diff command. |
+| [`policy_export`](policy_export.md) | Policy Export | Execute the policy_export command. |
+| [`pool_rename`](pool_rename.md) | Pool Rename | Rename a pool's display name, preserving its stable profile ID. |
+| [`pool_scale`](pool_scale.md) | Pool Scale | Set global pool bounds, optionally stopping surplus idle workers now. |
+| [`pool_set_enabled`](pool_set_enabled.md) | Pool Set Enabled | Set the global pool profile's operator kill-switch. |
+| [`pool_set_lifecycle`](pool_set_lifecycle.md) | Pool Set Lifecycle | Set the global profile lifecycle, draining former pool sessions. |
+| [`pool_status`](pool_status.md) | Pool Status | Supply/demand/bounds snapshot for every worker pool.  Backs ``aq pool status``. |
+| [`pr_merge`](pr_merge.md) | Pr Merge | Merge a PR.  Backs ``aq pr merge`` and the ``pr_merge`` agent tool. |
+| [`preview_portable_config`](preview_portable_config.md) | Preview Portable Config | Show the reviewed, non-secret configuration that bundle export would use. |
+| [`prime`](prime.md) | Prime | Render the startup prime document for a task via ``src/prime/``. |
+| [`probe_mcp_server`](probe_mcp_server.md) | Probe Mcp Server | Probe a single server and refresh its catalog entry. |
+| [`profile_audit`](profile_audit.md) | Profile Audit | Report which profiles still derive capabilities from allowed_tools. |
+| [`profile_drift`](profile_drift.md) | Profile Drift | Report vault system profiles that diverge from their shipped default. |
+| [`profile_reseed`](profile_reseed.md) | Profile Reseed | Restore or repair one vault system profile from its shipped default. |
+| [`project_doctor`](project_doctor.md) | Project Doctor | Diagnose the local-first project authorization gap without changing it. |
+| [`project_ready`](project_ready.md) | Project Ready | Ready frontier for a project + withheld tasks with reasons. |
 | [`promote_approve`](promote_approve.md) | Promote Approve | Post a pinned GitHub approval using the authenticated human gh login. |
 | [`promote_cancel`](promote_cancel.md) | Promote Cancel | Close an unpublished promotion PR and abort its intent. |
 | [`promote_hotfix`](promote_hotfix.md) | Promote Hotfix | File a hotfix based on a promotion target, through ordinary task routing. |
 | [`promote_list`](promote_list.md) | Promote List | List promotion history using the local evidence cache. |
+| [`promote_note`](promote_note.md) | Promote Note | Execute the promote_note command. |
 | [`promote_prepare`](promote_prepare.md) | Promote Prepare | File ordinary release preparation on the repository default branch. |
 | [`promote_repair`](promote_repair.md) | Promote Repair | Back up and restore a stranded promotion task the train refuses. |
 | [`promote_request`](promote_request.md) | Promote Request | Open an idempotent promotion intent and a PR pinned to its source commit. |
@@ -205,28 +397,127 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`promote_schema`](promote_schema.md) | Promote Schema | Authenticated hierarchical integration operational control. |
 | [`promote_status`](promote_status.md) | Promote Status | Read promotion intents and cached check and PR review evidence. |
 | [`promote_validate`](promote_validate.md) | Promote Validate | Authenticated hierarchical integration operational control. |
+| [`provide_input`](provide_input.md) | Provide Input | Provide a human reply to an agent question (WAITING_INPUT → READY). |
+| [`provider_allocation_apply`](provider_allocation_apply.md) | Provider Allocation Apply | Apply one reviewed provider allocation preview (spec §Apply algorithm). |
 | [`provider_allocation_preview`](provider_allocation_preview.md) | Preview a provider worker allocation | Show what one provider allocation would change -- the selected profiles before and after, the provider-wide ceiling, the sessions it drains and the busy set an interrupt would need, the pins and manual agents it leaves alone -- with the token apply consumes, without changing anything. |
 | [`provider_allocation_status`](provider_allocation_status.md) | Read provider worker allocation | Group every ordinary worker profile by provider with its pool supply, live sessions, pinned tasks, manual agents, project preferences and the provider-wide configured ceiling, without changing anything. |
 | [`provider_availability_notify`](provider_availability_notify.md) | Announce a provider's availability change | Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing. |
+| [`provider_held_tasks`](provider_held_tasks.md) | Provider Held Tasks | Queued tasks an unavailable provider is holding (``aq provider held-tasks``). |
+| [`provider_history`](provider_history.md) | Provider History | One provider's effective-state transitions, newest first (``aq provider history``). |
+| [`provider_recheck`](provider_recheck.md) | Provider Recheck | Run the provider's login probe now and fold the answer in (``aq provider recheck``). |
 | [`provider_reroute`](provider_reroute.md) | Re-route work off an unavailable provider | Move queued work whose provider is unavailable to the same intelligence class on an available provider, a few tasks at a time; pinned tasks and single-provider classes hold. |
+| [`provider_reroute_undo`](provider_reroute_undo.md) | Provider Reroute Undo | Undo re-routes (``aq provider reroute-undo``, D16). |
+| [`provider_set_state`](provider_set_state.md) | Provider Set State | Set or clear an operator override on a provider (``aq provider set-state``, D6). |
+| [`provider_status`](provider_status.md) | Provider Status | Every tracked provider's availability, or one (``aq provider status``). |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |
+| [`push_branch`](push_branch.md) | Push Branch | Execute the push_branch command. |
+| [`question_answer`](question_answer.md) | Question Answer | Execute the question_answer command. |
+| [`question_escalate`](question_escalate.md) | Question Escalate | Execute the question_escalate command. |
+| [`question_list`](question_list.md) | Question List | Execute the question_list command. |
+| [`queue_sync_workspaces`](queue_sync_workspaces.md) | Queue Sync Workspaces | Queue a high-priority Sync Workspaces task that orchestrates a full sync workflow. |
+| [`read_file`](read_file.md) | Read File | Execute the read_file command. |
+| [`read_logs`](read_logs.md) | Read Logs | Read and filter the daemon's JSONL log file. |
+| [`read_note`](read_note.md) | Read Note | Execute the read_note command. |
+| [`read_prompt`](read_prompt.md) | Read Prompt | Read a specific prompt template's content and metadata. |
+| [`reconcile_agent_cron`](reconcile_agent_cron.md) | Reconcile Agent Cron | Execute the reconcile_agent_cron command. |
+| [`reconcile_agent_waits`](reconcile_agent_waits.md) | Reconcile Agent Waits | Execute the reconcile_agent_waits command. |
+| [`reconcile_collaborations`](reconcile_collaborations.md) | Reconcile Collaborations | Execute the reconcile_collaborations command. |
 | [`record_capabilities`](record_capabilities.md) | Record Capabilities | Describe what this caller may do with records. |
+| [`record_file_inspection`](record_file_inspection.md) | Record File Inspection | Execute the record_file_inspection command. |
 | [`record_repair`](record_repair.md) | Record Repair | Inspect or apply bounded task mapping backfill or outbox replay. |
 | [`record_search`](record_search.md) | Record Search | Search authorized records with a bounded query. |
 | [`record_show`](record_show.md) | Record Show | Read a record by identity, pinned to a revision when knowledge. |
+| [`release_project_constraint`](release_project_constraint.md) | Release Project Constraint | Release (remove) the scheduling constraint from a project. |
+| [`release_workspace`](release_workspace.md) | Release Workspace | Admin force-release a stuck workspace lock. |
+| [`reload_config`](reload_config.md) | Reload Config | Manually trigger a config hot-reload from disk. |
+| [`remove_dependency`](remove_dependency.md) | Remove Dependency | Remove a dependency edge: *task_id* no longer depends on *depends_on*. |
+| [`remove_task`](remove_task.md) | Remove Task | Deprecated alias for the unified delete action. |
+| [`remove_workspace`](remove_workspace.md) | Remove Workspace | Delete a workspace by ID or name. |
 | [`render_prompt`](render_prompt.md) | Render a prompt | Render a bundled or project prompt with explicit variables. |
+| [`reopen_with_feedback`](reopen_with_feedback.md) | Reopen With Feedback | Reopen a completed/failed task with feedback appended to its description. |
+| [`reparent_task`](reparent_task.md) | Reparent Task | Move a task under another container, or to root.  Backs ``aq task reparent``. |
 | [`report_brief`](report_brief.md) | Report Brief | Read a bounded, paged report brief and its CAS version. |
 | [`report_get`](report_get.md) | Report Get | Read a stored morning report in project scope. |
 | [`report_list`](report_list.md) | Report List | List stored morning reports in project scope. |
 | [`report_reconcile`](report_reconcile.md) | Report Reconcile | Recover reserved hourly report requests after lost events. |
 | [`report_request`](report_request.md) | Report Request | Queue one author wake for a reserved report. |
 | [`report_submit`](report_submit.md) | Report Submit | Submit one authored report before its deadline. |
+| [`restart_task`](restart_task.md) | Restart Task | Execute the restart_task command. |
+| [`resume_playbook`](resume_playbook.md) | Resume Playbook | Execute the resume_playbook command. |
+| [`resume_project`](resume_project.md) | Resume Project | Execute the resume_project command. |
+| [`resume_task`](resume_task.md) | Resume Task | Execute the resume_task command. |
+| [`review_attachment_add`](review_attachment_add.md) | Review Attachment Add | Execute the review_attachment_add command. |
+| [`review_attachment_list`](review_attachment_list.md) | Review Attachment List | Execute the review_attachment_list command. |
+| [`review_comment`](review_comment.md) | Review Comment | Execute the review_comment command. |
+| [`review_decide`](review_decide.md) | Review Decide | Execute the review_decide command. |
+| [`review_delegate`](review_delegate.md) | Review Delegate | Execute the review_delegate command. |
+| [`review_dispatch`](review_dispatch.md) | Review Dispatch | File *count* adversarial reviewer tasks for one review revision. |
+| [`review_import_edits`](review_import_edits.md) | Review Import Edits | Execute the review_import_edits command. |
+| [`review_list`](review_list.md) | Review List | Execute the review_list command. |
+| [`review_reopen`](review_reopen.md) | Review Reopen | Execute the review_reopen command. |
+| [`review_show`](review_show.md) | Review Show | Execute the review_show command. |
+| [`review_submit`](review_submit.md) | Review Submit | Execute the review_submit command. |
+| [`review_withdraw`](review_withdraw.md) | Review Withdraw | Execute the review_withdraw command. |
+| [`run_playbook`](run_playbook.md) | Run Playbook | Execute the run_playbook command. |
+| [`scan_stub_staleness`](scan_stub_staleness.md) | Scan Stub Staleness | Scan vault reference stubs for staleness by comparing source_hash. |
+| [`search_files`](search_files.md) | Search Files | Execute the search_files command. |
+| [`search_github_repositories`](search_github_repositories.md) | Search Github Repositories | Search GitHub repositories visible to the daemon host's gh session. |
+| [`select_files_for_inspection`](select_files_for_inspection.md) | Select Files For Inspection | Execute the select_files_for_inspection command. |
+| [`session_attach`](session_attach.md) | Session Attach | Return the shell command a human runs to attach. |
+| [`session_cleanup`](session_cleanup.md) | Session Cleanup | Stop and forget taskless sleeping named sessions in one operator action. |
+| [`session_drain_ack`](session_drain_ack.md) | Session Drain Ack | Agent-facing: "I am done, you may kill me." |
+| [`session_input`](session_input.md) | Session Input | Send direct human input; never queue a message or wake a session. |
+| [`session_kill`](session_kill.md) | Session Kill | Fenced kill.  The task then goes through the exit classifier. |
+| [`session_list`](session_list.md) | Session List | List sessions with lifecycle, state, task, harness, activity. |
+| [`session_logs`](session_logs.md) | Session Logs | Normalized output for a session. |
+| [`session_nudge`](session_nudge.md) | Session Nudge | Inject text into a session and submit it. |
+| [`session_peek`](session_peek.md) | Session Peek | Last N lines of a session's visible output. |
+| [`session_prune`](session_prune.md) | Session Prune | Remove one inactive named row; never signal or forget live work. |
+| [`session_show`](session_show.md) | Session Show | Full detail for one session. |
+| [`session_sleep`](session_sleep.md) | Session Sleep | Record that a session is not wanted running. |
+| [`session_token`](session_token.md) | Session Token | Mint a fresh API bearer token for an existing session. |
+| [`session_wake`](session_wake.md) | Session Wake | Mark a sleeping named session as wanted again. |
+| [`set_default_branch`](set_default_branch.md) | Set Default Branch | Set (or change) a project's default branch. |
+| [`set_git_identity`](set_git_identity.md) | Set Git Identity | Execute the set_git_identity command. |
+| [`set_playbook_enabled`](set_playbook_enabled.md) | Set Playbook Enabled | Pause or resume a playbook's activation without changing its artifact. |
+| [`set_project_constraint`](set_project_constraint.md) | Set Project Constraint | Set a scheduling constraint on a project. |
+| [`set_task_status`](set_task_status.md) | Set Task Status | Execute the set_task_status command. |
+| [`show_effective_profile`](show_effective_profile.md) | Show Effective Profile | Run the orchestrator's resolution cascade and return the result. |
+| [`show_playbook_graph`](show_playbook_graph.md) | Show Playbook Graph | Execute the show_playbook_graph command. |
+| [`skip_task`](skip_task.md) | Skip Task | Skip a BLOCKED/FAILED task to unblock its dependency chain. |
+| [`spec_approve`](spec_approve.md) | Spec Approve | Execute the spec_approve command. |
+| [`start_agent_terminal`](start_agent_terminal.md) | Start Agent Terminal | Execute the start_agent_terminal command. |
+| [`subagent_event`](subagent_event.md) | Subagent Event | Record one ``SubagentStart`` / ``SubagentStop`` from a harness hook. |
 | [`supervisor_inbox_history`](supervisor_inbox_history.md) | Supervisor Inbox History | Page conversations by update time or one conversation's inputs by receipt time. |
 | [`supervisor_inbox_post`](supervisor_inbox_post.md) | Supervisor Inbox Post | Accept verified gateway input or local test/replay provenance into the global inbox. |
 | [`supervisor_inbox_reply`](supervisor_inbox_reply.md) | Supervisor Inbox Reply | Record an explicit live global-supervisor answer and queue its Discord delivery. |
 | [`supervisor_inbox_status`](supervisor_inbox_status.md) | Supervisor Inbox Status | Read installation-wide conversation preconditions, limits, counts and intake health. |
+| [`supervisor_restart`](supervisor_restart.md) | Supervisor Restart | Execute the supervisor_restart command. |
+| [`task_batch_discard`](task_batch_discard.md) | Task Batch Discard | Execute the task_batch_discard command. |
+| [`task_batch_propose`](task_batch_propose.md) | Task Batch Propose | Execute the task_batch_propose command. |
+| [`task_batch_update`](task_batch_update.md) | Task Batch Update | Execute the task_batch_update command. |
+| [`task_children`](task_children.md) | Task Children | Direct or recursive children of a task.  Backs ``aq task children``. |
+| [`task_claim`](task_claim.md) | Task Claim | Claim a ready task for the calling session (``aq task claim``). |
+| [`task_close`](task_close.md) | Task Close | Close a task with an outcome.  Backs ``aq task close``. |
+| [`task_comment`](task_comment.md) | Task Comment | Execute the task_comment command. |
+| [`task_comment_delete`](task_comment_delete.md) | Task Comment Delete | Execute the task_comment_delete command. |
+| [`task_comment_edit`](task_comment_edit.md) | Task Comment Edit | Execute the task_comment_edit command. |
+| [`task_comments`](task_comments.md) | Task Comments | Execute the task_comments command. |
+| [`task_deps`](task_deps.md) | Task Deps | Return upstream dependencies and downstream dependents for a task. |
 | [`task_failure_triage_notify`](task_failure_triage_notify.md) | Wake supervisor failure triage | Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident. |
 | [`task_handoff`](task_handoff.md) | Record a task handoff | Store bounded agent assertions with current daemon facts. Auto is note-only; non-auto records a restart request, without performing a restart. |
+| [`task_heartbeat`](task_heartbeat.md) | Task Heartbeat | Refresh this task's agent lease.  Backs ``aq task heartbeat``. |
+| [`task_progress`](task_progress.md) | Task Progress | Computed group progress (counts, waves, max parallelism).  Backs ``aq task progress``. |
+| [`task_recent_activity`](task_recent_activity.md) | Task Recent Activity | What was worked on in the last N hours, and by which models. |
+| [`task_recover`](task_recover.md) | Task Recover | Execute the task_recover command. |
+| [`task_route`](task_route.md) | Task Route | Send a task back to its router: ``aq task route`` (spec §7). |
+| [`task_route_override`](task_route_override.md) | Task Route Override | Pin one task to a worker profile in an emergency (spec §7, D2). |
+| [`task_set`](task_set.md) | Task Set | Work-state contract writes. Never performs status transitions. |
+| [`task_show`](task_show.md) | Task Show | Full task detail in one round trip: fields + deps + context + labels. |
+| [`task_subtask_add`](task_subtask_add.md) | Task Subtask Add | Execute the task_subtask_add command. |
+| [`task_subtask_get`](task_subtask_get.md) | Task Subtask Get | Execute the task_subtask_get command. |
+| [`task_subtask_update`](task_subtask_update.md) | Task Subtask Update | Execute the task_subtask_update command. |
+| [`task_subtasks`](task_subtasks.md) | Task Subtasks | Execute the task_subtasks command. |
 | [`test_select`](test_select.md) | Test Select | Record a scoped smart test selection proposal. |
 | [`test_selection_list`](test_selection_list.md) | Test Selection List | List recorded selections in one project. |
 | [`test_selection_observe`](test_selection_observe.md) | Test Selection Observe | Append execution evidence to a visible selection. |
@@ -235,10 +526,22 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`test_selection_recheck`](test_selection_recheck.md) | Test Selection Recheck | Check whether a recorded selection snapshot is stale. |
 | [`test_selection_revoke`](test_selection_revoke.md) | Test Selection Revoke | Locally revoke an omission-policy promotion once. |
 | [`test_selection_show`](test_selection_show.md) | Test Selection Show | Read a selection and its appended observations. |
+| [`token_audit`](token_audit.md) | Token Audit | Execute the token_audit command. |
+| [`update_config`](update_config.md) | Update Config | Replace one top-level section in the YAML config and reload. |
+| [`update_playbook_source`](update_playbook_source.md) | Update Playbook Source | Atomically save Markdown, compile a V2 artifact, and activate it. |
+| [`vault_rebuild_index`](vault_rebuild_index.md) | Vault Rebuild Index | Rebuild vault hub files with optional LLM-generated summaries. |
+| [`vibecop_check`](vibecop_check.md) | Vibecop Check | Execute the vibecop_check command. |
+| [`vibecop_scan`](vibecop_scan.md) | Vibecop Scan | Execute the vibecop_scan command. |
+| [`vibecop_status`](vibecop_status.md) | Vibecop Status | Execute the vibecop_status command. |
 | [`wait_cancel`](wait_cancel.md) | Wait Cancel | Cancel a current-claim wait and queue its result. |
 | [`wait_get`](wait_get.md) | Wait Get | Read a durable wait, optionally consuming its notification. |
 | [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |
 | [`wait_register`](wait_register.md) | Wait Register | Register one bounded typed wait and end the turn. |
+| [`workflow_pipeline_view`](workflow_pipeline_view.md) | Workflow Pipeline View | Return structured pipeline view data for dashboard rendering of a workflow. |
+| [`workspace_doctor`](workspace_doctor.md) | Workspace Doctor | Diagnose workspace inventory.  Read-only unless ``fix`` is set. |
+| [`workspace_reap`](workspace_reap.md) | Workspace Reap | Explicit reap of retired slots.  Refuses live slots. |
+| [`write_file`](write_file.md) | Write File | Execute the write_file command. |
+| [`write_note`](write_note.md) | Write Note | Execute the write_note command. |
 
 <!-- aq:generated:end -->
 

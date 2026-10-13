@@ -276,12 +276,31 @@ def generated_block(name: str, contract: Any) -> str:
         "## Parameters",
         "",
     ]
-    lines += _parameter_table(args_schema, presentation.arg_labels)
+    if execution.argument_mode == "json_object" and not fields(args_schema):
+        lines += ["Arguments are a JSON object validated against the descriptor's full schema."]
+    else:
+        lines += _parameter_table(args_schema, presentation.arg_labels)
+    if execution.argument_mode == "json_object":
+        metadata = execution.descriptor_metadata
+        lines += [
+            "", "This generated contract exposes the **playbook** input-schema view. "
+            "MCP/CLI/API retain their legacy **transport** view.",
+            f"Schema source: {code(metadata['schema_source'])}; "
+            f"quality: {code(metadata['schema_quality'])}; "
+            f"coarse effect: {code(metadata['effect_class'])}.",
+            "", "**Live invocation is disabled** pending the authorization, result-protocol "
+            "and private-value release gates. Discovery does not grant authority. "
+            "Dry-run/shadow have no live fallback.",
+        ]
     if execution.sensitive_args:
         redacted = ", ".join(code(field) for field in sorted(execution.sensitive_args))
         lines += ["", f"Redacted in receipts and explanations: {redacted}."]
     lines += ["", "## Result", ""]
-    lines += _result_table(result_schema, presentation.result_labels)
+    if execution.result_mode == "typed":
+        lines += _result_table(result_schema, presentation.result_labels)
+    if execution.result_mode == "json_object":
+        lines += ["", "The result model is a JSON object. It preserves the original keys "
+                  "without a `root` or `payload` wrapper; its execution protocol is gated."]
     if execution.receipt_projection:
         projected = ", ".join(code(field) for field in execution.receipt_projection)
         lines += ["", f"Projected into the run receipt: {projected}."]

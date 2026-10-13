@@ -98,6 +98,9 @@ def canonical_effect(contract: CommandContract[Any, Any]) -> ExplanationEffect:
     """
     execution = contract.execution
     fields = ", ".join(execution.args_model.model_fields) or "no arguments"
+    if execution.argument_mode == "json_object":
+        schema = execution.args_model.model_json_schema()
+        fields = ", ".join(schema.get("properties", {})) or "a JSON object"
     return ExplanationEffect(
         operation=execution.side_effect.value,
         text=f"{execution.side_effect.value.replace('_', ' ').capitalize()} using {fields}",

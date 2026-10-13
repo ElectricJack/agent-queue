@@ -617,9 +617,9 @@ def test_the_derivation_is_not_vacuously_small():
 
 
 def test_extra_forbid_is_untouched_on_every_contract():
-    """The mechanism is target resolution, never a looser model."""
-    for name in CONTRACTS.names():
-        model = CONTRACTS.get(name).contract.execution.args_model
+    """Target resolution never loosens an existing typed dispatch model."""
+    for name, contract in CONTRACTS.typed_contracts().items():
+        model = contract.execution.args_model
         assert issubclass(model, CommandArgs)
         assert model.model_config.get("extra") == "forbid", name
 

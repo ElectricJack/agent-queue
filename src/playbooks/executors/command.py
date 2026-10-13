@@ -254,7 +254,7 @@ def _build_args(
     if execution.idempotency.mode == "keyed":
         _keyed_argument(execution, ctx, payload, fallback=key)
     try:
-        return execution.args_model(**payload), payload, None
+        return execution.args_model.model_validate(payload), payload, None
     except ValidationError as exc:
         return None, payload, f"{exc.error_count()} argument(s) failed validation"
 
