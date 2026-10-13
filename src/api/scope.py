@@ -251,8 +251,8 @@ def _forbids_project_id(command: str) -> bool:
     rather than listed, so a contract that gains or loses the field moves with
     it.
 
-    An unregistered command (``delete_project``, ``edit_project``, the project
-    and agent controls — none of them carry a contract) forbids nothing, so the
+    A command without a typed dispatch contract (``delete_project``,
+    ``edit_project``, the project and agent controls) forbids nothing, so the
     gate keeps injecting for them: there is no model to reject the key, and the
     project row itself is what such a command acts on.  A contractless command
     that acts on *another* project's row has to fence it in its handler, because
@@ -271,7 +271,9 @@ def _forbids_project_id(command: str) -> bool:
     from src.commands.contracts import CONTRACTS
 
     registration = CONTRACTS.get(command)
-    if registration is None:
+    if registration is None or registration.contract.execution.argument_mode == "json_object":
+        # Discovery-only generated models are not the handler's dispatch model.
+        # Their catalogue presence must not suppress legacy project injection.
         return False
     args_model = registration.contract.execution.args_model
     return "project_id" not in args_model.model_fields

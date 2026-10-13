@@ -301,6 +301,41 @@ of the default arm.
 
 ## The playbook command pages
 
+Command discovery is composed in
+[`src/commands/command_inventory.py`](../../src/commands/command_inventory.py).
+It supplies handler, plugin and explicit-tool inventories to the immutable
+[`descriptor builder`](../../src/commands/descriptors.py), which imports neither
+the handler nor MCP. The contract registry, MCP registration, CLI catalogue and
+API code generator project this shared snapshot. Live plugin load/unload changes
+its generation; unloaded names remain visible with `available=False`.
+
+Descriptors carry two schema views. Playbooks prefer an existing typed contract,
+then an explicit tool definition, then a fallback schema. A proven argumentless
+handler gets a closed empty object; other uncovered handlers get an explicitly
+opaque open object. Existing transports retain explicit-tool precedence and
+their legacy empty-schema behavior. Disagreements appear in
+`DescriptorSnapshot.schema_quality_report()` instead of silently replacing either
+view. Full schemas, including local references, defaults and nullable unions,
+are preserved; generated argument models validate JSON without coercion or
+remote reference fetching.
+
+Generated contracts use generation-2 execution fingerprints. Existing typed
+contracts keep their generation-1 documents and fingerprints, pinned by
+`tests/fixtures/contracts/legacy-command-descriptors.json`, captured before the
+descriptor migration. The same fixture records transport definitions, CLI
+catalogue bytes and existing playbook artifacts. An intentional compatibility
+change must review that evidence; regenerating expected values during a test
+would conceal the change.
+
+**Generated invocation is disabled.** New catalogue entries do not grant
+authority. Authorization, handler-return auditing, private-value storage and
+safe inspection must be completed before an execution adapter is enabled;
+there is no runtime bypass flag in this foundation. Generated entries default
+to protected, destructive, non-retryable behavior without preview or receipt
+projection. `run_command`, `shutdown`, `restart_daemon` and `update_and_restart`
+have explicit playbook denials and no generated registrations. The existing
+memory helpers and typed plugin adapters remain registered unchanged.
+
 [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md)
 is half generated and half hand-written, page by page. Everything between
 `<!-- aq:generated:start -->` and `<!-- aq:generated:end -->` comes from the

@@ -141,6 +141,7 @@
     "command-dispatch": {
       "description": "Command dispatch: CommandHandler.execute, the placement of every command on the surface, per-call scope isolation, the scope matrix, surface and system commands, prompt path validation and command.invoked events.",
       "modules": [
+        "tests/test_command_descriptors.py",
         "tests/test_command_dispatch.py",
         "tests/test_command_invoked_event.py",
         "tests/test_command_scope_isolation.py",
@@ -4228,6 +4229,37 @@
         "parametrize"
       ],
       "summary": "Contract-boundary invariants for Playbook V2 commands."
+    },
+    "tests/test_command_descriptors.py": {
+      "areas": [
+        "command-dispatch"
+      ],
+      "default_arm": true,
+      "digest": "sha256:6427f09f4e82c8f62c5bd355a53739e01a02ec24da62101f40be5590920db113",
+      "imports": [
+        "src.api.scope",
+        "src.commands.command_inventory",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.generated",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.descriptors",
+        "src.commands.handler",
+        "src.config",
+        "src.mcp_registration",
+        "src.playbooks.executors.command",
+        "src.playbooks.explanation",
+        "src.playbooks.expressions",
+        "src.playbooks.validation",
+        "src.plugins.base",
+        "src.plugins.registry",
+        "src.tools.command_catalogue"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Descriptor coverage, compatibility and disabled generated execution."
     },
     "tests/test_command_dispatch.py": {
       "areas": [

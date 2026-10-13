@@ -43,7 +43,6 @@ from src.routing.filing import GUARDED_COMMANDS, REFUSED_ROUTING_ARGS, ROUTING_C
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
     CATEGORIES,
-    _ALL_TOOL_DEFINITIONS,
     _CLI_CATEGORY_OVERRIDES,
     _TOOL_CATEGORIES,
 )
@@ -515,37 +514,20 @@ def build_category_routers() -> list[APIRouter]:
     response_models = get_all_response_models()
     request_models = get_all_request_models()
 
-    # Build complete tool map
-    tool_map: dict[str, dict] = {t["name"]: t for t in _ALL_TOOL_DEFINITIONS}
-    try:
-        from src.mcp_registration import _discover_all_commands
+    # All generated routes expose the legacy transport view of the shared
+    # descriptor snapshot; dedicated request DTOs remain authoritative below.
+    from src.commands.command_inventory import command_snapshot
 
-        discovered = _discover_all_commands()
-        for name, defn in discovered.items():
-            if name not in tool_map:
-                tool_map[name] = defn
-    except Exception:
-        pass
-
-    # Collect internal plugin tool definitions
-    plugin_categories: dict[str, str] = {}
-    try:
-        from src.plugins.internal import collect_internal_tool_definitions
-
-        for category, tool_defs in collect_internal_tool_definitions():
-            for defn in tool_defs:
-                name = defn["name"]
-                if name not in tool_map:
-                    tool_map[name] = defn
-                if name not in _TOOL_CATEGORIES and name not in _CLI_CATEGORY_OVERRIDES:
-                    plugin_categories[name] = category
-    except Exception:
-        pass
-
-    # ``_discover_all_commands`` already stamps ``_FALLBACK_INPUT_SCHEMAS``
-    # onto the commands that have no ``_ALL_TOOL_DEFINITIONS`` entry, so every
-    # definition in ``tool_map`` carries the real properties by the time it
-    # gets here (src/tools/definitions.py).  Plugin definitions ship their own.
+    snapshot = command_snapshot()
+    plugin_names = {plugin.name for plugin in snapshot.plugins}
+    tool_map = {
+        name: descriptor.tool_definition() for name, descriptor in snapshot.commands.items()
+        if name in snapshot.handler_names or name in snapshot.explicit_names
+        or name in plugin_names
+    }
+    plugin_categories = {
+        plugin.name: plugin.category for plugin in snapshot.plugins if plugin.category
+    }
 
     # Group tools by category
     category_tools: dict[str, list[tuple[str, dict]]] = defaultdict(list)

@@ -750,10 +750,26 @@ class CommandHandler(
         return False
 
     def contracted_commands(self) -> frozenset[str]:
-        """Commands backed by a typed Playbook V2 contract (read-only)."""
+        """Commands backed by typed or generated Playbook V2 contracts."""
         from src.commands.contracts import CONTRACTS
 
         return CONTRACTS.names()
+
+    @property
+    def command_descriptors(self):
+        """Compose only after construction, refreshing on plugin generation changes."""
+        from src.commands.command_inventory import compose_snapshot
+        from src.commands.contracts import CONTRACTS
+        from src.plugins.registry import PluginRegistry
+
+        typed = CONTRACTS.typed_contracts()
+        plugins = getattr(self.orchestrator, "plugin_registry", None)
+        generation = plugins.command_generation if isinstance(plugins, PluginRegistry) else 0
+        key = (id(plugins), generation)
+        if getattr(self, "_descriptor_cache_key", None) != key:
+            self._descriptor_snapshot = compose_snapshot(type(self), typed, plugin_registry=plugins)
+            self._descriptor_cache_key = key
+        return self._descriptor_snapshot
 
     # -- Execution principal seam (Playbook V2 Package 0 §3.5) -------------
     #

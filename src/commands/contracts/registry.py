@@ -6,14 +6,19 @@ import json
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from src.commands.contracts.models import CommandArgs, CommandContract, CommandResult
+from pydantic import BaseModel
+
+from src.commands.contracts.models import CommandContract, CommandResult
 from src.commands.principal import ExecutionPrincipal
 from src.docs_urls import DEFAULT_DOCS_BASE_URL, command_docs_url
 
 CommandContext = ExecutionPrincipal
-InvokeAdapter = Callable[[CommandArgs, CommandContext], Awaitable[CommandResult[Any]]]
+if TYPE_CHECKING:
+    from src.commands.descriptors import DescriptorSnapshot
+
+InvokeAdapter = Callable[[BaseModel, CommandContext], Awaitable[CommandResult[Any]]]
 PreviewAdapter = InvokeAdapter
 
 
@@ -54,24 +59,78 @@ class ContractRegistry:
         self._loading = False
         self._lock = threading.RLock()
         self._docs_base_url = docs_base_url
+        self._discover_descriptors = autoload
+        self._snapshot: DescriptorSnapshot | None = None
+        self._snapshot_provider: Callable[[], DescriptorSnapshot] | None = None
+        self._generated_names: set[str] = set()
 
     def _ensure_loaded(self) -> None:
         """Register the built-ins once, on first read."""
-        if not self._autoload:
+        if not self._autoload and not self._discover_descriptors:
             return
         with self._lock:
-            if not self._autoload or self._loading:
+            if self._loading:
                 return
             self._loading = True
             try:
                 # Deferred so importing this module never imports the
                 # contract definitions, which import this module back.
-                from src.commands.contracts.builtin import register_builtin_contracts
+                if self._autoload:
+                    from src.commands.contracts.builtin import register_builtin_contracts
 
-                register_builtin_contracts(self)
-                self._autoload = False
+                    register_builtin_contracts(self)
+                    self._autoload = False
+                if self._snapshot_provider:
+                    snapshot = self._snapshot_provider()
+                elif self._snapshot is None:
+                    from src.commands.command_inventory import offline_snapshot
+
+                    snapshot = offline_snapshot(self.typed_contracts())
+                else:
+                    snapshot = self._snapshot
+                if snapshot is not self._snapshot:
+                    self.replace_descriptors(snapshot)
             finally:
                 self._loading = False
+
+    def typed_contracts(self) -> dict[str, CommandContract[Any, Any]]:
+        """Only legacy registrations are inputs to discovery; never generated ones."""
+        self._ensure_loaded()
+        return {
+            name: registration.contract for name, registration in self._registrations.items()
+            if name not in self._generated_names
+        }
+
+    @property
+    def descriptors(self) -> DescriptorSnapshot:
+        self._ensure_loaded()
+        if self._snapshot is None:
+            raise RuntimeError("This registry has no descriptor snapshot")
+        return self._snapshot
+
+    def configure_snapshot_provider(self, provider: Callable[[], DescriptorSnapshot] | None) -> None:
+        """Late composition after handler construction; None restores offline discovery."""
+        with self._lock:
+            self._snapshot_provider = provider
+            self._snapshot = None
+
+    def replace_descriptors(self, snapshot: DescriptorSnapshot) -> None:
+        """Atomically replace generated registrations, retaining every typed adapter."""
+        from src.commands.contracts.generated import generated_registration
+
+        with self._lock:
+            typed = {
+                name: r for name, r in self._registrations.items() if name not in self._generated_names
+            }
+            generated = {
+                name: self._with_docs_url(generated_registration(descriptor))
+                for name, descriptor in snapshot.commands.items()
+                if name not in typed and descriptor.denial_reason is None
+                and (descriptor.origin in {"handler", "plugin"})
+            }
+            self._registrations = typed | generated
+            self._generated_names = set(generated)
+            self._snapshot = snapshot
 
     def register(self, registration: CommandRegistration) -> None:
         if registration.name in self._registrations:

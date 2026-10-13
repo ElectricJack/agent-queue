@@ -778,6 +778,28 @@ def set_handler_provider(provider: Callable[[], Any] | None) -> None:
     """
     global _handler_provider
     _handler_provider = provider
+    from src.commands.contracts.registry import CONTRACTS
+
+    if provider is None:
+        CONTRACTS.configure_snapshot_provider(None)
+        return
+
+    offline = None
+
+    def snapshot_provider():
+        nonlocal offline
+        handler = provider()
+        if isinstance(getattr(type(handler), "command_descriptors", None), property):
+            return handler.command_descriptors
+        # Keep provider installation late-bound. Minimal adapter test doubles
+        # retain a cached offline inventory rather than manufacturing commands.
+        if offline is None:
+            from src.commands.command_inventory import offline_snapshot
+
+            offline = offline_snapshot(CONTRACTS.typed_contracts())
+        return offline
+
+    CONTRACTS.configure_snapshot_provider(snapshot_provider)
 
 
 def handler_provider_installed() -> bool:

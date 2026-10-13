@@ -19,16 +19,12 @@ tool-use loop — no business logic is reimplemented here.
 
 from __future__ import annotations
 
-import ast
-import inspect
 import json
 import logging
 import os
-import textwrap
 from typing import TYPE_CHECKING, Any
 
 from src.models import AgentState, TaskStatus
-from src.tools.definitions import _ALL_TOOL_DEFINITIONS
 from src.mcp_interfaces import (
     agent_to_dict,
     profile_to_dict,
@@ -149,135 +145,46 @@ def get_effective_exclusions(
 # ---------------------------------------------------------------------------
 
 
-def _discover_all_commands(warn_on_empty_schema: bool = False) -> dict[str, dict]:
-    """Discover all commands from CommandHandler by introspecting ``_cmd_*`` methods.
+def _discover_all_commands(warn_on_empty_schema: bool = False, *, snapshot=None) -> dict[str, dict]:
+    """Project the shared snapshot using the legacy transport schema view."""
+    from src.commands.command_inventory import command_snapshot
 
-    Returns a dict mapping command name → basic tool definition dict for
-    every ``_cmd_*`` method on ``CommandHandler``.  Descriptions come from
-    the method docstring.  The input schema comes from the typed command
-    contract when the handler has one, then ``_FALLBACK_INPUT_SCHEMAS`` when
-    the command has one, and is otherwise the empty
-    ``{"type": "object", "properties": {}}``.
-
-    This is used as a safety net: any command present in ``CommandHandler``
-    but absent from ``_ALL_TOOL_DEFINITIONS`` will still be registered via
-    MCP — and reach the CLI and the codegen API router — with a functional
-    schema.
-
-    **An empty schema means the command takes no arguments at all**, on every
-    surface: the generated Click command has only ``--help`` and the FastAPI
-    request model drops every client field.  That is right for the handful of
-    genuinely argument-less commands and wrong for everything else, so a
-    command whose handler reads ``args`` and has neither a typed definition
-    nor a fallback schema is worth a warning rather than passing silently (see
-    ``_needs_arguments``).
-
-    That warning is opt-in via *warn_on_empty_schema*, and only
-    ``register_command_tools`` asks for it: discovery also runs during CLI
-    catalogue generation and on every app build, where a logger with no
-    handlers writes straight to the user's stderr. Once per daemon start,
-    into the daemon log, is loud enough — the
-    hard gate is ``tests/test_command_surface.py``.
-    """
-    # Lazy import to avoid circular dependency at module level.
-    # CommandHandler imports tool_registry → tool_registry is imported here.
-    from src.commands.contracts import CONTRACTS
-    from src.commands.handler import CommandHandler  # noqa: E402
-    from src.tools.definitions import _FALLBACK_INPUT_SCHEMAS
-
-    typed = {d["name"] for d in _ALL_TOOL_DEFINITIONS} | set(CONTRACTS.names())
-
-    discovered: dict[str, dict] = {}
-    undefined: list[str] = []
-    for attr_name in dir(CommandHandler):
-        if not attr_name.startswith("_cmd_"):
-            continue
-        cmd_name = attr_name[5:]  # strip "_cmd_" prefix
-        method = getattr(CommandHandler, attr_name, None)
-        if method is None or not callable(method):
-            continue
-
-        # Extract first line of docstring as description
-        doc = inspect.getdoc(method) or ""
-        first_line = doc.split("\n")[0].strip() if doc else ""
-        description = first_line or f"Execute the {cmd_name} command."
-
-        registration = CONTRACTS.get(cmd_name)
-        if registration is not None:
-            description = registration.contract.presentation.summary or description
-            schema = registration.contract.execution.args_model.model_json_schema()
-        else:
-            schema = _FALLBACK_INPUT_SCHEMAS.get(cmd_name)
-        if schema is None:
-            schema = {"type": "object", "properties": {}}
-            if cmd_name not in typed and _needs_arguments(method):
-                undefined.append(cmd_name)
-
-        discovered[cmd_name] = {
-            "name": cmd_name,
-            "description": description,
-            "input_schema": schema,
-        }
-
+    snapshot = snapshot if snapshot is not None else command_snapshot()
+    undefined = sorted(
+        name for name in snapshot.handler_names
+        if snapshot.commands[name].schema_quality == "opaque"
+    )
     if undefined and warn_on_empty_schema:
         logger.warning(
-            "%d command(s) reach MCP/CLI/API with an empty input schema even "
-            "though their handler reads args — callers cannot pass any "
-            "argument: %s. Add a definition to _ALL_TOOL_DEFINITIONS or a "
-            "schema to _FALLBACK_INPUT_SCHEMAS (src/tools/definitions.py).",
-            len(undefined),
-            ", ".join(sorted(undefined)),
+            "%d command(s) retain an empty input schema on legacy transports; "
+            "playbooks label their arguments opaque: %s. Add an explicit schema.",
+            len(undefined), ", ".join(undefined),
         )
-
-    return discovered
+    return {name: snapshot.commands[name].tool_definition() for name in sorted(snapshot.handler_names)}
 
 
 def effective_tool_definitions() -> list[dict]:
-    """The typed command surface: legacy definitions plus contract-backed ones.
+    """Explicit and legacy typed definitions, using the transport schema view.
 
-    ``_ALL_TOOL_DEFINITIONS`` used to be the only source of a rich input
-    schema.  Commands registered in ``src.commands.contracts`` carry their
-    schema on the contract's ``args_model`` instead and are projected by
-    :func:`_discover_all_commands`, so a ratchet that treats a command as
-    "untyped" because it is absent from ``_ALL_TOOL_DEFINITIONS`` is wrong
-    for them.  Every drift check over the typed surface should read this
-    list; a legacy entry wins over a contract projection of the same name.
+    Generated/opaque entries do not pretend to be audited typed definitions.
     """
-    from src.commands.contracts import CONTRACTS
+    from src.commands.command_inventory import command_snapshot
 
-    definitions = list(_ALL_TOOL_DEFINITIONS)
-    seen = {definition["name"] for definition in definitions}
-    discovered = _discover_all_commands()
-    for name in sorted(CONTRACTS.names() & discovered.keys()):
-        if name not in seen:
-            definitions.append(discovered[name])
-            seen.add(name)
-    return definitions
+    snapshot = command_snapshot()
+    names = list(snapshot.explicit_names)
+    seen = set(names)
+    names.extend(
+        name for name in sorted(snapshot.handler_names - seen)
+        if snapshot.commands[name].result_mode == "typed"
+    )
+    return [snapshot.commands[name].tool_definition() for name in names]
 
 
 def _needs_arguments(method: Any) -> bool:
-    """Does this ``_cmd_*`` implementation actually read its ``args`` dict?
+    """Compatibility diagnostic; unknown source is conservatively argumentful."""
+    from src.commands.descriptors import argument_usage
 
-    Body inspection, not a signature check: every handler takes ``args``
-    whether or not it uses it, so the signature says nothing.  A handler that
-    never loads ``args`` (``list_projects``, ``archive_settings``) is
-    genuinely argument-less and an empty schema is correct for it.  Anything
-    that does read it — directly, or by handing it to a resolver such as
-    ``_resolve_session(args)`` — needs a schema, or its callers have no way to
-    pass the value the handler then reports as missing.
-
-    Returns ``False`` when the source cannot be parsed, which keeps this a
-    diagnostic and never a hard failure.
-    """
-    try:
-        source = textwrap.dedent(inspect.getsource(method))
-        tree = ast.parse(source)
-    except (OSError, TypeError, SyntaxError, IndentationError):  # pragma: no cover
-        return False
-    return any(
-        isinstance(node, ast.Name) and node.id == "args" and isinstance(node.ctx, ast.Load)
-        for node in ast.walk(tree)
-    )
+    return argument_usage(method) is not False
 
 
 # ---------------------------------------------------------------------------
@@ -395,8 +302,11 @@ def register_command_tools(
         mcp_server._tool_manager._tools[name] = tool
         return True
 
+    from src.commands.command_inventory import command_snapshot
+
+    snapshot = command_snapshot(plugin_tools=plugin_tools)
     explicit_names: set[str] = set()
-    for tool_def in _ALL_TOOL_DEFINITIONS:
+    for tool_def in (snapshot.commands[name].tool_definition() for name in snapshot.explicit_names):
         name = tool_def["name"]
         explicit_names.add(name)
         description = tool_def.get("description", f"Execute the {name} command.")
@@ -412,6 +322,7 @@ def register_command_tools(
         if not name or name in explicit_names:
             continue  # already handled in pass 1
         explicit_names.add(name)  # prevent duplicate in pass 3
+        tool_def = snapshot.commands[name].tool_definition()
         description = tool_def.get("description", f"Execute the {name} command.")
         input_schema = tool_def.get("input_schema", {"type": "object", "properties": {}})
         if _register_tool(name, description, input_schema):
@@ -428,7 +339,7 @@ def register_command_tools(
     # --- Pass 3: auto-discover any missing commands -----------------------
 
     try:
-        all_commands = _discover_all_commands(warn_on_empty_schema=True)
+        all_commands = _discover_all_commands(warn_on_empty_schema=True, snapshot=snapshot)
     except Exception:
         logger.warning(
             "Could not auto-discover CommandHandler commands; "

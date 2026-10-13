@@ -17,6 +17,8 @@ result is ``unknown_command`` / ``unknown_profile`` / ``unknown_event``, never
 
 from __future__ import annotations
 
+import re
+
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -209,6 +211,9 @@ class ContractInfo:
     outcomes: frozenset[str]
     execution_fingerprint: str
     outcome_classes: Mapping[str, str] = dataclass_field(default_factory=dict)
+    # Generic JSON-object models expose document properties, never a "root"
+    # parameter. Full JSON Schema validation remains the runtime boundary.
+    argument_schema: Mapping[str, Any] | None = None
 
 
 @runtime_checkable
@@ -310,6 +315,14 @@ class RegistryContractLookup:
             )
             for field_name, field in execution.args_model.model_fields.items()
         }
+        argument_schema = None
+        if execution.argument_mode == "json_object":
+            argument_schema = execution.args_model.model_json_schema()
+            arguments = {
+                name: ArgumentSpec(name=name, type=type_from_schema(schema),
+                                   required=name in argument_schema.get("required", []))
+                for name, schema in argument_schema.get("properties", {}).items()
+            }
         return ContractInfo(
             name=name,
             arguments=arguments,
@@ -320,6 +333,7 @@ class RegistryContractLookup:
                 outcome.name: str(outcome.classification.value)
                 for outcome in execution.outcomes
             },
+            argument_schema=argument_schema,
         )
 
 
@@ -1609,6 +1623,20 @@ def _check_command_arguments(
     scope: Any,
 ) -> None:
     for name in sorted(set(step.inputs) - set(info.arguments)):
+        if info.argument_schema is not None:
+            schema = info.argument_schema
+            if schema.get("additionalProperties", True) is not False:
+                continue
+            try:
+                matches_pattern = any(
+                    re.search(pattern, name) for pattern in schema.get("patternProperties", {})
+                )
+            except re.error:
+                # An invalid plugin schema is rejected by its runtime model;
+                # it must not crash static inspection of the catalogue.
+                continue
+            if matches_pattern:
+                continue
         context.emit(
             "argument_unknown",
             f"{name!r} is not an argument of {step.command!r}",
