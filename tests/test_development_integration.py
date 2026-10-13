@@ -15,6 +15,7 @@ from src.database.tables import task_dependencies, tasks
 from src.integration.development import (
     DevelopmentBusy, DevelopmentPrimitives, DevelopmentPolicy,
 )
+from src.integration.models import INTEGRATION_REPAIR_PRIORITY
 from src.models import (
     Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus,
 )
@@ -433,6 +434,8 @@ async def test_single_source_repair_is_a_child_without_a_reverse_cycle(setup):
     # not the title; the repair is filed unrouted (mandatory-routing §5.3).
     assert repair.created_by_kind == "development_repair"
     assert (repair.profile_id, repair.route_source) == (None, "unrouted")
+    # The repair gates the development train, so it is filed ahead of ordinary work.
+    assert repair.priority == INTEGRATION_REPAIR_PRIORITY
 
 
 UNREPAIRED = "integration.development_conflicts_unrepaired"

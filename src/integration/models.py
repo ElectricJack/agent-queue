@@ -37,6 +37,13 @@ REQUEUE_INTEGRATION_OWNER_ROLES = RETRYABLE_INTEGRATION_OWNER_ROLES | {"verifier
 # outbox quarantines it as an explicit failed delivery.
 DEFAULT_INTEGRATION_MAX_WAIT_SECONDS = 3600.0
 
+# Task priority for train/batch repair filings (lower runs first).  A repair
+# holds a sealed batch, so every task waiting on that target branch is stuck
+# behind it; at the ordinary default of 100 it starved for hours behind
+# ordinary work (bright-stone-28).  Stopgap until repair waits get their own
+# scheduling (eager-forge-44).
+INTEGRATION_REPAIR_PRIORITY = 1
+
 # Shared refusal code for completion without a trusted CI binding. Keep this
 # in the value layer so command schemas need no database implementation imports.
 AWAITING_TRUSTED_VERIFICATION = "awaiting_trusted_verification"

@@ -335,9 +335,21 @@ async def test_patch_id_reaps_both_processes_on_interruption(clone, mgr, monkeyp
         return process
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    deadlines = []
     if failure == "timeout":
-        monkeypatch.setattr(mgr, "_GIT_TIMEOUT", 1)
+        # Expire the deadline only once both children run: a wall-clock budget
+        # can lapse during a slow first spawn and never reach patch-id at all.
+        timeout = asyncio.timeout
+
+        def deadline(delay):
+            deadlines.append(timeout(None))
+            return deadlines[-1]
+
+        monkeypatch.setattr(asyncio, "timeout", deadline)
     operation = asyncio.create_task(mgr.apatch_id(clone, "HEAD", "HEAD"))
+    if failure == "timeout":
+        await asyncio.wait_for(started.wait(), timeout=10)
+        deadlines[0].reschedule(asyncio.get_running_loop().time())
     if failure == "cancel":
         await asyncio.wait_for(started.wait(), timeout=10)
         operation.cancel()

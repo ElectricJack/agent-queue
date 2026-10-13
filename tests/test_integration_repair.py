@@ -45,6 +45,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
 from src.integration.models import (
+    INTEGRATION_REPAIR_PRIORITY,
     ArtifactSnapshot,
     BranchKey,
     Fence,
@@ -3429,6 +3430,8 @@ async def test_pre_testing_dispatch_delegate_task_carries_candidate_ci(db):
     assert (await service.dispatch(operation_id, 0))["outcome"] == "dispatched"
     delegate = await db.get_task(f"repair-{operation_id}-0")
 
+    # The delegate holds the batch, so it must not starve behind ordinary work.
+    assert delegate.priority == INTEGRATION_REPAIR_PRIORITY
     assert "## Awaiting candidate CI" in delegate.description
     assert "(revision state: constructing)" in delegate.description
     assert f"Construction base: {STARTING_SHA}" in delegate.description
@@ -8031,6 +8034,23 @@ async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_resta
         assert not (await conn.execute(select(integration_repair_operations))).first()
         assert not (await conn.execute(select(integration_repair_stages))).first()
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
+
+
+async def test_ordinary_repair_is_filed_ahead_of_ordinary_work(ordinary_env):
+    """A train repair holds the sealed batch, so it outranks the default priority.
+
+    At priority 100 one sat READY for 11.5h behind ordinary work while every task
+    waiting on the target branch was blocked behind it (bright-stone-28).
+    """
+    env = ordinary_env
+    filed = await env.service.allocate(
+        "ordinary", authorize=AsyncMock(return_value=True), target_ref=env.ref,
+        head_sha=STARTING_SHA,
+    )
+    assert filed["outcome"] == "filed"
+    repair = await env.db.get_task(filed["task_id"])
+    assert repair.priority == INTEGRATION_REPAIR_PRIORITY
+    assert repair.priority < Task(id="t", project_id="p", title="t", description="").priority
 
 
 @pytest.mark.parametrize("archived", [False, True])
