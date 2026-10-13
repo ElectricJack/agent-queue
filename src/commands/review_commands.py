@@ -415,6 +415,25 @@ class ReviewCommandsMixin:
         if not isinstance(content, str):
             return _error("not_utf8", "content must be UTF-8 text")
         review_id = args.get("review_id")
+        held = None
+        response = None
+        if self._is_worker():
+            held, error = await self._worker_held_task()
+            if error:
+                return error
+            if args.get("task_id") not in (None, held.id):
+                return _error("not_your_task", "task_id must be the task this worker holds")
+            response = await self.db.get_task_meta(held.id, "review_response")
+            if isinstance(response, dict):
+                assigned_id = response["review_id"]
+                if review_id and review_id != assigned_id:
+                    return _error(
+                        "not_your_task",
+                        f"this revision task must update review {assigned_id}; use "
+                        f"aq review submit --review-id {assigned_id} --file <draft.md> "
+                        '--changes "<comment dispositions and evidence>"',
+                    )
+                review_id = assigned_id
         try:
             if review_id:
                 review, error = await self._review_for_caller(review_id)
@@ -430,10 +449,6 @@ class ReviewCommandsMixin:
                         return _error("object_result_language", error)
                 submitted_task_id: str | None = None
                 if self._is_worker():
-                    held, error = await self._worker_held_task()
-                    if error:
-                        return error
-                    response = await self.db.get_task_meta(held.id, "review_response")
                     is_response_task = (
                         isinstance(response, dict)
                         and response.get("review_id") == review["id"]

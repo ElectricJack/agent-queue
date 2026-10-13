@@ -14570,12 +14570,13 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:34aebd839b737c878051df38751bda7b7d9d483127df2a511caf429db759b427",
+      "digest": "sha256:158f7215be282b8270068d461c901091b35f556a342fbc98e5fe610e76fec0d7",
       "imports": [
         "src.api",
         "src.api.auth",
         "src.api.codegen",
         "src.api.dependencies",
+        "src.api.execute",
         "src.api.middleware",
         "src.api.scope",
         "src.api.websocket",
