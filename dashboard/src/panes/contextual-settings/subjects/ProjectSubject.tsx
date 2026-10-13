@@ -57,7 +57,10 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
         max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
         credit_weight: parseOptionalFloat(form.credit_weight),
         budget_limit: parseOptionalFloat(form.budget_limit),
-        supervisor_enabled: form.supervisor_enabled,
+        // A stale form must not undo a supervisor decision made elsewhere.
+        ...(form.supervisor_enabled !== (project.supervisor_enabled ?? false)
+          ? { supervisor_enabled: form.supervisor_enabled }
+          : {}),
         ...identity,
       });
     } catch (err) {

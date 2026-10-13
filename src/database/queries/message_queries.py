@@ -45,6 +45,14 @@ def _global_supervisor_mailbox():
     )
 
 
+def _project_supervisor_session():
+    """Identify the named project supervisor, never a worker or global instance."""
+    return and_(
+        sessions.c.lifecycle == "named", sessions.c.project_id.is_not(None),
+        sessions.c.name == "n-supervisor--" + sessions.c.project_id,
+    )
+
+
 def _global_backlog_snapshot():
     """Count and oldest identity come from the same database snapshot."""
     return select(messages.c.id, func.count().over().label("total")).where(
@@ -101,6 +109,12 @@ class MessageQueriesMixin:
                     if suffix != "global":
                         recipient_project = suffix
                     break
+            else:
+                # Native guidance and terminal messages use immutable IDs.
+                # The target session's project, not the sender's, owns opt-in.
+                recipient_project = (await conn.execute(select(sessions.c.project_id).where(
+                    sessions.c.id == to_id, _project_supervisor_session(),
+                ))).scalar_one_or_none()
         if recipient_project:
             enabled = (await conn.execute(select(projects.c.supervisor_enabled).where(
                 projects.c.id == recipient_project,
@@ -117,6 +131,9 @@ class MessageQueriesMixin:
         Delivered but unread messages become pending again, so an abandoned
         supervisor turn cannot swallow a worker's report.
         """
+        supervisor_ids = select(sessions.c.id).where(
+            _project_supervisor_session(), sessions.c.project_id == projects.c.id,
+        ).correlate(projects)
         disabled_recipient = select(projects.c.id).where(
             projects.c.supervisor_enabled.is_(False),
             or_(
@@ -127,6 +144,9 @@ class MessageQueriesMixin:
                         "supervisor-" + projects.c.id,
                         "n-supervisor--" + projects.c.id,
                     ]),
+                ),
+                and_(
+                    messages.c.to_kind == "session", messages.c.to_id.in_(supervisor_ids),
                 ),
                 and_(
                     messages.c.to_kind == "profile", messages.c.to_id == "supervisor",

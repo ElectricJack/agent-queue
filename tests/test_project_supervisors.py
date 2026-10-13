@@ -64,6 +64,60 @@ async def test_recipient_project_controls_routing_and_preserves_sender_context(d
         assert msg.project_id == "sender"
 
 
+async def test_immutable_supervisor_address_redirects_new_and_queued_messages(db):
+    await db.update_project("p1", supervisor_enabled=True)
+    row = SessionRecord(
+        id="project-supervisor-id", name="n-supervisor--p1", project_id="p1",
+        profile_id="supervisor", harness="codex", provider="fake", lifecycle="named",
+        work_dir="/tmp", epoch="e", instance_token="token", started_at=1, state="running",
+    )
+    await db.create_session(row)
+    queued = await db.create_message(
+        project_id="sender", from_kind="system", from_id="worker", to_kind="session",
+        to_id=row.id, body="blocker", thread_id="worker-question", priority=90,
+    )
+    assert queued.to_id == row.id  # enabled immutable recipients remain pinned
+    await db.mark_delivered(queued.id, via="nudge")
+    await db.update_project("p1", supervisor_enabled=False)
+
+    recovered = await db.get_message(queued.id)
+    assert (recovered.to_kind, recovered.to_id) == ("session", "supervisor-global")
+    assert recovered.delivered_at is None
+    assert (recovered.project_id, recovered.thread_id, recovered.priority) == (
+        "sender", "worker-question", 90,
+    )
+    assert (recovered.from_kind, recovered.from_id, recovered.body, recovered.id) == (
+        queued.from_kind, queued.from_id, queued.body, queued.id,
+    )
+    # The native guidance command resolves its target to this immutable ID.
+    command = handler(db)
+    sent = await command._cmd_agent_message({"target": row.id, "body": "follow-up"})
+    assert (await db.get_message(sent["message_id"])).to_id == "supervisor-global"
+    cross_project = await db.create_message(
+        project_id="sender", from_kind="system", from_id="worker", to_kind="session",
+        to_id=row.id, body="another blocker",
+    )
+    assert (cross_project.to_id, cross_project.project_id) == ("supervisor-global", "sender")
+
+
+@pytest.mark.parametrize("lifecycle,name", [
+    ("pool", "p-worker"), ("task", "s-worker"), ("named", "n-other--p1"),
+])
+async def test_disabled_project_keeps_other_session_recipients(db, lifecycle, name):
+    row = SessionRecord(
+        id="worker-id", name=name, project_id="p1", profile_id="worker-codex",
+        harness="codex", provider="fake", lifecycle=lifecycle,
+        work_dir="/tmp", epoch="e", instance_token="token", started_at=1, state="running",
+    )
+    await db.create_session(row)
+    msg = await db.create_message(
+        project_id="p1", from_kind="system", from_id="supervisor", to_kind="session",
+        to_id=row.id, body="guidance",
+    )
+    await db.redirect_disabled_supervisor_messages()
+    assert (await db.get_message(msg.id)).to_id == row.id
+
+
 async def test_global_session_id_inbox_recovers_internal_project_notices(db):
     await db.create_session(SessionRecord(
         id="global-session-id", name="n-supervisor--global", project_id=None,
@@ -113,9 +167,15 @@ async def test_edit_defaults_and_disable_records_stop_intent_and_recovers_unread
 
 @pytest.mark.parametrize("kind,address", [
     ("session", "supervisor-p1"), ("session", "n-supervisor--p1"),
-    ("profile", "supervisor"),
+    ("profile", "supervisor"), ("session", "project-supervisor-id"),
 ])
 async def test_internal_event_insert_redirects_before_delivery(db, kind, address):
+    if address == "project-supervisor-id":
+        await db.create_session(SessionRecord(
+            id=address, name="n-supervisor--p1", project_id="p1", profile_id="supervisor",
+            harness="codex", provider="fake", lifecycle="named", work_dir="/tmp",
+            epoch="e", instance_token="token", started_at=1, state="running",
+        ))
     async with db._engine.begin() as conn:
         await conn.execute(sa.insert(messages).values(
             id="internal-notice", project_id="p1", from_kind="system", from_id="event",
