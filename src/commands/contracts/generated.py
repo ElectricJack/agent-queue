@@ -1,8 +1,7 @@
-"""JSON-object contracts for uncovered commands; live invocation remains gated.
+"""JSON-object contracts with authorization and private-storage release gates.
 
-A2 owns the return-protocol and authorization audit; A3 owns private values and
-safe inspection. This foundation deliberately has no switch that can bypass those
-release gates. Catalogue membership alone can never call a newly discovered verb.
+Only engine invocations with ready protected storage can dispatch uncovered
+commands. The original principal and handler result protocol remain intact.
 """
 
 from __future__ import annotations
@@ -143,12 +142,20 @@ def argument_model(descriptor: CommandDescriptor) -> type[JsonObjectArgs]:
 
 
 class GeneratedInvocationDisabled(RuntimeError):
-    """The generated command audit and confidentiality gates are not complete."""
+    """Direct invocation outside an authorized engine context is disabled."""
 
 
-def require_generated_execution() -> None:
-    """A3 must replace this gate only after confidentiality acceptance passes."""
-    raise GeneratedInvocationDisabled("generated_invocation_disabled")
+async def require_generated_execution() -> None:
+    """Generated execution requires an actual engine invocation and storage."""
+    from src.playbooks.invocation import current_invocation
+    from src.playbooks.private_values import PrivateValueError
+
+    invocation = current_invocation()
+    if invocation is None:
+        raise GeneratedInvocationDisabled("generated_invocation_disabled")
+    if invocation.private_values is None:
+        raise PrivateValueError("private_storage_unavailable")
+    await invocation.private_values.check_ready()
 
 
 def generated_registration(descriptor: CommandDescriptor):
@@ -162,7 +169,7 @@ def generated_registration(descriptor: CommandDescriptor):
         payload = args.model_dump()
         if set(payload).intersection(SERVER_OWNED_ARG_KEYS):
             return {"success": False, "error_code": "server_owned_argument"}
-        require_generated_execution()
+        await require_generated_execution()
         from src.commands.contracts.builtin import _handler
 
         # Return the original object. Only the executor's _consume interprets

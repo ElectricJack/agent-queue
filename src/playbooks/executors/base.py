@@ -114,6 +114,7 @@ class ExecutorResult:
     #: the contract's result model or ``step.output_schema``.  ``None`` when
     #: the step declares no ``save_result_as``.
     value: Any | None = None
+    private_fields: tuple[str, ...] | None = None
     goto_step_id: str | None = None
     wait: WaitSpec | None = None
     terminal_outcome: str | None = None
@@ -178,6 +179,7 @@ class EngineServices:
     #: Package 0's dispatch-boundary authorization needs both; §2.5 item 11.
     resolver: CommandResolver | None = None
     authorization_mode: str = "audit"
+    private_values: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +208,7 @@ class StepContext:
     #: Resolved ``step.inputs`` (§3.4 step 4).  The engine resolves them so a
     #: resolution failure is an outcome *before* any executor runs.
     inputs: Mapping[str, Any] = field(default_factory=dict)
+    private_inputs: bool = False
     #: Resolved ``CommandStep.idempotency_key``, the step-level override of
     #: the contract's key field (``definition.py``: "overrides the contract
     #: default").  Resolved by the engine for the same reason

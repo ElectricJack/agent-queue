@@ -93,7 +93,7 @@ def test_projection_omits_an_allow_listed_key_the_result_lacks():
     assert projected == {"count": 2}
 
 
-def test_sensitive_value_is_replaced_by_a_stable_handle():
+def test_sensitive_value_is_replaced_by_an_unlinkable_handle():
     _, first = project_receipt(
         {},
         {"api_key": "s3cr3t"},
@@ -108,7 +108,7 @@ def test_sensitive_value_is_replaced_by_a_stable_handle():
         sensitive_result_fields=("api_key",),
         run_id="run-1",
     )
-    assert first == second
+    assert first != second
     assert first["api_key"].startswith("sensitive:")
     assert "s3cr3t" not in first["api_key"]
 
@@ -117,7 +117,7 @@ def test_sensitive_handle_is_scoped_to_the_run():
     a = sensitive_handle("run-1", "result.api_key", "s3cr3t")
     b = sensitive_handle("run-2", "result.api_key", "s3cr3t")
     assert a != b
-    assert a == sensitive_handle("run-1", "result.api_key", "s3cr3t")
+    assert a != sensitive_handle("run-1", "result.api_key", "s3cr3t")
 
 
 def test_input_projection_redacts_sensitive_arguments():

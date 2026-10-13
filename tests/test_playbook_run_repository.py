@@ -431,6 +431,11 @@ async def test_commit_boundary_advances_the_version_and_writes_one_receipt(db):
 
 
 async def test_one_llm_attempt_accepts_ordered_call_and_interrupted_boundaries(db):
+    from src.playbooks.private_values import PrivateValueService
+
+    db.set_playbook_private_values(PrivateValueService(
+        db._engine, active_key_id="test", keys={"test": b"x" * 32},
+    ))
     snapshot = await db.create_run(make_snapshot(current_step_id="classify"))
     first = make_receipt(
         snapshot,
@@ -851,6 +856,11 @@ async def test_cancel_of_an_unknown_run_conflicts(db):
 
 async def test_sensitive_value_never_lands_in_a_receipt(db):
     from src.playbooks.receipts import project_receipt
+    from src.playbooks.private_values import PrivateValueService
+
+    db.set_playbook_private_values(PrivateValueService(
+        db._engine, active_key_id="test", keys={"test": b"x" * 32},
+    ))
 
     snapshot = await db.create_run(make_snapshot())
     handle_inputs, handle_result = project_receipt(

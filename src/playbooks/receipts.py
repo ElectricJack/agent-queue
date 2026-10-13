@@ -18,8 +18,7 @@ Two things make a receipt safe to show an operator:
 
 from __future__ import annotations
 
-import hashlib
-import json
+import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -75,20 +74,9 @@ def idempotency_key(run_id: str, step_id: str, iteration: int, attempt: int) -> 
     return f"{run_id}:{step_id}:{loop_part}:{attempt}"
 
 
-def _canonical(value: Any) -> str:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
-    )
-
-
 def sensitive_handle(run_id: str, path: str, value: Any) -> str:
-    """An opaque, stable stand-in for a value that must never be receipted.
-
-    Scoped to the run so the same secret in two runs does not correlate them,
-    and to the path so two fields of one result stay distinguishable.
-    """
-    digest = hashlib.sha256(f"{run_id}|{path}|{_canonical(value)}".encode()).hexdigest()
-    return f"{SENSITIVE_PREFIX}{digest[:32]}"
+    """A non-dereferenceable random redaction marker, never a secret digest."""
+    return f"{SENSITIVE_PREFIX}{uuid.uuid4().hex}"
 
 
 def project_receipt(

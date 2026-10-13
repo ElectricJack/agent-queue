@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import contextvars
 from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterator
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
     from src.playbooks.artifact_ref import ArtifactRef
@@ -32,6 +32,7 @@ class PlaybookInvocation:
     #: restricted to one kind of playbook can check the artifact without
     #: reloading it from the store.
     aq_commands: frozenset[str] = frozenset()
+    private_values: Any = field(default=None, repr=False, compare=False)
 
 
 _invocation_var: contextvars.ContextVar[PlaybookInvocation | None] = (
@@ -58,6 +59,7 @@ def _invocation_context(ctx: StepContext) -> Iterator[PlaybookInvocation]:
         step_id=ctx.step_id,
         attempt=ctx.attempt,
         aq_commands=granted_aq_commands(getattr(ctx, "artifact", None)),
+        private_values=ctx.services.private_values,
     )
     token = _invocation_var.set(invocation)
     try:

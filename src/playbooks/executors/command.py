@@ -33,6 +33,11 @@ from src.playbooks.executors.base import (
     project_step_receipt,
 )
 from src.playbooks.invocation import _invocation_context
+from src.playbooks.private_values import (
+    PrivateValueError,
+    needs_private_result,
+    private_result_fields,
+)
 from src.playbooks.receipts import idempotency_key
 from src.playbooks.run_state import DEFAULT_MAX_RESULT_BYTES, canonical_json
 
@@ -131,7 +136,7 @@ def _consume(
         return _fail(
             "contract_violation",
             operation=operation,
-            diagnostics=(f"outcome {result.outcome!r} is not declared by the contract",),
+            diagnostics=("outcome is not declared by the contract",),
             key=key,
         )
 
@@ -165,7 +170,7 @@ def _consume(
         return _fail(
             "contract_violation",
             operation=operation,
-            diagnostics=(f"outcome {result.outcome!r} has no transition and there is no runtime_error edge",),
+            diagnostics=("outcome has no transition and there is no runtime_error edge",),
             key=key,
         )
 
@@ -186,6 +191,8 @@ def _consume(
     receipt_inputs, receipt_result = project_step_receipt(
         resolved_inputs, dumped, contract=execution, run_id=ctx.run_id
     )
+    if ctx.private_inputs:
+        receipt_inputs, receipt_result = project_step_receipt(resolved_inputs, dumped)
     # Only a contract-projected error may become durable diagnostics; the
     # adapter summary can contain unclassified data and is never a fallback.
     diagnostics = (diagnostic,) if diagnostic else ()
@@ -195,6 +202,7 @@ def _consume(
         control=StepControl.ADVANCE,
         outcome=result.outcome,
         value=value,
+        private_fields=tuple(sorted(private_result_fields(execution, dumped))),
         idempotency_key=key,
         receipt_inputs=receipt_inputs,
         receipt_result=receipt_result,
@@ -323,12 +331,20 @@ class LiveCommandExecutor:
 
         timeout = registration.contract.execution.timeout_seconds
         try:
+            if step.save_result_as and (ctx.private_inputs or needs_private_result(
+                registration.contract.execution
+            )):
+                if ctx.services.private_values is None:
+                    raise PrivateValueError("private_storage_unavailable")
+                await ctx.services.private_values.check_ready()
             with _invocation_context(ctx):
                 if timeout:
                     async with asyncio.timeout(timeout):
                         result = await registration.invoke(args, ctx.principal)
                 else:
                     result = await registration.invoke(args, ctx.principal)
+        except PrivateValueError as exc:
+            return _fail("unavailable", operation=operation, diagnostics=(exc.code,), key=key)
         except TimeoutError:
             return _fail("timed_out", operation=operation, diagnostics=("step",), key=key)
         except asyncio.CancelledError:
@@ -420,7 +436,7 @@ class ShadowCommandExecutor:
             operation=unresolved.operation,
             diagnostics=unresolved.diagnostics,
             possible_outcomes=unresolved.possible_outcomes,
-            recorded_command_args=args.model_dump(mode="json"),
+            recorded_command_args={name: "(redacted)" for name in args.model_dump()},
         )
 
 

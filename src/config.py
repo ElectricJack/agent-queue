@@ -1578,6 +1578,10 @@ class PlaybooksConfig:
     """
 
     enabled: bool = False
+    # Environment variable names only. Key bytes never enter serialized config,
+    # vault sources or script inputs. Retain old entries for encrypted readback.
+    private_value_active_key_id: str = ""
+    private_value_key_env: dict[str, str] = field(default_factory=dict)
     v2_max_artifact_bytes: int = 1_048_576
     v2_max_result_bytes: int = 262_144
     v2_max_snapshot_bytes: int = 4_194_304
@@ -4960,6 +4964,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         pb = raw["playbooks"]
         config.playbooks = PlaybooksConfig(
             enabled=bool(pb.get("enabled", False)),
+            private_value_active_key_id=str(pb.get("private_value_active_key_id", "")),
+            private_value_key_env=dict(pb.get("private_value_key_env") or {}),
             cancellation_grace_seconds=int(pb.get("cancellation_grace_seconds", 30)),
             v2_dry_run_max_paths=int(pb.get("v2_dry_run_max_paths", 32)),
             v2_dry_run_max_step_visits=int(pb.get("v2_dry_run_max_step_visits", 1000)),

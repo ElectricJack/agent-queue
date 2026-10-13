@@ -15,6 +15,7 @@ import multiprocessing
 import os
 import signal
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -39,6 +40,7 @@ from src.playbooks.run_state import LoopFrame, RunLifecycle, RunSnapshot
 from src.playbooks.receipts import StepReceipt
 from src.playbooks.waits import WaitSpec
 from src.playbooks.recovery import RestartReconciler
+from src.playbooks.private_values import PrivateValueService
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     LIST_TASKS,
@@ -87,6 +89,8 @@ def fresh_engine(
     store.put(artifact)
     engine = PlaybookEngine(
         services=EngineServices(
+            private_values=(runs.playbook_private_values()
+                            if hasattr(runs, "playbook_private_values") else AsyncMock()),
             contracts=registry,
             clock=lambda: 2_000.0,
             artifact_store=store,
@@ -106,6 +110,9 @@ async def restart_db():
 
     database = Database(lease_dsn("v2_restart_recovery"))
     await database.initialize()
+    database.set_playbook_private_values(PrivateValueService(
+        database._engine, active_key_id="test", keys={"test": b"x" * 32},
+    ))
     yield database
     await database.close()
 
@@ -214,6 +221,7 @@ async def test_restart_sweep_preserves_ambiguous_external_effects(restart_db, ki
     stored = await restart_db.load_run(snapshot.run_id)
     assert stored.lifecycle is RunLifecycle.PAUSED
     assert stored.operator_decision is not None
+    stored = await restart_db.resolve_private_snapshot(stored, TRUSTED_LOCAL)
     assert stored.context["resume_cause"]["kind"] == "interrupted_by_restart"
     assert stored.bindings == {}
     assert not adapter.calls
@@ -252,6 +260,7 @@ async def test_restart_sweep_recovers_internal_boundaries(restart_db, boundary):
         assert stored.lifecycle is RunLifecycle.COMPLETED
     if boundary == "loop":
         assert [args.title for args in adapter.args_for("ensure_task")] == ["Gate: d-2", "Gate: d-3"]
+        stored = await restart_db.resolve_private_snapshot(stored, TRUSTED_LOCAL)
         assert [item["index"] for item in stored.bindings["sweep_result"]["items"]] == [0, 1, 2]
     assert await recovery.tick() == ()
     await recovery.shutdown()

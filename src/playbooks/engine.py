@@ -1222,6 +1222,13 @@ class PlaybookEngine:
             return RunOutcome(run_id, RunLifecycle.FAILED, "unknown_run")
         if snapshot.is_terminal:
             return RunOutcome(run_id, snapshot.lifecycle, "already_terminal", snapshot)
+        from src.playbooks.private_values import PrivateValueError
+
+        try:
+            snapshot = await self._resolve_private_run(snapshot, principal, repository)
+        except PrivateValueError as exc:
+            # Key loss or failed authorization must not destroy resumable data.
+            return RunOutcome(run_id, snapshot.lifecycle, exc.code, snapshot.redacted())
         if isinstance(cause, InterruptedByRestart):
             if (
                 snapshot.lifecycle not in {RunLifecycle.RUNNING, RunLifecycle.CANCELLING}
@@ -1244,6 +1251,7 @@ class PlaybookEngine:
         mode = ExecutionMode(snapshot.mode)
         artifact_ref = await self._ref_for(snapshot)
         artifact = self._load(artifact_ref)
+        snapshot = self._classify_private_bindings(snapshot, artifact)
         if snapshot.operator_decision is not None:
             return await self._resolve_operator_decision(
                 snapshot, cause, principal, artifact, artifact_ref, mode, repository
@@ -1257,6 +1265,7 @@ class PlaybookEngine:
             # The interrupted receipt is a boundary of its own.  Re-load the
             # durable snapshot shape before replaying the identical attempt.
             snapshot = await repository.load_run(run_id) or snapshot
+            snapshot = await self._resolve_private_run(snapshot, principal, repository)
         current_step = artifact.steps.get(snapshot.current_step_id or "")
         if isinstance(cause, ChildTaskCompleted):
             if not isinstance(current_step, WaitStep):
@@ -1590,6 +1599,7 @@ class PlaybookEngine:
                         step_id=step.save_result_as,
                         value=value,
                         declared=value.keys(),
+                        private_fields=tuple(value),
                     )
                 except (AttributeError, StateLimitExceeded):
                     attempt.outcome = "state_limit_exceeded"
@@ -2184,6 +2194,8 @@ class PlaybookEngine:
         and the commit writes anything durable, so a crash in that window
         loses the attempt and never the run.
         """
+        snapshot = self._classify_private_bindings(snapshot, artifact)
+        snapshot = await self._resolve_private_run(snapshot, principal, repository)
         step_id = snapshot.current_step_id
         if step_id is None or step_id not in artifact.steps:
             failed, receipt, outcome = await self._fail_now(
@@ -2302,6 +2314,27 @@ class PlaybookEngine:
                 self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
             )
 
+        # Wait/child results have no audited public result contract. Mark
+        # their future binding before opening the wait or spawning the child,
+        # so an event racing registration also enters the protected inbox.
+        if isinstance(step, (WaitStep, AgentTaskStep)) and step.save_result_as:
+            from src.playbooks.private_values import PrivateValueError
+
+            try:
+                if self.services.private_values is None:
+                    raise PrivateValueError("private_storage_unavailable")
+                await self.services.private_values.check_ready()
+            except PrivateValueError as exc:
+                attempt.outcome = "unavailable"
+                attempt.error = exc.code
+                return await finish(
+                    self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+                )
+            snapshot = replace(snapshot, private_bindings={
+                **snapshot.private_bindings, step.save_result_as: (),
+            })
+            attempt.snapshot = snapshot
+
         async def on_tool_turn(turn: LLMToolTurn) -> None:
             if control is None:
                 await self._commit_llm_turn(attempt, turn, artifact_ref, repository)
@@ -2348,6 +2381,7 @@ class PlaybookEngine:
             cancel_requested=snapshot.cancel_requested_at is not None,
             cancel_event=control.cancel_event if control is not None else None,
             inputs=inputs,
+            private_inputs=snapshot.has_private_data,
             authored_idempotency_key=authored_key,
             evaluation_budget=budget,
             loop_frame=snapshot.loop,
@@ -2610,6 +2644,7 @@ class PlaybookEngine:
                     declared=result.value.keys()
                     if isinstance(result.value, Mapping)
                     else (),
+                    private_fields=result.private_fields,
                 )
             except StateLimitExceeded:
                 attempt.outcome = "state_limit_exceeded"
@@ -2622,7 +2657,8 @@ class PlaybookEngine:
         if result.control is StepControl.TERMINATE:
             if result.value is not None:
                 attempt.receipt_result = dict(attempt.receipt_result) | {
-                    "value": result.value
+                    "value": {"__redacted__": True}
+                    if attempt.snapshot.has_private_data else result.value
                 }
             attempt.lifecycle = _TERMINAL_LIFECYCLE.get(
                 result.terminal_outcome or "completed", RunLifecycle.COMPLETED
@@ -2881,7 +2917,7 @@ class PlaybookEngine:
             principal=self._principal_projection(turn.principal or attempt.principal),
             result={
                 "tool_call_ids": list(turn.tool_call_ids),
-                "results_digest": turn.results_digest,
+                "results_digest": "(redacted)",
             },
             error=error if turn.kind == "interrupted" else None,
             error_code="interrupted" if turn.kind == "interrupted" else None,
@@ -3049,7 +3085,7 @@ class PlaybookEngine:
                 if key != "_in_flight_attempt"
             },
             budget=budget,
-            error=attempt.error,
+            error="private_run_error" if snapshot.has_private_data and attempt.error else attempt.error,
             error_code=(
                 attempt.outcome if attempt.outcome in ENGINE_RESERVED_OUTCOMES else None
             ),
@@ -3077,7 +3113,7 @@ class PlaybookEngine:
             inputs=dict(attempt.receipt_inputs),
             result=dict(attempt.receipt_result),
             selected_transition=attempt.selected_transition,
-            error=attempt.error,
+            error="private_run_error" if snapshot.has_private_data and attempt.error else attempt.error,
             error_code=(
                 attempt.outcome if attempt.outcome in ENGINE_RESERVED_OUTCOMES else None
             ),
@@ -3118,7 +3154,7 @@ class PlaybookEngine:
         failed = replace(
             snapshot,
             lifecycle=RunLifecycle.FAILED,
-            error=error,
+            error="private_run_error" if snapshot.has_private_data else error,
             error_code=outcome,
             updated_at=now,
             completed_at=now,
@@ -3133,7 +3169,7 @@ class PlaybookEngine:
             outcome="failure",
             started_at=now,
             snapshot_version=snapshot.version + 1,
-            error=error,
+            error="private_run_error" if snapshot.has_private_data else error,
             error_code=outcome,
             completed_at=now,
         )
@@ -3546,6 +3582,44 @@ class PlaybookEngine:
         if isinstance(cause, OperatorResolution):
             return {"resume_resolution": cause.kind}
         return {}
+
+    def _classify_private_bindings(
+        self, snapshot: RunSnapshot, artifact: PlaybookDefinition,
+    ) -> RunSnapshot:
+        from src.playbooks.private_values import private_result_fields
+
+        classified = dict(snapshot.private_bindings)
+        for name, value in snapshot.bindings.items():
+            step = artifact.steps.get(name) or next(
+                (item for item in artifact.steps.values()
+                 if getattr(item, "save_result_as", None) == name), None,
+            )
+            registration = self.services.contracts.get(getattr(step, "command", ""))
+            names = (private_result_fields(registration.contract.execution, value)
+                     if registration is not None else frozenset(value))
+            names |= frozenset(classified.get(name, ()))
+            if names:
+                classified[name] = tuple(sorted(names))
+        return replace(snapshot, private_bindings=classified)
+
+    async def _resolve_private_run(
+        self, snapshot: RunSnapshot, principal: Any, repository: Any,
+    ) -> RunSnapshot:
+        from src.playbooks.invocation import _invocation_context
+        from src.playbooks.private_values import contains_reference
+
+        if not contains_reference(snapshot.to_body(protect=lambda value: value)):
+            return snapshot
+        artifact_ref = await self._ref_for(snapshot)
+        artifact = self._load(artifact_ref)
+        ctx = StepContext(
+            run_id=snapshot.run_id, dispatch_id=snapshot.dispatch_id or "",
+            artifact_ref=artifact_ref, artifact=artifact, rule_id=snapshot.rule_id,
+            step_id=snapshot.current_step_id or "", principal=principal,
+            scope=ResolutionScope(), services=self.services,
+        )
+        with _invocation_context(ctx):
+            return await repository.resolve_private_snapshot(snapshot, principal)
 
     def _scope(
         self, snapshot: RunSnapshot, artifact: PlaybookDefinition, attempt: int = 1

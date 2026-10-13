@@ -55,7 +55,7 @@ def consume(value, *, bound=True):
         command=registration.name, save_result_as="result" if bound else None,
         transitions={"success": "done", "failure": "bad", "runtime_error": "bad"},
     )
-    return _consume(value, registration, step, SimpleNamespace(run_id="run"),
+    return _consume(value, registration, step, SimpleNamespace(run_id="run", private_inputs=False),
                     resolved_inputs={}, key="attempt")
 
 
@@ -373,7 +373,7 @@ async def test_generated_adapter_preserves_principal_without_inferring_result(mo
         seen.append((name, args, current_principal()))
         return raw
     set_handler_provider(lambda: SimpleNamespace(execute=execute))
-    monkeypatch.setattr(generated, "require_generated_execution", lambda: None)
+    monkeypatch.setattr(generated, "require_generated_execution", AsyncMock())
     try:
         registration = generated_registration(replace(descriptor(), origin="plugin", plugin="probe"))
         result = await registration.invoke(

@@ -1970,6 +1970,8 @@
       "default": {
         "cancellation_grace_seconds": 30,
         "enabled": false,
+        "private_value_active_key_id": "",
+        "private_value_key_env": {},
         "v2_artifact_min_versions": 10,
         "v2_artifact_retention_days": 90,
         "v2_dry_run_max_paths": 32,
@@ -1994,6 +1996,17 @@
           "description": "When false the V2 playbook runtime, TimerService, resume handlers, and workflow recovery are not started. V2 artifacts and run data are preserved. See docs/specs/design/feature-pauses.md.",
           "restart_required": true,
           "type": "boolean"
+        },
+        "private_value_active_key_id": {
+          "default": "",
+          "type": "string"
+        },
+        "private_value_key_env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
         },
         "v2_artifact_min_versions": {
           "default": 10,

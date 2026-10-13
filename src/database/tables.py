@@ -24,6 +24,7 @@ from sqlalchemy import (
     Identity,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     PrimaryKeyConstraint,
     SmallInteger,
@@ -2353,6 +2354,33 @@ playbook_activations = Table(
         name="uq_playbook_activations_scope",
     ),
     Index("idx_playbook_activations_health", "health"),
+)
+
+playbook_private_values = Table(
+    "playbook_private_values",
+    metadata,
+    Column("value_id", Text, primary_key=True),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("scope_kind", Text, nullable=False),
+    Column("scope_owner", Text, nullable=False),
+    Column("format_version", Integer, nullable=False),
+    Column("content_type", Text, nullable=False),
+    Column("ciphertext", LargeBinary, nullable=False),
+    Column("key_id", Text, nullable=False),
+    Column("nonce", LargeBinary, nullable=False),
+    Column("digest", Text, nullable=False),
+    Column("byte_count", BigInteger, nullable=False),
+    Column("expires_at", Float),
+    CheckConstraint("owner_kind IN ('run', 'namespace')", name="ck_playbook_private_values_owner_kind"),
+    CheckConstraint("scope_kind IN ('system', 'project', 'profile')",
+                    name="ck_playbook_private_values_scope_kind"),
+    CheckConstraint("byte_count >= 0", name="ck_playbook_private_values_byte_count"),
+    CheckConstraint("format_version > 0", name="ck_playbook_private_values_format_version"),
+    CheckConstraint("octet_length(nonce) = 12", name="ck_playbook_private_values_nonce"),
+    CheckConstraint("owner_id <> '' AND scope_owner <> ''", name="ck_playbook_private_values_owner"),
+    Index("idx_private_values_owner", "owner_kind", "owner_id"),
+    Index("idx_private_values_expiry", "expires_at"),
 )
 
 playbook_v2_runs = Table(
