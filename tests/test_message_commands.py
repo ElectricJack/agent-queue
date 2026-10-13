@@ -1244,9 +1244,7 @@ class TestStatusRecipientProject:
         outsider = await _execute_as(
             handler, "message_status", {"message_id": pointer.group(1)}, _supervisor_scope("p3")
         )
-        assert outsider["success"] is False
-        assert outsider["error_code"] == "resource_scope_denied"
-        assert "message" not in outsider
+        assert outsider == {"success": False, "error": f"Message '{sent['message_id']}' not found"}
 
     @pytest.mark.parametrize("mailbox", ["supervisor", "named_supervisor", "session", "task"])
     async def test_another_projects_row_to_an_own_mailbox_is_readable(self, setup, mailbox):
