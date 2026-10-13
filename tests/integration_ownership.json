@@ -15258,6 +15258,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary completion audit evidence for exact published-source required CI. It records a check observation, not ref replay or managed delivery state."
+    },
+    "src/orchestrator/pools.py::PoolsMixin._check_pool_progress::f6acd075b5bd9a6a9104d37e66f4885432fd8fd46ebb5c13cd8902504da0de5e": {
+      "line": 563,
+      "owner": "PoolsMixin._check_pool_progress",
+      "call": "log_event",
+      "owner_fingerprint": "fd45a29fa965f1c775f0ef8b740c06d36e9fde8279e8f2f7a4a43be6dc7b4781",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary pool-progress watchdog audit event, pool.scaler_stalled. Records bounded demand, live supply, ticks and a reconciliation hint; no Git ref replay, delivery state or integration lifecycle authority. Recovery re-measures ordinary scheduling admission through the existing pool reconciler."
     }
   },
   "generic_dependencies": {
