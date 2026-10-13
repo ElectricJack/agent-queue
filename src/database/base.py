@@ -989,8 +989,9 @@ class DatabaseBackend(Protocol):
     ) -> bool: ...
     async def count_ready_by_profile(
         self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
-        hierarchy_mode=None,
-    ) -> dict[str | None, int]: ...
+        hierarchy_mode=None, pool_profiles: Mapping[str, AgentProfile] | None = None,
+        include_repair_counts: bool = False,
+    ) -> dict[str | None, int] | dict[str | None, tuple[int, int]]: ...
 
     # --- Router (mandatory-routing spec §6.4-§6.6) ---
 

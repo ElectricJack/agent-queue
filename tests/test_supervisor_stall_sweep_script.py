@@ -122,6 +122,20 @@ def _scoped_responses(task_response):
     }}
 
 
+def test_train_repair_capacity_alarm_reaches_timed_patrol(tmp_path):
+    responses = _scoped_responses([_task("delegate", "READY", age_s=1900)])
+    responses["aq"]["task explain --task-id delegate"] = {"reasons": [
+        {"code": "awaiting_pool_session", "detail": "pool at capacity"},
+        {"code": "train_repair_capacity_wait", "ref": "operation-1",
+         "detail": "active train repair for batch train-1 (operation operation-1) waits"},
+    ]}
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert "TRAIN-REPAIR-CAPACITY rom delegate" in proc.stdout
+    assert "train-1" in proc.stdout and "operation-1" in proc.stdout
+    assert "STUCK rom delegate" not in proc.stdout
+
+
 def test_orphaned_assignment_without_session_is_reported(tmp_path):
     responses = _scoped_responses([
         _task("lost", "IN_PROGRESS", assigned_agent="idle-agent"),

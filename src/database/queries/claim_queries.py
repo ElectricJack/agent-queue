@@ -54,6 +54,7 @@ from src.database.tables import (
     agents,
     integration_batches,
     integration_branch_owners,
+    integration_repair_operations,
     integration_repair_stages,
     projects,
     sessions,
@@ -82,6 +83,32 @@ SETTLED_POOL_CLAIM_STATUSES = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.val
 #: ``close_session_id``, which the close writes before it is accepted and a
 #: refused close leaves behind, it exists only once that close committed.
 ACCEPTED_CLOSE_KEY = "accepted_close"
+
+
+def active_train_repair_bindings():
+    """Current active batch-repair delegate identities, independent of titles."""
+    operation = integration_repair_operations.alias("urgent_operation")
+    stage = integration_repair_stages.alias("urgent_stage")
+    return select(
+        stage.c.repair_task_id, operation.c.id.label("operation_id"), operation.c.batch_id,
+    ).select_from(stage.join(
+        operation, operation.c.id == stage.c.operation_id,
+    )).where(
+        stage.c.ordinal == operation.c.active_stage,
+        stage.c.writer_kind == "repair_delegate",
+        stage.c.state.in_(("active", "awaiting_completion")),
+        operation.c.target_kind == "batch",
+        operation.c.state.in_(("active", "escalated")),
+    )
+
+
+def active_train_repair_tasks():
+    bindings = active_train_repair_bindings()
+    return bindings.with_only_columns(bindings.selected_columns.repair_task_id)
+
+
+def active_train_repair(task_id=tasks.c.id):
+    return task_id.in_(active_train_repair_tasks())
 
 
 def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
@@ -785,7 +812,7 @@ class ClaimQueryMixin:
         on each attempt. A pre-read *hierarchy_mode* only filters candidates:
         the task is re-fenced under lock and preparation re-reads the project.
 
-        Prefer this agent's affinity rows, then scan all admissible rows. Both
+        Prefer active train repairs, then this agent's affinity rows, then all admissible rows.
         scans order by priority/created_at so an index can stop at LIMIT 1.
         A CASE affinity sort instead evaluated every candidate's frontier
         subqueries (~10,100 shared buffers versus 10–14 at the §15.2 scale).
@@ -799,7 +826,7 @@ class ClaimQueryMixin:
         """
         profile_ok = tasks.c.profile_id == profile_id
 
-        def candidate(*, pinned: bool):
+        def candidate(*, pinned: bool, repair_only: bool = False):
             stmt = (
                 select(tasks.c.id)
                 .where(
@@ -815,6 +842,10 @@ class ClaimQueryMixin:
                 stmt = stmt.where(tasks.c.id.not_in(excluded_task_ids))
             if pinned:
                 stmt = stmt.where(tasks.c.affinity_agent_id == agent_id)
+            if repair_only:
+                # The uncorrelated existence gate avoids scanning ordinary
+                # tasks when there is no active repair anywhere in the fleet.
+                stmt = stmt.where(active_train_repair_tasks().exists(), active_train_repair())
             stmt = stmt.where(*_pool_routing_predicates(
                 operator=operator, enforce_routing=enforce_routing,
                 intelligence_class=intelligence_class,
@@ -824,8 +855,12 @@ class ClaimQueryMixin:
             return stmt.with_for_update(of=tasks, skip_locked=True)
 
         if task_id is None:
-            row = (await conn.execute(candidate(pinned=True))).fetchone()
-            if row:
+            # COALESCE probes repairs then affinity lazily in one round trip.
+            row = (await conn.execute(select(func.coalesce(
+                candidate(pinned=False, repair_only=True).scalar_subquery(),
+                candidate(pinned=True).scalar_subquery(),
+            )))).fetchone()
+            if row and row[0] is not None:
                 return row[0]
         row = (await conn.execute(candidate(pinned=False))).fetchone()
         return row[0] if row else None
@@ -2197,7 +2232,8 @@ class ClaimQueryMixin:
         self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None,
         hierarchy_mode: ProjectIntegrationMode | None = None,
         pool_profiles: Mapping[str, AgentProfile] | None = None,
-    ) -> dict[str | None, int]:
+        include_repair_counts: bool = False,
+    ) -> dict[str | None, int] | dict[str | None, tuple[int, int]]:
         """Count structural work, restricted to verified development admission when supplied.
 
         *router_ready* counts only claimable work (:func:`route_claimable`),
@@ -2207,6 +2243,8 @@ class ClaimQueryMixin:
         *pool_profiles* restricts sizing demand to the fixed class and operator
         role each pool can execute. A stale route must not start a session that
         cannot claim its task. Structural callers may omit this snapshot.
+        With *include_repair_counts*, values are ``(ready, train_repairs)``;
+        both counts use the same frontier and one database round trip.
         """
         if hierarchy_mode is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
@@ -2214,7 +2252,10 @@ class ClaimQueryMixin:
             hierarchy_mode = (await hierarchy_frontier_modes(
                 self, project_ids={project_id}
             )).get(project_id)
-        stmt = select(tasks.c.profile_id, func.count()).where(
+        columns = [tasks.c.profile_id, func.count()]
+        if include_repair_counts:
+            columns.append(func.count().filter(active_train_repair()))
+        stmt = select(*columns).where(
             _frontier_where(project_id, hierarchy_mode, router_ready=router_ready),
         ).group_by(tasks.c.profile_id)
         if allowed_task_ids is not None:
@@ -2223,4 +2264,6 @@ class ClaimQueryMixin:
             stmt = stmt.where(_pool_profiles_predicate(pool_profiles))
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).fetchall()
+        if include_repair_counts:
+            return {pid: (int(n), int(repairs)) for pid, n, repairs in rows}
         return {pid: int(n) for pid, n in rows}

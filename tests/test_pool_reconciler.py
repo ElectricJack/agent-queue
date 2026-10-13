@@ -684,6 +684,57 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
     )
 
 
+@pytest.mark.parametrize("state,ordinal,expected", [
+    ("active", 0, True), ("escalated", 0, True),
+    ("completed", 0, False), ("cancelled", 0, False), ("active", 1, False),
+])
+async def test_train_repair_demand_claim_and_alarm_use_current_stage(
+    orch, db, state, ordinal, expected,
+):
+    from src.database.tables import integration_repair_operations, integration_repair_stages
+    from src.doctor.models import DoctorContext
+    from src.doctor.stall_checks import _waiting_train_repairs
+    from src.scheduler import PoolKey
+
+    await ready(db, "ordinary")
+    await ready(db, "repair")
+    # Ordinary priority and affinity would otherwise beat this repair.
+    await db.update_task("ordinary", priority=0, affinity_agent_id="probe")
+    await db.update_task("repair", priority=100)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_repair_operations).values(
+            id="op", target_kind="batch", batch_id="train", episode_id="episode",
+            active_stage=0, state=state, policy_snapshot={}, artifact_snapshot={},
+            required_check_version="v1", created_at=1, updated_at=1,
+        ))
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id="op", ordinal=ordinal, policy={}, repair_task_id="repair",
+            writer_kind="repair_delegate", starting_sha="a" * 40, state="active",
+        ))
+    measurement = await orch._measure_pools()
+    [candidate] = measurement.candidates[PoolKey("worker")]
+    assert candidate.repair_ready == int(expected)
+    async with db.immediate() as conn:
+        selected = await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        )
+        if expected:
+            # The repair probe locks its row even inside COALESCE: another
+            # claimant skips it and can still take ordinary affinity work.
+            async with db.immediate() as other:
+                assert await db.select_ready_for_profile(
+                    other, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+                ) == "ordinary"
+    assert selected == ("repair" if expected else "ordinary")
+    bindings = await _waiting_train_repairs(DoctorContext(db=db, config=orch.config), ["repair", "ordinary"])
+    assert bindings == ({"repair": {"batch_id": "train", "operation_id": "op"}}
+                        if expected else {})
+    # The same frontier fence must withhold urgent demand too.
+    await db.set_task_meta("repair", "claim_prepare_backoff_until", time.time() + 300)
+    [candidate] = (await orch._measure_pools()).candidates[PoolKey("worker")]
+    assert candidate.repair_ready == 0
+
+
 async def test_pool_watchdog_reports_and_recovers_eligible_demand(orch, db, caplog):
     await ready(db, "stranded")
     # No cascade tick: reproduce a scheduler blocked in unrelated housekeeping.

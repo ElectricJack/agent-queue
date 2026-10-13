@@ -308,12 +308,12 @@ class PoolsMixin:
             # Demand is claimable work only (mandatory routing §9.1): an
             # unrouted task is demand for no pool, and neither is a legacy
             # one once the project's router is ready.
-            ready_by_profile = await self.db.count_ready_by_profile(
+            demand_by_profile = await self.db.count_ready_by_profile(
                 project.id,
                 allowed_task_ids=allowed,
                 router_ready=project.id in ready_projects,
                 hierarchy_mode=hierarchy_modes.get(project.id) or ProjectIntegrationMode.of(project),
-                pool_profiles=pool_profiles,
+                pool_profiles=pool_profiles, include_repair_counts=True,
             )
             workspace_capacity = await self.db.count_available_workspaces(
                 project.id,
@@ -349,7 +349,7 @@ class PoolsMixin:
             for profile_id, profile in pool_profiles.items():
                 key = PoolKey(profile_id)
                 measurement.profiles[key] = profile
-                ready = ready_by_profile.get(profile_id, 0)
+                ready, repair_ready = demand_by_profile.get(profile_id, (0, 0))
                 measurement.demand[key] = measurement.demand.get(key, 0) + ready
 
                 local = PoolProjectSupply()
@@ -403,6 +403,7 @@ class PoolsMixin:
                         warm_floor=getattr(profile, "min_per_project", 0) or 0,
                         idle_session_ids=tuple(local.idle_session_ids),
                         starting=local.starting,
+                        repair_ready=repair_ready,
                     )
                 )
 
@@ -500,6 +501,13 @@ class PoolsMixin:
             scale_down_grace=self.config.swarm.scale_down_grace,
             max_starts_per_tick=self.config.swarm.max_starts_per_tick,
             max_drains_per_tick=self.config.swarm.max_drains_per_tick,
+            repair_demand={
+                key: sum(max(0, c.repair_ready - len(c.idle_session_ids) - c.starting)
+                         for c in candidates
+                         if not c.quarantined and c.workspace_capacity > 0
+                         and (c.project_cap is None or c.project_live_total < c.project_cap))
+                for key, candidates in measurement.candidates.items()
+            },
         )
 
     async def _check_pool_progress(self) -> None:

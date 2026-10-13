@@ -401,12 +401,13 @@ fails is the blocking reason reported on a starvation:
 Eligible projects are then ordered, re-sorting after every single start so a
 budget of two does not pile onto whichever project sorts first:
 
-1. projects below their `min_per_project` warm floor, largest shortfall first;
-2. then by unserved deficit `ready - (idle + starting)`, largest first;
-3. then by fewest live workers — spread rather than concentrate;
-4. then `project_id` ascending, so the outcome is deterministic.
+1. projects with unserved active train repair delegates;
+2. projects below their `min_per_project` warm floor, largest shortfall first;
+3. then by fewest live workers among projects with unserved demand;
+4. then by unserved deficit `ready - (idle + starting)`, largest first;
+5. then `project_id` ascending, so the outcome is deterministic.
 
-The winner's reason (`warm_floor` / `deficit` / `spread`) is carried on the
+The winner's reason (`train_repair` / `warm_floor` / `deficit` / `spread`) is carried on the
 `pool.scaled` event as `placement_reason`, which is the answer to "why *there*?".
 
 **Drains invert it.** A project at or below its warm floor is excluded
@@ -416,8 +417,11 @@ session in the chosen project goes. That is what stops a quiet project's one
 warm worker from being reaped first simply for being idle and old.
 
 When global supply already matches demand but idle workers are in another
-project, the pool waits the scale-down grace period and drains only idle
-surplus above that project's warm floor. A destination must have unserved
+project, the pool waits the scale-down grace period and drains idle workers above
+that project's warm floor. Ordinary queued demand can yield idle capacity to
+a project with a smaller share (more than one worker behind), or to an unserved
+train repair. Capacity serving the donor's train repairs stays protected.
+A destination must have unserved
 ready work, workspace capacity and room under its project cap. The next
 normal sizing pass replaces the retired capacity; rebalancing never grants
 extra starts or raises the configured limits.
@@ -427,6 +431,15 @@ eligible, the start is not silently dropped: it comes back as a starvation,
 logged once per condition (not per tick), persisted as
 `pool.placement_starved` with the blocking reason per project, and reported by
 `aq doctor --check pools.placement_starved` once it has held for five minutes.
+
+Train repairs receive priority from the current active batch repair stage's
+binding, independent of titles and ordinary task priority. Unserved repairs
+also precede ordinary profiles when competing for box-wide start headroom.
+Claims prefer eligible repair delegates before ordinary priority/affinity
+ordering. `aq doctor --check stall.sweep` reports a distinct
+`train_repair_capacity_wait` after a READY repair waits on compatible worker
+capacity longer than 30 minutes, naming its task, batch, operation and profile.
+All-busy pools wait for held work to finish; no claim is interrupted.
 
 Over-subscribing per-project caps is still the intended arrangement: six
 profiles capped at 3+2+2+2+1+1 = 11 against a project cap of 8 does not mean 11
@@ -588,16 +601,17 @@ the design, not defects:
   *somewhere*, not everywhere. A project that is quiet when the floor is
   placed pays a cold launch for its next task. `min_per_project` buys it back
   where you want it, at the cost of fleet slots (§2).
-- **Warmth follows demand.** Deficit-ordered placement concentrates workers in
-  the busiest project. Above `min_per_project`, nothing keeps a worker warm in
+- **Warmth follows demand.** Placement shares workers among projects with
+  unserved demand, favoring the smaller live share before backlog size. Above
+  `min_per_project`, nothing keeps a worker warm in
   a project with no work — nor should it.
 - **Cross-project isolation is weaker.** A 500-task backlog in project A used
   to be unable to touch project B's pool, because B had one of its own. Under
-  one fleet, A absorbs capacity up to `max_active`.
-  `projects.max_concurrent_agents` still ceilings A's share and
-  `min_per_project` still floors B's, but there is no proportional fair-share
-  between projects — a project that needs a guaranteed share needs its own
-  profile.
+  one fleet, A can absorb capacity up to `max_active` when no other project
+  has unserved demand. New starts favor smaller project shares. Idle workers
+  can be redistributed after the scale-down grace, but busy claims finish
+  first. `projects.max_concurrent_agents` still ceilings A's share and
+  `min_per_project` still floors B's.
 - **Slower cold ramp under burst.** `max_starts_per_tick` is 2 per profile in
   total now (§3.1), so a ramp is a few ticks rather than N projects' worth of
   starts in parallel.
@@ -611,7 +625,7 @@ the design, not defects:
 `pool status` shows the current shape, never the fact that it changed. Four
 pool events are written to the event table; `pool.scaled` is the answer to
 "why did a worker appear at 03:14?" and its `placement_reason`
-(`warm_floor` / `deficit` / `spread`) is the answer to "why *there*?":
+(`train_repair` / `warm_floor` / `deficit` / `spread`) is the answer to "why *there*?":
 
 ```bash
 aq system get-recent-events --event-type 'pool.*' --since 1h
