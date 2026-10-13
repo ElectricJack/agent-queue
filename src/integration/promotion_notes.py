@@ -315,9 +315,16 @@ def draft_notes(notes_input, *, kind, version):
     raise ValueError("Only configured notes formats can be drafted")
 
 
-def step_pr_body(step, source, request_id, notes_input, authored_notes=None, *, origin_ref=None):
+def step_pr_body(step, source, request_id, notes_input, authored_notes=None, *, origin_ref=None,
+                 migration_admission=None):
     prefix = f"Promote `{origin_ref or step['source']}` to `{step['target']}` at `{source}`.\n\n"
     suffix = f"\nAQ-Promotion-Request: {request_id}\n"
+    if migration_admission and migration_admission["override"]:
+        operator = migration_admission["override"]
+        suffix += (f"\nBreaking migration override by {operator['identity']} "
+                   f"({operator['github_login']}); {migration_admission['finding_count']} findings "
+                   f"(SHA256 {migration_admission['findings_sha256']}). "
+                   "Code rollback across this release is disabled.\n")
     if notes_input is None:
         body = prefix + suffix
         if len(body.encode()) > MAX_PR_BODY_BYTES:

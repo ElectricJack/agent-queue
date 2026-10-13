@@ -11922,6 +11922,12 @@
             "default": null,
             "description": "Completed hotfix task to promote.",
             "title": "From Task"
+          },
+          "allow_breaking_migration": {
+            "default": false,
+            "description": "Local operator override of non-additive migrations; disables code rollback.",
+            "title": "Allow Breaking Migration",
+            "type": "boolean"
           }
         },
         "required": [
@@ -15174,6 +15180,12 @@
             "default": null,
             "description": "Completed hotfix task to promote.",
             "title": "From Task"
+          },
+          "allow_breaking_migration": {
+            "default": false,
+            "description": "Local operator override of non-additive migrations; disables code rollback.",
+            "title": "Allow Breaking Migration",
+            "type": "boolean"
           }
         },
         "required": [

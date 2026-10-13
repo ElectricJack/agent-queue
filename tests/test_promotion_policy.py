@@ -111,6 +111,41 @@ async def policy_engine(e, kind):
                            ref=ref, engine=engine, principal=principal)
 
 
+@pytest.mark.parametrize('kind,rule', [
+    ('request', 'explicit-request'), ('request', 'hotfix-completed'),
+    ('request', 'backmerge-delivered'), ('continuous', 'explicit-request'),
+    ('continuous', 'hotfix-completed'), ('continuous', 'backmerge-delivered'),
+    ('continuous', 'advance-source'),
+])
+@pytest.mark.parametrize('refusal', [
+    'migrations_not_additive', 'migration_range_invalid',
+    'breaking_migration_override_forbidden',
+])
+async def test_migration_refusals_notify_once_without_override_or_retry(kind, rule, refusal):
+    handler = SimpleNamespace(
+        _cmd_integration_promotion_policy_input=AsyncMock(return_value={
+            'success': True, 'outcome': 'policy_input',
+            'policy': {'source_sha': 'a' * 40, 'backmerge_pending': False,
+                       'active_request_id': None, 'newer_source': False},
+        }),
+    )
+    command = ('integration_backmerge_source' if rule == 'backmerge-delivered'
+               else 'promote_request')
+    refused = AsyncMock(return_value={'success': False, 'outcome': refusal})
+    setattr(handler, '_cmd_' + command, refused)
+    policy = await policy_engine(SimpleNamespace(handler=handler), kind)
+
+    await policy.run(rule, from_task='hotfix' if rule == 'hotfix-completed' else None)
+
+    refused.assert_awaited_once()
+    assert policy.results[-2][1]['outcome'] == refusal
+    assert [name for name, _ in policy.calls].count('message_send') == 1
+    assert policy.calls[-1][0] == 'message_send'
+    assert all(not args.get('allow_breaking_migration') for _, args in policy.calls)
+    assert not any(name in {'promote_approve', 'integration_promotion_publish', 'promote_cancel'}
+                   for name, _ in policy.calls)
+
+
 async def chain_lanes(e, flow):
     lanes = {}
     truth = GitTruth(e.ops.git)

@@ -165,6 +165,170 @@ async def request(e, **kwargs):
     return await e.handler._cmd_promote_request({"project_id": "p", "step_id": "release", **kwargs})
 
 
+def _migration(revision, parent, body):
+    return ("from alembic import op\nimport sqlalchemy as sa\n"
+            f"revision = {revision!r}\ndown_revision = {parent!r}\n"
+            f"def upgrade():\n    {body}\n")
+
+
+def _migration_source(e, files, *, base=None):
+    source = commit(e.repo.store, files, base=base or e.source)
+    git(e.repo.store, "push", "origin", source + ":refs/heads/dev")
+    e.github.runs[source] = "success"
+    e.source = source
+    return source
+
+
+@pytest.mark.parametrize("operation", [
+    "op.execute('UPDATE tasks SET title = title')",
+    "op.drop_constraint('ck_tasks_old', 'tasks')",
+    "op.alter_column('tasks', 'title', type_=sa.Integer())",
+    "op.add_column('tasks', column)",
+])
+async def test_nonadditive_release_refuses_before_pr_ref_or_intent(promote_env, operation):
+    e = promote_env
+    _migration_source(e, {"migrations/versions/a.py": _migration("a", None, operation)})
+    refs_before = git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/")
+    result = await request(e)
+    assert result["outcome"] == "migrations_not_additive", result
+    audit = result["migration_admission"]
+    assert audit["range"] == {"previous": None, "current": e.source}
+    assert audit["finding_count"] == 1 and audit["override"] is None
+    assert e.github.created == 0
+    assert git(e.ops.git.remote_path, "for-each-ref", "refs/heads/aq/promote/") == refs_before
+    async with e.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).all()
+        assert not (await conn.execute(select(tasks))).all()
+
+
+async def test_first_release_bootstrap_and_previous_tag_pin_migration_range(promote_env):
+    e = promote_env
+    boundary = _migration_source(e, {
+        "migrations/versions/a.py": _migration("a", None, "op.execute('old backfill')"),
+    })
+    source = _migration_source(e, {
+        "migrations/versions/b.py": _migration("b", "a", "op.add_column('tasks', sa.Column('new', sa.Text(), nullable=True))"),
+    })
+    assert (await request(e))["outcome"] == "migrations_not_additive"
+    step = copy.deepcopy(e.meta["step"])
+    step["notes"]["bootstrap_sha"] = boundary
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(projects).values(promotion_flow=[step]))
+    opened = await request(e)
+    assert opened["outcome"] == "requested", opened
+    assert opened["promotion"]["migration_admission"]["range"] == {"previous": boundary, "current": source}
+    assert opened["promotion"]["migration_admission"]["status"] == "additive"
+    # A replay keeps the immutable audit even if the caller requests an override.
+    replay = await request(e, allow_breaking_migration=True)
+    assert replay["outcome"] == "already_requested"
+    assert replay["promotion"]["migration_admission"] == opened["promotion"]["migration_admission"]
+
+
+async def test_previous_tag_overrides_bootstrap_and_uses_pinned_source_tree(promote_env):
+    e = promote_env
+    boundary = _migration_source(e, {
+        "migrations/versions/a.py": _migration("a", None, "op.execute('old backfill')"),
+    })
+    git(e.repo.store, "tag", "-a", "v0.1.0", "-m", "previous", boundary)
+    git(e.repo.store, "push", "origin", "refs/tags/v0.1.0")
+    source = _migration_source(e, {"source.txt": "safe source"})
+    _migration_source(e, {"migrations/versions/b.py": _migration("b", "a", "op.execute('new backfill')")})
+    assert (await request(e))["outcome"] == "migrations_not_additive"
+    opened = await request(e, source_sha=source)
+    assert opened["outcome"] == "requested", opened
+    audit = opened["promotion"]["migration_admission"]
+    assert audit["range"] == {"previous": boundary, "current": source}
+    assert audit["previous_tag"] == "v0.1.0" and audit["status"] == "additive"
+
+
+async def test_release_audit_bounds_findings_without_losing_total_or_digest(promote_env):
+    e = promote_env
+    body = "\n    ".join("op.execute('backfill')" for _ in range(120))
+    _migration_source(e, {"migrations/versions/a.py": _migration("a", None, body)})
+    refused = await request(e)
+    assert refused["outcome"] == "migrations_not_additive", refused
+    audit = refused["migration_admission"]
+    assert audit["finding_count"] == 120 and len(audit["findings"]) == 100
+    assert audit["findings_truncated"] is True and len(audit["findings_sha256"]) == 64
+    accepted = await request(e, allow_breaking_migration=True)
+    assert accepted["outcome"] == "requested", accepted
+    assert accepted["promotion"]["migration_admission"]["findings_sha256"] == audit["findings_sha256"]
+
+
+async def test_invalid_migration_graph_cannot_be_overridden(promote_env):
+    e = promote_env
+    _migration_source(e, {"migrations/versions/a.py": _migration("a", "missing", "pass")})
+    result = await request(e, allow_breaking_migration=True)
+    assert result["outcome"] == "migrations_not_additive" and "graph" in result["error"]
+    assert e.github.created == 0
+
+
+async def test_migration_admission_preserves_exact_historical_file_contents(promote_env):
+    e = promote_env
+    path = "migrations/versions/a.py"
+    original = _migration("a", None, "pass")
+    boundary = _migration_source(e, {path: original})
+    git(e.repo.store, "tag", "-a", "v0.1.0", "-m", "previous", boundary)
+    git(e.repo.store, "push", "origin", "refs/tags/v0.1.0")
+    _migration_source(e, {path: "\n" + original})
+    result = await request(e)
+    assert result["outcome"] == "migrations_not_additive", result
+    assert result["migration_admission"]["findings"] == [path + ":1: existing migration removed or modified"]
+    assert e.github.created == 0
+
+
+@pytest.mark.parametrize("kind", [PrincipalKind.SESSION, PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK])
+async def test_breaking_override_is_local_operator_only(promote_env, kind):
+    e = promote_env
+    principal = _supervisor("p") if kind is PrincipalKind.SESSION else ExecutionPrincipal(kind=kind, policy=DENY_ALL)
+    with principal_context(principal):
+        result = await request(e, allow_breaking_migration=True)
+    assert result["outcome"] == "breaking_migration_override_forbidden"
+    assert e.github.created == 0
+
+
+async def test_operator_breaking_override_freezes_exact_evidence_and_publishes_annotation(promote_env):
+    from src.integration.promotion_steps import PromotionIntentInvalid, StepPullRequestGate
+    from tests.test_promotion_steps import visit
+
+    e = promote_env
+    path = "migrations/versions/a.py"
+    _migration_source(e, {path: _migration("a", None, "op.execute('backfill')")})
+    refusal = await request(e)
+    opened = await request(e, allow_breaking_migration=True)
+    assert opened["outcome"] == "requested", opened
+    meta = opened["promotion"]
+    audit = meta["migration_admission"]
+    assert audit["schema"] == "aq.migration-admission.v1"
+    assert audit["range"] == {"previous": None, "current": e.source}
+    assert audit["findings"] == [path + ":6: non-additive or unproven operation: execute"]
+    assert audit["findings_sha256"] == refusal["migration_admission"]["findings_sha256"]
+    assert audit["override"]["identity"] == "human:local-operator"
+    assert audit["override"]["github_login"] == "operator" and audit["override"]["recorded_at"] > 0
+    assert "Code rollback across this release is disabled" in e.github.body
+    batch = await e.store.get(opened["batch_id"])
+    members = await e.store.members(batch.id)
+    assert await e.admission.load(batch, members) == meta
+    async with e.db._engine.begin() as conn:
+        edited = copy.deepcopy(meta)
+        edited["migration_admission"]["override"] = None
+        await conn.execute(update(task_context).values(content=json.dumps(edited)))
+    with pytest.raises(PromotionIntentInvalid):
+        await e.admission.load(batch, members)
+    async with e.db._engine.begin() as conn:
+        await conn.execute(update(task_context).values(content=json.dumps(meta)))
+    assert (await request(e))["promotion"]["migration_admission"] == audit
+    assert (await e.handler._cmd_promote_approve({"project_id": "p", "request_id": meta["request_id"]}))["outcome"] == "approved"
+    e.batch, e.member, e.meta = batch, members[0], meta
+    e.checks.pull_request = lambda _: StepPullRequestGate(e.github, e.repo.binding)
+    observation = await visit(e)
+    assert observation.state == "delivered", observation
+    annotation = git(e.ops.git.remote_path, "cat-file", "-p", "v0.2.0")
+    encoded = next(line.removeprefix("AQ-Migration-Admission: ") for line in annotation.splitlines()
+                   if line.startswith("AQ-Migration-Admission: "))
+    assert json.loads(encoded) == audit
+
+
 @pytest.fixture
 async def source_audit(promote_env):
     """The reported green delivery push: 16 prefixed tests and one audit check."""
@@ -819,6 +983,11 @@ def test_intent_contracts_have_typed_arguments_and_read_only_cache_commands():
             "request", ["--step", "release", "--from-task", "fix"],
             {"step_id": "release", "from_task": "fix", "source_sha": None,
              "version": None, "notes_reviewed": False},
+        ),
+        (
+            "request", ["--step", "release", "--allow-breaking-migration"],
+            {"step_id": "release", "source_sha": None, "version": None,
+             "notes_reviewed": False, "allow_breaking_migration": True},
         ),
         (
             "hotfix", ["--step", "release", "--title", "Fix release", "--version", "0.2.1"],

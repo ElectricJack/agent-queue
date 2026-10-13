@@ -9727,6 +9727,9 @@
     },
     "src/orchestrator/lifecycle.py::LifecycleMixin.reevaluate_frontier_rejections": {
       "reason": "READY frontier lifecycle advisory evaluates shared integration admission predicates; it cannot publish refs or change delivery state."
+    },
+    "src/database/additive_migrations.py::check_range": {
+      "reason": "Conservative nonexecuting migration-range checker used by versioned promotion admission; validates the exact before/after revision graph and reports changed historical or non-additive new migrations."
     }
   },
   "shared_state": {
