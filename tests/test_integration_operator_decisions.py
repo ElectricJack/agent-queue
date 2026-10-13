@@ -32,7 +32,7 @@ async def supervisor(db, identity, project):
         kind=PrincipalKind.SESSION, session_id=identity, project_id=project,
         profile_id="supervisor", elevated=True,
         policy=CapabilityPolicy(aq_commands=frozenset({
-            "decision_record", "decision_list", "integration_promote_main", "task_show",
+            "decision_record", "decision_list", "integration_seal_now", "task_show",
         })),
     )
 
@@ -44,7 +44,7 @@ async def test_project_and_global_supervisors_share_hold_and_conflicting_control
     project = await supervisor(db, "project-supervisor", "proj-1")
     global_ = await supervisor(db, "global-supervisor", None)
     control = AsyncMock(return_value={"success": True})
-    monkeypatch.setattr(handler, "_cmd_integration_promote_main", control)
+    monkeypatch.setattr(handler, "_cmd_integration_seal_now", control)
     with principal_context(project):
         recorded = await handler.execute("decision_record", instruction())
     assert recorded["success"], recorded
@@ -58,7 +58,7 @@ async def test_project_and_global_supervisors_share_hold_and_conflicting_control
                 "object_kind": "task", "object_id": task.id,
             })
             shown = await handler.execute("task_show", {"task_id": task.id})
-            blocked = await handler.execute("integration_promote_main", {"task_id": task.id})
+            blocked = await handler.execute("integration_seal_now", {"task_id": task.id})
         assert read["operator_decisions"][0]["id"] == row["id"]
         assert shown["operator_decisions"] == read["operator_decisions"]
         assert blocked["outcome"] == "operator_decision_hold", blocked
@@ -70,7 +70,7 @@ async def test_project_and_global_supervisors_share_hold_and_conflicting_control
             "source_ref": "discord://channel/message-124",
         })
         assert released["success"], released
-        assert (await handler.execute("integration_promote_main", {"task_id": task.id}))["success"]
+        assert (await handler.execute("integration_seal_now", {"task_id": task.id}))["success"]
     control.assert_awaited_once()
     # A fresh reader observes the release; nothing depends on either mailbox.
     history = await OperatorDecisions(db).history("task", task.id)
@@ -142,7 +142,7 @@ async def test_operation_hold_cannot_be_bypassed_using_batch_control(batch_env):
         instruction("operation", "repair"), recorded_by="human:local-operator",
     )
     from src.operator_decisions import control_refusal
-    refused = await control_refusal(db, "integration_promote_main", {"batch_id": batch.id})
+    refused = await control_refusal(db, "integration_seal_now", {"batch_id": batch.id})
     assert refused["operator_decisions"][0]["id"] == row["id"]
 
 

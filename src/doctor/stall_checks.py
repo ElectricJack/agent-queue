@@ -771,7 +771,11 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
         _ACTIVE_BATCH_LIFECYCLES,
         _root_delivery_receipt_conditions,
     )
-    from src.integration.review_evidence import ReviewEvidenceProducer
+    from src.integration.reviews import ReviewEvidenceProducer
+    from src.integration.delivery_observer import prerequisite_observer
+    from src.integration.delivery_truth import DeliveryState
+
+    observer = prerequisite_observer(ctx.db)
 
     child, archived = t.tasks.alias("unadmitted_child"), t.archived_tasks.alias("unadmitted_archived")
     statement = select(
@@ -797,18 +801,28 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
             t.integration_batches, t.integration_batches.c.id == t.integration_batch_members.c.batch_id,
         ).where(t.integration_batch_members.c.task_id == t.tasks.c.id,
                 t.integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_LIFECYCLES))),
-        ~exists(select(t.task_delivery_receipts.c.id).where(
+        (True if observer is not None else ~exists(select(t.task_delivery_receipts.c.id).where(
             t.task_delivery_receipts.c.source_task_id == t.tasks.c.id,
             *_root_delivery_receipt_conditions(t.repos.c.id, t.repos.c.default_branch),
-        )),
+        ))),
     ).order_by(t.tasks.c.updated_at, t.tasks.c.id).limit(100)
     producer = ReviewEvidenceProducer(ctx.db, None)
     findings = []
     probe_deadline = time.monotonic() + _PARENT_PR_PROBE_BUDGET_SECONDS
     async with ctx.db._engine.connect() as conn:
         rows = (await conn.execute(statement)).mappings().all()
+    view = (await observer.observe([row["task_id"] for row in rows], max_age=observer.READ_MAX_AGE)
+            if observer is not None and rows else None)
+    fresh = view is not None and await view.fresh()
+    async with ctx.db._engine.connect() as conn:
+        verified = await view.verified_on(conn, [row["task_id"] for row in rows]) if fresh else {}
         for index, record in enumerate(rows):
             row = dict(record)
+            proof = verified.get(row["task_id"])
+            if (proof is not None
+                    and proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}
+                    and (not row["checkpoint_sha"] or row["checkpoint_sha"] == proof.source_oid)):
+                continue
             observed = {"pr_open": None, "pr_head": None}
             remaining = probe_deadline - time.monotonic()
             if index < _MAX_PR_PROBES and remaining > 0:
@@ -1009,7 +1023,7 @@ async def _find_orphaned_prs(ctx, project_ids=None, *, now=None):
 
     if ctx.db is None or not hasattr(ctx.db, "_engine"):
         return [], []
-    factory = getattr(ctx.handler, "_integration_promotion_service", None)
+    factory = getattr(ctx.handler, "_integration_repository_git", None)
     if factory is not None:
         git = factory().git
     else:

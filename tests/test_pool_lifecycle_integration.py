@@ -491,9 +491,12 @@ class TestClaimAdmissibility:
     """A pool session may only claim work its live class/harness can run."""
 
     async def test_pool_session_cannot_claim_a_higher_class_task(self, orch, db, handler):
-        await ready(db, "deep", intelligence_class="deep-high")
+        # Launch from compatible demand, then replace it with a stale class route.
+        await ready(db, "std")
         await orch._reconcile_pools()
         await orch.wait_for_pool_launches()
+        await db.transition_task("std", TaskStatus.COMPLETED, context="test")
+        await ready(db, "deep", intelligence_class="deep-high")
         session = await only_pool_session(db)
         assert session.intelligence_class == "standard-medium"
 
@@ -513,9 +516,11 @@ class TestClaimAdmissibility:
         assert (res["result"], res["task"]["id"]) == ("claimed", "std")
 
     async def test_targeted_claim_of_an_inadmissible_task_is_refused(self, orch, db, handler):
-        await ready(db, "deep", intelligence_class="deep-high")
+        await ready(db, "std")
         await orch._reconcile_pools()
         await orch.wait_for_pool_launches()
+        await db.transition_task("std", TaskStatus.COMPLETED, context="test")
+        await ready(db, "deep", intelligence_class="deep-high")
         session = await only_pool_session(db)
         res = await scoped(handler, session.id)._cmd_task_claim({"task_id": "deep"})
         assert res["result"] != "claimed"

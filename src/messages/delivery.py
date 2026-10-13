@@ -107,7 +107,11 @@ class MessageDeliveryEngine:
         if self._delivery_lock.locked():
             return result
         async with self._delivery_lock:
+            await self._db.expire_finished_task_notices()
             await self._db.redirect_disabled_supervisor_messages()
+            alert = await self._db.alert_global_supervisor_backlog()
+            if alert is not None:
+                result["delivered"] += await self._deliver_to_user([alert])
             recipients = await self._db.get_pending_recipients()
             seen = set()
             for to_kind, to_id, _project_id in recipients:
@@ -139,6 +143,7 @@ class MessageDeliveryEngine:
                 min(NOTIFICATION_MAX_RETRY_SECONDS, NOTIFICATION_RETRY_SECONDS * 2**index)
                 for index in range(4)
             ),
+            newest_first=to_kind in {"session", "task"},
         )
         # Offline turns stay durable until supervisor start routes them.
         # They must neither cold-start a supervisor nor park.
@@ -164,11 +169,13 @@ class MessageDeliveryEngine:
         for msg in pending:
             if (msg.notification_attempts >= 3 and msg.last_notified_at is not None
                     and now >= msg.last_notified_at + _retry_delay(msg)
-                    and msg.body_kind != "delivery_alert"
-                    and msg.to_id not in {"supervisor-global", "n-supervisor--global"}):
+                    and msg.body_kind != "delivery_alert"):
                 alert = await self._db.escalate_unread_message(msg.id)
                 if alert is not None:
-                    await self._emit("message.sent", _message_sent_payload(alert))
+                    if alert.to_kind == "user":
+                        result["delivered"] += await self._deliver_to_user([alert])
+                    else:
+                        await self._emit("message.sent", _message_sent_payload(alert))
         pending = [msg for msg in pending if msg.body_kind == "schedule_prompt"
                    or msg.last_notified_at is None
                    or now >= msg.last_notified_at + _retry_delay(msg)]

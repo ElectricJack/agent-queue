@@ -9721,6 +9721,9 @@
     },
     "src/portable_config.py::_stage_project_preferences": {
       "reason": "Writes a pending portable integration preference draft, retaining destination-local trust and rollout requirements without activation."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.transition_task": {
+      "reason": "Public lifecycle transition observes current Git delivery outside the transaction and passes request-scoped evidence to the locked mutation guard; no persisted delivery projection or ref replay authority."
     }
   },
   "shared_state": {

@@ -264,6 +264,7 @@ from .delete_task_response_disposition import DeleteTaskResponseDisposition
 from .delete_task_summary import DeleteTaskSummary
 from .delete_warning import DeleteWarning
 from .delete_worktree import DeleteWorktree
+from .deployment_event import DeploymentEvent
 from .diff_item import DiffItem
 from .diff_item_original_scope import DiffItemOriginalScope
 from .diff_item_scope import DiffItemScope
@@ -2195,6 +2196,7 @@ __all__ = (
     "DeleteTaskSummary",
     "DeleteWarning",
     "DeleteWorktree",
+    "DeploymentEvent",
     "DiffItem",
     "DiffItemOriginalScope",
     "DiffItemScope",

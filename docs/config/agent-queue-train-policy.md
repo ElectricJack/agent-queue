@@ -1,7 +1,9 @@
 # Agent Queue train policy handoff
 
 The project-scoped bundles in `src/prompts/reviewed_playbooks/` are compiled
-against the current V2 command and event registries. The parent route handles
+against the current V2 command and event registries. Their legacy publisher
+event rules have been retired; the Git train owns candidate construction and
+publication, while the authored integration policy tables remain unchanged. The parent route handles
 the current `integration_complete_parent` outcomes, including idempotent
 `already_completed` and terminal `failed`. The policy JSON binds their exact
 artifact identities and the sixteen `Tests (...)`, `E2E CLI (...)` and
@@ -45,8 +47,8 @@ aq playbook v2-validate --path reviewed-playbooks/agent-queue-parent-integration
 aq playbook v2-validate --path reviewed-playbooks/agent-queue-root-train/artifact.json
 aq playbook v2-import --path reviewed-playbooks/agent-queue-parent-integration
 aq playbook v2-import --path reviewed-playbooks/agent-queue-root-train
-aq playbook activate --playbook-id agent-queue-parent-integration --artifact-sha256 sha256:a514441d2d7dd73a4de0795fbfc4e5e14d1fe07dfb9152ec2a3c602c82333d77 --enabled
-aq playbook activate --playbook-id agent-queue-root-train --artifact-sha256 sha256:0b01412a51b1e122fa4f7fd85a79380a2e0e0f3d05b04a4cb5ff2116f172b8bb --enabled
+aq playbook activate --playbook-id agent-queue-parent-integration --artifact-sha256 sha256:6bac753c97dddfb8683ebab844c1b9af8ed273d00e334d7d29a75e3e5c10042c --enabled
+aq playbook activate --playbook-id agent-queue-root-train --artifact-sha256 sha256:f17f082f3e2e1aae663a61e42ca0be904e46885dcf22a6f7e19f4ffd5b0b0e0e --enabled
 aq playbook activation-health --playbook-id agent-queue-parent-integration
 aq playbook activation-health --playbook-id agent-queue-root-train
 ```

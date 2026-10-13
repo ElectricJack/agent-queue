@@ -1362,7 +1362,7 @@ class SessionCommandsMixin:
         review_evidence_snapshot = None
         if outcome == "pass" and task.profile_id in {"reviewer", "final-reviewer"}:
             from src.database.queries.hierarchy_queries import HierarchyError
-            from src.integration.review_evidence import ReviewEvidenceProducer
+            from src.integration.reviews import ReviewEvidenceProducer
 
             try:
                 review_evidence_snapshot = await ReviewEvidenceProducer(

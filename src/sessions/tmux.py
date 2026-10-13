@@ -1723,15 +1723,19 @@ _OPENCODE_AGENT_ROW = re.compile(r"\S.* · \S.*")
 
 @dataclass(frozen=True)
 class _OpenCodeBox:
-    """Row indices of the OpenCode composer box on one captured screen."""
+    """Rows and horizontal bounds of the OpenCode composer on one screen."""
 
     indent: int
+    right: int
     top: int
     agent: int
 
     def rows(self, lines: list[str]) -> list[str]:
         """The rows between the top padding and the agent row, bar removed."""
-        return [line[self.indent + len(_OPENCODE_BAR) :] for line in lines[self.top : self.agent]]
+        return [
+            line[self.indent + len(_OPENCODE_BAR) : self.right]
+            for line in lines[self.top : self.agent]
+        ]
 
 
 @dataclass(frozen=True)
@@ -1764,16 +1768,20 @@ def _opencode_box(lines: list[str]) -> _OpenCodeBox | None:
     if not border:
         return None
     indent = len(lines[border]) - len(lines[border].lstrip(" "))
+    # With its sidebar open, OpenCode paints worktree paths alongside the
+    # blank composer rows. Only columns above the bottom border are input;
+    # reading the rest of the screen misclassifies an idle box as a draft.
+    right = len(lines[border].rstrip())
     bar = " " * indent + _OPENCODE_BAR
     agent = border - 1
     if not lines[agent].startswith(bar) or not _OPENCODE_AGENT_ROW.fullmatch(
-        lines[agent][len(bar) :].strip()
+        lines[agent][len(bar) : right].strip()
     ):
         return None
     top = agent
     while top > 0 and lines[top - 1].startswith(bar):
         top -= 1
-    return _OpenCodeBox(indent=indent, top=top, agent=agent) if top < agent else None
+    return _OpenCodeBox(indent=indent, right=right, top=top, agent=agent) if top < agent else None
 
 
 def _opencode_input(lines: list[str]) -> str | None:
@@ -1845,10 +1853,16 @@ def _composer_preview(tail: str, prompt_prefix: str) -> str:
         border = _opencode_border(lines)
         if border is None:
             return ""
-        top = border
-        while top > 0 and lines[top - 1].strip():
-            top -= 1
-        rows = (line.strip().removeprefix(_OPENCODE_BAR).strip() for line in lines[top:border])
+        box = _opencode_box(lines)
+        top = box.top if box is not None else border
+        if box is None:
+            while top > 0 and lines[top - 1].strip():
+                top -= 1
+        right = len(lines[border].rstrip())
+        rows = (
+            line[:right].strip().removeprefix(_OPENCODE_BAR).strip()
+            for line in lines[top:border]
+        )
         return " / ".join(row for row in rows if row)
     prefix = _normalize(prompt_prefix).strip()
     if not prefix:

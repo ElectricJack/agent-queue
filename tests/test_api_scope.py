@@ -110,7 +110,6 @@ EXPECTED_AGENT_COMMANDS = {
     "promote_rulesets",
     "promote_status",
     "promote_list",
-    "integration_resolve_candidate_member",
     "review_submit",
     "review_show",
     "review_list",

@@ -24,7 +24,6 @@ from src.database.tables import (
     repos,
     task_branch_origins,
     task_completion_records,
-    task_delivery_receipts,
     task_integration_checkpoints,
     task_labels,
     tasks,
@@ -34,14 +33,13 @@ from src.git.manager import GitError, GitManager
 from src.integration.delivery_observer import DeliveryObserver
 from src.integration.github_review_poll import GitHubReviewPoller
 from src.integration.models import HierarchicalIntegrationPolicy
-from src.integration.promotion import PromotionService
-from src.integration.review_evidence import ReviewEvidenceProducer
-from src.integration.scheduler import TrainService
-from src.integration.settling import settled
+from src.integration.repository_git import RepositoryGit
+from src.integration.reviews import ReviewEvidenceProducer
 from src.integration.source_ci import RUNNER_NOT_ACQUIRED
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, TaskType
 from tests.db_fixtures import lease_dsn
-from tests.test_integration_sealing import _policy
+from src.integration.models import IntegrationBoundaryPolicy, RequiredCheckSet, RepairPolicy, PlaybookRoute
+from src.integration.models import ArtifactSnapshot
 
 
 async def _continuous_policy(case):
@@ -709,32 +707,6 @@ def test_conflicting_pull_request_without_checks_is_conflict_not_pending():
         )[0] == expected
 
 
-@pytest.mark.parametrize("conflict_scope", ["batch", "member"])
-@pytest.mark.parametrize("source_ci", [None, "pending", "green", "red", "cancelled", "conflict"])
-async def test_source_pr_ci_does_not_gate_candidate_admission(
-    case, conflict_scope, source_ci
-):
-    policy = await _continuous_policy(case)
-    if conflict_scope == "member":
-        policy["root"]["repair"]["conflict_scope"] = "member"
-        await case["db"].update_project("p", hierarchical_integration_policy=policy)
-    db = case["db"]
-    async with db.immediate() as conn:
-        generation = (await conn.execute(select(task_integration_checkpoints.c.generation).where(
-            task_integration_checkpoints.c.task_id == "e1"))).scalar_one()
-        if source_ci is not None:
-            await conn.execute(insert(integration_source_ci).values(
-                task_id="e1", repository_id="repo", source_base=case["base"],
-                source_head=case["first"], generation=generation, policy_generation=0,
-                state=source_ci, evidence={}, observed_at=1000.0))
-    assert await case["producer"].snapshot_authorized(
-        "e1", reviewed_sha=case["first"], policy_generation=0)
-    async with db.immediate() as conn:
-        members = await TrainService(db)._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request")
-    # Candidate construction and CI handle conflicts and failures under either
-    # scope, including sources whose PR checks are missing or still pending.
-    assert {item["task_id"] for item in members} == {"e1"}
 
 
 async def test_conflict_observation_files_no_source_repair(case, tmp_path):
@@ -1278,153 +1250,12 @@ async def _pending_repair_source(case):
         assert await case["producer"].snapshot_authorized(task_id, reviewed_sha=head, policy_generation=0)
 
 
-@pytest.mark.parametrize("original_ci", ["red", "green"])
-@pytest.mark.parametrize("delivery", ["git", "receipt"])
-@pytest.mark.parametrize("repair_ci", ["pending", "red", "cancelled", "conflict", "green", None])
-async def test_repair_remains_eligible_after_original_delivers(
-    case, original_ci, delivery, repair_ci,
-):
-    await _pending_repair_source(case)
-    db = case["db"]
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_source_ci).where(
-            integration_source_ci.c.task_id == "e1").values(state=original_ci))
-        if repair_ci is None:
-            await conn.execute(delete(integration_source_ci).where(
-                integration_source_ci.c.task_id == "repair-source"))
-        else:
-            await conn.execute(update(integration_source_ci).where(
-                integration_source_ci.c.task_id == "repair-source").values(state=repair_ci))
-        if delivery == "receipt":
-            await conn.execute(insert(task_delivery_receipts).values(
-                id="original-delivery", domain_key="original-delivery", source_task_id="e1",
-                repository_id="repo", target_branch="main", reviewed_head_sha=case["first"],
-                disposition="code", created_at=1000.0))
-        members = await TrainService(db)._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request",
-            git_delivered={"e1"} if delivery == "git" else set())
-    assert {item["task_id"] for item in members} == {"repair-source"}
-    # The repair's own hold and the lineage's policy fence still bind.
-    async with db.immediate() as conn:
-        await conn.execute(insert(task_labels).values(task_id="repair-source", label="hold:product"))
-        assert await TrainService(db)._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request",
-            git_delivered={"e1"} if delivery == "git" else set()) == []
 
 
-async def test_sealing_observes_delivered_repair_ancestor_outside_frontier(case, tmp_path):
-    await _pending_repair_source(case)
-    db = case["db"]
-    db.set_delivery_observer(DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "observer"))
-    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_source_ci).where(
-            integration_source_ci.c.task_id == "repair-source").values(state="green"))
-        await conn.execute(insert(task_labels).values(task_id="e1", label="hold:product"))
-    service = TrainService(db)
-    view = await service._observe_root_deliveries("p", "repair-delivery")
-    assert "e1" in view.evidence
-    async with db.immediate() as conn:
-        repository = (await conn.execute(select(repos).where(repos.c.id == "repo"))).mappings().one()
-        delivered = await service._git_delivered_roots_on(conn, view, "p", repository)
-        assert "e1" in delivered
-        members = await service._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request",
-            git_delivered=delivered)
-    assert {member["task_id"] for member in members} == {"repair-source"}
 
 
-async def test_retired_ready_repair_cannot_reenter_train_with_old_checkpoint(case, tmp_path):
-    await _pending_repair_source(case)
-    db = case["db"]
-    handler, _filing = await _source_handler(case, tmp_path)
-    db.set_delivery_observer(DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "observer"))
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_source_ci).where(
-            integration_source_ci.c.task_id == "repair-source").values(state="green"))
-        await conn.execute(update(tasks).where(tasks.c.id == "repair-source").values(status="READY"))
-    await _retain_completion(case, close_id="close-e1", commits=[_land(case, squash=False)])
-    assert "repair-source" in await handler._delivered_source_repairs("p")
-    assert (await db.get_task("repair-source")).status is TaskStatus.COMPLETED
-    async with db.immediate() as conn:
-        assert await TrainService(db)._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request",
-            git_delivered={"e1"}) == []
 
 
-@pytest.mark.parametrize("source_blocker", [
-    "hold", "repair_hold", "gate", "rejected", "generation", "policy",
-])
-async def test_repair_chain_admission_preserves_cleanup_coverage_and_source_blockers(
-    case, source_blocker,
-):
-    await _pending_repair_source(case)
-    db = case["db"]
-    async def members():
-        async with db.immediate() as conn:
-            return await TrainService(db)._eligible_members(
-                conn, project_id="p", repository_id="repo", project_mode="pull_request")
-    assert {item["task_id"] for item in await members()} == {"e1", "repair-source"}
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_source_ci).where(
-            integration_source_ci.c.task_id == "repair-source").values(state="green"))
-    assert {item["task_id"] for item in await members()} == {"e1", "repair-source"}
-    # A second repair retains the complete ancestry and cleanup coverage.
-    _git("checkout", "--detach", case["second"], cwd=case["work"])
-    (case["work"] / "final-fix.txt").write_text("second CI repair\n")
-    _git("add", "final-fix.txt", cwd=case["work"])
-    _git("commit", "-m", "second CI repair", cwd=case["work"])
-    third = _git("rev-parse", "HEAD", cwd=case["work"])
-    final_branch = "aq/final-source-repair"
-    _git("push", "origin", f"HEAD:refs/heads/{final_branch}", cwd=case["work"])
-    async with db.immediate() as conn:
-        await conn.execute(insert(tasks).values(
-            id="final-repair", project_id="p", repo_id="repo", title="Second CI repair",
-            description="", status="COMPLETED", task_type="bugfix", branch_name=final_branch,
-            pr_url="https://github.com/o/r/pull/9", created_at=1.0, updated_at=1.0))
-        await conn.execute(insert(task_branch_origins).values(
-            id="origin-final-repair", task_id="final-repair", repository_id="repo",
-            base_sha=case["base"], creation_generation=0, reserved=True, created_at=1.0))
-        await conn.execute(insert(task_integration_checkpoints).values(
-            task_id="final-repair", repository_id="repo", branch=final_branch,
-            checkpoint_sha=third, generation=0, updated_at=1.0))
-        await conn.execute(update(integration_source_ci).where(
-            integration_source_ci.c.task_id == "repair-source"
-        ).values(state="red", repair_task_id="final-repair", repair_attempt=1))
-        await conn.execute(insert(integration_source_ci).values(
-            task_id="final-repair", repository_id="repo", source_base=case["base"],
-            source_head=third, generation=0, policy_generation=0, state="green",
-            evidence={}, observed_at=1001.0))
-    assert await case["producer"].snapshot_authorized(
-        "final-repair", reviewed_sha=third, policy_generation=0)
-    assert {item["task_id"] for item in await members()} == {"e1", "repair-source", "final-repair"}
-    # Explicit gates and stale source identities bind the repair lineage.
-    # A repair's hold or stale source-CI observation does not block the
-    # original source's current review from admission.
-    if source_blocker == "rejected":
-        await case["producer"].snapshot_from_pull_request(
-            "e1", verdict="rejected", reviewer_login="reviewer", reviewed_sha=case["first"])
-    elif source_blocker == "gate":
-        await db.create_gate("p", "human", "Product decision", waiter_task_ids=["e1"])
-    else:
-        async with db.immediate() as conn:
-            if source_blocker in {"hold", "repair_hold"}:
-                held = "repair-source" if source_blocker == "repair_hold" else "e1"
-                await conn.execute(insert(task_labels).values(task_id=held, label="hold:product"))
-            elif source_blocker == "generation":
-                await conn.execute(update(task_integration_checkpoints).where(
-                    task_integration_checkpoints.c.task_id == "e1").values(generation=2))
-            else:
-                await conn.execute(update(integration_source_ci).where(
-                    integration_source_ci.c.task_id == "e1").values(policy_generation=1))
-    expected = {"e1"} if source_blocker in {"repair_hold", "policy"} else set()
-    assert {item["task_id"] for item in await members()} == expected
-    # Revocation invalidates authorization and CI tied to the older policy generation.
-    async with db.immediate() as conn:
-        assert await db.cas_project_integration_control_on(
-            conn, project_id="p", expected_generation=0, effective_mode="train",
-            desired_mode="train", draining=False)
-    assert await members() == []
 
 
 async def test_source_repair_admission_refuses_missing_source_ancestry(case):
@@ -1585,7 +1416,7 @@ async def case(tmp_path):
                 updated_at=1.0,
             )
         )
-    promotion = PromotionService(db, data_dir=tmp_path / "data", git_manager=GitManager())
+    promotion = RepositoryGit(db, data_dir=tmp_path / "data", git_manager=GitManager())
     yield {
         "db": db,
         "producer": ReviewEvidenceProducer(db, promotion, clock=lambda: 1000.0),
@@ -1645,7 +1476,7 @@ class _ReviewGit:
         return self.client
 
 
-async def test_live_review_poller_arms_window_only_for_exact_human_approval(case):
+async def test_live_review_poller_records_exact_human_approval_without_legacy_window(case):
     reviews = [
         {
             "id": 1,
@@ -1673,7 +1504,7 @@ async def test_live_review_poller_arms_window_only_for_exact_human_approval(case
         schedule = (
             await conn.execute(select(project_integration_schedules))
         ).mappings().one()
-    assert schedule["settling_first_approval_at"] == 1000.0
+    assert schedule["settling_first_approval_at"] is None
     await poller.tick(1031.0)
     assert len(await _rows(case["db"])) == 1
 
@@ -2133,59 +1964,6 @@ async def test_new_github_review_id_can_supersede_an_earlier_rejection(case):
     assert max(rows, key=lambda row: row["created_at"])["verdict"] == "approved"
 
 
-async def test_approval_writes_exact_trusted_evidence_and_is_eligible(case):
-    evidence = await case["producer"].snapshot_from_pull_request(
-        "e1",
-        verdict="approved",
-        reviewer_login="jkern",
-        reviewed_sha=case["first"],
-        summary="Looks good",
-    )
-    assert evidence == (await _rows(case["db"]))[0]
-    assert {
-        key: evidence[key]
-        for key in (
-            "source_task_id",
-            "repository_id",
-            "source_base",
-            "reviewed_head_sha",
-            "reviewed_tree_sha",
-            "reviewer_task_id",
-            "reviewer_session_attempt_id",
-            "reviewer_identity",
-            "review_kind",
-            "generation",
-            "verdict",
-        )
-    } == {
-        "source_task_id": "e1",
-        "repository_id": "repo",
-        "source_base": case["base"],
-        "reviewed_head_sha": case["first"],
-        "reviewed_tree_sha": case["tree"],
-        "reviewer_task_id": None,
-        "reviewer_session_attempt_id": None,
-        "reviewer_identity": "github:jkern",
-        "review_kind": "parent",
-        "generation": 1,
-        "verdict": "approved",
-    }
-    assert evidence["evidence"] == {
-        "decision_path": "github_pull_request",
-        "summary": "Looks good",
-        "feedback": "",
-        "reviewed_sha": case["first"],
-        "pr_url": "https://github.com/o/r/pull/7",
-        "verification_id": "verification-e1",
-    }
-    async with case["db"].immediate() as conn:
-        assert await settled(conn, project_id="p", now=1299.0) is False
-        assert await settled(conn, project_id="p", now=1300.0) is True
-        members = await TrainService(case["db"])._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request"
-        )
-    assert [member["task_id"] for member in members] == ["e1"]
-    assert members[0]["review"] == evidence
 
 
 async def _childless_root(case, *, checkpoint_sha=None):
@@ -2216,26 +1994,6 @@ async def _childless_root(case, *, checkpoint_sha=None):
         )
 
 
-async def test_approval_of_a_childless_root_is_leaf_evidence_the_train_seats(case):
-    """A leaf root's PR approval must reach the train, not stop at ingestion."""
-    await _childless_root(case)
-
-    evidence = await case["producer"].snapshot_from_pull_request(
-        "r1", verdict="approved", reviewer_login="jkern", reviewed_sha=case["first"]
-    )
-
-    assert evidence["review_kind"] == "leaf"
-    assert evidence["reviewed_head_sha"] == case["first"]
-    assert evidence["source_base"] == case["base"]
-    assert evidence["generation"] == 0
-    assert evidence["evidence"]["verification_id"] is None
-    async with case["db"].immediate() as conn:
-        members = await TrainService(case["db"])._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request"
-        )
-    assert [member["task_id"] for member in members] == ["r1"]
-    assert members[0]["source_kind"] == "leaf"
-    assert members[0]["review"] == evidence
 
 
 async def test_childless_root_still_at_its_base_takes_no_verdict(case):
@@ -2326,21 +2084,6 @@ async def test_approval_of_moved_head_is_not_reused(case):
     assert second["reviewed_head_sha"] == case["second"]
 
 
-async def test_rejection_records_feedback_without_arming_window(case):
-    evidence = await case["producer"].snapshot_from_pull_request(
-        "e1",
-        verdict="rejected",
-        reviewer_login="jkern",
-        reviewed_sha=case["first"],
-        feedback="Needs a test for the cap.",
-    )
-    assert evidence["verdict"] == "rejected"
-    assert evidence["evidence"]["feedback"] == "Needs a test for the cap."
-    async with case["db"].immediate() as conn:
-        assert await settled(conn, project_id="p", now=1e12) is True
-        schedule = (await conn.execute(select(project_integration_schedules))).mappings().one()
-        assert schedule["settling_first_approval_at"] is None
-        assert schedule["settling_fires_at"] is None
 
 
 async def test_epic_without_pull_request_is_refused(case):
@@ -2370,24 +2113,6 @@ async def test_approval_is_refused_when_remote_head_moved(case):
     assert await _rows(case["db"]) == []
 
 
-async def test_later_rejection_wins_when_clock_has_not_advanced(case):
-    approved = await case["producer"].snapshot_from_pull_request(
-        "e1", verdict="approved", reviewer_login="jkern", reviewed_sha=case["first"]
-    )
-    rejected = await case["producer"].snapshot_from_pull_request(
-        "e1", verdict="rejected", reviewer_login="jkern", reviewed_sha=case["first"]
-    )
-    assert rejected["created_at"] > approved["created_at"]
-    async with case["db"].immediate() as conn:
-        candidates = await case["db"].eligible_root_page_on(
-            conn, project_id="p", repository_id="repo", after=None, limit=10
-        )
-        latest = await case["db"].latest_exact_reviews_on(conn, candidates)
-        members = await TrainService(case["db"])._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request"
-        )
-    assert list(latest.values()) == [rejected]
-    assert members == []
 
 
 async def test_duplicate_approval_is_idempotent(case):
@@ -2417,3 +2142,45 @@ async def test_train_review_uses_retained_git_without_legacy_settling(case):
         schedule = (await conn.execute(select(project_integration_schedules))).mappings().one()
     assert schedule["settling_first_approval_at"] is None
     assert schedule["settling_fires_at"] is None
+
+def _artifact() -> ArtifactSnapshot:
+    return ArtifactSnapshot(
+        playbook_id="hierarchical-delivery",
+        artifact_sha256="sha256:" + "1" * 64,
+        schema_generation=2,
+        contract_fingerprint="sha256:" + "2" * 64,
+        source_digest="sha256:" + "3" * 64,
+        compiler_build="task8b-test",
+        compiled_at="2026-09-05T00:00:00Z",
+        version=1,
+    )
+
+def _policy() -> dict:
+    boundary = IntegrationBoundaryPolicy(
+        required_checks=RequiredCheckSet(version="checks-v1", names=("unit",), producer_id="forge"),
+        repair=RepairPolicy(
+            primary_seconds=30,
+            primary_attempts=2,
+            debug_seconds=60,
+            debug_attempts=1,
+            debug_intelligence_class="debug-high",
+            debug_profile_id="debugger",
+        ),
+        route=PlaybookRoute(
+            playbook_id="hierarchical-delivery",
+            scope="project",
+            scope_identifier="p",
+            activation_id="activation-audit",
+            artifact=_artifact(),
+        ),
+        primary_intelligence_class="primary-medium",
+        primary_profile_id="repairer",
+        verifier_intelligence_class="verifier-high",
+        verifier_profile_id="verifier",
+    )
+    return HierarchicalIntegrationPolicy(
+        parent=boundary,
+        root=boundary,
+        branchless_parent="verifier",
+        on_failed_child="block",
+    ).model_dump(mode="json")

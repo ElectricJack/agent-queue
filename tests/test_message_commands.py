@@ -136,6 +136,21 @@ class TestDisabledGate:
         assert result == {"error": MESSAGES_DISABLED_ERROR}
 
 
+async def test_supervisor_inbox_expires_deleted_task_notice_without_acknowledgment(setup):
+    handler, db, _bus = setup
+    notice = await db.create_message(**_send_args(
+        from_kind="system", from_id="task-recovery", body_kind="task_recovery",
+        subject="Task recovery: deleted-task",
+    ))
+    await db.mark_delivered(notice.id, via="prime")
+    result = await handler._cmd_message_inbox({
+        "to_kind": "session", "to_id": "supervisor-p1", "inject": True,
+    })
+    assert result["count"] == 0
+    stored = await db.get_message(notice.id)
+    assert stored.archived_at is not None and stored.read_at is None
+
+
 # ---------------------------------------------------------------------------
 # message_send
 # ---------------------------------------------------------------------------

@@ -25,8 +25,32 @@ import uuid
 from sqlalchemy import and_, case, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import messages, projects
+from src.database.tables import messages, projects, sessions, tasks
 from src.models import Message
+
+
+GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD = 50
+
+
+def _global_supervisor_mailbox():
+    """Include historical logical addresses and the named launch's UUID."""
+    global_sessions = select(sessions.c.id).where(
+        sessions.c.profile_id == "supervisor", sessions.c.lifecycle == "named",
+        sessions.c.project_id.is_(None),
+    )
+    return and_(
+        messages.c.to_kind == "session",
+        or_(messages.c.to_id.in_(("supervisor-global", "n-supervisor--global")),
+            messages.c.to_id.in_(global_sessions)),
+    )
+
+
+def _global_backlog_snapshot():
+    """Count and oldest identity come from the same database snapshot."""
+    return select(messages.c.id, func.count().over().label("total")).where(
+        _global_supervisor_mailbox(),
+        messages.c.read_at.is_(None), messages.c.archived_at.is_(None),
+    ).order_by(messages.c.created_seq.asc()).limit(1)
 
 
 def _new_message_id() -> str:
@@ -199,11 +223,13 @@ class MessageQueriesMixin:
         limit: int = 50,
         notification_at: float | None = None,
         notification_delays: tuple[float, ...] = (),
+        newest_first: bool = False,
     ) -> list[Message]:
         """Undelivered, unarchived messages for one recipient.
 
         Ordered by ``priority`` ascending (lower delivers first) then
-        ``created_at`` ascending — the delivery order the engine consumes.
+        ``created_at`` ascending for body injection. Notification callers can
+        select newest first within a priority to surface current work.
 
         The notification caller supplies its retry delays. Apply eligibility
         before the limit so unread mail in backoff cannot starve newer mail.
@@ -218,7 +244,11 @@ class MessageQueriesMixin:
                     messages.c.archived_at.is_(None),
                 )
             )
-            .order_by(messages.c.priority.asc(), messages.c.created_at.asc())
+            .order_by(
+                messages.c.priority.asc(),
+                messages.c.created_at.desc() if newest_first else messages.c.created_at.asc(),
+                messages.c.created_seq.desc() if newest_first else messages.c.created_seq.asc(),
+            )
             .limit(limit)
         )
         if notification_at is not None and notification_delays:
@@ -235,6 +265,56 @@ class MessageQueriesMixin:
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
             return [_row_to_message(r) for r in result.mappings().fetchall()]
+
+    async def expire_finished_task_notices(self) -> int:
+        """Archive obsolete internal notices without fabricating a recipient read.
+
+        These producers use exact subject prefixes followed by the full task id.
+        Never infer a task from free-form user mail or expire an unfinished task.
+        """
+        prefixes = (
+            ("task_recovery", "Task recovery: "),
+            ("stale_open", "Stale BLOCKED task: "),
+            ("stale_open", "Stale PAUSED task: "),
+        )
+        subject_task = case(*(
+            (and_(messages.c.body_kind == kind, messages.c.subject.startswith(prefix)),
+             func.substr(messages.c.subject, len(prefix) + 1))
+            for kind, prefix in prefixes
+        ))
+        unfinished = select(tasks.c.id).where(
+            tasks.c.id == subject_task,
+            tasks.c.project_id == messages.c.project_id,
+            tasks.c.status != "COMPLETED",
+        ).exists()
+        async with self._engine.begin() as conn:
+            result = await conn.execute(update(messages).where(
+                messages.c.from_kind == "system",
+                messages.c.read_at.is_(None), messages.c.archived_at.is_(None),
+                subject_task.is_not(None), ~unfinished,
+            ).values(archived_at=time.time(), via="expired-task-notice"))
+            return int(result.rowcount or 0)
+
+    async def alert_global_supervisor_backlog(self) -> Message | None:
+        """Notify the user once per oldest unread backlog identity, across restarts."""
+        async with self._engine.begin() as conn:
+            backlog = (await conn.execute(_global_backlog_snapshot())).mappings().first()
+            if backlog is None or backlog["total"] <= GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD:
+                return None
+            oldest, count = backlog["id"], backlog["total"]
+            result = await conn.execute(pg_insert(messages).values(
+                id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, f'aq:global-backlog:{oldest}').hex}",
+                project_id=None, from_kind="system", from_id="delivery-engine",
+                to_kind="user", to_id="dashboard", priority=50,
+                body_kind="delivery_alert", created_at=time.time(),
+                subject="Global supervisor unread backlog",
+                body=(f"The global supervisor has {count} unread messages "
+                      f"(threshold {GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD}); oldest is {oldest}. "
+                      "Inspect its authentication and delivery path. "
+                      "These messages remain unread; this alert does not acknowledge them."),
+            ).on_conflict_do_nothing(index_elements=[messages.c.id]).returning(messages))
+            row = result.mappings().first()
+            return _row_to_message(row) if row else None
 
     async def get_consumed_messages(
         self,
@@ -362,7 +442,7 @@ class MessageQueriesMixin:
             return result.rowcount > 0
 
     async def escalate_unread_message(self, message_id: str) -> Message | None:
-        """Copy an unanswered notification to global supervision exactly once.
+        """Copy an unanswered notification to supervision or the user exactly once.
 
         Lock the source against a racing acknowledgment; deterministic alert IDs
         make retries and daemon restarts idempotent. Never consume the source.
@@ -377,11 +457,22 @@ class MessageQueriesMixin:
             ).with_for_update())).mappings().first()
             if source is None or source["body_kind"] == "delivery_alert":
                 return None
+            global_recipient = (await conn.execute(select(messages.c.id).where(
+                messages.c.id == message_id, _global_supervisor_mailbox(),
+            ))).scalar_one_or_none() is not None
+            alert_identity = f"aq:delivery-alert:{message_id}"
+            if global_recipient:
+                backlog = (await conn.execute(_global_backlog_snapshot())).mappings().one()
+                # Share the threshold alert's identity: a broken global mailbox
+                # cannot generate one user alert for every unread source row.
+                alert_identity = f"aq:global-backlog:{backlog['id']}"
             result = await conn.execute(pg_insert(messages).values(
-                id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, f'aq:delivery-alert:{message_id}').hex}",
+                id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, alert_identity).hex}",
                 project_id=source["project_id"],
                 from_kind="system", from_id="delivery-engine",
-                to_kind="session", to_id="supervisor-global", priority=source["priority"],
+                to_kind="user" if global_recipient else "session",
+                to_id="dashboard" if global_recipient else "supervisor-global",
+                priority=source["priority"],
                 body_kind="delivery_alert", created_at=time.time(),
                 subject=f"Unread message: {source['subject'] or message_id}",
                 body=(f"Message {message_id} to {source['to_kind']}:{source['to_id']} "

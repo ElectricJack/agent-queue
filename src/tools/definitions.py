@@ -3903,8 +3903,8 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "update_and_restart",
         "description": (
-            "Update and restart the daemon. Without deploy.tag_glob, pull the upstream "
-            "and restart even when already current. With a release selector, run shared "
+            "Update and restart the daemon. Without deploy.tag_glob or deploy.track_branch, pull the upstream "
+            "and restart even when already current. With a release or branch selector, run shared "
             "preflight and launch the operator updater; returns pid, log, selector and commit, "
             "or up_to_date without restarting. Read the log for the final outcome. "
             "Use wait_for_tasks=true to let running tasks finish before restarting; "
@@ -3914,6 +3914,10 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "automatic": {
+                    "type": "boolean",
+                    "description": "Tracked-branch background check; hold a previously failed target until an operator retries. Default: false.",
+                },
                 "reason": {
                     "type": "string",
                     "description": "Why the update/restart is being requested",
@@ -8220,53 +8224,6 @@ _FALLBACK_INPUT_SCHEMAS["integration_train_tick"] = {
     "additionalProperties": False,
 }
 
-# The parent reconciler's per-visit dispatch.  Excluded from MCP
-# (DEFAULT_EXCLUDED_COMMANDS): authority is the process-bound visit exclusion,
-# never the payload.  A fallback schema keeps it out of the LLM tool list while
-# the generated CLI command can name the subject, its expected version and the
-# discriminated primitive request; each primitive's own arguments stay validated
-# by ``PRIMITIVE_ARGS`` inside the adapters, so ``request`` carries the
-# discriminator here and its siblings open.
-_FALLBACK_INPUT_SCHEMAS["integration_parent_action"] = {
-    "type": "object",
-    "properties": {
-        "subject_id": {"type": "string", "minLength": 1},
-        "expected_version": {"type": "integer", "minimum": 0},
-        "request": {
-            "type": "object",
-            "properties": {
-                "primitive": {
-                    "type": "string",
-                    "enum": [
-                        "integration_observe_subject",
-                        "integration_seal",
-                        "git_materialize_ref",
-                        "git_merge_members",
-                        "git_preserve",
-                        "git_publish",
-                        "git_ancestry",
-                        "ci_request",
-                        "ci_observe",
-                        "ci_attest",
-                        "writer_file",
-                        "writer_lease",
-                        "writer_stop_proof",
-                        "record_receipt",
-                        "record_attempt",
-                        "record_decision",
-                        "wait",
-                        "gate",
-                        "eject",
-                        "cleanup",
-                    ],
-                },
-            },
-            "required": ["primitive"],
-        },
-    },
-    "required": ["subject_id", "expected_version", "request"],
-    "additionalProperties": False,
-}
 
 
 _JOB_INPUT_SCHEMAS: dict[str, dict] = {

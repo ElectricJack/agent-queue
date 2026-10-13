@@ -12,6 +12,7 @@ this list"), now mechanically checkable.
 from __future__ import annotations
 
 import pathlib
+import runpy
 
 import pytest
 
@@ -58,6 +59,7 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "triage": {"edit_task"},
     "worker-claude": {"pr_merge"},
     "worker-codex": {"pr_merge"},
+    "worker-opencode": {"pr_merge"},
 }
 
 REACHABLE = AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
@@ -73,7 +75,37 @@ def _parsed(profile_id: str):
 def test_every_shipped_profile_is_covered():
     """The pin lists exactly the shipped profiles — no drift either way."""
     assert set(PROFILE_IDS) == set(EXPECTED_UNREACHABLE)
-    assert len(PROFILE_IDS) == 12
+    assert len(PROFILE_IDS) == 13
+
+
+@pytest.mark.parametrize("profile_id", [pid for pid in PROFILE_IDS if pid.startswith("worker-")])
+def test_every_worker_template_can_publish_and_shares_the_worker_grants(profile_id):
+    parsed = _parsed(profile_id)
+    assert parsed.frontmatter.template is True
+    policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
+    assert policy.allows_plugin_tool("git_push")
+    assert policy.allows_plugin_tool("git_create_pr")
+    assert parsed.capabilities == _parsed("worker-codex").capabilities
+
+
+def test_worker_grant_generator_repairs_drift_without_changing_harness_or_prose(tmp_path):
+    generate = runpy.run_path(
+        str(DEFAULTS_DIR.parents[2] / "scripts" / "generate-worker-capabilities.py")
+    )["generate"]
+    source = tmp_path / "worker-codex" / "profile.md"
+    source.parent.mkdir()
+    source.write_text((DEFAULTS_DIR / "worker-codex" / "profile.md").read_text())
+    target = tmp_path / "worker-opencode" / "profile.md"
+    target.parent.mkdir()
+    original = (DEFAULTS_DIR / "worker-opencode" / "profile.md").read_text()
+    stale = original.replace('    "git_push",\n', '').replace('    "job_submit",\n', '')
+    target.write_text(stale)
+
+    assert generate(tmp_path, check=True) == [target]
+    assert target.read_text() == stale
+    assert generate(tmp_path) == [target]
+    assert target.read_text() == original
+    assert generate(tmp_path, check=True) == []
 
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)

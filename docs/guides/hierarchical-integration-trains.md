@@ -246,9 +246,9 @@ own exact-head PR checks. For a leaf root nothing is started: merge the default
 branch into the task branch, push it and close the task again. Push-event runs
 never count as PR checks.
 
-For an existing historical subject, `engine-transfer` and
-`development-engine-transfer` offer a forward-only audited transfer to
-`reconciler`. Preview first, then supply every exact subject version, the reason
+For an existing historical root subject, `engine-transfer` offers a forward-only
+audited ownership transfer to `reconciler`. It does not install a publisher.
+Development subject transfer was retired with the dormant development runtime. Preview first, then supply every exact subject version, the reason
 and reviewed cutover evidence. There is no transfer back to the retired engine.
 
 GitHub App readiness remains available through `aq integration app-verify PROJECT_ID`. See [App-mode setup](../config/app-mode-train.md) for
@@ -340,72 +340,26 @@ and other fences. Never edit integration tables to bypass a gate or CI proof.
 aq integration redrive-root TASK_ID
 aq integration redrive-child CHILD_TASK_ID
 aq integration reopen-collection PARENT_TASK_ID
-aq integration rebind-repair --task-id REPAIR_TASK --dry-run
-aq integration rebind-detached-repair OPERATION_ID
-aq integration recover-preserved-repair OPERATION_ID --intent INTENT_ID --candidate SHA
-aq integration resolve-candidate-member --help
-aq integration recover-candidate-member RESERVATION_ID
+aq integration reevaluate-repair OPERATION_ID
+aq integration release-owner --task-id REPAIR_TASK --dry-run
 aq integration close-delivered-pr PROJECT_ID PR_NUMBER
 ```
 
 ## Repair and collection recovery
 
-A parent conflict successor retains the current intent as its trigger and
-publishes with its own fence. If an older attachment names a displaced intent,
-preview `rebind-repair` with the repair task id before applying its current head.
+The train owns current integration work. Inspect `aq integration status PROJECT_ID`
+and the blocker returned by its batch or repair operation. A stopped attachment uses
+`release-owner --task-id TASK_ID --dry-run`; apply only the exact recovery that the
+preview proves. An audited no-op repair can be previewed with
+`aq integration reevaluate-repair OPERATION_ID`. Its apply requires the reported
+head, generation, stage, fence and snapshot digest plus a reason, and repeats the
+trusted exact-head green-CI proof.
 
-Use the full `head_sha` reported by the dry run. The command refuses a stopped
-writer, expired authority, changed candidate or moved remote target. Applying
-records the reservation under the current intent; the attached repair session
-then pushes with its current fence and closes. If the writer has stopped,
-recover its attachment through the existing repair lifecycle first.
-
-When a parent repair stage exhausts at the open conflict's old tip, its debug
-successor keeps that conflict intent as its trigger. Its writer resolves and
-publishes through `integration-resolve-conflict` and `push-conflict-resolution`
-under its own fence, with no rebind. Any other debug stage carries the trigger
-`stage-exhausted:<operation>:<ordinal>`.
-
-A parent debug stage can be frozen on a commit the parent branch never
-received: its retained handoff bound a stopped writer's local head, so every
-delegate fails admission with `slot_reset_failed` ("repair branch no longer
-descends from its frozen starting commit") and its `stage-exhausted` trigger
-cannot resolve the open conflict. The same operators can rebind that detached
-stage to the conflict at the published head:
-
-```bash
-aq integration rebind-detached-repair OPERATION_ID
-aq integration rebind-detached-repair OPERATION_ID --apply \
-    --stage STAGE --remote-head PUBLISHED_SHA --reason "..."
-```
-
-Pass the `stage` and `remote_head_sha` the dry run reported. The command
-refuses unless the writer is detached and unclaimed, the stage is within its
-unchanged deadline and attempts, the published head is the conflict's
-expected target, and the frozen head is an unpublished descendant of it. Every
-receipt must also sit in the published history. Apply changes only the stage's
-starting commit, trigger and subject, and records the previous values in the
-dossier's `detached_rebinds`. The branch, fence, budget, intent and gates are
-left as they were. The same delegate is then readied, and it resolves the
-conflict through the normal fenced publication path. Design:
-[detached repair rebind](../superpowers/specs/2026-10-01-detached-repair-rebind-design.md).
-
-If a debug stage has already expired without progress, but its stopped writer
-completed a resolution that `release-owner` preserved, preview that exact commit:
-
-```bash
-aq integration recover-preserved-repair OPERATION_ID --intent INTENT_ID --candidate SHA
-```
-
-Run the returned `apply_command` after inspecting its source, target, parents,
-tree, released fence and remaining attempts. Apply requires `--stage`,
-`--released-fence` and `--reason`; it repeats every proof and publishes with an
-expected-old compare-and-swap under a fresh collector fence. It consumes only
-the audited two-parent merge. The expired deadline and consumed attempts remain
-unchanged, the former delegate stays blocked, and normal parent verification is
-still required. An exhausted attempt budget or human gate returns a specific
-blocker. An interrupted push with an unchanged target is ambiguous and is never
-blindly retried. See [preserved repair recovery](../superpowers/specs/2026-10-01-preserved-repair-recovery-design.md).
+The former candidate-member and parent repair rebind/preserved-publication commands
+were retired with the legacy publishers. Their historical dossiers and evidence remain
+available to recovery and archival checks; they do not authorize a legacy publisher.
+See the [consumer retirement audit](../reports/2026-10-12-legacy-consumer-retirement.md)
+for the retained contracts and table exclusions.
 
 ### No-code child receipts
 

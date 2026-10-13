@@ -1,19 +1,14 @@
 ---
 playbook_id: root-train
-artifact_sha256: sha256:6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52
-source_sha256: sha256:37a6a9659c6cbe46244f1e45a25987bbe47669399bdf33691f924a16933f41d6
-contract_fingerprint: sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41
+artifact_sha256: sha256:92617fde23736f359110002c87df676deadc3b70f01e8faad754e8ead2616196
+source_sha256: sha256:a42198058ea2c14d0a3d92451bbb64861cd5953856ad1ab078060a7fb563ce0e
+contract_fingerprint: sha256:365c5f42781909921f64f205484f5fad3df3e340f07184b5f84b4bc44767ddc2
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - integration_build_candidate
-  - integration_ci_evidence
-  - integration_repair_close_current
   - integration_cleanup
-  - integration_promote_main
   - integration_release
   - integration_repair_dispatch
-  - integration_seal
   harness_tools: []
   plugin_tools: []
 profiles_referenced: []
@@ -49,3 +44,11 @@ decision table. Only that command's compiled fingerprint and compile timestamp
 changed; the artifact digest and aggregate contract fingerprint follow them.
 No compiler questions remain. Installed activation and frozen operation pins
 are still owned by the operator and daemon.
+
+## Publisher retirement repair (2026-10-12)
+
+Removed event rules and recorded grants for retired publisher commands. Candidate
+construction and publication belong to the Git train. Retained recovery, release
+and cleanup rules compile against the live registry; the authored integration
+policy tables are unchanged. The refreshed digest requires operator review
+before activation.

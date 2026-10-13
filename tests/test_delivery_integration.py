@@ -26,7 +26,9 @@ cycle. Both paths use the real ``Orchestrator`` instance — no stubs.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -234,6 +236,53 @@ async def _seed_idle_supervisor_session(orch):
     )
     fake.sessions[handle.name].activity = time.time() - 300  # stale → idle
     return handle
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tmux provider is POSIX-only")
+async def test_idle_opencode_sidebar_pointer_is_submitted_then_body_is_read(orch, handler, monkeypatch):
+    from tests.test_tmux_opencode_composer import OpenCodePane, provider_for
+
+    await _seed_project(orch)
+    handle = await _seed_busy_task_session(orch)
+    await orch.db.update_session("sess-t-busy", provider="tmux", harness="opencode")
+    pane = OpenCodePane(width=120, sidebar=True)
+    provider = provider_for(pane)
+    provider.is_running = AsyncMock(return_value=True)
+    provider.last_activity = AsyncMock(return_value=time.time() - 300)
+    monkeypatch.setitem(orch.session_providers._instances, "tmux", provider)
+    monkeypatch.setattr("src.sessions.tmux._SUBMIT_POLLS", ((0.0,),) * 4)
+    result = await handler.execute("message_send", {
+        "project_id": PROJECT_ID,
+        "from_kind": "user", "from_id": "supervisor",
+        "to_kind": "session", "to_id": "sess-t-busy",
+        "body": "Grants restored; publish your held task branch and close it.",
+    })
+    message_id = result["message_id"]
+    pointer = f"Handle `aq message status {message_id} --json`."
+
+    await orch.message_delivery.run_delivery_pass()
+    assert pane.submitted == [pointer]
+    assert provider._fenced.call_args.args[0].name == handle.name
+    stored = await orch.db.get_message(message_id)
+    assert stored.notification_attempts == 1 and stored.via == "nudge"
+    assert stored.delivered_at is None and stored.read_at is None
+    assert "Grants restored" not in "\n".join(pane.transcript)
+    # No duplicate prompt before the notification backoff, and the actual
+    # recipient's command read, rather than Enter, establishes the receipt.
+    await orch.message_delivery.run_delivery_pass()
+    assert pane.submitted == [pointer]
+    read = await handler.execute("message_status", {
+        "message_id": message_id,
+        "_scope": {
+            "kind": "session", "session_id": "sess-t-busy", "task_id": "t-busy",
+            "project_id": PROJECT_ID, "session_instance_token": handle.instance_token,
+        },
+    })
+    assert read["message"]["body"] == result["message"]["body"]
+    assert read["state"] == "acknowledged" and read["via"] == "read"
+    assert read["delivered_at"] is not None and read["acknowledged_at"] is not None
+    await orch.message_delivery.run_delivery_pass()
+    assert pane.submitted == [pointer]
 
 
 # ---------------------------------------------------------------------------

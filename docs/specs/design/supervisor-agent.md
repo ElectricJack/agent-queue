@@ -274,7 +274,9 @@ Concurrent engine passes are skipped while one is in flight.
    recipient's message. Notification attempts and their timestamps survive daemon
    restarts. Retry after 60 seconds, doubling up to five minutes; after three
    unanswered attempts queue one durable alert, including the original body, to
-   the global supervisor. The alert does not recursively escalate. The original
+   the global supervisor. For mail addressed to the global supervisor, send that
+   alert to `user:dashboard` instead: an unauthenticated supervisor cannot alert
+   itself. The alert does not recursively escalate. The original
    message stays pending and retryable. `message_status` is therefore on the agent
    surface (`AGENT_COMMAND_SET`) and granted to every shipped profile that reads its
    own mailbox, and a non-elevated session may read only messages addressed to its
@@ -289,6 +291,17 @@ Concurrent engine passes are skipped while one is in flight.
    verbatim"). A nudge to a
    sleeping `on_demand` session first **wakes** it
    (session-runtime start with `--resume`); this is the "wakes on first message" behavior.
+   Wake selection preserves priority (lower first), then selects the newest
+   eligible message, with creation sequence breaking timestamp ties. Inbox/prime
+   body injection retains chronological ordering. Before delivery and supervisor
+   inbox reads, archive unread system `task_recovery` and `stale_open` notices
+   whose subject identifies a completed or missing task in the notice's project.
+   Preserve user mail and notices for failed or otherwise unfinished tasks;
+   expiry is archival, never a recipient acknowledgment.
+   More than 50 unread, unarchived messages across the global supervisor's logical
+   addresses also queues a durable alert to `user:dashboard`, even if the session
+   is busy or absent. Anchor its identity to the oldest unread message so delivery
+   passes and daemon restarts cannot repeat an alert for the same backlog episode.
 2. **Target session busy (mid-turn)** → do not interrupt. The message waits and is
    nudged on the first delivery pass that observes the session idle. This *was* a
    `UserPromptSubmit` hook running `aq inbox --inject`; it was removed 2026-08-27 because

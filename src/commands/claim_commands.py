@@ -474,7 +474,9 @@ class ClaimCommandsMixin:
         # to recognise a spent session, so the two cannot drift.
         return pool_claim_cap(self.config, profile)
 
-    def _pool_claim_routing(self, session, profile) -> tuple[str | None, str | None, str | None]:
+    def _pool_claim_routing(
+        self, session, profile,
+    ) -> tuple[str | None, str | None, str | None, bool]:
         """Restrict claims to the recorded live session, not next-launch settings.
 
         A running pool cannot change model or reasoning class between claims.
@@ -483,7 +485,8 @@ class ClaimCommandsMixin:
         claim adds no catalog query to its transaction.
         """
         from src.agents.routing import task_agent_mismatch
-        from src.models import Agent, Task
+        from src.commands.operator_authority import is_operator_profile
+        from src.models import Agent, Task, TaskType
 
         live_class = session.intelligence_class or None
         worker = Agent(
@@ -513,6 +516,7 @@ class ClaimCommandsMixin:
                 description="",
                 profile_id=session.profile_id,
                 intelligence_class=class_id,
+                task_type=TaskType.OPERATOR if is_operator_profile(profile) else None,
             )
             return (
                 task_agent_mismatch(
@@ -530,6 +534,7 @@ class ClaimCommandsMixin:
             live_class if live_class and matches(live_class) else None,
             session.llm_provider or None,
             None,
+            is_operator_profile(profile),
         )
 
     async def _attempt_claim(self, session, want_id, cap, project, *, routing=None, repaired=False):
@@ -770,6 +775,7 @@ class ClaimCommandsMixin:
                     intelligence_class=routing[0] if routing else None,
                     llm_provider=routing[1] if routing else None,
                     options_hash=routing[2] if routing else None,
+                    operator=routing[3] if routing else None,
                     allowed_task_ids=admission.allowed if admission is not None else None,
                     excluded_task_ids=withheld_source_repairs or None,
                 )

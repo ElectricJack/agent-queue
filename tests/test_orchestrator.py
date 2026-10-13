@@ -343,26 +343,19 @@ async def test_orchestrator_owns_single_integration_service_loop(orch):
     assert service is not None
     assert service._task is not None
     assert service._task.get_name() == "integration-reconciliation-service"
-    assert orch.integration_scheduler is not None
+    assert orch.integration_scheduler is None
     assert orch.integration_outbox is not None
     assert orch.integration_attestation_service is not None
     assert not hasattr(orch, "integration_control_service")
     assert orch.branch_materialization_service is not None
-    # shadow keeps the parent runtime, so containers may still be bootstrapped.
-    assert orch.branch_materialization_service.legacy_container_collection is True
-    assert service._subject_runtime is not None
-    assert orch.config.integration.reconciler_active is True
-    assert len(service._subject_runtime.loops) == 1
-    assert service._subject_runtime.loops[0]._mode.value == "active"
-    assert service._parent_subject_runtime is orch.parent_subject_runtime
-    assert service._development_subject_runtime is orch.development_subject_runtime
+    assert orch.branch_materialization_service.legacy_container_collection is False
+    assert service._subject_runtime is None
+    assert service._parent_subject_runtime is None
+    assert service._development_subject_runtime is None
     assert service._outbox is orch.integration_outbox
     assert "delegate cleanup" in service._maintenance
     assert orch.integration_train is None and service._train is None
-    assert (
-        orch.integration_attestation_resolver.__self__
-        is orch.integration_attestation_service
-    )
+    assert orch.integration_attestation_resolver.__self__ is orch.integration_attestation_service
 
 
 async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_path, monkeypatch):
@@ -373,14 +366,11 @@ async def test_git_first_active_runs_the_train_instead_of_subject_runtimes(tmp_p
     )
     config.worktrees.enabled = False
     config.integration.git_first = "active"
-    def legacy_constructor(*args, **kwargs):
-        raise AssertionError("active train constructed a retired publisher or scheduler")
-    for cls in (
-        "src.integration.scheduler.IntegrationScheduler.__init__",
-        "src.integration.promotion.PromotionService.__init__",
-        "src.integration.main_promotion.RootPromotionService.__init__",
-    ):
-        monkeypatch.setattr(cls, legacy_constructor)
+    import sys
+    for name in ("scheduler", "promotion", "main_promotion", "root_runtime", "parent_runtime",
+                 "reconciler", "root_adapters", "candidates", "subjects", "parent_engine",
+                 "settling", "stale_schedule", "development_runtime", "development_adapter"):
+        monkeypatch.setitem(sys.modules, f"src.integration.{name}", None)
     orch = Orchestrator(config, runtimes=MockAdapterFactory())
     from src.commands.handler import CommandHandler
 
@@ -557,7 +547,7 @@ async def test_orchestrator_outbox_sinks_unsubscribed_events_with_runtime_eviden
     assert "NoIntegrationEventConsumer: no ready playbook" in unknown["last_error"]
 
 
-async def test_runtime_cycle_materializes_origins_and_starts_untouched_container(orch, tmp_path):
+async def test_runtime_cycle_materializes_origins_without_legacy_container_episode(orch, tmp_path):
     """The daemon cycle, not a direct service call, owns origin reconciliation."""
     from sqlalchemy import insert
 
@@ -652,8 +642,8 @@ async def test_runtime_cycle_materializes_origins_and_starts_untouched_container
     await orch.run_one_cycle()
 
     checkpoint = await orch.db.get_integration_checkpoint("materialization-epic")
-    assert checkpoint["episode_id"] is not None
-    assert (await orch.db.get_task("materialization-epic")).status is TaskStatus.PAUSED
+    assert checkpoint["episode_id"] is None
+    assert (await orch.db.get_task("materialization-epic")).status is TaskStatus.IN_PROGRESS
     origin = await orch.db.get_task_branch_origin_for_promotion(
         "materialization-epic", "materialization-repo"
     )
@@ -3782,3 +3772,32 @@ class TestGlobalBudgetReload:
         await orch._schedule()
 
         assert orch._last_scheduler_state.global_budget is None
+
+
+async def test_branch_tracking_dispatches_in_background_once_per_interval(monkeypatch):
+    from types import SimpleNamespace
+
+    orch = object.__new__(Orchestrator)
+    orch.config = AppConfig()
+    orch._tracked_deploy_check = None
+    orch._tracked_deploy_last_check = 0
+    handler = SimpleNamespace(execute=AsyncMock(return_value={"success": True}))
+    orch._command_handler = handler
+    monkeypatch.setattr("src.orchestrator.core.time.monotonic", lambda: 500)
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is None  # default is opt-out
+    orch.config.deploy.track_branch = "dev"
+    orch._schedule_tracked_deploy_check()
+    task = orch._tracked_deploy_check
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is task
+    await task
+    handler.execute.assert_awaited_once_with("update_and_restart", {
+        "automatic": True, "reason": "Installation tracks dev",
+    })
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is task  # cadence also gates completed checks
+    orch.config.deploy.track_branch = None
+    monkeypatch.setattr("src.orchestrator.core.time.monotonic", lambda: 1000)
+    orch._schedule_tracked_deploy_check()
+    assert orch._tracked_deploy_check is task

@@ -320,6 +320,11 @@ class TestSessionTokenStore:
             digest = hashlib.sha256(token.encode()).hexdigest()
             original = await db.get_api_token(digest)
             now += 1700
+            replacement = await store.mint(
+                session_id="sup", session_instance_token="tok-sup", task_id=None,
+                project_id=project_id, elevated=True,
+            )
+            assert replacement != token
             assert await store.revoke_expired() == 0
             assert (await db.get_api_token(digest))["expires_at"] == original["expires_at"]
             now += 200
@@ -354,6 +359,11 @@ class TestSessionTokenStore:
                     assert response.json() == {
                         "elevated": True, "project_id": project_id, "instance": "tok-sup",
                     }
+                    # Minting an operator recovery token cannot strand the live
+                    # process using its original launch bearer, even after reload.
+                    assert (await client.get("/probe", headers={
+                        "Authorization": f"Bearer {replacement}",
+                    })).status_code == 200
             if project_id is None:
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=app, client=("203.0.113.1", 1)),
@@ -364,6 +374,7 @@ class TestSessionTokenStore:
             await active_store.revoke_session("sup")
             await active_store.revoke_expired()
             assert await active_store.validate(token) is None
+            assert await active_store.validate(replacement) is None
         finally:
             await db.close()
 

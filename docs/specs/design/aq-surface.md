@@ -261,6 +261,16 @@ Exit codes: `0` success (and all `paused` no-ops, so agent loops don't spuriousl
 `4` auth/scope denied.
 `aq inbox --inject` always exits `0` regardless (§6.2).
 
+An interrupted or malformed `/api/execute` reply is a `command_error` at exit `1`,
+with `details.outcome="unknown"` and `details.automatic_retry=false`: the CLI must
+not replay a command that may already have committed. Generic command replies
+include a safe `details.failure_kind` (HTTP exception class or response-validation
+category); read timeouts also include `details.read_timeout_seconds`. Diagnostics
+never include raw exception messages or response bodies. `pool status` and `task
+explain` have a 120-second read budget because they may measure the entire fleet,
+including separate bounded prerequisite reads for each project. Other commands
+retain their existing timeout budgets.
+
 The two structured-output exceptions are protocols rather than ordinary command results:
 `aq logs --json` (and `aq --json logs`) emits JSON Lines until the bounded read or follow
 stream ends, and `aq prime --hook-json` emits the harness-owned hook envelope. Interactive
@@ -519,6 +529,9 @@ from reaching the agent. On any failure it prints nothing and exits 0.
   instance. Existing project fences still apply; a project supervisor cannot
   mint a global credential. Replace the affected session's `AQ_API_TOKEN` with
   `.data.token`; the command does not mutate a running process's environment.
+  Minting another credential never revokes an existing launch credential. Each
+  eligible bearer is renewed independently until that launch ends, so a live
+  process can continue using the token it received at startup.
   `sessions.authentication` and `stall.sweep` report recent rejected credentials
   associated with a running launch, and named supervisors with no valid credential
   for their current instance. Auth diagnostics never include bearer tokens or hashes.

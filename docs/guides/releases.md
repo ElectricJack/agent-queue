@@ -196,6 +196,44 @@ databases and never run this procedure. Sources:
 [src/database/backup.py](../../src/database/backup.py), and
 [migrations](migrations.md).
 
+## Follow an installation branch automatically
+
+For a source installation that already runs on `dev` with upstream `origin/dev`,
+set this installation section in `~/.agent-queue/config.yaml` (or System Config):
+
+```yaml
+deploy:
+  track_branch: dev
+  poll_interval_seconds: 300
+```
+
+The running daemon picks up this setting through config hot reload. It checks in
+the background every five minutes and launches the same safe operator updater
+as `aq update --yes`. This does not require a supervisor cron or an agent call.
+Null `track_branch` disables future checks. Release tag selection and branch
+tracking are mutually exclusive; a tag deployment record must be reconciled by
+an operator before returning to branch tracking.
+
+The installation must stay clean, on the configured branch, with its matching
+upstream. Local commits, divergent history, dirty tracked files and multiple
+Alembic heads refuse deployment before anything stops. Updates preserve agent
+sessions, rebuild changed dashboard inputs, and require successful daemon health,
+readiness and installed dashboard verification. An ordinary failed update restores
+the previous version. After migrations may have run, the existing updater safety
+policy retains newer code and names the backup for operator recovery.
+
+System Config's Deployments table shows timestamps, branches, commit targets,
+outcomes and recovery details. History is capped at 100 events and persists across
+restart. `~/.agent-queue/update.log` holds the detailed updater output. A failed
+commit is held to prevent restart loops; a newer commit can deploy, or the operator
+can retry the same commit with `aq update --yes` after correcting its failure.
+Failures after migrations set a persistent recovery hold that also blocks newer
+commits. Follow the recorded backup and daemon log remediation to restore the
+installation, then run `aq update --yes --resume-after-recovery` as operator.
+It verifies daemon health/readiness and the installed dashboard before releasing
+the hold. Automatic updates always require the pre-migration backup.
+Workers do not enable tracking or restart the operator installation.
+
 ## Inputs and outputs
 
 Release input is a configured versioned step and reviewed S. Its output is a

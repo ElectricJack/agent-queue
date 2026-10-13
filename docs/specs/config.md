@@ -777,10 +777,10 @@ override → project policy `projects.integration_mode` → this).
 | `merge_required_checks` | `list[str]` | `[]` | Check names that must be green, e.g. `["Tests (default)"]`. Empty means every check in the rollup — the strict reading. A required name the rollup never mentions is treated as not-yet-reported, which blocks under `required`. A bare string is accepted as a one-element list. |
 | `merge_require_up_to_date` | `bool` | `true` | Whether a PR head that is *behind* its base counts as not green — GitHub's "Require branches to be up to date before merging", applied on the fleet's own merge path. A green rollup only proves the head passed against the base as it was when the run started; PRs #390 and #391 were each green on their own base and their back-to-back merge put a `main` together that no run had tested. Under `warn` this only adds a `base` block (`ref`, `behind_by`, `state`: `current` / `stale` / `unknown`) to the result; under `required` a stale or unreadable base refuses the merge until the branch is updated and its checks re-run. The trade-off is more CI re-runs on a busy queue. |
 | `owner_recovery_sweep` | `bool` | `true` | Whether the daemon periodically (every 300 s) releases branch owners whose writers are proven gone, through the same guarded recovery as `aq integration release-owner`: a live writer, a live checkout or an unreachable origin is refused, never released. Ships on because stranded-owner recovery is routine; an explicit `false` (including the string `"false"` from a `${VAR}` substitution) keeps it off. |
-| `reconciler_shadow` | `bool` | `false` | Install the root subject loop in shadow mode: every visit observes, records exactly one decision from the pinned policy artifact and reschedules, and performs no mutating primitive. Legacy keeps exclusive ownership of every root subject, so the loop observes real traffic without changing it. Off by default; see [Shadow week and the guarded root cutover](../guides/reconciler-shadow-cutover-runbook.md). |
-| `reconciler_active` | `bool` | `false` | Visit root and Development subjects that were explicitly transferred to the reconciler. This setting never transfers ownership on its own — `aq integration engine-transfer` does that for roots and `aq integration development-engine-transfer PROJECT_ID` for a project's Development subjects, each with exact subject versions, a reason and shadow/scenario/approval evidence. Disabling it is the first half of the feature-off rollback; the second half is transferring each subject back to `legacy`. A Development transfer to the reconciler is refused while this is off, so the reconciler is never handed a project it may only mirror. |
-| `git_first` | `str` | `"shadow"` | Integration protocol selector, read when the daemon builds its integration service. `"shadow"` keeps the root, parent and development subject runtimes authoritative and logs structured Git-first comparisons for child delivery, epic readiness, repair progress and lease eligibility; diagnostics allocate no repairs, publish no refs and emit no policy actions. `"active"` constructs no subject runtime: one Git-first train (`src/integration/train.py`) visits each target through `integration_train_tick`, freezes completed sources into a batch, requires exact-candidate checks, fast-forwards the target and files ordinary repair tasks only for the failures the target commit does not also fail (a pre-existing or undecided failure is re-requested under bounded backoff, never repaired); outbox dispatch, scheduler leases and green continuations stop. Switching either way is an operator restart; see [the activation runbook](../guides/git-first-train-runbook.md). |
-| `publisher_stall_after` | `int` | `5` | Consecutive identical unsuccessful evaluations after which the development publisher ends a skipped candidate's attempt as `stalled`: one error log, one `supervisor-<project>` message and doctor ERROR (`integration.development_publisher_stalled`). An evaluation is identical when task, latest completion, reason, related task, target repository/ref and the relevant git evidence are unchanged. Idle ticks, daemon downtime and waits on a live repair do not count; new evidence or an explicit `aq integration sweep --retry` / `--recover-child` starts a new attempt. |
+| `reconciler_shadow` | `bool` | `false` | Retained configuration compatibility flag. The legacy subject publisher/shadow runtime has been removed; this flag installs no subject loop. Historical evidence remains available to ownership and cleanup checks. |
+| `reconciler_active` | `bool` | `false` | Retained historical ownership-transfer guard. It installs no subject publisher. Generic root `engine-transfer` retains exact-version/reason/evidence fences; Development transfer was removed with its dormant runtime. Current delivery runs through `git_first: active`. |
+| `git_first` | `str` | `"shadow"` | Read when startup constructs integration services. `"active"` constructs the Git-first train and runs it through `integration_train_tick`, with exact-candidate checks, review/publication gates and bounded repair policy. `"shadow"` leaves the train off; the removed legacy subject runtimes are not restored. Cleanup, outbox and ownership maintenance retain their safety contracts. A selector change requires an operator restart; see [the current runbook](../guides/git-first-train-runbook.md). |
+| `publisher_stall_after` | `int` | `5` | Retained compatibility setting for the retired development publisher. It does not install a publisher or alter the active train repair budget. |
 | `service_source_timeout_seconds` | `float` | `300` | Wall-clock budget for one source callback of the integration reconciliation service (one bounded page of one source: GitHub PR reviews, candidate CI, the outbox, …). A source past its budget is cancelled and the pass continues with the other sources; its durable rows stay retryable. A callback that refuses cancellation is left to unwind and its source is skipped, never run twice at once, until it has. The slowest sources observed on a busy install take about two minutes. |
 | `service_item_timeout_seconds` | `float` | `60` | Budget for one item of a page the service iterates itself (a due schedule, a repair deadline, a repair dispatch, a candidate CI row, a promotion intent, a cleanup item). A hung item is cancelled and the later items of the page still run. |
 | `service_source_timeouts` | `dict[str, float]` | `{}` | Per-source overrides of `service_source_timeout_seconds`, keyed by the source name the daemon logs (`integration slow source=<name>`), e.g. `{"GitHub PR reviews": 600}`. |
@@ -802,19 +802,15 @@ value alone installs no loop into a running service, so both need `aq restart
 The active train's shared contracts and ownership guards live in retained
 `runtime_contracts.py`, `promotion_contracts.py` and `owner_guards.py`. Shared
 parent checkpoint seeding belongs to `parent_subjects.py`, and is invoked only
-when a subject policy loader is explicitly installed. Loading gates or the
-Development adapter must not import the legacy scheduler or reconciler; their
-compatibility execution paths load those services only when invoked. The
-Development runtime factory also refuses construction under `git_first: active`,
-so a fallback caller cannot install a second publisher.
+when a subject policy loader is explicitly installed. Loading gates and the active train use retained contracts without importing
+retired schedulers or reconciler publishers. The Development adapter/runtime and
+its transfer command are absent; the train imports policy pins and repository
+construction from `development_policy.py` and `repository_git.py`.
 
-`git_first` accepts only `shadow` or `active` and is read when the integration service is constructed; a change takes effect at the next daemon restart.
-It requires an operator restart to change. Its diagnostics stay outside policy bindings
-and the subject journal; failures and timeouts leave the selected policy unchanged.
-The temporary `shadow.py` allowance is fixed at 300 physical lines within the plan's
-fixed 15,000-line replacement allowance; stage four removes the selector and adapter.
-Diagnostic agreement is not cutover acceptance. The seven-day legacy-exclusive shadow
-report does not certify these comparisons or the replacement protocol.
+`git_first` accepts only `shadow` or `active` and is read when the integration service
+is constructed. Current startup constructs no subject publisher in either mode.
+The [consumer retirement audit](../reports/2026-10-12-legacy-consumer-retirement.md)
+records the remaining historical safety and active repair consumers.
 
 `merge_ci_policy` exists because GitHub was never asked the question: `main`
 carries no required status check, so `gh pr merge` merged 29 of the last 30
@@ -890,6 +886,29 @@ Set by `aq install` (wizard, `--git-name/--git-email`, or
 `settings.git_identity` in `--config`) and by `aq system config git-identity`.
 
 ---
+
+### deploy — installation deployment
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `tag_glob` | `str \| null` | `null` | Annotated release tag family for operator updates. |
+| `target` | `str` | `"main"` | Promotion branch containing selected release tags. |
+| `track_branch` | `str \| null` | `null` | Automatically deploy new commits from the installation's matching branch/upstream. Conflicts with tag selection. |
+| `poll_interval_seconds` | `float` | `300.0` | Background branch-check cadence; finite, at least 60 seconds. |
+
+This section is hot reloadable. Branch tracking requires a clean operator
+checkout on the configured branch with a matching upstream. It never switches
+branches, discards local commits, or runs from worker slots. Updates check the
+pinned target's single-head migration graph, keep running agent sessions, rebuild
+changed dashboard inputs, and verify daemon health/readiness and the installed
+dashboard. Failed starts restore the previous deployment unless schema migrations
+may have run; then newer code is retained and the pre-update backup is named.
+Failed automatic targets remain held until a new commit or manual operator retry.
+After migrations may have run, a persistent recovery hold blocks all targets
+until an operator restores health/readiness and the dashboard, then verifies with
+`aq update --yes --resume-after-recovery`. Automatic updates require backup.
+System Config shows the private, bounded `deploy-history.json` log.
+See [branch tracking](design/branch-tracking-deployment.md).
 
 ## 5. Loading Behavior
 

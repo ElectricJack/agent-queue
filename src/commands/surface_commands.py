@@ -106,7 +106,34 @@ class SurfaceCommandsMixin:
             and project.hierarchical_integration_mode in {"hierarchy", "train"}
             and checkpoint is not None
         ):
-            if checkpoint.get("episode_id") is None:
+            from src.integration.delivery_observer import prerequisite_observer
+
+            observer = prerequisite_observer(self.db)
+            if observer is not None:
+                from src.integration.delivery_truth import DeliveryState
+
+                view = await observer.observe(
+                    [task_id], max_age=observer.READ_MAX_AGE, cached_only=True,
+                )
+                async with self.db._engine.connect() as conn:
+                    verified = await view.verified_on(conn, [task_id])
+                proof = verified.get(task_id)
+                head = (checkpoint.get("verified_sha") if checkpoint.get("episode_id")
+                        else checkpoint.get("checkpoint_sha"))
+                delivered = bool(
+                    proof is not None
+                    and proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}
+                    and head == proof.source_oid
+                )
+                info["integration_delivery"] = {
+                    "outcome": "delivered" if delivered else "working",
+                    "task_id": task_id, "generation": int(checkpoint["generation"]),
+                    "checkpoint_sha": checkpoint.get("checkpoint_sha"),
+                    "episode_id": checkpoint.get("episode_id"), "operation_id": None,
+                    "head_sha": head,
+                    "receipts": [], "blockers": [],
+                }
+            elif checkpoint.get("episode_id") is None:
                 receipts = await self._root_delivery_receipts(checkpoint)
                 info["integration_delivery"] = {
                     "outcome": "delivered" if receipts else "working",

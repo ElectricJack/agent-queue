@@ -1,9 +1,8 @@
 """The reduced integration train: level-triggered visits over Git, checks and intent.
 
 Under ``integration.git_first: active`` one :class:`IntegrationTrain` takes the
-place of the root, parent and development subject runtimes. It is a reduction
-of :class:`~src.integration.reconciler.IntegrationReconciler`, not a second
-engine: every visit derives progress from one fetched Git snapshot, the cached
+place of the retired root, parent and development subject runtimes. Every
+visit derives progress from one fetched Git snapshot, the cached
 checks of the exact candidate commit and the batch's durable intent, so a
 restart or a missed notification is repaired by the next visit. There is no
 journal, generation or receipt to replay.

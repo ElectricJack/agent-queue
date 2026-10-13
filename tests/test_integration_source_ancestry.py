@@ -19,46 +19,27 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database.tables import (
-    integration_batch_members,
-    integration_batches,
-    integration_branch_owners,
-    integration_candidate_revisions,
     integration_outbox,
-    integration_repair_operations,
-    integration_repair_stages,
     integration_review_evidence,
     integration_source_ci,
     messages,
     playbook_artifacts,
-    project_integration_leases,
-    project_integration_schedules,
     projects,
     task_branch_origins,
     task_integration_checkpoints,
     tasks,
 )
-from src.git.github_app import GitHubRepositoryBinding
 from src.git.manager import GitManager
-from src.integration.candidates import CONSTRUCTION_RETRY_SECONDS, CandidateService
-from src.integration.github_review_poll import GitHubReviewPoller
-from src.integration.promotion import PromotionService
-from src.integration.review_evidence import ReviewEvidenceProducer
-from src.integration.scheduler import IntegrationScheduler, TrainService
+from src.integration.repository_git import RepositoryGit
+from src.integration.reviews import ReviewEvidenceProducer
 from src.integration.source_ancestry import (
-    ANCESTRY_DECISION_PATH,
-    ANCESTRY_REVIEWER,
     SourceAncestryInvalid,
 )
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, TaskStatus
 from tests.db_fixtures import lease_dsn
-from tests.test_integration_candidates import (
-    _AppClient,
-    _artifact,
-    _AuditForge,
-    _LocalPushGit,
-    _policy,
-    _scrubbed_env,
-)
+from tests.test_epic_pr_review_evidence import _artifact, _policy
+import os
+
 from tests.test_integration_review_evidence import review_case  # noqa: F401 (fixture)
 
 FRESH, KEEN = "fresh-flare-12", "keen-beacon-16"
@@ -162,9 +143,6 @@ async def train(tmp_path, reuse_database):
                 checkpoint_sha=head, generation=0, updated_at=1.0,
             ))
             await _green(conn, task_id, graph["recorded"], head)
-    await IntegrationScheduler(db, clock=lambda: 0.0).configure(
-        project_id="p", now=0.0, enabled=True, interval_seconds=300
-    )
     yield {"db": db, "tmp_path": tmp_path, **graph}
 
 
@@ -189,24 +167,8 @@ async def _approve_as_before(db, task_id, base, head, tree):
         ))
 
 
-async def _seal(db, now: float, request_id: str | None = None) -> dict:
-    if request_id is None:
-        due = await IntegrationScheduler(db, clock=lambda: now).mark_due("p", now, "manual")
-        assert due["outcome"] == "due"
-        request_id = due["request_id"]
-    sealed = await TrainService(db).seal("p", request_id, now)
-    assert sealed["outcome"] == "sealed", sealed
-    return sealed
 
 
-def _candidate(case, now: float, *, head_ref=True) -> CandidateService:
-    app = _AppClient(case["origin"] if head_ref else None)
-    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
-    return CandidateService(
-        case["db"], data_dir=case["tmp_path"] / "data",
-        git_manager=_LocalPushGit(case["origin"]), forge_provider=_AuditForge(),
-        app_client=app, clock=lambda: now,
-    )
 
 
 async def _rows(db, table, *conditions, order_by=None):
@@ -238,108 +200,24 @@ async def _sealed_events(db, prefix: str):
     return [row for row in rows if row["id"].startswith(prefix)]
 
 
-def test_reviewed_root_train_still_ends_moved_construction_failed():
-    """The graph gives these outcomes no continuation; the durable state must."""
-    for playbook in ("root-train", "agent-queue-root-train"):
-        artifact = json.loads((REVIEWED_ARTIFACTS / playbook / "artifact.json").read_text())
-        transitions = artifact["steps"]["construct-and-test--build"]["transitions"]
-        assert transitions["source_moved"] == "construct-and-test--failed"
-        assert transitions["base_moved"] == "construct-and-test--failed"
+@pytest.mark.parametrize("playbook", ("root-train", "agent-queue-root-train"))
+def test_reviewed_root_train_preserves_moved_construction_policy(playbook):
+    """Retired event construction leaves bounded retries in the authored table."""
+    artifact = json.loads((REVIEWED_ARTIFACTS / playbook / "artifact.json").read_text())
+    assert "construct-and-test--build" not in artifact["steps"]
+    assert "integration.sealed" not in {rule["trigger"]["event_type"] for rule in artifact["rules"]}
+
+    build = artifact["integration_policy"]["tables"]["root_batch"]["actions"]["build"]
+    assert build["primitive"] == "git_merge_members"
+    for outcome in ("source_moved", "base_moved"):
+        assert build["outcomes"][outcome] == {
+            "kind": "wait",
+            "phase": "building",
+            "reason": outcome.replace("_", "-"),
+            "seconds": 60,
+        }
 
 
-async def test_stacked_source_is_withdrawn_and_the_valid_source_reseals_on_its_own(train):
-    db = train["db"]
-    await _approve_as_before(db, FRESH, train["recorded"], train["fresh"], train["fresh_tree"])
-    await _approve_as_before(db, KEEN, train["recorded"], train["keen"], train["keen_tree"])
-    first = await _seal(db, 1301.0)
-    members = await _rows(
-        db, integration_batch_members,
-        integration_batch_members.c.batch_id == first["batch_id"],
-        order_by=integration_batch_members.c.ordinal,
-    )
-    assert [m["task_id"] for m in members] == [FRESH, KEEN]
-    schedule = await _one(db, project_integration_schedules)
-
-    result = await _candidate(train, 1302.0).build(first["batch_id"])
-
-    assert (result.outcome, result.member_ordinal, result.revision) == ("source_moved", 0, 0)
-    batch = await _one(db, integration_batches, integration_batches.c.id == first["batch_id"])
-    assert batch["lifecycle"] == "aborted"
-    assert "is not an ancestor" in batch["human_abort_reason"]
-    # The frozen manifest, its revision and the run's history stay exact.
-    assert await _rows(
-        db, integration_batch_members,
-        integration_batch_members.c.batch_id == first["batch_id"],
-        order_by=integration_batch_members.c.ordinal,
-    ) == members
-    revision = await _one(
-        db, integration_candidate_revisions,
-        integration_candidate_revisions.c.batch_id == first["batch_id"],
-    )
-    assert revision["state"] == "constructing" and revision["next_member_ordinal"] == 0
-    operation = await _one(
-        db, integration_repair_operations,
-        integration_repair_operations.c.batch_id == first["batch_id"],
-    )
-    assert operation["state"] == "cancelled"
-    stages = await _rows(
-        db, integration_repair_stages,
-        integration_repair_stages.c.operation_id == operation["id"],
-    )
-    assert [(s["ordinal"], s["state"], s["repair_task_id"]) for s in stages] == [
-        (0, "cancelled", None)
-    ]
-    owner = await _one(
-        db, integration_branch_owners,
-        integration_branch_owners.c.ref == batch["integration_branch"],
-    )
-    assert owner["handoff_state"] == "released"
-    # No lease is renewed for an ended batch; the sweep's catch-up is due now.
-    assert await _rows(db, project_integration_leases) == []
-    catchup = f"integration-sweep:p:{int(schedule['request_sequence']) + 1}"
-    schedule = await _one(db, project_integration_schedules)
-    assert schedule["outstanding_request_id"] == catchup
-    assert schedule["catchup_trigger"] is None
-    assert await _rows(db, integration_outbox, integration_outbox.c.id == catchup) == []
-    assert await _sealed_events(db, "integration-construction-retry:") == []
-    # One exact, attributable withdrawal; the valid source is untouched.
-    rejection = await _latest_evidence(db, FRESH, train["fresh"])
-    assert rejection["verdict"] == "rejected"
-    assert rejection["reviewer_identity"] == ANCESTRY_REVIEWER
-    assert rejection["evidence"]["decision_path"] == ANCESTRY_DECISION_PATH
-    assert rejection["evidence"]["merge_base"] == train["fork"]
-    assert rejection["evidence"]["detected_by"] == "construction"
-    assert rejection["evidence"]["batch_id"] == first["batch_id"]
-    assert f"git merge {train['recorded']}" in rejection["evidence"]["feedback"]
-    assert (await _latest_evidence(db, KEEN, train["keen"]))["verdict"] == "approved"
-
-    second = await _seal(db, 1401.0, catchup)
-    assert [m["task_id"] for m in await _rows(
-        db, integration_batch_members,
-        integration_batch_members.c.batch_id == second["batch_id"],
-    )] == [KEEN]
-    built = await _candidate(train, 1402.0).build(second["batch_id"])
-    assert built.outcome == "built"
-    _git(train["origin"], "merge-base", "--is-ancestor", train["keen"], built.head_sha)
-    _git(train["origin"], "merge-base", "--is-ancestor", train["observed"], built.head_sha)
-    assert not await GitManager().ais_ancestor(str(train["origin"]), train["fresh"], built.head_sha)
-
-    # The review poller routes the withdrawn, still-completed source to repair.
-    routed = []
-
-    async def handler(observation):
-        routed.append(observation)
-        return {"success": True}
-
-    poller = GitHubReviewPoller(
-        db, ReviewEvidenceProducer(db, None), None, ancestry_handler=handler
-    )
-    await poller._poll({"id": FRESH, "pr_url": "https://github.com/example/repo/pull/1"})
-    assert len(routed) == 1
-    assert routed[0].identity() == (FRESH, "repo", train["recorded"], train["fresh"], 0)
-    assert (routed[0].reason, routed[0].detected_by, routed[0].batch_id) == (
-        "source_base_not_ancestor", "construction", first["batch_id"]
-    )
 
 
 class _PullRequests:
@@ -387,91 +265,13 @@ def _handler(case):
     return CommandHandler(orchestrator, config)
 
 
-async def test_admission_refuses_the_stacked_head_and_reopens_it_for_repair(train):
-    db = train["db"]
-    producer = ReviewEvidenceProducer(
-        db, PromotionService(db, data_dir=train["tmp_path"] / "data", git_manager=GitManager()),
-        clock=lambda: 1000.0,
-    )
-    with pytest.raises(SourceAncestryInvalid) as refused:
-        await producer.snapshot_authorized(FRESH, reviewed_sha=train["fresh"], policy_generation=0)
-    assert refused.value.code == "invalid_ancestry"
-    assert refused.value.observation.merge_base == train["fork"]
-    with pytest.raises(SourceAncestryInvalid):
-        await producer.snapshot_from_pull_request(
-            FRESH, verdict="approved", reviewer_login="human", reviewed_sha=train["fresh"]
-        )
-    assert await _latest_evidence(db, FRESH, train["fresh"]) is None
-
-    handler = _handler(train)
-    client = _PullRequests({
-        "https://github.com/example/repo/pull/1": (train["fresh"], f"aq/{FRESH}"),
-        "https://github.com/example/repo/pull/2": (train["keen"], f"aq/{KEEN}"),
-    })
-    poller = GitHubReviewPoller(
-        db, producer, _GitHub(client),
-        ancestry_handler=handler.repair_integration_source_ancestry,
-    )
-    await poller.tick(1000.0)
-
-    reopened = await db.get_task(FRESH)
-    assert reopened.status is TaskStatus.READY
-    assert f"git merge {train['recorded']}" in reopened.description
-    assert "Do not rebase" in reopened.description
-    rejection = await _latest_evidence(db, FRESH, train["fresh"])
-    assert (rejection["verdict"], rejection["reviewer_identity"]) == ("rejected", ANCESTRY_REVIEWER)
-    assert rejection["evidence"]["detected_by"] == "admission"
-    keen = await _latest_evidence(db, KEEN, train["keen"])
-    assert (keen["verdict"], keen["evidence"]["decision_path"]) == ("approved", "authorized_task")
-    # Replay finds the source reopened and changes nothing.
-    replay = await handler.repair_integration_source_ancestry(refused.value.observation)
-    assert replay["outcome"] == "stale"
-    assert len(await _rows(
-        db, integration_review_evidence, integration_review_evidence.c.source_task_id == FRESH
-    )) == 1
-
-    # A close that brings the same head back is not reopened a second time.
-    async with db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == FRESH).values(
-            status="COMPLETED", pr_url="https://github.com/example/repo/pull/1"))
-    await poller.tick(2000.0)
-    assert (await db.get_task(FRESH)).status is TaskStatus.COMPLETED
-    repeat = await _one(db, messages, messages.c.to_id == "supervisor-p")
-    assert "already reopened once" in repeat["body"]
-    assert rejection["id"] in repeat["body"]
-
-    # The worker merges the recorded base, keeping every reviewed commit.
-    work = train["work"]
-    _git(work, "switch", f"aq/{FRESH}")
-    _git(work, "merge", "--no-edit", train["recorded"])
-    repaired = _git(work, "rev-parse", "HEAD")
-    _git(work, "push", "origin", f"HEAD:refs/heads/aq/{FRESH}")
-    _git(work, "merge-base", "--is-ancestor", train["fresh"], repaired)
-    async with db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == FRESH).values(
-            status="COMPLETED", pr_url="https://github.com/example/repo/pull/1"))
-        await conn.execute(update(task_integration_checkpoints).where(
-            task_integration_checkpoints.c.task_id == FRESH
-        ).values(checkpoint_sha=repaired, generation=1))
-        await _green(conn, FRESH, train["recorded"], repaired, generation=1)
-    approved = await producer.snapshot_authorized(
-        FRESH, reviewed_sha=repaired, policy_generation=0
-    )
-    assert approved["verdict"] == "approved" and approved["generation"] == 1
-    async with db.immediate() as conn:
-        eligible = await TrainService(db)._eligible_members(
-            conn, project_id="p", repository_id="repo", project_mode="pull_request"
-        )
-    assert {(m["task_id"], m["source_head"]) for m in eligible} == {
-        (FRESH, repaired), (KEEN, train["keen"])
-    }
 
 
 async def test_without_source_repair_authority_the_supervisor_is_told_once(train):
     db = train["db"]
     await db.update_project("p", hierarchical_integration_policy=_continuous_policy(source_ci=False))
     producer = ReviewEvidenceProducer(
-        db, PromotionService(db, data_dir=train["tmp_path"] / "data", git_manager=GitManager()),
+        db, RepositoryGit(db, data_dir=train["tmp_path"] / "data", git_manager=GitManager()),
         clock=lambda: 1000.0,
     )
     with pytest.raises(SourceAncestryInvalid) as refused:
@@ -491,111 +291,14 @@ async def test_without_source_repair_authority_the_supervisor_is_told_once(train
     )) == 1
 
 
-async def _strand_like_the_incident(train, monkeypatch) -> dict:
-    """Build with the pre-fix construction: ``source_moved`` and nothing else."""
-    db = train["db"]
-    await _approve_as_before(db, FRESH, train["recorded"], train["fresh"], train["fresh_tree"])
-    await _approve_as_before(db, KEEN, train["recorded"], train["keen"], train["keen_tree"])
-    sealed = await _seal(db, 1301.0)
-
-    async def no_withdrawal(*_args, **_kwargs):
-        return None
-
-    async def no_retry(*_args, **_kwargs):
-        return None
-
-    with monkeypatch.context() as patched:
-        patched.setattr(CandidateService, "_withdraw_invalid_sources", no_withdrawal)
-        patched.setattr(CandidateService, "_schedule_construction_retry", no_retry)
-        stranded = await _candidate(train, 1302.0).build(sealed["batch_id"])
-    assert (stranded.outcome, stranded.member_ordinal) == ("source_moved", 0)
-    batch = await _one(db, integration_batches, integration_batches.c.id == sealed["batch_id"])
-    stage = await _one(
-        db, integration_repair_stages,
-        integration_repair_stages.c.operation_id == sealed["operation_id"],
-    )
-    # The operator database's row for e694, field for field.
-    assert batch["lifecycle"] == "building"
-    assert (stage["ordinal"], stage["state"], stage["repair_task_id"], stage["writer_kind"]) == (
-        0, "active", None, None
-    )
-    assert (await _one(db, integration_candidate_revisions))["state"] == "constructing"
-    assert await _rows(db, project_integration_leases)
-    return {**sealed, "deadline": float(stage["deadline_at"]), "attempts": stage["attempts"]}
 
 
 
 
 
 
-async def test_withdrawal_waits_for_a_live_writer_and_keeps_a_continuation(train, monkeypatch):
-    db = train["db"]
-    stranded = await _strand_like_the_incident(train, monkeypatch)
-    async with db.immediate() as conn:
-        await conn.execute(insert(tasks).values(
-            id="repair-writer", project_id="p", repo_id="repo", title="repair",
-            description="", status="IN_PROGRESS", created_at=1.0, updated_at=1.0,
-        ))
-        await conn.execute(update(integration_repair_stages).where(
-            integration_repair_stages.c.operation_id == stranded["operation_id"]
-        ).values(repair_task_id="repair-writer", writer_kind="repair_delegate"))
-
-    result = await _candidate(train, 1310.0).build(stranded["batch_id"])
-
-    assert (result.outcome, result.member_ordinal) == ("source_moved", 0)
-    assert "withdrawal waits on: writer" in result.reason
-    batch = await _one(db, integration_batches, integration_batches.c.id == stranded["batch_id"])
-    assert batch["lifecycle"] == "building"
-    assert (await _one(
-        db, integration_repair_operations,
-        integration_repair_operations.c.id == stranded["operation_id"],
-    ))["state"] == "active"
-    assert await _latest_evidence(db, FRESH, train["fresh"]) is not None
-    assert (await _latest_evidence(db, FRESH, train["fresh"]))["verdict"] == "approved"
-    assert [row["payload"]["batch_id"] for row in await _sealed_events(
-        db, "integration-construction-retry:"
-    )] == [stranded["batch_id"]]
 
 
-async def test_base_moved_keeps_one_pending_retry_while_the_batch_lives(train):
-    db = train["db"]
-    await _approve_as_before(db, KEEN, train["recorded"], train["keen"], train["keen_tree"])
-    sealed = await _seal(db, 1301.0)
-    now = 1320.0
-    unreadable_main = _candidate(train, now, head_ref=False)
-
-    first = await unreadable_main.build(sealed["batch_id"])
-    replay = await unreadable_main.build(sealed["batch_id"])
-    assert first.outcome == replay.outcome == "base_moved"
-    retries = await _sealed_events(db, "integration-construction-retry:")
-    window = int(now // CONSTRUCTION_RETRY_SECONDS)
-    assert [row["id"] for row in retries] == [
-        f"integration-construction-retry:{sealed['batch_id']}:0:{window}"
-    ]
-    assert retries[0]["available_at"] == now + CONSTRUCTION_RETRY_SECONDS
-    assert retries[0]["payload"]["operation_id"] == sealed["operation_id"]
-
-    # While that retry is undelivered no second one is written, even in a later
-    # window; once the route accepts it, the next base_moved writes the next.
-    later = _candidate(train, now + CONSTRUCTION_RETRY_SECONDS, head_ref=False)
-    assert (await later.build(sealed["batch_id"])).outcome == "base_moved"
-    assert len(await _sealed_events(db, "integration-construction-retry:")) == 1
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_outbox).where(
-            integration_outbox.c.id == retries[0]["id"]).values(delivered_at=now + 61))
-    assert (await later.build(sealed["batch_id"])).outcome == "base_moved"
-    assert len(await _sealed_events(db, "integration-construction-retry:")) == 2
-
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_batches).where(
-            integration_batches.c.id == sealed["batch_id"]).values(lifecycle="aborted"))
-    assert await later._schedule_construction_retry(sealed["batch_id"], 0) is None
-
-    # Once main is readable again the retried build proceeds normally.
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_batches).where(
-            integration_batches.c.id == sealed["batch_id"]).values(lifecycle="sealed"))
-    assert (await _candidate(train, now + 61.0).build(sealed["batch_id"])).outcome == "built"
 
 
 async def test_reviewer_task_cannot_approve_a_train_root_that_dropped_its_base(
@@ -634,3 +337,16 @@ async def test_reviewer_task_cannot_approve_a_train_root_that_dropped_its_base(
 def _current_root_authority(monkeypatch):
     from tests.integration_primitive_scope import authorize_root_primitives
     authorize_root_primitives(monkeypatch)
+
+def _scrubbed_env() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in _AMBIENT_IDENTITY_KEYS}
+
+
+_AMBIENT_IDENTITY_KEYS = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)

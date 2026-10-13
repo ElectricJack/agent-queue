@@ -9,14 +9,12 @@ triggers:
   - task.failed
   - task.child_added
   - task.parent_checkpointed
-  - delivery.ready
   - delivery.applied
   - task.integration_ready
   - task.integration_verified
   - integration.ci_completed
   - integration.repair_exhausted
   - integration.repair_deadline_due
-  - integration.resolution_push_observed
   - integration.repair_delegate_closed
 ---
 
@@ -51,18 +49,6 @@ terminal; runtime failure is terminal failure.
 On `task.parent_checkpointed`, call `integration_checkpoint_parent` with `task_id`,
 `head_sha`, and `generation`. Outcomes `checkpointed` and `already_waiting` complete;
 `dirty` and `stale` fail.
-
-## Rule: promote-delivery
-
-On `delivery.ready`, call `delivery_promote` with `operation_key`, `source_task_id`,
-`source_head`, `source_base`, `expected_target`, and `fence`. Outcomes `promoted` and
-`already_promoted` complete. `source_moved` and `target_moved` fail. On `conflict`, call
-`integration_repair_start` with the event `operation_id`, `expected_target` as
-`starting_sha`, and `operation_key` as `trigger_id`; on `started` or `already_started`,
-call `integration_repair_dispatch` for literal `stage` zero. Repair outcomes
-`dispatched`, `already_dispatched`, and `writer_reused` complete; `busy`,
-`configuration_blocked`, `stale`, and `human_required` fail. Start outcomes `stale` and
-`invariant_error` fail.
 
 ## Rule: project-delivery-readiness
 
@@ -117,13 +103,6 @@ On `integration.repair_deadline_due`, call `integration_repair_timeout` with
 `operation_id` and `stage`. Outcomes `expired`, `not_due`, and `already_terminal`
 complete; `stale` fails. Escalation remains the command's typed `action`, not a renamed
 timeout outcome.
-
-## Rule: reconcile-resolution-push
-
-On `integration.resolution_push_observed`, call `integration_reconcile_promotion` with
-`promotion_intent_id` bound to `intent_id`. `applied`, `continued`, `superseded` complete.
-`not_applied`, `waiting`, `target_moved`, `invariant_error` fail. This triggers reconciliation
-of the exact remote; it is not a receipt or check-success assertion.
 
 ## Rule: complete-verified-parent
 

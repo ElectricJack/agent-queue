@@ -415,7 +415,7 @@ def integration_ci_sources(raw_policy: Any) -> dict[str, Any]:
     ``default``.  A stored policy that no longer validates reads as default,
     which is hosted, matching what the train's lanes do with it.
     """
-    from src.integration.development_runtime import project_development_pin
+    from src.integration.development_policy import project_development_pin
 
     hosted = dict.fromkeys(CI_TARGET_KINDS, "hosted")
     if isinstance(raw_policy, dict) and project_development_pin(

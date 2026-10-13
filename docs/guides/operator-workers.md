@@ -33,6 +33,13 @@ because bulk provider allocation controls select ordinary workers only. That
 diagnostic does not exclude operator profiles from routing or pool startup;
 inspect their individual bounds and demand with `aq pool status`.
 
+Pool claim validation preserves the profile's operator role when checking the
+session's frozen launch class and model. Demand counts only claimable routes
+whose task kind agrees with that role and whose class agrees with the pool's
+fixed class. An unrouted task or a stale route with a different role or class
+cannot launch a pool session as queued demand. Explicit warm-pool floors still
+apply.
+
 ## Preflight and execution
 
 Declare the complete action list and every applicable prerequisite up front.

@@ -255,6 +255,7 @@ def test_e2e_config_enables_jobs_with_a_separate_test_database(tmp_path, test_ds
         check=True, env=env, capture_output=True, text=True,
     )
     config = load_config(str(tmp_path / "config.yaml"))
+    assert config.integration.git_first == "active"
     assert config.resources.jobs.enabled
     assert config.resources.jobs.test_database_url == (
         test_dsn or
@@ -1901,3 +1902,17 @@ def test_pytest_collection_selects_only_the_requested_shard(group):
     assert {line.rsplit("[", 1)[1].removesuffix("]") for line in nodes} == {
         f"{group}-{key}" for key in SCENARIO_GROUPS[group]
     }
+
+
+def test_train_validation_pin_excludes_retired_commands(monkeypatch, tmp_path):
+    from src.playbooks.definition import load_definition_json
+
+    smoke = _load_smoke()
+    monkeypatch.setattr(smoke, "api_checked", lambda *_: {"success": True})
+    policy = smoke._pin_train_validation("fixture", tmp_path)
+    definition = load_definition_json(
+        (tmp_path / "vault/e2e-bundles/fixture-development/artifact.json").read_text()
+    )
+    assert [rule.id for rule in definition.rules] == ["cleanup-promoted"]
+    assert all(name.startswith("cleanup-promoted--") for name in definition.steps)
+    assert policy["development"]["route"]["artifact"]["artifact_sha256"]

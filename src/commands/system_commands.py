@@ -283,6 +283,9 @@ class SystemCommandsMixin:
                     "edit the file directly."
                 )
             }
+        from dataclasses import asdict
+
+        raw.setdefault("deploy", asdict(self.config.deploy))
         section = args.get("section") or None
         if section is not None:
             raw = {section: raw.get(section)}
@@ -292,7 +295,11 @@ class SystemCommandsMixin:
         # ``${VAR}`` strings byte-identical, so the two agree either way.
         env_refs = find_env_var_refs(raw)
         redacted_config, redacted_paths = redact_config(raw)
+        from src.install.deploy_history import read_history
+
+        deployment_history = await asyncio.to_thread(read_history, Path(self.config.data_dir))
         return {
+            "deployment_history": deployment_history,
             "path": path,
             "config": redacted_config,
             "section": section,
@@ -954,27 +961,49 @@ class SystemCommandsMixin:
         }
 
     async def _cmd_update_and_restart(self, args: dict) -> dict:
-        """Opt into release selection only with a configured tag family."""
-        if not self.config.deploy.tag_glob:
+        """Run the safe operator updater when a release or tracked branch is configured."""
+        if args.get("automatic") and not self.config.deploy.track_branch:
+            return {"success": False, "error": "automatic branch deployment is disabled"}
+        if not (self.config.deploy.tag_glob or self.config.deploy.track_branch):
             return await self._update_and_restart_legacy(args)
         import subprocess
         import sys
 
         from src.install.update import UpdateRefused, plan_update
+        from src.install.deploy_history import failed_target, record_deploy, recovery_pending
 
         reason = args.get("reason", "No reason provided")
         wait_for_tasks = args.get("wait_for_tasks", False)
         orch = self.orchestrator
         repo_dir = Path(__file__).resolve().parents[2]
         state_dir = Path(self.config.data_dir)
+        if await asyncio.to_thread(recovery_pending, state_dir):
+            return {
+                "success": False, "error": "migration_recovery_required",
+                "remediation": "Follow deployment history remediation, then run aq update --yes "
+                "--resume-after-recovery as operator after restoring the installation.",
+            }
+        if (state_dir / "update.lock").exists():
+            return {"success": True, "status": "updating", "log": str(state_dir / "update.log")}
         try:
             plan = await asyncio.to_thread(
                 plan_update, repo_dir, state_dir=state_dir,
                 tag_glob=self.config.deploy.tag_glob,
                 promotion_target=self.config.deploy.target,
+                **({"track_branch": self.config.deploy.track_branch}
+                   if self.config.deploy.track_branch else {}),
             )
         except UpdateRefused as refused:
+            await asyncio.to_thread(
+                record_deploy, state_dir, "refused", branch=self.config.deploy.track_branch or "",
+                message=refused.reason, automatic=bool(args.get("automatic")),
+            )
             return {"success": False, "error": refused.reason, "remediation": refused.remediation}
+        if args.get("automatic") and await asyncio.to_thread(failed_target, state_dir, plan.target):
+            return {
+                "success": False, "error": "deployment_failed",
+                "remediation": "This commit previously failed; retry aq update --yes as operator.",
+            }
         if plan.up_to_date:
             return {"success": True, "status": "up_to_date", "commit": plan.current}
 
@@ -998,13 +1027,21 @@ class SystemCommandsMixin:
                 self.config, explicit={"AQ_INSTALL_STATE_DIR": str(state_dir)}
             ).env
             try:
-                with log.open("ab") as output:
+                descriptor = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                with os.fdopen(descriptor, "ab") as output:
+                    os.fchmod(output.fileno(), 0o600)
                     process = await asyncio.create_subprocess_exec(
                         sys.executable, "-m", "src.cli.app", "update", "--yes",
+                        *(["--automatic"] if args.get("automatic") else []),
                         cwd=str(repo_dir), env=env, stdin=subprocess.DEVNULL,
                         stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
                     )
             except OSError as error:
+                await asyncio.to_thread(
+                    record_deploy, state_dir, "refused", branch=plan.branch,
+                    previous=plan.current, target=plan.target,
+                    message=f"could not start aq update: {error}", automatic=bool(args.get("automatic")),
+                )
                 return {"success": False, "error": f"could not start aq update: {error}"}
 
             async def restore_scheduling() -> None:

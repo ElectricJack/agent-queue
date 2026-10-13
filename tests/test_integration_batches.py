@@ -327,7 +327,7 @@ async def test_local_lane_never_calls_attestation_publish(batch_env, monkeypatch
     monkeypatch.setattr(db, "get_repo", AsyncMock(return_value=SimpleNamespace(
         url=str(ops.git.remote_path), default_branch="main",
     )))
-    monkeypatch.setattr("src.integration.development_runtime.development_repository",
+    monkeypatch.setattr("src.integration.repository_git.development_repository",
                         AsyncMock(return_value=repo))
     attestation = SimpleNamespace(publish=AsyncMock(), _load_trust=AsyncMock())
     orchestrator = SimpleNamespace(

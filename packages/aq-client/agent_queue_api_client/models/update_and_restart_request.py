@@ -15,16 +15,25 @@ T = TypeVar("T", bound="UpdateAndRestartRequest")
 class UpdateAndRestartRequest:
     """
     Attributes:
+        automatic (bool | None | Unset): Tracked-branch background check; hold a previously failed target until an
+            operator retries. Default: false.
         reason (None | str | Unset): Why the update/restart is being requested
         wait_for_tasks (bool | None | Unset): If true, pause orchestrator and wait for running tasks to complete before
             restarting (up to 5 minutes). Default: false.
     """
 
+    automatic: bool | None | Unset = UNSET
     reason: None | str | Unset = UNSET
     wait_for_tasks: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        automatic: bool | None | Unset
+        if isinstance(self.automatic, Unset):
+            automatic = UNSET
+        else:
+            automatic = self.automatic
+
         reason: None | str | Unset
         if isinstance(self.reason, Unset):
             reason = UNSET
@@ -40,6 +49,8 @@ class UpdateAndRestartRequest:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
+        if automatic is not UNSET:
+            field_dict["automatic"] = automatic
         if reason is not UNSET:
             field_dict["reason"] = reason
         if wait_for_tasks is not UNSET:
@@ -50,6 +61,15 @@ class UpdateAndRestartRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
+
+        def _parse_automatic(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        automatic = _parse_automatic(d.pop("automatic", UNSET))
 
         def _parse_reason(data: object) -> None | str | Unset:
             if data is None:
@@ -70,6 +90,7 @@ class UpdateAndRestartRequest:
         wait_for_tasks = _parse_wait_for_tasks(d.pop("wait_for_tasks", UNSET))
 
         update_and_restart_request = cls(
+            automatic=automatic,
             reason=reason,
             wait_for_tasks=wait_for_tasks,
         )

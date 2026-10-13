@@ -502,7 +502,16 @@ async def test_reopen_releases_frozen_source_ci_repair_batch_for_the_corrected_s
     checks.green.add(testing.candidate_sha)
     before = git(world.origin.url, "rev-parse", "main")
 
-    await world.db.transition_task("source", TaskStatus.READY, context="reopen_with_feedback")
+    # Reproduce a persisted reopen from the older writer. Current Git-first
+    # mutation guards correctly refuse reopening this already delivered source.
+    from src.integration.source_repairs import retire_reopened_source_repairs_on
+
+    async with world.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "source").values(
+            status=TaskStatus.READY.value))
+        await retire_reopened_source_repairs_on(
+            world.db, conn, "source", context="reopen_with_feedback",
+        )
     released = await train.visit(MAIN)
     assert released.state == "blocked", released
     blocker = next(b for b in released.detail["blockers"] if b.get("task_id") == "repair")
@@ -589,7 +598,7 @@ async def test_admission_withholds_a_failed_source_ci_repair_and_releases_its_ba
 
 
 async def test_paused_batch_is_not_released_for_a_superseded_repair(world):
-    source = await completed(world, "source", land=True)
+    source = await completed(world, "source")
     repair = await completed_source_ci_repair(world, source)
     await source_ci_binding(world, "source", "repair", source)
     store = BatchStore(world.db)
@@ -2619,71 +2628,6 @@ async def test_cross_epic_completed_policy_is_explicit_legacy_admission(world):
     assert await db.is_hierarchy_task_runnable("child")
 
 
-@pytest.mark.parametrize("changed", [False, True])
-async def test_empty_completion_root_releases_child_and_has_no_train_blocker(world, changed):
-    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
-    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
-    from src.integration.scheduler import TrainService
-    from src.integration.source_repairs import prove_source_delivered
-    from src.models import TaskCompletion
-
-    db, origin = world.db, world.origin
-    base = git(origin.url, "rev-parse", "main")
-    await completed(world, "epic", done=False)
-    source = base
-    if changed:
-        source = origin.work("no-change")
-        origin.land("no-change")
-    else:
-        git(origin.clone, "push", "origin", f"{base}:refs/heads/aq/no-change")
-    await completed(world, "no-change", done=False, head=source, source_base=base)
-    await db.save_task_completion(TaskCompletion(
-        id="close-no-change", task_id="no-change", outcome="pass", commits=[],
-        completed_at=time.time(),
-    ))
-    await GitProvenance(world.truth.git, str(origin.clone), repository_url=origin.url
-                        ).write_completion(CompletedSource(
-        CompletionIdentity("p", "r", "no-change", "close-no-change"), source,
-    ))
-    await db.transition_task("no-change", TaskStatus.COMPLETED)
-    await completed(world, "child", parent="epic", needs=("no-change",), done=False)
-    await db.transition_task("child", TaskStatus.READY)
-
-    requests = await load_delivery_requests(db, ["no-change"], repository_id="r",
-                                             target_ref=MAIN.target_ref, reduced=True)
-    proof = await (await snapshot(world)).is_delivered(requests["no-change"], source_base=base)
-    assert proof.state is (DeliveryState.CONTAINED if changed else DeliveryState.NO_CHANGE)
-    assert proof.satisfied
-    if changed:
-        # Root delivery alone cannot release a cross-epic child whose parent
-        # still lacks the exact source, regardless of descriptive close commits.
-        assert not await db.is_hierarchy_task_runnable("child")
-        assert "frontier_epic_refresh_pending" in {
-            item["code"] for item in await db.claim_frontier_exclusions("child")}
-        git(origin.clone, "checkout", "-B", "aq/epic", "origin/aq/epic")
-        git(origin.clone, "merge", "--no-ff", "-m", "contain root prerequisite", "origin/main")
-        git(origin.clone, "push", "origin", "aq/epic")
-    assert await db.is_hierarchy_task_runnable("child")
-    assert not [item for item in await db.claim_frontier_exclusions("child")
-                if "prerequisite" in item["code"]]
-    observer = db._delivery_observer
-    view = await observer.observe(["no-change"])
-    async with db._engine.connect() as conn:
-        from src.database.tables import repos
-        repository = (await conn.execute(select(repos).where(repos.c.id == "r"))).mappings().one()
-        assert await TrainService(db)._git_delivered_roots_on(conn, view, "p", repository) == {"no-change"}
-    repair_proof = await prove_source_delivered(db, observer, task_id="no-change", source={
-        "project_id": "p", "repository_id": "r", "head": source, "base": base,
-        "generation": 0,
-    })
-    assert repair_proof.state == "delivered"
-    blockers = []
-    assert await DatabaseBatches(db).pending(MAIN, await snapshot(world), blockers=blockers) is None
-    assert blockers == []
-    train, _, _ = lane(world, LocalGit(Path(origin.url)))
-    assert (await train.visit(MAIN)).state == "idle"
-    status = await IntegrationStatusService(db, git_first="active", train=train).control_status("p")
-    assert not [item for item in status["blockers"] if item.get("task_id") == "no-change"]
 
 
 @pytest.mark.parametrize("relation", ["sibling", "cross_epic"])
@@ -3911,7 +3855,10 @@ async def test_epic_completion_preserves_readiness_constraints(collected_epic, b
     head = await collect_epic(case)
     await review_epic(case)
     if blocker == "open_child":
-        await case.db.transition_task("child-b", TaskStatus.READY)
+        # Model persisted legacy/raced state; active Git-first correctly fences
+        # ordinary reopen once this child is contained in the epic.
+        async with case.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "child-b").values(status="READY"))
     elif blocker == "checks":
         del case.github.runs[head]
     elif blocker == "rejection":
@@ -4502,7 +4449,10 @@ async def test_closed_epic_sync_after_abort_hands_code_conflicts_to_worker(colle
                 task_branch_origins.c.task_id.in_(("child-a", "child-b")),
             ).values(retired_at=time.time()))
         for tid in ("child-a", "child-b"):
-            await case.db.archive_task(tid)
+            # Exercise already archived legacy inputs without authorizing a new
+            # archive of work that has only reached the epic, not main.
+            await case.db.archive_task(tid, abandon_undelivered=True,
+                                      abandon_reason="legacy archive fixture", disposition="retire")
     prior = Batch("aborted-epic-work", "p", "r", case.target.target_ref)
     store = BatchStore(case.db)
     members = [BatchMember(tid, source, case.base, order)
@@ -4656,7 +4606,7 @@ async def development_train(world, tmp_path, monkeypatch, validation: str, *, mo
     async def binding(repo_row):
         return None
 
-    monkeypatch.setattr("src.integration.development_runtime.development_repository",
+    monkeypatch.setattr("src.integration.repository_git.development_repository",
                         development_repository)
     orchestrator = SimpleNamespace(
         db=db, git=LocalGit(Path(origin.url)), _command_handler=jobs_handler(db, tmp_path),
@@ -6112,10 +6062,7 @@ async def test_train_eject_missing_batch_requires_global_authority(world, monkey
             session_id="supervisor", elevated=True, project_id=project_id)):
         result = await handler._cmd_integration_eject({"batch_id": "missing", "task_id": "a"})
     assert result["outcome"] == outcome and not result["success"]
-    if project_id is None:
-        legacy_get.assert_awaited_once_with("missing")
-    else:
-        legacy_get.assert_not_awaited()
+    legacy_get.assert_not_awaited()
 
 
 @pytest.mark.parametrize("kind,elevated", [("session", False), ("session", True),

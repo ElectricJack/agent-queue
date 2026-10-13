@@ -1038,6 +1038,14 @@ Incident `retry_allowed` and its next action reflect the execution-end and routi
 guards as well as the attention reason and remaining budgets. Provider liveness
 is always freshly confirmed when executing a recovery decision.
 
+A recovery incident whose current decision is `hold` excludes its task from
+the pool claim frontier, named claims, and pool demand even if the task is
+otherwise `READY`. Claims, demand, and frontier diagnostics share this check.
+The hold remains effective until explicitly released through the recovery
+controls above. A recorded `retry` decision permits a new claim even though
+its incident's `retry_allowed` is false: that flag describes whether another
+recovery decision is allowed, not whether an approved attempt can run.
+
 ---
 
 ## 16. Shutdown
