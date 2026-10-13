@@ -103,6 +103,22 @@ async def _scheduler_wake_or_shutdown(wake: asyncio.Event, shutdown: asyncio.Eve
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _run_pool_watchdog(orch: Orchestrator, shutdown: asyncio.Event) -> None:
+    """Keep pool progress observable when an unrelated cascade step is blocked."""
+    from src.orchestrator.pools import POOL_WATCHDOG_INTERVAL
+
+    while not shutdown.is_set():
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=POOL_WATCHDOG_INTERVAL)
+            return
+        except TimeoutError:
+            pass
+        try:
+            await orch._check_pool_progress()
+        except Exception:
+            logger.exception("Pool progress watchdog failed; retrying on the next interval")
+
+
 async def _run_scheduler_cycles(
     orch: Orchestrator, shutdown_event: asyncio.Event, *, interval: float | None = None,
 ) -> None:
@@ -116,6 +132,10 @@ async def _run_scheduler_cycles(
     unsubscribes = [bus.subscribe(event, lambda _data: wake.set())
                     for event in SCHEDULER_WAKE_EVENTS] if bus is not None else []
     loop = asyncio.get_running_loop()
+    watchdog = (
+        asyncio.create_task(_run_pool_watchdog(orch, shutdown_event), name="pool-watchdog")
+        if callable(getattr(orch, "_check_pool_progress", None)) else None
+    )
     try:
         while not shutdown_event.is_set():
             wake.clear()
@@ -154,6 +174,9 @@ async def _run_scheduler_cycles(
             except asyncio.TimeoutError:
                 pass
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
+            await asyncio.gather(watchdog, return_exceptions=True)
         for unsubscribe in unsubscribes:
             unsubscribe()
 

@@ -693,6 +693,17 @@ a slot, preventing two workers from provisioning the same next slot. Shutdown ca
 and confirms their processes have stopped before releasing resources; sessions
 that already have durable rows remain owned by normal session reconciliation.
 
+A watchdog checks pool progress every 30 seconds independently of the main
+scheduling cycle. If placement could accept claimable work but three consecutive
+checks see no successful start and no launch in flight, it logs and records
+`pool.scaler_stalled` with the profile, desired/live/ready counts and tick count,
+then retries normal reconciliation. It reports once until progress resumes or
+eligible demand disappears. It respects the same fleet/project caps, provider
+availability and quarantine as ordinary sizing; a capacity shortage stays a
+placement condition. Reconciliation itself times out after 30 seconds so a
+stuck read can be retried. The watchdog preserves live workers and background
+launch reservations and does not restart the daemon.
+
 Pool workers keep their claim loop alive during daemon restarts. `aq task claim
 --next --wait 60` retries connection failures within its wait window; if the
 daemon remains unavailable, it exits with code 3 and the worker retries the

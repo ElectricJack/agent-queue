@@ -75,6 +75,13 @@ _LIVE_STATES = ("starting", "running", "draining")
 #: workspace acquisition failure also backs off so other projects can launch.
 LAUNCH_BACKOFF = 60.0
 
+# Independent of the cascade cadence: a blocked housekeeping step must not
+# strand eligible pool demand. Reads/placement may be retried; live launches
+# remain separately owned and are never cancelled by this timeout.
+POOL_WATCHDOG_INTERVAL = 30.0
+POOL_STALL_TICKS = 3
+POOL_RECONCILE_TIMEOUT = 30.0
+
 
 #: How much of a dead session's captured startup output to carry into the
 #: quarantine reason.  Enough to show the actual error line, short enough to
@@ -460,12 +467,30 @@ class PoolsMixin:
         if not (self.config.swarm.enabled and self.config.sessions.enabled):
             return
 
-        measurement = await self._measure_pools(hierarchy_modes=hierarchy_modes)
-        # A drained holder's seat is counted from the next tick on.
-        await self._release_container_claims(measurement.pool_sessions)
-        now = time.time()
-        await self._announce_bounds_rescoped(measurement)
-        actions, self._pool_surplus_since = size_pools(
+        async with self._pool_reconcile_lock():
+            try:
+                async with asyncio.timeout(POOL_RECONCILE_TIMEOUT):
+                    await self._reconcile_pools_inner(hierarchy_modes=hierarchy_modes)
+            except TimeoutError:
+                logger.warning(
+                    "Pool reconciliation timed out after %.0fs; retrying on a later tick",
+                    POOL_RECONCILE_TIMEOUT,
+                )
+
+    def _pool_reconcile_lock(self) -> asyncio.Lock:
+        return self.__dict__.setdefault("_pool_reconciliation_lock", asyncio.Lock())
+
+    def _reap_pool_launches(self) -> None:
+        # Cancellation before a coroutine's first instruction skips its finally.
+        launches = getattr(self, "_pool_launches", {})
+        for sid, launch in list(launches.items()):
+            if launch.task is not None and launch.task.done():
+                if not launch.task.cancelled():
+                    launch.task.exception()
+                launches.pop(sid, None)
+
+    def _size_pool_actions(self, measurement, now):
+        return size_pools(
             supply=measurement.supply,
             demand=measurement.demand,
             bounds=measurement.bounds,
@@ -476,6 +501,84 @@ class PoolsMixin:
             max_starts_per_tick=self.config.swarm.max_starts_per_tick,
             max_drains_per_tick=self.config.swarm.max_drains_per_tick,
         )
+
+    async def _check_pool_progress(self) -> None:
+        """Detect eligible demand stranded behind a cycle with no start progress."""
+        observations = self.__dict__.setdefault("_pool_progress_observations", {})
+        if not (self.config.swarm.enabled and self.config.sessions.enabled):
+            observations.clear()
+            return
+        lock = self._pool_reconcile_lock()
+        if lock.locked():
+            # The bounded active pass owns convergence. Never overlap its
+            # snapshot or cancel its background launches to manufacture room.
+            return
+        async with lock:
+            async with asyncio.timeout(POOL_RECONCILE_TIMEOUT):
+                self._reap_pool_launches()
+                measurement = await self._measure_pools(for_display=True)
+                actions, _ = self._size_pool_actions(measurement, time.time())
+                starts, _, _ = place_pool_actions(
+                    actions=actions, candidates=measurement.candidates,
+                )
+        eligible = {
+            start.key for start in starts
+            if any(
+                candidate.project_id == start.project_id
+                and candidate.ready > len(candidate.idle_session_ids) + candidate.starting
+                for candidate in measurement.candidates[start.key]
+            )
+        }
+        stalled = []
+        current = {}
+        for key in eligible:
+            supply = measurement.supply[key]
+            if supply.starting:
+                continue
+            generation = getattr(self, "_pool_last_start", {}).get(key, 0.0)
+            previous_generation, ticks, reported = observations.get(key, (generation, 0, False))
+            if generation != previous_generation:
+                ticks, reported = 0, False
+            ticks += 1
+            current[key] = (generation, ticks, reported)
+            if ticks < POOL_STALL_TICKS:
+                continue
+            stalled.append(key)
+            if reported:
+                continue
+            current[key] = (generation, ticks, True)
+            lo, hi = measurement.bounds[key]
+            desired = max(lo, supply.running_busy + measurement.demand[key])
+            if hi is not None:
+                desired = min(desired, hi)
+            payload = {
+                "profile_id": key.profile_id, "desired": desired,
+                "live": supply.running_idle + supply.running_busy,
+                "ready": measurement.demand[key], "ticks": ticks,
+                "recovery": "reconcile",
+            }
+            logger.warning("pool.scaler_stalled: %s", payload)
+            try:
+                async with asyncio.timeout(POOL_RECONCILE_TIMEOUT):
+                    await self.db.log_event("pool.scaler_stalled", payload=json.dumps(payload))
+                    await self.bus.emit("pool.scaler_stalled", payload)
+            except Exception:
+                logger.exception("Could not record pool scaler stall")
+        self._pool_progress_observations = current
+        if stalled:
+            # Re-measure fresh admission/capacity under the same lock as the
+            # cascade. The watchdog's cached diagnostic is never launch authority.
+            await self._reconcile_pools()
+
+    async def _reconcile_pools_inner(self, *, hierarchy_modes=None) -> None:
+        self._reap_pool_launches()
+
+        measurement = await self._measure_pools(hierarchy_modes=hierarchy_modes)
+        # A drained holder's seat is counted from the next tick on.
+        await self._release_container_claims(measurement.pool_sessions)
+        now = time.time()
+        await self._announce_bounds_rescoped(measurement)
+        actions, self._pool_surplus_since = self._size_pool_actions(measurement, now)
         starts, drains, starvations = place_pool_actions(
             actions=actions, candidates=measurement.candidates
         )
@@ -617,10 +720,7 @@ class PoolsMixin:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         # A task cancelled before its first instruction cannot run its finally.
-        launches = getattr(self, "_pool_launches", {})
-        for sid, launch in list(launches.items()):
-            if launch.task is not None and launch.task.done():
-                launches.pop(sid, None)
+        self._reap_pool_launches()
 
     def _launching_pool_agent_ids(self) -> set[str]:
         return {launch.agent_id for launch in getattr(self, "_pool_launches", {}).values()
@@ -1176,6 +1276,7 @@ class PoolsMixin:
             await _rollback(f"launch failed: {exc}", quarantine=True)
             return None
 
+        self.__dict__.setdefault("_pool_last_start", {})[PoolKey(profile.id)] = time.monotonic()
         logger.info(
             "pool %s/%s: session %s started (%s/%s) in %s",
             project.id,
