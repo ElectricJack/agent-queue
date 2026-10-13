@@ -651,6 +651,96 @@ async def test_recorded_recovery_hold_excludes_task_projected_back_to_ready(env)
     assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
 
 
+@pytest.mark.parametrize("command", ["restart_task", "reopen_with_feedback"])
+@pytest.mark.parametrize("projected_ready", [False, True])
+async def test_explicit_restart_supersedes_hold_before_ready_notification(
+    env, command, projected_ready,
+):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    await env.db.set_task_meta("t", "supervisor_recovery_attempts", 2)
+    if projected_ready:
+        await env.db.update_task("t", status=TaskStatus.READY)
+    observed = []
+
+    async def on_ready(entries):
+        observed.append(await env.db.claim_frontier_exclusions("t"))
+
+    env.db.set_ready_listener(on_ready)
+    result = await env.handler.execute(command, {
+        "task_id": "t", "feedback": "Fix the diagnosed failure and resume.",
+    })
+    assert "error" not in result, result
+    reopened = await env.db.get_task("t")
+    assert reopened.status == TaskStatus.READY
+    assert reopened.branch_name == "aq/keep"
+    assert await env.db.claim_frontier_exclusions("t") == []
+    assert await env.db.count_ready_by_profile("p") == {reopened.profile_id: 1}
+    assert all(exclusions == [] for exclusions in observed)
+    if not projected_ready:
+        assert observed
+    superseded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert superseded["id"] == held["id"]
+    assert superseded["decision"] == "superseded"
+    assert command in superseded["decision_reason"]
+    assert superseded["decision_history"][-1] == {
+        key: held[key]
+        for key in ("decision", "decision_reason", "decided_at", "decided_by")
+    }
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") == 2
+    assert (await env.db.get_message("msg-" + held["id"])).archived_at is not None
+    # Replays of the old failure cannot recreate a hold or another notice.
+    assert await env.db.queue_task_recovery_notifications() == 0
+    assert (await notify(env))["outcome"] == "not_actionable"
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == superseded
+
+
+@pytest.mark.parametrize("command", ["restart_task", "reopen_with_feedback"])
+async def test_refused_restart_preserves_recovery_hold(env, command):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    await env.db.pause_task("t")
+    result = await env.handler.execute(command, {"task_id": "t", "feedback": "Resume."})
+    assert "error" in result
+    assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
+
+
+@pytest.mark.parametrize("command", ["restart_task", "reopen_with_feedback"])
+async def test_explicit_restart_archives_pending_incident_without_a_scan(env, command):
+    current = await incident(env)
+    message_id = "msg-" + current["id"]
+    assert (await env.db.get_message(message_id)).archived_at is None
+    result = await env.handler.execute(command, {"task_id": "t", "feedback": "Resume."})
+    assert "error" not in result, result
+    assert (await env.db.get_message(message_id)).archived_at is not None
+    superseded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert superseded["id"] == current["id"]
+    assert superseded["decision"] == "superseded"
+    assert superseded["decision_history"] == []
+
+
+async def test_same_status_restart_supersession_rolls_back_with_transition(env):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    await env.db.update_task("t", status=TaskStatus.READY)
+    before = await env.db.get_message("msg-" + held["id"])
+    with pytest.raises(RuntimeError, match="rollback"):
+        async with env.db.immediate() as conn:
+            await env.db._apply_transition(conn, "t", TaskStatus.READY, context="restart_task")
+            raise RuntimeError("rollback")
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
+    assert (await env.db.get_message("msg-" + held["id"])).archived_at == before.archived_at
+    await env.db.transition_task("t", TaskStatus.READY, context="restart_task")
+    assert await env.db.claim_frontier_exclusions("t") == []
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] == (
+        "superseded"
+    )
+
+
 @pytest.mark.parametrize("decision,expected_status", [("retry", "READY"), ("hold", "BLOCKED")])
 async def test_human_evidence_drives_guarded_recovery_or_keep_blocked(env, decision, expected_status):
     current = await incident(env)
