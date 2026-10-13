@@ -3493,6 +3493,53 @@
         }
       }
     },
+    "/api/ci/completed-status": {
+      "post": {
+        "tags": [
+          "ci"
+        ],
+        "summary": "Audit COMPLETED tasks' recorded source commits against the project's required CI. List failing checks separately from pending or unavailable observations, with exact SHAs and check links. Read-only; operator or supervisor only.",
+        "description": "Audit COMPLETED tasks' recorded source commits against the project's required CI. List failing checks separately from pending or unavailable observations, with exact SHAs and check links. Read-only; operator or supervisor only.",
+        "operationId": "ci_completed_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CiCompletedStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CiCompletedStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/collaboration/accept": {
       "post": {
         "tags": [
@@ -24332,6 +24379,70 @@
         },
         "type": "object",
         "title": "CiBaselineStatusResponse"
+      },
+      "CiCompletedStatusRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project to audit."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "CiCompletedStatusRequest"
+      },
+      "CiCompletedStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "default": ""
+          },
+          "checked": {
+            "type": "integer",
+            "title": "Checked",
+            "default": 0
+          },
+          "failing": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Failing",
+            "default": []
+          },
+          "unresolved": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Unresolved",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "CiCompletedStatusResponse"
       },
       "CiRepairAdoptRequest": {
         "properties": {

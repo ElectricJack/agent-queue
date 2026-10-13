@@ -222,6 +222,15 @@ class PrMergeResponse(BaseModel):
     ci: PrMergeCiVerdict | None = None
 
 
+class CiCompletedStatusResponse(BaseModel):
+    success: bool = True
+    project_id: str = ""
+    checked: int = 0
+    failing: list[dict] = []
+    unresolved: list[dict] = []
+    error: str | None = None
+
+
 class CiBaselineStatusResponse(BaseModel):
     success: bool = True
     project_id: str = ""
@@ -264,6 +273,7 @@ class CiRepairAdoptResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "ci_completed_status": CiCompletedStatusResponse,
     "ci_baseline_status": CiBaselineStatusResponse,
     "ci_repair_adopt": CiRepairAdoptResponse,
     "checkout_branch": CheckoutBranchResponse,

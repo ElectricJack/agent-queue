@@ -5286,6 +5286,22 @@
       }
     },
     {
+      "name": "ci_completed_status",
+      "description": "Audit COMPLETED tasks' recorded source commits against the project's required CI. List failing checks separately from pending or unavailable observations, with exact SHAs and check links. Read-only; operator or supervisor only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Project to audit."
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
       "name": "ci_baseline_status",
       "description": "Read the CI verdict for a project's default branch head (or ``ref``): green / red / pending / unknown, the failing checks and pytest node ids, and a failure signature.  Read-only.  When red it also returns the deduplication key, title and description of the repair task the ci-main-sentinel playbook files, and ``escalated`` once the same signature has already burned two repair attempts.",
       "input_schema": {
@@ -15964,6 +15980,7 @@
     "policy": "Portable project policy profiles: export, diff and selective import",
     "cron": "Session-owned recurring prompts: register, inspect and cancel wake-ups.",
     "git": "Branch, commit, push, PR, merge, and remote URL operations for project repositories",
+    "ci": "Required CI evidence and completed task audits",
     "project": "Project CRUD, workspace management, project metadata (repo URL, GitHub URL, workspace path)",
     "agent": "Agent management, agent profiles, profile import/export",
     "supervisor": "Supervisor session lifecycle \u2014 fresh or resumed restarts through AQ",
@@ -16327,6 +16344,7 @@
     "task_route_override": "task",
     "pr_merge": "git",
     "ci_baseline_status": "git",
+    "ci_completed_status": "ci",
     "ci_repair_adopt": "git",
     "provider_status": "provider",
     "provider_history": "provider",

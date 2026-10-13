@@ -257,6 +257,7 @@ start code work, tests or QA from a digest author turn.
     "provider_status",
     "project_ready",
     "pr_merge",
+    "ci_completed_status",
     "question_answer",
     "question_escalate",
     "question_list",

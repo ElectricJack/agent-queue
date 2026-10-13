@@ -482,6 +482,14 @@ Check the local syntax without sending a control request:
 aq integration pause-batch --help
 ```
 
+### Completed source CI
+
+`aq ci completed-status --project-id PROJECT` is a read-only supervisor/operator
+audit of completed tasks' recorded source commits. `failing` lists red required
+checks with their exact SHA and links; `unresolved` retains pending or unavailable
+evidence. This remains useful without a live train and does not change completion
+or delivery state. See [the completion CI spec](../specs/design/task-completion-ci.md).
+
 ### Abort and retire delivered origins
 
 Batch intent (`open`, `paused`, `aborted`) is the only control the train reads. An

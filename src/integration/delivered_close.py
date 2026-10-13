@@ -28,6 +28,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import RemoteRefState
+from src.integration.row_query import select_row
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -41,17 +42,7 @@ class DeliveredClose:
         self.db, self.snapshot = db, snapshot
 
     async def _identity_on(self, conn, request):
-        task = (
-            (
-                await conn.execute(
-                    select(tasks).where(
-                        tasks.c.id == request.task_id,
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        task = await select_row(conn, tasks, tasks.c.id == request.task_id)
         if task is None or task["project_id"] != request.project_id:
             raise ValueError("task does not belong to the explicitly selected project")
         project = (
@@ -66,17 +57,8 @@ class DeliveredClose:
             .one()
         )
         repository_id = project["integration_repository_id"]
-        repo = (
-            (
-                await conn.execute(
-                    select(repos).where(
-                        repos.c.id == repository_id,
-                        repos.c.project_id == request.project_id,
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
+        repo = await select_row(
+            conn, repos, repos.c.id == repository_id, repos.c.project_id == request.project_id
         )
         if repo is None or task["repo_id"] not in (None, repository_id):
             raise ValueError("task has no unambiguous designated project repository")

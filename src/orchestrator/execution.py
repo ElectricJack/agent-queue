@@ -619,10 +619,8 @@ class ExecutionMixin:
         await self._launch_session_for_task(action, task, profile, workspace)
         return
 
-    # ======================================================================
-    # Session runtime -- launch and return (session-runtime spec §4, §6)
-    # ======================================================================
-
+    # ===============================================================    # Session runtime -- launch and return (session-runtime spec §4, §6)
+    # ===============================================================
     def _is_session_routed(self, profile) -> bool:
         """True when this profile's tasks run as sessions.
 
@@ -1815,6 +1813,38 @@ class ExecutionMixin:
                     "verification_retry": True, "issues": [feedback], "feedback": feedback,
                 }
 
+        if outcome == "pass" and completed_ok:
+            from src.integration.completion_ci import verify_completion_ci
+
+            ci = await verify_completion_ci(
+                self.db, getattr(self, "git", None), self.config, task, project,
+                commit=commit, workspace_path=workspace_path,
+            )
+            if ci is not None:
+                if ci["state"] != "green":
+                    feedback = (
+                        f"Required CI is {ci['state']} on {ci.get('head_sha') or 'unknown head'}; "
+                        "resolve the checks or wait for CI and retry close."
+                    )
+                    return {
+                        "status": task.status.value, "pr_url": pr_url, "pipeline_ok": False,
+                        "verification_retry": True, "issues": [feedback], "feedback": feedback,
+                        "ci": ci,
+                    }
+                # Bind accepted completion to the checked SHA, including explicit
+                # commit and post-pipeline auto-remediation paths.
+                completion_source = ci["head_sha"]
+                completion_commits = [completion_source]
+                await self.db.set_task_meta(task.id, "completion_ci", ci)
+                # Recovery must preserve the checked SHA if the daemon dies
+                # after the terminal transition but before the record write.
+                from src.database.queries.result_queries import PENDING_COMPLETION_KEY
+
+                draft = await self.db.get_task_meta(task.id, PENDING_COMPLETION_KEY)
+                if (accepted_close is not None and isinstance(draft, dict)
+                        and draft.get("identity") == accepted_close):
+                    draft["completion"]["commits"] = completion_commits
+                    await self.db.set_task_meta(task.id, PENDING_COMPLETION_KEY, draft)
         if managed_parent_suspended:
             new_status = TaskStatus.PAUSED
             context = "integration_parent_suspended"
@@ -1959,7 +1989,7 @@ class ExecutionMixin:
                     accepted_close=accepted_close,
                     **pr_kwargs,
                 )
-            elif completion_source is not None and new_status == TaskStatus.COMPLETED:
+            elif git_completion and completion_source is not None and new_status == TaskStatus.COMPLETED:
                 # The git ref was retained above. Publish its generation id
                 # atomically with COMPLETED, before event subscribers and the
                 # command's full completion-record write can take their time.
@@ -2350,7 +2380,7 @@ class ExecutionMixin:
             # task close. Preserve the head proved under the repair writer's
             # fence rather than making the completion infer it there.
             response["completion_source"] = repair_writer_head
-        elif git_completion:
+        elif git_completion or completion_source is not None:
             response["completion_source"] = completion_source
             if completion_commits is not None:
                 response["completion_commits"] = completion_commits
