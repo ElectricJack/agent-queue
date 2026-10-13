@@ -540,7 +540,7 @@ class TestLegacyGitProvenanceMigration:
     @pytest.mark.parametrize("no_artifact", [False, True])
     @pytest.mark.parametrize("reopened", [False, True])
     async def test_upgrade_restores_audited_timestamp_identity_only_before_reopen(
-        self, provenance_repo, db, recorded_id, no_artifact, reopened,
+        self, provenance_repo, schema_db, recorded_id, no_artifact, reopened,
     ):
         import hashlib
         import json
@@ -554,6 +554,7 @@ class TestLegacyGitProvenanceMigration:
         from src.integration.delivery_truth import DeliveryState
         from src.integration.provenance import CompletedSource, CompletionIdentity
 
+        db = schema_db
         git, store, path, remote, base = provenance_repo
         await self._seed(db, remote, base)
         await self._completed(db, "legacy")
@@ -628,12 +629,18 @@ class TestLegacyGitProvenanceMigration:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    """Create a real in-memory database for tests."""
+async def schema_db():
+    """Fresh initialization for tests that downgrade and upgrade the schema."""
     database = Database(lease_dsn("test.db"))
     await database.initialize()
     yield database
     await database.close()
+
+
+@pytest.fixture
+async def db(reuse_database):
+    """Fresh PostgreSQL adapter with rows reset between command tests."""
+    return await reuse_database("test.db")
 
 
 @pytest.fixture

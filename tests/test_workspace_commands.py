@@ -11,7 +11,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig
-from src.database import Database
 from src.models import (
     Agent,
     AgentProfile,
@@ -32,9 +31,8 @@ from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def setup(tmp_path):
-    db = Database(lease_dsn("test.db"))
-    await db.initialize()
+async def setup(tmp_path, reuse_database):
+    db = await reuse_database("test.db")
     await db.create_project(Project(id="p1", name="test", repo_url=""))
 
     # Add a project-scoped kind for the kind_id-acceptance tests.
@@ -66,7 +64,6 @@ async def setup(tmp_path):
     handler._active_project_id = "p1"
 
     yield handler, db, tmp_path
-    await db.close()
 
 
 class TestAddWorkspaceKindId:

@@ -33,14 +33,9 @@ provider_checks = sys.modules["src.doctor.provider_checks"]
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-    from tests.db_fixtures import lease_dsn
-
-    database = Database(lease_dsn("pa.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("pa.db")
     yield database
-    await database.close()
 
 
 def _config(**failover) -> AppConfig:

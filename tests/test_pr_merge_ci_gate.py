@@ -19,7 +19,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig, IntegrationConfig
-from src.database import Database
 from src.git import ci_gate
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import Project, RepoSourceType, Workspace
@@ -197,9 +196,8 @@ async def test_apr_check_rollup_maps_null_to_an_empty_list(monkeypatch):
 
 
 @pytest.fixture
-async def db(tmp_path):
-    d = Database(lease_dsn("cg.db"))
-    await d.initialize()
+async def db(tmp_path, reuse_database):
+    d = await reuse_database("cg.db")
     await d.create_project(Project(id="p1", name="P1", repo_url="https://github.com/o/r.git"))
     await d.create_workspace(
         Workspace(
@@ -210,7 +208,6 @@ async def db(tmp_path):
         )
     )
     yield d
-    await d.close()
 
 
 def _config(tmp_path, **integration) -> AppConfig:

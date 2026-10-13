@@ -10,6 +10,7 @@ See docs/specs/design/playbooks.md Section 7 for the specification.
 import asyncio
 import pathlib
 import re
+import shutil
 import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
@@ -55,9 +56,10 @@ def _commit_file(clone: str, filename: str, content: str, message: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def bare_repo(tmp_path):
+@pytest.fixture(scope="session")
+def _empty_repo_seed(tmp_path_factory):
     """Create a bare repo to act as 'origin'."""
+    tmp_path = tmp_path_factory.mktemp("empty-git-seed")
     bare = str(tmp_path / "origin.git")
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", bare],
@@ -68,8 +70,19 @@ def bare_repo(tmp_path):
 
 
 @pytest.fixture
-def clone(tmp_path, bare_repo):
+def bare_repo(tmp_path, _empty_repo_seed):
+    """An isolated empty origin; requesting clone seeds it as before."""
+    bare = str(tmp_path / "origin.git")
+    shutil.copytree(_empty_repo_seed, bare)
+    return bare
+
+
+@pytest.fixture(scope="session")
+def _clone_seed(tmp_path_factory, _empty_repo_seed):
     """Clone the bare repo with an initial commit pushed to main."""
+    tmp_path = tmp_path_factory.mktemp("clone-seed")
+    bare_repo = str(tmp_path / "origin.git")
+    shutil.copytree(_empty_repo_seed, bare_repo)
     clone_path = str(tmp_path / "clone")
     subprocess.run(["git", "clone", bare_repo, clone_path], check=True, capture_output=True)
     _git(["config", "user.name", "Test"], cwd=clone_path)
@@ -78,6 +91,18 @@ def clone(tmp_path, bare_repo):
     _git(["add", "."], cwd=clone_path)
     _git(["commit", "-m", "init"], cwd=clone_path)
     _git(["push", "origin", "main"], cwd=clone_path)
+    return clone_path
+
+
+@pytest.fixture
+def clone(tmp_path, bare_repo, _clone_seed):
+    """Copy the populated origin and clone; mutations never reach the seed."""
+    shutil.copytree(
+        pathlib.Path(_clone_seed).parent / "origin.git", bare_repo, dirs_exist_ok=True
+    )
+    clone_path = str(tmp_path / "clone")
+    shutil.copytree(_clone_seed, clone_path)
+    _git(["config", "remote.origin.url", bare_repo], cwd=clone_path)
     return clone_path
 
 

@@ -2740,12 +2740,11 @@
         "provider-usage"
       ],
       "default_arm": true,
-      "digest": "sha256:53dbf267a06ca71d24965b4ce7b1860495eb13d04e738d61cd264d7de1217392",
+      "digest": "sha256:745cb17a60b35329f3a70b6d52b6db44b2756b39efa6c8868c2316d16878296e",
       "imports": [
         "src.api.providers",
         "src.api.spec",
-        "src.config",
-        "src.database"
+        "src.config"
       ],
       "markers": [],
       "summary": "``GET /api/providers/usage`` --- newest reading per series, staleness included."
@@ -2755,7 +2754,7 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:92f2d8e32f0363500a898e388c6678ad233e00b058cce85037fc719653fc30da",
+      "digest": "sha256:d90bab6905d95f9ff7c05b58d6618eed30f80936ef427d54440aa3e31c75956d",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2763,7 +2762,6 @@
         "src.api.middleware",
         "src.api.pull_requests",
         "src.commands.review_commands",
-        "src.database",
         "src.database.queries.pull_request_queries",
         "src.database.tables",
         "src.git.github_contracts"
@@ -2901,10 +2899,9 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:1854515ac9ad1cfa60b3d298ed12a31805650e5f9e4b9b8e0caad21665ac454e",
+      "digest": "sha256:ed3b7fb99b11d87d806d13c77e1735f3c1f67d6359205cef59d985897b06c83e",
       "imports": [
         "src.config",
-        "src.database",
         "src.doctor",
         "src.doctor.models",
         "src.doctor.workspace_checks",
@@ -4753,7 +4750,7 @@
         "provider-usage"
       ],
       "default_arm": true,
-      "digest": "sha256:65e091a88fc327ba6c8da456460531113e35ecad83cab0d86e97851a28d00a96",
+      "digest": "sha256:cac6dda6889a9563e1ea986bd61f6f97ccfcc53be0299c765de2eeb33959e701",
       "imports": [
         "src.api.codegen",
         "src.api.models",
@@ -4763,7 +4760,6 @@
         "src.commands.principal",
         "src.config",
         "src.config_editor",
-        "src.database",
         "src.database.tables",
         "src.models",
         "src.profiles.capabilities",
@@ -4802,10 +4798,9 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:de05095b09a382af6f6e72160d0dbb2a48165569c0ac7b031393a8976d4de9d0",
+      "digest": "sha256:77ae82dac85dc41f0ff81d4b61e54e1f8ac23a71a72685a53e877e88d437b228",
       "imports": [
         "src.commands.handler",
-        "src.database",
         "src.models"
       ],
       "markers": [],
@@ -12837,11 +12832,10 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:5f650e9b9ca8176140565498e091a01df70df24cb1028034bdee3d434ecd21a7",
+      "digest": "sha256:f1eaa4053ba06bf1a12fc8d5ec1a17140b47340d387fe5446364938983ff9eb9",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.git.github_contracts",
         "src.git.manager",
         "src.models",
@@ -12855,11 +12849,10 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:eb46dc07ead20a24b8a7fd55cc95686d9bcccc8dd0ffc33595b383e5a635e4a6",
+      "digest": "sha256:44a626333f067d921afb0b3ff0ad52b1b05669d224d7892f390f1e12fed3af89",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.git",
         "src.git.ci_gate",
         "src.git.github_contracts",
@@ -12878,11 +12871,10 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:713b2c88c29221d351cbd89a71146e60789887b8fd95eeb1c86196d46d12fbe4",
+      "digest": "sha256:5232da520e141824c7fb9eea072fed8426b967bade3b6823bbc72ee7f3cd790c",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.git",
         "src.git.github",
         "src.git.github_contracts",
@@ -13733,10 +13725,9 @@
         "provider-failover"
       ],
       "default_arm": true,
-      "digest": "sha256:54b6650b5be966ea2b471c22709333dde32e35af6d003e3167540ef444831bcf",
+      "digest": "sha256:19038e2eca9a3da179d60d76c495ef4d4ef2ca692edf4c5f7810238f9b1605a2",
       "imports": [
         "src.config",
-        "src.database",
         "src.doctor",
         "src.doctor.models",
         "src.doctor.provider_availability_checks",
@@ -13776,11 +13767,10 @@
         "provider-usage"
       ],
       "default_arm": true,
-      "digest": "sha256:db9ee9043122e4067bd7b5e52933a05ad4a2210e9ae2bccff8e8e1787d8f1f48",
+      "digest": "sha256:839ff0a1f718a933c743e8657ab21cb5f57c0cbfbd6b3fe9921cffb8d7ec13ff",
       "imports": [
         "src.cli.app",
         "src.config",
-        "src.database",
         "src.doctor",
         "src.doctor.models",
         "src.providers.snapshot"
@@ -13793,10 +13783,9 @@
         "provider-failover"
       ],
       "default_arm": true,
-      "digest": "sha256:7e82f1dee6756f1fd709572961f03acee5cb36aaeb769254d0743f7d383406b1",
+      "digest": "sha256:b9ae752f2864c4662e5953caf93b8d51100e38917277ee45177899998efdfff0",
       "imports": [
         "src.config",
-        "src.database",
         "src.escalations.facts",
         "src.escalations.plan",
         "src.models",
@@ -13815,11 +13804,10 @@
         "provider-failover"
       ],
       "default_arm": true,
-      "digest": "sha256:17d553b54b52c49eed6d2ef2b955e54e30fe0ad0422095b9c3b9f7f2d010e7f7",
+      "digest": "sha256:5b5132dbae4f01db44c8e50315791d85f2196f0ae5411099dc8e972094528c60",
       "imports": [
         "src.api.auth",
         "src.config",
-        "src.database",
         "src.install.providers",
         "src.llm",
         "src.llm.fake",
@@ -13952,11 +13940,10 @@
         "provider-failover"
       ],
       "default_arm": true,
-      "digest": "sha256:c98668c371247d427d6345e382bbb5b4d0a451452a7c27978cfd107ad48fd4b1",
+      "digest": "sha256:e24f4413d01f0d4072e047c81422bc639fa937328570aa0daf7bb578e94ea729",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
@@ -14468,10 +14455,9 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:b72e61e5bceba0bdaabdcaef09ceaeed429fd3c08b8c734a84f93b6eb28163c7",
+      "digest": "sha256:32ef8cdd82ca805d3f5fe8fef9a4e741866e26d8db17561c97dffaf4a7d33fc8",
       "imports": [
         "src.config",
-        "src.database",
         "src.git.manager",
         "src.models",
         "src.plugins.services"
@@ -15715,11 +15701,10 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:dcc30f841d6a08bc7f53ed14d995a617635492b2f3701fbac82ba984fdd7a990",
+      "digest": "sha256:47726176a2b7d361893b3b573bab100941a35d844245e9bc43bcf7b2b19ea425",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.git.manager",
         "src.models",
         "src.orchestrator"
@@ -15806,10 +15791,9 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:20d9d2da5cdf446a7162192da41838beacf4546b6e281d1c439172b6bbc44139",
+      "digest": "sha256:44467636d75a4ab60fa28f0d763c426df2cc51f5825f870c704981dbc94cb717",
       "imports": [
         "src.commands.handler",
-        "src.database",
         "src.git.manager",
         "src.models"
       ],
@@ -16777,9 +16761,8 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:f7b806b821f25ffd078a7e53e97a014c8ba33bf8f9cb175b2768328b1b0835c7",
+      "digest": "sha256:58cefcb347ab111cda92aec0719ce91413a887c51177a22d387c04555ca0bb93",
       "imports": [
-        "src.database",
         "src.models"
       ],
       "markers": [],
@@ -17930,13 +17913,12 @@
         "github"
       ],
       "default_arm": true,
-      "digest": "sha256:30630f4c61b9804b929fa99be4f0b5abaab5841edf3db9de4b359b1839c79793",
+      "digest": "sha256:94960140ca7f2f48a9bff50efa918b40cd8895685b29418cdc81f9057cbfd080",
       "imports": [
         "src.api.auth",
         "src.api.scope",
         "src.cli.app",
         "src.config",
-        "src.database",
         "src.git.github_contracts",
         "src.git.identity",
         "src.git.manager",
@@ -17971,9 +17953,8 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:81562e6ac3f7c68d6430f60389ab762c60570faf2f08bd4e076c7271603b2498",
+      "digest": "sha256:46bd5df4d3b017b7347a8c2c1eab50ded4338bcc565f73927fcd22dccb31f7fd",
       "imports": [
-        "src.database",
         "src.models",
         "src.orchestrator.workspace_attachments"
       ],
@@ -17985,9 +17966,8 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:49288b23bba5e8e93096c2ae8e45122c16d20a44e11ca0f4fa6c1ec2af7ec781",
+      "digest": "sha256:9dbb666487c41482f00f54a5e4c8789f01eceb5194e6de9fef19bb41dfacb399",
       "imports": [
-        "src.database",
         "src.database.adapters.postgresql",
         "src.models",
         "src.orchestrator.workspace_attachments"
@@ -18036,11 +18016,10 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:51bde2a41d03703492c632213af9ca2f0d8cd92f4c27e4217c236fd2be921655",
+      "digest": "sha256:9cbf9c09ff2a7f4de572a1c5fca3f25e3fd2f6b251f5b877eeb21aa4b1f2799e",
       "imports": [
         "src.commands.handler",
         "src.config",
-        "src.database",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.task_checkpoint",
@@ -18085,9 +18064,8 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:5513d0fb785dc3fdce01b464440e6d4c2783424d38a507b98f5eadb77171f399",
+      "digest": "sha256:3d764cf8415b7485b57571262351041973982b1a11578cedbbea9cd024fc002c",
       "imports": [
-        "src.database",
         "src.models",
         "src.profiles.workspace_kind_registry"
       ],
@@ -18099,9 +18077,8 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:4c83e0139c59e3841ba3117909a195f0dee4977bb3168892f2d7f44b8e40e6c4",
+      "digest": "sha256:e3bab3c522c2456cabb4651948ad0f12077d6587679556f54a672ab80500e637",
       "imports": [
-        "src.database",
         "src.models"
       ],
       "markers": [],
@@ -18195,9 +18172,8 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:b052b934d34b96c7b3760322d3926711a95d8f85e169882a3765a31c573d3747",
+      "digest": "sha256:1380934743f8d4ecd9e79fb68721290594b84904b6560927de95bdaeb2c00a3d",
       "imports": [
-        "src.database",
         "src.models",
         "src.orchestrator.workspace_attachments"
       ],
@@ -18211,9 +18187,8 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:6aedb674622c38b187f120737a68f4807e136ed672c1cc44ab34a6292f0da985",
+      "digest": "sha256:4c87ab81b131f90eedfa3057d36628771ab0506f598e1d6c6860a41f0a71e6ee",
       "imports": [
-        "src.database",
         "src.doctor",
         "src.doctor.models",
         "src.doctor.worktree_checks",

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -61,9 +62,10 @@ def _git(args: list[str], cwd: str | Path) -> str:
     return r.stdout.strip()
 
 
-@pytest.fixture
-def base_repo(tmp_path: Path) -> Path:
+@pytest.fixture(scope="session")
+def _base_repo_seed(tmp_path_factory) -> Path:
     """A clone of a bare origin, with one commit on ``main``."""
+    tmp_path = tmp_path_factory.mktemp("worktree-seed")
     origin = tmp_path / "origin.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(origin)],
@@ -79,6 +81,17 @@ def base_repo(tmp_path: Path) -> Path:
     _git(["add", "-A"], cwd=base)
     _git(["commit", "-m", "init"], cwd=base)
     _git(["push", "origin", "main"], cwd=base)
+    return base
+
+
+@pytest.fixture
+def base_repo(tmp_path: Path, _base_repo_seed: Path) -> Path:
+    """Each test owns a copy of the prepared clone and its bare origin."""
+    origin = tmp_path / "origin.git"
+    base = tmp_path / "base"
+    shutil.copytree(_base_repo_seed.parent / "origin.git", origin)
+    shutil.copytree(_base_repo_seed, base)
+    _git(["config", "remote.origin.url", str(origin)], cwd=base)
     return base
 
 

@@ -25,7 +25,6 @@ from src.api.scope import (
     worker_branches_for_session,
 )
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitManager
 from src.plugins.internal.git import _build_tool_definitions
@@ -48,9 +47,8 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(params=["task", "pool"])
-async def env(tmp_path, request):
-    db = Database(lease_dsn("worker-git.db"))
-    await db.initialize()
+async def env(tmp_path, request, reuse_database):
+    db = await reuse_database("worker-git.db")
     await db.create_project(Project(id="p", name="p", repo_default_branch="main"))
     await db.create_project(Project(id="other", name="other"))
     await db.upsert_profile(AgentProfile(
@@ -76,7 +74,6 @@ async def env(tmp_path, request):
         task_id="t1" if request.param == "task" else None, project_id="p",
     )
     yield db, scope
-    await db.close()
 
 
 # --- the grant ------------------------------------------------------------
