@@ -133,7 +133,7 @@ class TestDisabledGate:
         handler, _db, _bus = setup
         handler.config.messages = MessagesConfig(enabled=False)
         result = await getattr(handler, command)(args)
-        assert result == {"error": MESSAGES_DISABLED_ERROR}
+        assert result == {"success": False, "error": MESSAGES_DISABLED_ERROR}
 
 
 async def test_supervisor_inbox_expires_deleted_task_notice_without_acknowledgment(setup):
@@ -166,11 +166,12 @@ class TestSend:
         assert stored.subject == "status?"
         assert stored.delivered_at is None
 
-    async def test_no_success_key_injected(self, setup):
-        """House convention: `_cmd_*` returns domain data, not {"success": ...}."""
+    async def test_producer_returns_explicit_success_with_domain_data(self, setup):
+        """The shared producer supplies the protocol flag for delegated callers."""
         handler, _db, _bus = setup
         result = await handler._cmd_message_send(_send_args())
-        assert "success" not in result
+        assert result["success"] is True
+        assert result["message_id"] == result["message"]["id"]
 
     async def test_emits_message_sent(self, setup):
         handler, _db, bus = setup
@@ -397,7 +398,7 @@ class TestSupervisorAgentMessage:
 
         result = await handler._cmd_agent_message({"target": "task-1", "body": "hello"})
 
-        assert result == {"error": "Task 'task-1' has no live worker session"}
+        assert result == {"success": False, "error": "Task 'task-1' has no live worker session"}
 
     @pytest.mark.parametrize("target", ["task-p2", "session-p2", "worker-p2"])
     async def test_project_scope_rejects_foreign_targets(self, setup, target):
@@ -409,7 +410,7 @@ class TestSupervisorAgentMessage:
             {"target": target, "body": "cross-project", "project_id": "p1"}
         )
 
-        assert result == {"error": f"No live worker target '{target}' in project 'p1'"}
+        assert result == {"success": False, "error": f"No live worker target '{target}' in project 'p1'"}
         assert await db.list_messages(project_id="p2") == []
         assert (await db.list_task_comments("task-p2", project_id="p2"))["comments"] == []
 
@@ -467,12 +468,12 @@ class TestSupervisorAgentMessage:
             result = await handler._cmd_agent_message(
                 {"target": "task-w", "body": "filed", "reply_to": reply_to, "project_id": "p1"}
             )
-            assert result == {"error": f"Message '{reply_to}' not found"}
+            assert result == {"success": False, "error": f"Message '{reply_to}' not found"}
         assert (
             await handler._cmd_agent_message(
                 {"target": "task-w", "body": "filed", "reply_to": "msg-missing"}
             )
-        ) == {"error": "Message 'msg-missing' not found"}
+        ) == {"success": False, "error": "Message 'msg-missing' not found"}
         # An unscoped caller can read the row, so it is refused for what it is.
         unscoped = await handler._cmd_agent_message(
             {"target": "task-w", "body": "filed", "reply_to": foreign["message_id"]}
@@ -507,6 +508,7 @@ class TestSupervisorAgentMessage:
         )
 
         assert result == {
+            "success": False,
             "error": (
                 f"Message '{report['message_id']}' is not a message of the target's project "
                 f"'p1': reply_to threads guidance onto that worker's own message. Send "
@@ -556,7 +558,7 @@ class TestSupervisorAgentMessage:
             {"message_id": sent["message_id"], "project_id": "p1"}
         )
 
-        assert result == {"error": f"Message '{sent['message_id']}' not found"}
+        assert result == {"success": False, "error": f"Message '{sent['message_id']}' not found"}
 
 
 # ---------------------------------------------------------------------------
@@ -1140,7 +1142,7 @@ class TestStatusMailboxFence:
             "message_status",
             {"message_id": sent["message_id"], "_scope": _session_scope()},
         )
-        assert result == {"error": f"Message '{sent['message_id']}' not found"}
+        assert result == {"success": False, "error": f"Message '{sent['message_id']}' not found"}
         assert (await db.get_message(sent["message_id"])).delivered_at is None
 
     async def test_pool_token_with_no_claim_reads_no_task_message(self, setup):
@@ -1242,7 +1244,9 @@ class TestStatusRecipientProject:
         outsider = await _execute_as(
             handler, "message_status", {"message_id": pointer.group(1)}, _supervisor_scope("p3")
         )
-        assert outsider == {"error": f"Message '{sent['message_id']}' not found"}
+        assert outsider["success"] is False
+        assert outsider["error_code"] == "resource_scope_denied"
+        assert "message" not in outsider
 
     @pytest.mark.parametrize("mailbox", ["supervisor", "named_supervisor", "session", "task"])
     async def test_another_projects_row_to_an_own_mailbox_is_readable(self, setup, mailbox):
@@ -1276,7 +1280,7 @@ class TestStatusRecipientProject:
         result = await handler._cmd_message_status(
             {"message_id": sent["message_id"], "project_id": "global"}
         )
-        assert result == {"error": f"Message '{sent['message_id']}' not found"}
+        assert result == {"success": False, "error": f"Message '{sent['message_id']}' not found"}
 
 
 class _NudgeRecorder:

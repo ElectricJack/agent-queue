@@ -16,16 +16,16 @@ class DiscordCommandsMixin:
         """
         bot = getattr(self.orchestrator, "_discord_bot", None)
         if not bot:
-            return None, {"error": "Discord bot not available (is the daemon running?)"}
+            return None, {"success": False, "error": "Discord bot not available (is the daemon running?)"}
 
         channel_id = args.get("channel_id")
         if not channel_id:
-            return None, {"error": "channel_id is required"}
+            return None, {"success": False, "error": "channel_id is required"}
 
         try:
             channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
         except Exception as e:
-            return None, {"error": f"could not resolve channel {channel_id}: {e}"}
+            return None, {"success": False, "error": f"could not resolve channel {channel_id}: {e}"}
         return channel, None
 
     async def _cmd_discord_purge_channel(self, args: dict) -> dict:
@@ -59,7 +59,7 @@ class DiscordCommandsMixin:
                 else:
                     old += 1
         except Exception as e:
-            return {"error": f"could not read channel history: {e}"}
+            return {"success": False, "error": f"could not read channel history: {e}"}
 
         if not confirm:
             return {
@@ -79,6 +79,7 @@ class DiscordCommandsMixin:
                 deleted += len(chunk)
         except Exception as e:
             return {
+                "success": False,
                 "error": f"purge failed after {deleted} message(s): {e}",
                 "deleted": deleted,
             }

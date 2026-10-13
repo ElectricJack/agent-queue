@@ -440,7 +440,7 @@ class JobCommandsMixin:
         """
         argv = job.get("argv") or []
         if not argv:
-            return {"error": "the job records no candidate bundle path"}
+            return {"success": False, "error": "the job records no candidate bundle path"}
         try:
             document, declared = candidate_document(Path(argv[-1]) / "candidate.json")
             return retain_document(
@@ -448,4 +448,4 @@ class JobCommandsMixin:
                 origin={**origin, "member": "candidate.json"}, expect_sha256=declared,
             )
         except (OSError, ValueError, TypeError, KeyError) as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}

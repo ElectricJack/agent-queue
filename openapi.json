@@ -9912,8 +9912,8 @@
         "tags": [
           "playbook"
         ],
-        "summary": "List every registered Playbook V2 command with its title, summary, documentation URL, and typed parameter JSON Schema.",
-        "description": "List every registered Playbook V2 command with its title, summary, documentation URL, and typed parameter JSON Schema.",
+        "summary": "Inspect a bounded page of playbook command contracts, including denied and unavailable commands, schemas, caller requirements and execution metadata.",
+        "description": "Inspect a bounded page of playbook command contracts, including denied and unavailable commands, schemas, caller requirements and execution metadata.",
         "operationId": "playbook_commands",
         "requestBody": {
           "content": {
@@ -52038,6 +52038,179 @@
             "type": "object",
             "title": "Parameters Schema",
             "default": {}
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "plugin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugin"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": true
+          },
+          "execution_available": {
+            "type": "boolean",
+            "title": "Execution Available",
+            "default": false
+          },
+          "denied": {
+            "type": "boolean",
+            "title": "Denied",
+            "default": false
+          },
+          "denial_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denial Reason"
+          },
+          "schema_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Source"
+          },
+          "schema_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Quality"
+          },
+          "result_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Mode"
+          },
+          "capability": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability"
+          },
+          "caller_requirements": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Caller Requirements",
+            "default": []
+          },
+          "effect_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effect Class"
+          },
+          "idempotency_mechanism": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Mechanism"
+          },
+          "idempotency_key_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key Field"
+          },
+          "retry_safe": {
+            "type": "boolean",
+            "title": "Retry Safe",
+            "default": false
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          },
+          "preview_available": {
+            "type": "boolean",
+            "title": "Preview Available",
+            "default": false
+          },
+          "sensitivity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sensitivity"
+          },
+          "receipt_projection": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Receipt Projection",
+            "default": []
           }
         },
         "additionalProperties": false,
@@ -52070,6 +52243,27 @@
             "type": "integer",
             "title": "Count",
             "default": 0
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
           }
         },
         "additionalProperties": false,
@@ -52077,7 +52271,122 @@
         "title": "PlaybookCommandCatalogResponse"
       },
       "PlaybookCommandsRequest": {
-        "properties": {},
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": ""
+          },
+          "prefix": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefix",
+            "description": ""
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin",
+            "description": ""
+          },
+          "plugin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugin",
+            "description": ""
+          },
+          "schema_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Quality",
+            "description": ""
+          },
+          "result_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Mode",
+            "description": ""
+          },
+          "available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available",
+            "description": ""
+          },
+          "denied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Denied",
+            "description": ""
+          },
+          "include_schema": {
+            "type": "boolean",
+            "title": "Include Schema",
+            "description": "",
+            "default": true
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "",
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 50
+          }
+        },
         "type": "object",
         "title": "PlaybookCommandsRequest"
       },

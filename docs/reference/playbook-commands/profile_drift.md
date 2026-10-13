@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `profile_drift` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:22ea7dc0cac8fd22790d1eb68a2d823f78ba3a8549f4c26c797434075b925e2b` |
+| Contract fingerprint | `sha256:f6ceba2c1df8300b10c1cf0f34e1b7c5356c03b374834c16a71d14fc4ecf9a58` |
 
 ## Parameters
 
@@ -24,7 +24,7 @@
 | `drifted_only` | `boolean` | no | — | Only report profiles that diverge |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -46,7 +46,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using profile_id, drifted_only | — | always |
+| Read using profile_id, drifted_only | — | always |
 
 <!-- aq:generated:end -->
 

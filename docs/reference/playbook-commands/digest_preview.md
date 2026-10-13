@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `digest_preview` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:ebca624bbf8b0056b9086fedb68b28549a2a2a5777daf3998d70c830d361c0e9` |
+| Contract fingerprint | `sha256:bd83d3047c77584d7c65dbb2509f2a403da3da8437c81c4c1b2f2695b18bddc1` |
 
 ## Parameters
 
@@ -24,7 +24,7 @@
 | `now` | `number` | no | — | Evaluate as of this epoch time. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -46,7 +46,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using dashboard_url, now | — | always |
+| Read using dashboard_url, now | — | always |
 
 <!-- aq:generated:end -->
 

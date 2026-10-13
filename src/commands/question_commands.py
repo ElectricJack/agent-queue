@@ -7,11 +7,11 @@ class QuestionCommandsMixin:
     async def _question_identity(self):
         scope = self._current_scope
         if not isinstance(scope, dict):
-            return {"error": "out of scope: explicit server caller identity is required"}
+            return {"success": False, "error": "out of scope: explicit server caller identity is required"}
         if scope.get("kind") == "local":
             return {"human": True, "actor": "local", "project_id": None}
         if scope.get("kind") != "session" or not scope.get("elevated"):
-            return {"error": "out of scope: questions require a human or elevated supervisor"}
+            return {"success": False, "error": "out of scope: questions require a human or elevated supervisor"}
         row = await self.db.get_session(scope.get("session_id"))
         if (
             row is None
@@ -21,18 +21,18 @@ class QuestionCommandsMixin:
             or row.desired_state != "running"
             or row.project_id != scope.get("project_id")
         ):
-            return {"error": "out of scope: a live supervisor session is required"}
+            return {"success": False, "error": "out of scope: a live supervisor session is required"}
         return {"human": False, "actor": "session:" + row.id, "project_id": row.project_id}
 
     async def _question_for_caller(self, question_id, identity):
         if not isinstance(question_id, str) or not question_id:
-            return {"error": "question_id is required"}
+            return {"success": False, "error": "question_id is required"}
         question = await self.db.get_agent_question(question_id)
         if question is None:
-            return {"error": "question not found"}
+            return {"success": False, "error": "question not found"}
         project_id = identity["project_id"]
         if project_id is not None and question["project_id"] != project_id:
-            return {"error": "out of scope: question belongs to another project"}
+            return {"success": False, "error": "out of scope: question belongs to another project"}
         return question
 
     async def _cmd_question_list(self, args):
@@ -41,14 +41,14 @@ class QuestionCommandsMixin:
             return identity
         project_id = args.get("project_id") or identity["project_id"]
         if identity["project_id"] is not None and project_id != identity["project_id"]:
-            return {"error": "out of scope: question belongs to another project"}
+            return {"success": False, "error": "out of scope: question belongs to another project"}
         questions = await self.db.list_agent_questions(project_id=project_id)
         # A native dialog's answer counts once the worker acts on it, not when
         # the pointer is typed: keep it listed (``delivered``) until then.
         service = getattr(self.orchestrator, "agent_questions", None)
         if service is not None:
             questions += await service.awaiting_resume(project_id)
-        return {"questions": questions, "count": len(questions)}
+        return {"success": True, "questions": questions, "count": len(questions)}
 
     async def _cmd_question_answer(self, args):
         identity = await self._question_identity()
@@ -56,6 +56,7 @@ class QuestionCommandsMixin:
             return identity
         if identity["human"]:
             return {
+                "success": False,
                 "error": (
                     "direct human question answers are retired; reply to the durable escalation "
                     "so the owning supervisor can apply verified evidence"

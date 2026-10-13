@@ -165,6 +165,8 @@ def build_descriptor_snapshot(
     plugin's declared definition is explicit for that plugin. No schema keyword
     is reconstructed or dropped during either projection.
     """
+    from src.commands.resource_authorization import AUDITED_READS, resource_requirements
+
     inventory = {h.name: h for h in handlers}
     explicit = {d["name"]: d for d in explicit_definitions}
     plugins = tuple(plugins)
@@ -217,8 +219,10 @@ def build_descriptor_snapshot(
             schema_source=source, schema_quality=quality, transport_schema_source=transport_source,
             result_mode="typed" if contract else "json_object",
             capability=ec.capability if ec else name,
+            caller_requirements=("original_principal", *resource_requirements(name)),
             # Existing typed annotations are trusted evidence, never a name heuristic.
-            effect_class="read" if ec and ec.side_effect.value == "read" else "destructive",
+            effect_class=("read" if (ec and ec.side_effect.value == "read")
+                          or (not ec and name in AUDITED_READS) else "destructive"),
             idempotency_mechanism=ec.idempotency.mode if ec else "none",
             idempotency_key_field=ec.idempotency.key_field if ec else None,
             retry_safe=ec.retry_safe if ec else False,

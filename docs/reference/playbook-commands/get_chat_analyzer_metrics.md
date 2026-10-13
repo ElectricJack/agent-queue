@@ -8,13 +8,13 @@
 | Property | Value |
 |---|---|
 | Capability | `get_chat_analyzer_metrics` |
-| Side effect | `composite` |
+| Side effect | `read` |
 | Idempotency | none |
 | Retry safe | no |
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:ea4da9f5766974ab9f53ca157ef85e75a6e6b83302c7567e1a008ee6c3500e34` |
+| Contract fingerprint | `sha256:6ad0fd499ea32eda4d0bad04be0f25f08ae550892626fd4e481fc74cbcb59416` |
 
 ## Parameters
 
@@ -24,7 +24,7 @@
 | `since_hours` | `integer` | no | — | Time window in hours (default: 24). Pass 0 to disable the window and return lifetime totals. |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
-Schema source: `explicit_tool`; quality: `declared`; coarse effect: `destructive`.
+Schema source: `explicit_tool`; quality: `declared`; coarse effect: `read`.
 
 **Live invocation is disabled** pending the authorization, result-protocol and private-value release gates. Discovery does not grant authority. Dry-run/shadow have no live fallback.
 
@@ -46,7 +46,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using project_id, since_hours | — | always |
+| Read using project_id, since_hours | — | always |
 
 <!-- aq:generated:end -->
 

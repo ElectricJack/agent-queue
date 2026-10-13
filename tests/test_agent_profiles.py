@@ -1507,7 +1507,8 @@ class TestProfileMcpServersShape:
         """Project-scoped profile CRUD was retired with the concept itself."""
         assert await handler.execute(
             "create_project_profile", {"project_id": "proj", "agent_type": "coding"}
-        ) == {"error": "Unknown command: create_project_profile"}
+        ) == {"success": False, "error_code": "unknown_command",
+              "error": "Unknown command: create_project_profile"}
         async with await self._client(handler) as client:
             for route in (
                 "/api/agent/create-project-profile",

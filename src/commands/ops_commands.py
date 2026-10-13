@@ -129,20 +129,20 @@ class OpsCommandsMixin:
                 or stage not in STAGES
                 or type(start) is not int or type(end) is not int
                 or start < 0 or end < start or end - start > 30 * 86400 * 1_000_000_000):
-            return {"error": "invalid task, span, stage or monotonic bounds"}
+            return {"success": False, "error": "invalid task, span, stage or monotonic bounds"}
         if principal is not None and principal.kind in {
             PrincipalKind.SESSION, PrincipalKind.PLAYBOOK,
         } and not principal.elevated and principal.task_id not in {None, task_id}:
-            return {"error": "out of scope: stage task must be the held task"}
+            return {"success": False, "error": "out of scope: stage task must be the held task"}
         task = await self.db.get_task(task_id)
         if task is None:
-            return {"error": "stage task must be active"}
+            return {"success": False, "error": "stage task must be active"}
         if principal is not None and principal.project_id not in {None, task.project_id}:
-            return {"error": "out of scope: project_id mismatch"}
+            return {"success": False, "error": "out of scope: project_id mismatch"}
         if principal is not None and principal.kind == PrincipalKind.SESSION and not principal.elevated:
             epoch = args.get("claim_epoch")
             if epoch is not None and (type(epoch) is not int or epoch < 0):
-                return {"error": "claim_epoch must be a nonnegative integer"}
+                return {"success": False, "error": "claim_epoch must be a nonnegative integer"}
             refusal = await self._assert_session_owns(
                 task_id, session_id=principal.session_id, claim_epoch=epoch
             )
@@ -153,7 +153,7 @@ class OpsCommandsMixin:
                     or session.task_id != task_id
                     or session.state not in {"starting", "running", "draining"}
                     or session.agent_id != task.assigned_agent_id):
-                return {"error": "out of scope: this session no longer owns the task"}
+                return {"success": False, "error": "out of scope: this session no longer owns the task"}
         session_attempt_id = None
         if principal is not None and principal.session_id:
             session_attempt_id = await self.db.get_open_task_session_attempt_id(
@@ -170,7 +170,7 @@ class OpsCommandsMixin:
                 claim_epoch=args.get("claim_epoch"),
             )
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
         return {"success": True, "span_id": span_id, "inserted": inserted,
                 "duration_ms": (end - start) / 1_000_000, "stage": stage,
                 "session_attempt_id": session_attempt_id}
@@ -184,19 +184,19 @@ class OpsCommandsMixin:
         if principal is not None and principal.kind in {
             PrincipalKind.SESSION, PrincipalKind.PLAYBOOK,
         } and not principal.elevated:
-            return {"error": "out of scope: benchmark reports require an operator or supervisor"}
+            return {"success": False, "error": "out of scope: benchmark reports require an operator or supervisor"}
         manifest = args.get("manifest")
         if not isinstance(manifest, dict):
-            return {"error": "manifest must be an object"}
+            return {"success": False, "error": "manifest must be an object"}
         try:
             _pairs, task_ids = _manifest_pairs(manifest)
             project_id = manifest["project_id"]
             if principal is not None and principal.project_id not in {None, project_id}:
-                return {"error": "out of scope: project_id mismatch"}
+                return {"success": False, "error": "out of scope: project_id mismatch"}
             evidence = await self.db.get_benchmark_evidence(project_id, task_ids)
             return {"success": True, **build_report(manifest, evidence, self.config.pricing)}
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
 
     async def _cmd_get_costs(self, args: dict) -> dict:
@@ -226,12 +226,12 @@ class OpsCommandsMixin:
         """
         group_by = args.get("group_by") or "project"
         if group_by not in ("project", "profile", "day"):
-            return {"error": f"group_by must be project, profile or day (got {group_by!r})"}
+            return {"success": False, "error": f"group_by must be project, profile or day (got {group_by!r})"}
 
         try:
             since_ts = _parse_since(args.get("since"))
         except ValueError as exc:
-            return {"error": str(exc)}
+            return {"success": False, "error": str(exc)}
 
         project_id = args.get("project_id") or self._active_project_id
 
@@ -243,7 +243,7 @@ class OpsCommandsMixin:
             )
         except Exception as exc:
             logger.exception("cost rollup failed")
-            return {"error": f"cost rollup failed: {type(exc).__name__}: {exc}"}
+            return {"success": False, "error": f"cost rollup failed: {type(exc).__name__}: {exc}"}
 
         pricing = self.config.pricing
         rows: list[dict] = []

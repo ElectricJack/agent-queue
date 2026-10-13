@@ -25,7 +25,8 @@ from src.commands.contracts.models import (
     OutcomeSpec,
     SideEffectClass,
 )
-from src.commands.descriptors import CommandDescriptor
+from src.commands.descriptors import PLAYBOOK_DENIALS, CommandDescriptor
+from src.commands.principal import SERVER_OWNED_ARG_KEYS, principal_context
 
 
 def validate_json(value: Any) -> None:
@@ -99,6 +100,8 @@ class JsonObjectArgs(JsonObject):
     @classmethod
     def _validate_schema(cls, value: Any) -> Any:
         validate_json(value)
+        if isinstance(value, dict) and set(value).intersection(SERVER_OWNED_ARG_KEYS):
+            raise ValueError("server_owned_argument")
         if cls._validator is None and cls._schema_error is None:
             # Catalogue/transport discovery needs the document, not a compiled
             # validator for every command. Compile only on first actual input.
@@ -143,17 +146,29 @@ class GeneratedInvocationDisabled(RuntimeError):
     """The generated command audit and confidentiality gates are not complete."""
 
 
+def require_generated_execution() -> None:
+    """A3 must replace this gate only after confidentiality acceptance passes."""
+    raise GeneratedInvocationDisabled("generated_invocation_disabled")
+
+
 def generated_registration(descriptor: CommandDescriptor):
     from src.commands.contracts.registry import CommandRegistration
 
     async def invoke(args: JsonObjectArgs, principal: Any):
-        # No handler lookup, dispatch, principal substitution or preview fallback
-        # is permitted before A2/A3 supply and verify the execution boundary.
-        reason = descriptor.denial_reason or (
-            "command_unavailable" if not descriptor.available else
-            "generated_invocation_disabled: authorization and private-value gates required"
-        )
-        raise GeneratedInvocationDisabled(reason)
+        if descriptor.name in PLAYBOOK_DENIALS or descriptor.denial_reason:
+            return {"success": False, "error_code": "playbook_command_denied"}
+        if not descriptor.available:
+            return {"success": False, "error_code": "command_unavailable"}
+        payload = args.model_dump()
+        if set(payload).intersection(SERVER_OWNED_ARG_KEYS):
+            return {"success": False, "error_code": "server_owned_argument"}
+        require_generated_execution()
+        from src.commands.contracts.builtin import _handler
+
+        # Return the original object. Only the executor's _consume interprets
+        # its protocol; plugins and built-ins have precisely the same boundary.
+        with principal_context(principal):
+            return await _handler().execute(descriptor.name, payload)
 
     return CommandRegistration(
         descriptor.name,
@@ -167,7 +182,9 @@ def generated_registration(descriptor: CommandDescriptor):
                     OutcomeSpec(name="success", classification=OutcomeClass.SUCCESS),
                     OutcomeSpec(name="failure", classification=OutcomeClass.FAILURE),
                 ),
-                capability=descriptor.capability, side_effect=SideEffectClass.COMPOSITE,
+                capability=descriptor.capability,
+                side_effect=(SideEffectClass.READ if descriptor.effect_class == "read"
+                             else SideEffectClass.COMPOSITE),
                 idempotency=IdempotencySpec(mode="none"), retry_safe=False,
             ),
             presentation=CommandPresentation(

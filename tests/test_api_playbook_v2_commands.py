@@ -39,11 +39,26 @@ async def _call(handler: CommandHandler, name: str, args: dict) -> dict:
 async def test_command_catalog_lists_every_contract_with_schema_and_docs_url():
     from src.commands.contracts import CONTRACTS
 
-    result = await _make_handler()._cmd_playbook_commands({})
-
+    handler = _make_handler()
+    result = await handler._cmd_playbook_commands({})
     assert result["success"] is True
-    assert result["count"] == len(CONTRACTS.names()) == len(result["commands"])
-    assert {entry["name"] for entry in result["commands"]} == CONTRACTS.names()
+    assert result["count"] == 50
+    assert result["next_offset"] == 50
+    entries = list(result["commands"])
+    offset = result["next_offset"]
+    while offset is not None:
+        page = await handler._cmd_playbook_commands({"offset": offset, "limit": 100})
+        entries.extend(page["commands"])
+        offset = page["next_offset"]
+    assert {entry["name"] for entry in entries} == CONTRACTS.descriptors.commands.keys()
+    assert len(entries) == result["total"]
+    denied = await handler._cmd_playbook_commands({"denied": True, "include_schema": False})
+    assert {entry["name"] for entry in denied["commands"]} == {
+        "run_command", "shutdown", "restart_daemon", "update_and_restart",
+    }
+    assert all(entry["execution_available"] is False for entry in denied["commands"])
+    assert all("parameters_schema" not in entry for entry in denied["commands"])
+    assert (await handler._cmd_playbook_commands({"limit": 101}))["success"] is False
     for entry in result["commands"]:
         assert entry["title"]
         assert entry["summary"]
@@ -54,8 +69,9 @@ async def test_command_catalog_lists_every_contract_with_schema_and_docs_url():
 class TestGraphArguments:
     async def test_playbook_id_is_required(self):
         handler = _make_handler()
-        assert await _call(handler, "playbook_v2_graph", {}) == {"error": "playbook_id is required"}
+        assert await _call(handler, "playbook_v2_graph", {}) == {"success": False, "error": "playbook_id is required"}
         assert await _call(handler, "playbook_v2_graph", {"playbook_id": "  "}) == {
+            "success": False,
             "error": "playbook_id is required"
         }
 
@@ -64,7 +80,7 @@ class TestGraphArguments:
         result = await _call(
             handler, "playbook_v2_graph", {"playbook_id": "p", "direction": "sideways"}
         )
-        assert result == {"error": "Invalid direction 'SIDEWAYS'. Valid: TD, LR"}
+        assert result == {"success": False, "error": "Invalid direction 'SIDEWAYS'. Valid: TD, LR"}
 
     @pytest.mark.parametrize(
         "sha",
@@ -77,7 +93,7 @@ class TestGraphArguments:
         result = await _call(
             handler, "playbook_v2_graph", {"playbook_id": "p", "artifact_sha256": sha}
         )
-        assert result == {"error": "artifact_sha256 must be a full 'sha256:<64 hex>' digest"}
+        assert result == {"success": False, "error": "artifact_sha256 must be a full 'sha256:<64 hex>' digest"}
 
 
 class TestActivationHealthArguments:
@@ -95,7 +111,7 @@ class TestArtifactDiffArguments:
     async def test_target_sha256_is_required(self):
         handler = _make_handler()
         result = await _call(handler, "playbook_artifact_diff", {"playbook_id": "p"})
-        assert result == {"error": "target_sha256 is required"}
+        assert result == {"success": False, "error": "target_sha256 is required"}
 
     async def test_base_sha256_is_validated_when_supplied(self):
         handler = _make_handler()
@@ -104,13 +120,13 @@ class TestArtifactDiffArguments:
             "playbook_artifact_diff",
             {"playbook_id": "p", "target_sha256": VALID_SHA, "base_sha256": "sha256:zz"},
         )
-        assert result == {"error": "base_sha256 must be a full 'sha256:<64 hex>' digest"}
+        assert result == {"success": False, "error": "base_sha256 must be a full 'sha256:<64 hex>' digest"}
 
 class TestActivateArguments:
     async def test_artifact_sha256_is_required(self):
         handler = _make_handler()
         result = await _call(handler, "playbook_activate", {"playbook_id": "p"})
-        assert result == {"error": "artifact_sha256 is required"}
+        assert result == {"success": False, "error": "artifact_sha256 is required"}
 
 class TestPendingEventArguments:
     async def test_reason_filter_is_validated(self):
@@ -122,12 +138,12 @@ class TestPendingEventArguments:
     async def test_limit_must_be_an_integer(self, limit):
         handler = _make_handler()
         result = await _call(handler, "playbook_pending_events", {"limit": limit})
-        assert result == {"error": "limit must be an integer"}
+        assert result == {"success": False, "error": "limit must be an integer"}
 
     async def test_limit_must_be_positive(self):
         handler = _make_handler()
         result = await _call(handler, "playbook_pending_events", {"limit": 0})
-        assert result == {"error": "limit must be >= 1"}
+        assert result == {"success": False, "error": "limit must be >= 1"}
 
     async def test_action_is_validated(self):
         handler = _make_handler()
@@ -143,7 +159,7 @@ class TestPendingEventArguments:
         result = await _call(
             handler, "playbook_pending_event_action", {"pending_event_ids": ["e1"]}
         )
-        assert result == {"error": "action is required"}
+        assert result == {"success": False, "error": "action is required"}
 
     @pytest.mark.parametrize("ids", [None, [], ["", "   "], 7])
     async def test_pending_event_ids_must_be_a_non_empty_list(self, ids):
@@ -156,16 +172,17 @@ class TestPendingEventArguments:
 class TestRunOverlayArguments:
     async def test_run_id_is_required(self):
         handler = _make_handler()
-        assert await _call(handler, "playbook_run_overlay", {}) == {"error": "run_id is required"}
+        assert await _call(handler, "playbook_run_overlay", {}) == {"success": False, "error": "run_id is required"}
 
     async def test_receipt_limit_is_validated(self):
         handler = _make_handler()
         assert await _call(handler, "playbook_run_overlay", {"run_id": "r", "receipt_limit": 0}) == {
+            "success": False,
             "error": "receipt_limit must be >= 1"
         }
         assert await _call(
             handler, "playbook_run_overlay", {"run_id": "r", "receipt_limit": "many"}
-        ) == {"error": "receipt_limit must be an integer"}
+        ) == {"success": False, "error": "receipt_limit must be an integer"}
 
 
 class TestScope:
@@ -290,7 +307,7 @@ async def test_graph_layout_save_rejects_unknown_steps():
         }
     )
 
-    assert result == {"error": "Unknown step_id 'missing'"}
+    assert result == {"success": False, "error": "Unknown step_id 'missing'"}
 
 
 async def test_run_overlay_command_returns_pinned_artifact_ref():
