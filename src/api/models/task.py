@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from src.observations.models import SnapshotValue
+
 from . import TaskRef
 
 
@@ -258,7 +260,7 @@ class TaskDict(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ListTasksResponse(BaseModel):
+class ListTasksResponse(SnapshotValue):
     display_mode: str = "flat"
     tasks: list[TaskDetail] = []
     total: int = 0

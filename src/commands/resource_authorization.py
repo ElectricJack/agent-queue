@@ -21,7 +21,7 @@ reload_config migrate_profiles profile_audit profile_drift profile_reseed check_
 list_available_tools list_mcp_tool_catalog list_prompts read_prompt plugin_config
 plugin_disable plugin_enable plugin_info plugin_install plugin_list plugin_prompts
 plugin_reload plugin_remove plugin_reset_prompts plugin_update policy_apply policy_diff
-policy_export doctor db_preflight_hierarchy digest_facts digest_post digest_preview
+policy_export doctor doctor_run observation_snapshot_cleanup db_preflight_hierarchy digest_facts digest_post digest_preview
 digest_status discord_purge_channel read_logs scan_stub_staleness vault_rebuild_index
 list_projects list_active_tasks_all_projects orchestrator_control pool_status pool_scale pool_rename
 pool_set_enabled pool_set_lifecycle provider_allocation_apply provider_history
@@ -42,7 +42,7 @@ run_command shutdown restart_daemon update_and_restart
 # Handlers with no resource data (schemas/catalogues only).
 PUBLIC_COMMANDS = frozenset("""
 get_schema playbook_commands find_applicable_tool load_tools
-formula_list formula_show list_workspace_kinds
+formula_list formula_show list_workspace_kinds doctor_catalog
 """.split())
 
 # Session-lifecycle commands require an actual session. Held-work commands also
@@ -98,7 +98,7 @@ dashboard_state_get dashboard_state_list dashboard_state_put dashboard_state_res
 # Explicit read audit, not a command-name heuristic. Unannotated effects remain
 # destructive and non-retryable; a read observation may still report unhealthy.
 AUDITED_READS = frozenset("""
-archive_settings check_profile claude_usage db_preflight_hierarchy digest_facts digest_preview
+archive_settings check_profile claude_usage db_preflight_hierarchy doctor_catalog doctor_run digest_facts digest_preview
  digest_status explain_task find_applicable_tool find_merge_conflict_workspaces formula_list
  formula_show gate_list gate_show get_agent get_agent_error get_benchmark_report get_chain_health
 get_chat_analyzer_metrics get_config get_config_schema get_costs get_git_identity

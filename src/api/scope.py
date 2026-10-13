@@ -294,6 +294,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
+    if command == "doctor_catalog":
+        # Registered schemas/audits carry no project data. Preserve the strict
+        # empty argument schema; capability enforcement still applies at dispatch.
+        return None
     if command == "supervisor_inbox_post":
         return "out of scope: conversation intake is daemon-internal"
     if command == "supervisor_inbox_reply" and not (scope.elevated and scope.project_id is None):

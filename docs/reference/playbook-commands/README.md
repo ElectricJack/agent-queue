@@ -192,6 +192,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`digest_status`](digest_status.md) | Digest Status | Configured schedule, next evaluation and delivery health. |
 | [`discord_purge_channel`](discord_purge_channel.md) | Discord Purge Channel | Delete messages from a Discord channel. |
 | [`doctor`](doctor.md) | Doctor | Run the health-check catalog and summarise the result. |
+| [`doctor_catalog`](doctor_catalog.md) | Doctor Catalog | List doctor observation audits, identity schemas, scope and coverage contracts. |
+| [`doctor_run`](doctor_run.md) | Doctor Run | Observe one audited check or group; never repair or filter a global scan. |
 | [`dry_run_playbook`](dry_run_playbook.md) | Dry Run Playbook | Execute the dry_run_playbook command. |
 | [`edit_agent`](edit_agent.md) | Edit Agent | Execute the edit_agent command. |
 | [`edit_file`](edit_file.md) | Edit File | Execute the edit_file command. |
@@ -331,6 +333,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`object_loop_reconcile`](object_loop_reconcile.md) | Object Loop Reconcile | Coordinate a bounded, durable object evaluation round. |
 | [`object_loop_start`](object_loop_start.md) | Object Loop Start | Coordinate a bounded, durable object evaluation round. |
 | [`object_score_record`](object_score_record.md) | Object Score Record | Coordinate a bounded, durable object evaluation round. |
+| [`observation_snapshot_cleanup`](observation_snapshot_cleanup.md) | Observation Snapshot Cleanup | Collect at most 100 expired snapshots; daemon/operator maintenance only. |
 | [`observe_integration_source_ci`](observe_integration_source_ci.md) | Observe Integration Source Ci | Daemon-only adapter for trusted CI observations, never a raw tool input. |
 | [`onboard_project`](onboard_project.md) | Onboard Project | Link, initialise or clone a repository beneath a configured root and register it. |
 | [`operator_execute`](operator_execute.md) | Operator Execute | Execute the operator_execute command. |

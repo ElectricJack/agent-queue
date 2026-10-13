@@ -9644,13 +9644,22 @@
       "parameters": {
         "required": [],
         "optional": [
+          "--pagination",
+          "--snapshot-id",
+          "--page-token",
+          "--page-size",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [],
-        "nullable": []
+        "nullable": [
+          "--pagination",
+          "--snapshot-id",
+          "--page-token",
+          "--page-size"
+        ]
       }
     },
     {
@@ -13721,6 +13730,81 @@
       }
     },
     {
+      "path": "aq system doctor-catalog",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "doctor_catalog",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system doctor-run",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "doctor_run",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--check-id",
+          "--group",
+          "--project-id",
+          "--now",
+          "--timeout-s",
+          "--pagination",
+          "--snapshot-id",
+          "--page-token",
+          "--page-size",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
       "path": "aq system edit-intelligence-class",
       "registration": "generated",
       "owner_kind": "core",
@@ -14129,13 +14213,22 @@
           "--in-progress-threshold-seconds",
           "--now",
           "--project-id",
+          "--pagination",
+          "--snapshot-id",
+          "--page-token",
+          "--page-size",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [],
-        "nullable": []
+        "nullable": [
+          "--pagination",
+          "--snapshot-id",
+          "--page-token",
+          "--page-size"
+        ]
       }
     },
     {
@@ -15751,6 +15844,38 @@
           "--dry-run",
           "--verify",
           "--force",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system observation-snapshot-cleanup",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "observation_snapshot_cleanup",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
           "--json",
           "--brief",
           "--save-output",

@@ -860,6 +860,8 @@ areas:
       - tests/test_doctor.py
       - tests/test_doctor_cli_timeout.py
       - tests/test_doctor_stall_checks.py
+      - tests/test_doctor_observations.py
+      - tests/test_observation_snapshots.py
       - tests/test_doctor_skill_checks.py
       - tests/test_doctor_perf_checks.py
       - tests/test_doctor_discord_config.py

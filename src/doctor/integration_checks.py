@@ -143,6 +143,7 @@ async def completed_undelivered(ctx: DoctorContext, *, project_ids=None, now=Non
 
     return await observe_completed_branches(
         ctx.db, _doctor_observer(ctx), project_ids=project_ids, now=now,
+        **({"cached_only": True} if ctx.read_only else {}),
     )
 
 
@@ -420,7 +421,7 @@ async def continuous_promotion_lag(
         try:
             snapshot = await observer.snapshot(DeliveryTarget(
                 row["id"], row["repository_id"], row["url"], "refs/heads/" + row["default_branch"],
-            ))
+            ), **({"cached_only": True} if ctx.read_only else {}))
             observed = getattr(snapshot, "observation", snapshot)
             if observed.error:
                 raise ValueError(observed.error)

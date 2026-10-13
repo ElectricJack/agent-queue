@@ -302,10 +302,12 @@
         "tests/test_doctor.py",
         "tests/test_doctor_cli_timeout.py",
         "tests/test_doctor_discord_config.py",
+        "tests/test_doctor_observations.py",
         "tests/test_doctor_perf_checks.py",
         "tests/test_doctor_skill_checks.py",
         "tests/test_doctor_stall_checks.py",
-        "tests/test_health_platform.py"
+        "tests/test_health_platform.py",
+        "tests/test_observation_snapshots.py"
       ]
     },
     "document-reviews": {
@@ -5896,6 +5898,32 @@
         "parametrize"
       ],
       "summary": "Subject schedule/hold diagnostics and the retained App trust check."
+    },
+    "tests/test_doctor_observations.py": {
+      "areas": [
+        "doctor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:38e0f2584cf9a1d626b94157b301e40889b92c52209d3c91447fc7faca624955",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands.command_inventory",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.doctor.models",
+        "src.doctor.observations",
+        "src.doctor.pool_checks",
+        "src.doctor.runner",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Scope-first observation, producer completeness and stable identities."
     },
     "tests/test_doctor_perf_checks.py": {
       "areas": [
@@ -11774,6 +11802,39 @@
       ],
       "summary": "AQ-3: real command traces, replayed through V2's write-free dry runner."
     },
+    "tests/test_observation_snapshots.py": {
+      "areas": [
+        "doctor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:9945c14131dcebf07198e0c6c207c6dc25faee66e96db8a65e3ad50141b120d9",
+      "imports": [
+        "src.api.models.project",
+        "src.api.models.system",
+        "src.api.models.task",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.observation_snapshot_queries",
+        "src.database.queries.stall_watch_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.observations",
+        "src.doctor.runner",
+        "src.models",
+        "src.observations.snapshots",
+        "src.playbooks.private_values",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Immutable pages, current authorization and atomic quotas on real PostgreSQL."
+    },
     "tests/test_onboarding_queries.py": {
       "areas": [
         "database",
@@ -16010,7 +16071,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:22ce75c1d88d6b3db131e288f8044d889df830f9c9e5c6a918ded30e15cd8a1c",
+      "digest": "sha256:10591d68eb7fc216dd194a067f200b514b80f7ed029cbc318456a07fc620ab60",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -16024,6 +16085,7 @@
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
+        "src.playbooks.private_values",
         "src.profiles.capabilities",
         "src.stall_watch"
       ],

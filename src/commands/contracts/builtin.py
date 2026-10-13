@@ -29,6 +29,7 @@ from src.commands.contracts.models import (
 )
 from src.commands.contracts.registry import CommandContext, CommandRegistration, ContractRegistry
 from src.commands.principal import principal_context
+from src.observations.models import SnapshotArgs, SnapshotValue
 
 
 class CreateTaskArgs(CommandArgs):
@@ -240,7 +241,7 @@ class GateResolveValue(CommandValue):
     unblocked_task_ids: list[str]
 
 
-class ListTasksArgs(CommandArgs):
+class ListTasksArgs(SnapshotArgs, CommandArgs):
     """The arguments ``_cmd_list_tasks`` actually reads.
 
     ``limit`` is deliberately absent.  No path in
@@ -254,9 +255,14 @@ class ListTasksArgs(CommandArgs):
     status: str | None = None
     display_mode: str | None = None
     show_dependencies: bool | None = None
+    include_completed: bool | None = None
+    completed_only: bool | None = None
+    show_all: bool | None = None
+    labels: list[str] | None = None
+    any_label: list[str] | None = None
 
 
-class ListTasksValue(CommandValue):
+class ListTasksValue(SnapshotValue, CommandValue):
     """What ``list_tasks`` returns — in both of the shapes it has.
 
     ``_cmd_list_tasks`` (``src/commands/task_commands.py``) answers with one
@@ -276,10 +282,8 @@ class ListTasksValue(CommandValue):
     failed its contract, in either display mode, while the compiler validated
     against the same fiction and reported nothing.
 
-    Only keys this contract's own arguments can produce are modelled.
-    ``label_filter_scope`` is left out deliberately: it appears only for a
-    ``labels`` / ``any_label`` filter, which ``ListTasksArgs`` does not
-    expose, so no playbook step can reach it.
+    Snapshot mode adds the shared immutable observation envelope. Label
+    filters preserve their root-only annotation in hierarchical modes.
     """
 
     display_mode: str = "flat"
@@ -290,6 +294,7 @@ class ListTasksValue(CommandValue):
     hidden_completed: int = 0
     filtered: bool = False
     dependency_display: str | None = None
+    label_filter_scope: str | None = None
 
     # Tree and compact mode only.
     trees: list[dict[str, Any]] = Field(default_factory=list)
@@ -297,12 +302,12 @@ class ListTasksValue(CommandValue):
     total_tasks: int = 0
 
 
-class ListProjectsArgs(CommandArgs):
+class ListProjectsArgs(SnapshotArgs, CommandArgs):
     pass
 
 
-class ListProjectsValue(CommandValue):
-    projects: list[dict[str, Any]]
+class ListProjectsValue(SnapshotValue, CommandValue):
+    projects: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GetTaskArgs(CommandArgs):
@@ -627,14 +632,14 @@ class TaskFailureTriageNotifyValue(TaskRecoveryNotifyValue):
     """The durable incident receipt returned to the triage playbook."""
 
 
-class GetStuckTasksArgs(CommandArgs):
+class GetStuckTasksArgs(SnapshotArgs, CommandArgs):
     assigned_threshold_seconds: int = Field(default=1800, ge=0)
     in_progress_threshold_seconds: int = Field(default=7200, ge=0)
     now: float | None = None
     project_id: str | None = None
 
 
-class GetStuckTasksValue(CommandValue):
+class GetStuckTasksValue(SnapshotValue, CommandValue):
     stuck: list[dict[str, Any]] = Field(default_factory=list)
     summary: str = ""
     now_used: float | None = None
@@ -947,6 +952,9 @@ def _adapter(name: str, value_type: type[CommandValue]):
                 provider=str(raw.get("provider") or getattr(args, "provider", None) or "claude"),
                 detail=raw.get("error"),
             )
+        elif name in {"list_tasks", "list_projects", "get_stuck_tasks"} and "complete" in raw:
+            value = value_type(**{field: raw[field] for field in value_type.model_fields
+                                 if field in raw})
         elif outcome in {
             "rejected", "refused_routing_gate", "already_linked", "not_running", "not_approved",
         }:
@@ -1818,7 +1826,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "list_tasks",
             ListTasksArgs,
             ListTasksValue,
-            (OutcomeSpec(name="listed", classification=OutcomeClass.SUCCESS),),
+            _outcomes("listed"),
             SideEffectClass.READ,
             (ReadClause(subject=EffectSubject.TASK_LIST),),
             IdempotencySpec(mode="natural"),
