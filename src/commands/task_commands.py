@@ -4545,15 +4545,37 @@ class TaskCommandsMixin:
         """
         previous = (task.status, task.retry_count, task.assigned_agent_id)
         previous_streak = await self.db.get_task_meta(task.id, "worker_failure_streak")
+        previous_incident = await self.db.get_task_meta(task.id, "supervisor_recovery_incident")
         await self.db.transition_task(
             task.id,
             TaskStatus.READY,
             context="restart_task",
             retry_count=0,
             assigned_agent_id=None,
+            _defer_recovery_supersession=True,
         )
         reservation = await self._integration_repair_service().reserve_delegate(task.id)
         if reservation["outcome"] in {"acquired", "already_reserved"}:
+            if previous_incident and previous_incident.get("decision") in (None, "hold"):
+                from src.database.tables import tasks
+
+                # The preparatory READY write cannot release a supervisor hold:
+                # only an accepted branch handoff authorizes the new attempt.
+                accepted = await self.db.transition_task_with_meta(
+                    task.id,
+                    TaskStatus.READY,
+                    meta={},
+                    context="restart_task",
+                    from_statuses=(TaskStatus.READY,),
+                    extra_where=(
+                        tasks.c.assigned_agent_id.is_(None)
+                        & (tasks.c.claim_epoch == task.claim_epoch)
+                    ),
+                )
+                if not accepted:
+                    return {"error": (
+                        f"Task {task.id} changed during its restart handoff; retry restart."
+                    )}
             return {
                 "restarted": task.id,
                 "title": task.title,

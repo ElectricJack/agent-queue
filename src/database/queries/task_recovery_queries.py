@@ -597,6 +597,50 @@ class TaskRecoveryQueryMixin:
                 .values(archived_at=now)
             )
 
+    async def _supersede_restarted_task_recovery_on(self, conn, task_id, *, context):
+        """Retire the old failure after an explicit READY write holds the task lock.
+
+        Ordinary status projection never releases a decided hold. Restart/reopen
+        intentionally begin a new attempt, including when a held task was already
+        projected to READY. Preserve its diagnosis and budget instead of deleting
+        the incident, and archive its notification before claim waiters wake.
+        Return whether a hold was released so READY-to-READY can announce it too.
+        """
+        raw = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == INCIDENT_KEY,
+        ))
+        incident = _decoded(raw)
+        if (
+            not isinstance(incident, dict)
+            or not incident.get("id")
+            or incident.get("decision") not in (None, "hold")
+        ):
+            return False
+        held = incident.get("decision") == "hold"
+        history = list(incident.get("decision_history", []))
+        if held:
+            history.append({
+                key: incident.get(key)
+                for key in ("decision", "decision_reason", "decided_at", "decided_by")
+            })
+        now = time.time()
+        reason = f"Previous recovery incident superseded by explicit {context}."
+        await self._upsert_meta(task_id, INCIDENT_KEY, {
+            **incident,
+            "decision": "superseded",
+            "decision_reason": reason,
+            "decided_at": now,
+            "decided_by": f"system:{context}",
+            "decision_history": history,
+            "retry_allowed": False,
+            "retry_blocker": reason,
+            "next_action": reason,
+        }, conn=conn)
+        await conn.execute(update(messages).where(
+            messages.c.id == "msg-" + incident["id"],
+        ).values(archived_at=now))
+        return held
+
     async def _queue_task_recovery_notification(self, task_id):
         result = await self._ensure_task_recovery_incident(task_id)
         return int(result["outcome"] == "queued" or bool(result.get("redelivered")))
