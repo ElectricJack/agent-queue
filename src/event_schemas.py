@@ -1533,6 +1533,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         # sizer alone never had one.
         "optional": ["placement_reason"],
     },
+    "pool.scaler_stalled": {
+        "required": ["profile_id", "desired", "live", "ready", "ticks", "recovery"],
+        "optional": [],
+    },
     # Sizing authorised a start and no project could take it — the condition
     # that was invisible before placement became explicit (§6.3).  ``reasons``
     # maps project id to the predicate that excluded it: ``quarantined``,

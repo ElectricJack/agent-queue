@@ -114,6 +114,7 @@ def test_registry_has_categories(registry):
     assert cat_names == {
         "files",
         "git",
+        "ci",
         "project",
         "agent",
         "supervisor",

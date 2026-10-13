@@ -906,6 +906,14 @@ _CANONICAL_PAYLOADS["pool.scaled"] = {
     "kind": "start",
     "count": 1,
 }
+_CANONICAL_PAYLOADS["pool.scaler_stalled"] = {
+    "profile_id": "worker",
+    "desired": 1,
+    "live": 0,
+    "ready": 1,
+    "ticks": 3,
+    "recovery": "reconcile",
+}
 _CANONICAL_PAYLOADS["pool.session_started"] = {
     "project_id": "proj-1",
     "profile_id": "worker",
