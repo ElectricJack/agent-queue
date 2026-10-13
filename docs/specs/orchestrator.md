@@ -231,6 +231,22 @@ the error handler attempts whichever reconciler was not reached, independently, 
 failure cannot strand pool starts or session teardown. A cycle logs at most one traceback
 for its original error and one for each failed reconciler.
 
+Pool convergence also has a backstop independent of the scheduling cycle. Every
+30 seconds it observes claimable demand and uses the same sizing and placement
+rules to check for an eligible start. After three consecutive observations with
+no successful start and no launch in flight, it logs and persists
+`pool.scaler_stalled` once per continuous condition and retries normal pool
+reconciliation. Capacity limits, disabled profiles, provider suppression and
+quarantine remain authoritative; lack of eligible capacity is not a scaler stall.
+Successful starts or disappearance of eligible demand reset the observation.
+
+Pool reconciliation is serialized with this backstop and bounded to 30 seconds,
+including measurement and audit writes. A timeout logs the stalled pass, releases
+the reconciliation lock and allows a later pass to retry. Background launches
+retain their capacity reservations and session ownership; they are not cancelled
+by a reconciliation timeout. Completed launch bookkeeping is reaped before
+measurement. The backstop ends with the scheduler on shutdown.
+
 ```
 Step 0   _sweep_resolve_pr_ci_gates     — resolve satisfied pr-merged/ci-run gates (polls `gh` via `_poll_pr_merged`, `src/orchestrator/pr_polling.py`)
 Step 1   _resume_paused_tasks           — promote PAUSED tasks whose resume_after has elapsed; also recovers tasks wedged in PAUSED with no resume_after and no operator hold

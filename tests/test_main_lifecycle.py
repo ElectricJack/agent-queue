@@ -422,6 +422,59 @@ async def test_long_cycle_report_preserves_waiting_work_and_omits_locals(caplog)
         await asyncio.gather(cycle, reporter, return_exceptions=True)
 
 
+async def test_pool_watchdog_runs_during_blocked_cycle_and_stops_with_scheduler(monkeypatch):
+    import src.orchestrator.pools as pools
+
+    monkeypatch.setattr(pools, "POOL_WATCHDOG_INTERVAL", 0.001)
+    shutdown, release = asyncio.Event(), asyncio.Event()
+    ticks = []
+
+    async def cycle():
+        await release.wait()
+        shutdown.set()
+
+    async def progress():
+        ticks.append(1)
+        if len(ticks) == 3:
+            release.set()
+
+    orch = SimpleNamespace(run_one_cycle=cycle, _check_pool_progress=progress)
+    async with asyncio.timeout(5):
+        await main_mod._run_scheduler_cycles(orch, shutdown)
+    assert len(ticks) == 3
+    assert not any(task.get_name() == "pool-watchdog" for task in asyncio.all_tasks())
+
+
+async def test_pool_watchdog_retries_failure_and_cancels_pending_check(monkeypatch, caplog):
+    import src.orchestrator.pools as pools
+
+    monkeypatch.setattr(pools, "POOL_WATCHDOG_INTERVAL", 0.001)
+    shutdown, entered, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def progress():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient read failure")
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def cycle():
+        await entered.wait()
+        shutdown.set()
+
+    orch = SimpleNamespace(run_one_cycle=cycle, _check_pool_progress=progress)
+    async with asyncio.timeout(5):
+        await main_mod._run_scheduler_cycles(orch, shutdown)
+    assert calls == 2
+    assert cancelled.is_set()
+    assert "Pool progress watchdog failed" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_pending_readiness_cleanup_is_bounded(monkeypatch, caplog):
     from unittest.mock import MagicMock

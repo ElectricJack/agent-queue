@@ -687,6 +687,174 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
     )
 
 
+async def test_pool_watchdog_reports_and_recovers_eligible_demand(orch, db, caplog):
+    await ready(db, "stranded")
+    # No cascade tick: reproduce a scheduler blocked in unrelated housekeeping.
+    for _ in range(2):
+        await orch._check_pool_progress()
+    assert await db.list_sessions(lifecycle="pool") == []
+    assert "pool.scaler_stalled" not in caplog.text
+
+    await orch._check_pool_progress()
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    assert session.state == "running"
+    [payload] = [call.args[1] for call in orch.bus.emit.await_args_list
+                 if call.args[0] == "pool.scaler_stalled"]
+    assert payload == {"profile_id": "worker", "desired": 1, "live": 0,
+                       "ready": 1, "ticks": 3, "recovery": "reconcile"}
+    events = await db.get_recent_events(event_type="pool.scaler_stalled")
+    assert len(events) == 1
+    # An idle worker can serve this demand now; clear the continuous incident.
+    await orch._check_pool_progress()
+    assert not orch._pool_progress_observations
+    assert caplog.text.count("pool.scaler_stalled") == 1
+
+
+async def test_pool_watchdog_deduplicates_and_resets_on_start(orch, db, monkeypatch, caplog):
+    from src.scheduler import PoolKey
+
+    await ready(db, "stranded")
+    recovery = AsyncMock()
+    monkeypatch.setattr(orch, "_reconcile_pools", recovery)
+    for _ in range(5):
+        await orch._check_pool_progress()
+    assert recovery.await_count == 3
+    assert caplog.text.count("pool.scaler_stalled") == 1
+    assert len(await db.get_recent_events(event_type="pool.scaler_stalled")) == 1
+    orch._pool_last_start = {PoolKey("worker"): 1.0}
+    await orch._check_pool_progress()
+    assert recovery.await_count == 3
+    await orch._check_pool_progress()
+    await orch._check_pool_progress()
+    assert recovery.await_count == 4
+    assert caplog.text.count("pool.scaler_stalled") == 2
+
+
+@pytest.mark.parametrize("blocker", [
+    "no_demand", "profile_disabled", "sessions_disabled", "swarm_disabled",
+    "profile_cap", "global_cap", "project_cap", "workspace", "quarantine", "provider",
+])
+async def test_pool_watchdog_respects_admission_and_capacity(orch, db, monkeypatch, caplog, blocker):
+    await ready(db, "task")
+    if blocker == "no_demand":
+        await db.transition_task("task", TaskStatus.FAILED)
+    elif blocker == "profile_disabled":
+        await db.update_profile("worker", enabled=False)
+    elif blocker == "sessions_disabled":
+        orch.config.sessions.enabled = False
+    elif blocker == "swarm_disabled":
+        orch.config.swarm.enabled = False
+    elif blocker == "profile_cap":
+        await db.update_profile("worker", max_active=0)
+    elif blocker == "global_cap":
+        orch.config.swarm.global_max_active = 0
+    elif blocker == "project_cap":
+        await db.update_project(PROJECT_ID, max_concurrent_agents=0)
+    elif blocker == "workspace":
+        monkeypatch.setattr(db, "count_available_workspaces", AsyncMock(return_value=0))
+    elif blocker == "quarantine":
+        orch._quarantine_pool(PROJECT_ID, "worker", "test")
+    elif blocker == "provider":
+        orch.provider_availability = MagicMock()
+        orch.provider_availability.suppresses.return_value = True
+    for _ in range(4):
+        await orch._check_pool_progress()
+    assert "pool.scaler_stalled" not in caplog.text
+    assert not orch._pool_progress_observations
+    assert await db.list_sessions(lifecycle="pool") == []
+
+
+async def test_pool_watchdog_preserves_live_launch_and_reaps_cancelled_bookkeeping(
+    orch, db, monkeypatch, caplog,
+):
+    import asyncio
+
+    from src.orchestrator.pools import PoolLaunch
+
+    await ready(db, "task")
+    launch = PoolLaunch(PROJECT_ID, "worker")
+    launch.task = asyncio.create_task(asyncio.Event().wait())
+    orch._pool_launches = {launch.session_id: launch}
+    try:
+        for _ in range(4):
+            await orch._check_pool_progress()
+        assert "pool.scaler_stalled" not in caplog.text
+        assert not launch.task.done()
+        assert await db.list_sessions(lifecycle="pool") == []
+        launch.task.cancel()
+        await asyncio.gather(launch.task, return_exceptions=True)
+        for _ in range(3):
+            await orch._check_pool_progress()
+        await orch.wait_for_pool_launches()
+        assert len(await db.list_sessions(lifecycle="pool")) == 1
+        assert "pool.scaler_stalled" in caplog.text
+        assert not orch._pool_launches
+    finally:
+        launch.task.cancel()
+        await asyncio.gather(launch.task, return_exceptions=True)
+
+
+async def test_pool_reconcile_timeout_releases_lock_for_recovery(orch, db, monkeypatch, caplog):
+    import asyncio
+
+    import src.orchestrator.pools as pools
+
+    await ready(db, "task")
+    original = orch._measure_pools
+    cancelled = asyncio.Event()
+
+    async def stuck(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(pools, "POOL_RECONCILE_TIMEOUT", 0.01)
+    monkeypatch.setattr(orch, "_measure_pools", stuck)
+    await orch._reconcile_pools()
+    assert cancelled.is_set()
+    assert not orch._pool_reconcile_lock().locked()
+    assert "Pool reconciliation timed out" in caplog.text
+    monkeypatch.setattr(orch, "_measure_pools", original)
+    monkeypatch.setattr(pools, "POOL_RECONCILE_TIMEOUT", 30)
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+
+
+async def test_pool_reconcile_and_watchdog_never_overlap(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    original = orch._measure_pools
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def measure(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original(**kwargs)
+
+    measurement = AsyncMock(side_effect=measure)
+    monkeypatch.setattr(orch, "_measure_pools", measurement)
+    first = asyncio.create_task(orch._reconcile_pools())
+    await entered.wait()
+    second = asyncio.create_task(orch._reconcile_pools())
+    try:
+        await orch._check_pool_progress()
+        await asyncio.sleep(0)
+        assert measurement.await_count == 1
+        release.set()
+        await asyncio.gather(first, second)
+        await orch.wait_for_pool_launches()
+        assert len(await db.list_sessions(lifecycle="pool")) == 1
+    finally:
+        release.set()
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
 class TestReconcilePools:
     async def test_pool_handoff_detects_git_without_literal_dot_git(
         self, orch, db, tmp_path
