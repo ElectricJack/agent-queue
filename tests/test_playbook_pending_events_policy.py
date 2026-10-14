@@ -44,6 +44,7 @@ from src.database.queries.playbook_run_queries import (
     PENDING_EVENT_OVERFLOW_ACTOR,
 )
 from src.playbooks.run_state import PendingEventQuotaExceeded
+from src.playbooks.runtime import V2PlaybookRuntime
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
 
@@ -54,6 +55,21 @@ DAY = 86_400.0
 
 
 # -- fixtures ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_live_arrival_overwrites_publisher_timestamp(monkeypatch, supplied_time):
+    runtime = object.__new__(V2PlaybookRuntime)
+    runtime._tasks = set()
+    runtime._dispatch = AsyncMock()
+    monkeypatch.setattr("src.playbooks.runtime.time.time", lambda: NOW)
+    event = {"event_type": "task.completed", "_received_at": supplied_time}
+
+    runtime._on_event(event)
+    await asyncio.gather(*runtime._tasks)
+
+    assert runtime._dispatch.await_args.args[0]["_received_at"] == NOW
+    assert event["_received_at"] == supplied_time
 
 
 @pytest.fixture
@@ -450,11 +466,13 @@ async def test_replay_re_evaluates_guards():
     assert rebuilt_runs.create_calls == 0
 
 
-async def test_replay_strips_principal_fields():
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_replay_strips_principal_fields(supplied_time):
     """A held payload cannot carry principal fields into its replay (§4.3)."""
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {
             "event_type": "task.completed",
             "task_id": "t1",
@@ -463,6 +481,7 @@ async def test_replay_strips_principal_fields():
             "_scope": "system",
             "_policy": "allow-all",
             "_profile_id": "root",
+            "_received_at": supplied_time,
         },
     }
     handler, engine = _command_handler(row)
@@ -473,7 +492,10 @@ async def test_replay_strips_principal_fields():
 
     assert result["success"] is True
     replayed = engine.dispatch_event.await_args.args[0]
-    assert set(replayed) == {"event_type", "task_id"}
+    # The stripped payload plus the row's own arrival time, which the replay
+    # stamps so the run observes when the event was received, not replayed.
+    assert set(replayed) == {"event_type", "task_id", "_received_at"}
+    assert replayed["_received_at"] == 1000.0
     for key in SERVER_OWNED_ARG_KEYS:
         assert key not in replayed
     # The stored row is left as received — stripping is a replay-time decision.
@@ -563,6 +585,7 @@ async def test_dispatch_does_not_require_a_reason():
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"event_type": "task.completed"},
     }
     handler, engine = _command_handler(row)
@@ -667,8 +690,7 @@ def _activation_handler(
     ``health_read_sees_row=False`` is the post-write health read coming back
     without the row that was just activated.
     """
-    from tests.test_api_playbook_v2_commands import _backend_fixture
-    from tests.test_playbook_activation_commands import _Handler
+    from tests.test_playbook_activation_commands import _backend_fixture, _Handler
 
     definition, ref, _activation = _backend_fixture()
     refreshed = _activation_record(ref, health=health, enabled=enabled)
@@ -707,6 +729,7 @@ def _held(event_id, **overrides):
     row = {
         "pending_event_id": event_id,
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"event_type": "task.completed", "event_id": event_id},
     }
     row.update(overrides)
@@ -756,7 +779,8 @@ async def test_automatic_policy_consumes_the_backlog_on_activation():
     assert engine.dispatch_event.await_count == 2
 
 
-async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
+@pytest.mark.parametrize("supplied_time", [1.0, 1e20])
+async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload(supplied_time):
     """The activation replay re-enters the same guarded path as the manual one."""
     handler, engine, definition, ref = _activation_handler(
         policy="automatic",
@@ -768,6 +792,7 @@ async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
                     "task_id": "t1",
                     "_principal": {"kind": "trusted_local"},
                     "_capabilities": {"aq_commands": ["*"]},
+                    "_received_at": supplied_time,
                 },
             )
         ],
@@ -776,7 +801,10 @@ async def test_automatic_replay_is_a_fresh_dispatch_of_the_stripped_payload():
     await _activate(handler, definition, ref)
 
     replayed = engine.dispatch_event.await_args.args[0]
-    assert set(replayed) == {"event_type", "task_id"}
+    # The stripped payload plus the row's own arrival time, which the replay
+    # stamps so the run observes when the event was received, not replayed.
+    assert set(replayed) == {"event_type", "task_id", "_received_at"}
+    assert replayed["_received_at"] == 1000.0
     for key in SERVER_OWNED_ARG_KEYS:
         assert key not in replayed
     # Matching is re-run against the playbook that was just activated.

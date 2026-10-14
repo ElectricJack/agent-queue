@@ -75,7 +75,7 @@ def test_one_edge_per_transition_record():
     }
     actual = [edge["id"] for edge in _project(definition)["edges"]]
     assert set(actual) == expected
-    assert len(actual) == len(set(actual)) == 34
+    assert len(actual) == len(set(actual)) == 35
 
 
 def test_timeout_edge_survives_when_it_shares_a_target():

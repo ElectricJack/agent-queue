@@ -8,7 +8,53 @@ from src.config import PlaybooksConfig
 from src.playbooks.activation import ActivationHealth, ActivationHealthRecord
 from src.playbooks.validation import RegisteredEventLookup, RegistryContractLookup
 from tests.playbook_v2_helpers import StubProfiles
-from tests.test_api_playbook_v2_commands import _backend_fixture
+from tests.test_api_playbook_v2_commands import _backend_fixture as _golden_backend_fixture
+
+
+def _backend_fixture():
+    """The §10.1 golden re-pinned to the contracts the live registry serves.
+
+    These handlers validate against ``RegistryContractLookup()`` — the real
+    registry — while the golden is a frozen artifact whose digest other suites
+    pin.  A command contract that legitimately evolves (``list_tasks`` gained
+    the observation-snapshot envelope and the shared ``rejected`` outcome)
+    therefore turns the golden ``stale_contract`` here, and every activation
+    under test would be refused for a reason none of them is about.  So the
+    copy records each command's current fingerprint and routes any business
+    outcome the step does not map yet to the step's own ``runtime_error``
+    target, exactly as a recompile against today's registry would have to.
+    """
+    import json
+    from dataclasses import replace
+
+    from src.playbooks.definition import canonical_bytes, load_definition_json
+
+    golden, golden_ref, golden_activation = _golden_backend_fixture()
+    raw = json.loads(canonical_bytes(golden))
+    lookup = RegistryContractLookup()
+    commands = raw["compiled_against"]["commands"]
+    for name in commands:
+        info = lookup.get(name)
+        if info is not None:
+            commands[name] = info.execution_fingerprint
+    for step in raw["steps"].values():
+        if step.get("type") != "command":
+            continue
+        info = lookup.get(step["command"])
+        transitions = step.get("transitions") or {}
+        fallback = transitions.get("runtime_error")
+        if info is None or fallback is None:
+            continue
+        for outcome in sorted(info.outcomes - set(transitions)):
+            transitions[outcome] = fallback
+    definition = load_definition_json(json.dumps(raw))
+    ref = replace(
+        golden_ref,
+        artifact_sha256=definition.artifact_sha256(),
+        contract_fingerprint=definition.contract_fingerprint(),
+    )
+    activation = replace(golden_activation, active_artifact_sha256=ref.artifact_sha256)
+    return definition, ref, activation
 
 
 class _Handler(PlaybookV2CommandsMixin):
@@ -122,7 +168,7 @@ async def test_project_activation_refuses_a_different_project_principal():
             }
         )
 
-    assert result == {"error": "out of scope: project_id mismatch"}
+    assert result == {"success": False, "error": "out of scope: project_id mismatch"}
     handler.db.set_playbook_activation.assert_not_awaited()
 
 
@@ -273,14 +319,17 @@ async def test_set_playbook_enabled_validates_its_arguments():
     handler.db.list_playbook_activations.return_value = []
 
     assert await handler._cmd_set_playbook_enabled({"enabled": True}) == {
+        "success": False,
         "error": "playbook_id is required"
     }
     assert await handler._cmd_set_playbook_enabled({"playbook_id": "p"}) == {
+        "success": False,
         "error": "enabled is required"
     }
     assert await handler._cmd_set_playbook_enabled(
         {"playbook_id": "p", "enabled": "yes"}
-    ) == {"error": "enabled must be a boolean"}
+    ) == {"success": False, "error": "enabled must be a boolean"}
     assert await handler._cmd_set_playbook_enabled({"playbook_id": "p", "enabled": True}) == {
+        "success": False,
         "error": "Playbook 'p' not found"
     }

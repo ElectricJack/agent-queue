@@ -795,7 +795,7 @@ class TestAutoCommands:
 
         result = runner.invoke(cli, ["playbook", "commands", "--help"])
         assert result.exit_code == 0
-        assert "registered Playbook V2 command" in result.output
+        assert "playbook command contracts" in result.output
 
     def test_prefix_stripping(self):
         """Category prefixes/suffixes should be stripped from command names."""

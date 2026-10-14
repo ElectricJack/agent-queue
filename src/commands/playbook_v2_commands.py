@@ -2015,9 +2015,13 @@ class PlaybookV2CommandsMixin:
         stable_dispatch_id = hashlib.sha256(
             f"v2-pending|{pending_event_id}".encode()
         ).hexdigest()[:12]
+        payload = self._v2_replayable_event(row["event"])
+        payload["_received_at"] = row["received_at"]
+        if row.get("event_id"):
+            payload.setdefault("event_id", row["event_id"])
         dispatch = asyncio.create_task(
             self._v2_engine().dispatch_event(
-                self._v2_replayable_event(row["event"]),
+                payload,
                 principal,
                 playbook_ids=[row["playbook_id"]],
                 dispatch_id=stable_dispatch_id,

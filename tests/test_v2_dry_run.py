@@ -16,6 +16,7 @@ from src.playbooks.executors import executor_for
 from src.playbooks.executors.base import EngineServices, ExecutionMode
 from src.playbooks.definition import ToolUsePolicy
 from src.profiles.capabilities import CapabilityPolicy
+from tests._private_values_helper import ReadyPrivateValues
 from tests.fixtures.contracts.engine_contracts import (
     ENSURE_TASK,
     EnsureTaskResult,
@@ -42,7 +43,10 @@ def build(
     store.put(artifact)
     registry, adapter = registry_with(ENSURE_TASK, LIST_TASKS, adapter=adapter)
     engine = PlaybookEngine(
-        services=EngineServices(contracts=registry, clock=lambda: 1_000.0, artifact_store=store),
+        services=EngineServices(
+            contracts=registry, clock=lambda: 1_000.0, artifact_store=store,
+            private_values=ReadyPrivateValues(),
+        ),
         # A dry run must not reach this repository.  Keeping a real recording
         # double here catches accidental wiring without mocking traversal.
         runs=RecordingRunRepository(),

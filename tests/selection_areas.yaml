@@ -316,6 +316,7 @@ areas:
       - tests/test_playbook_v2_integration_policy.py
       - tests/test_playbook_v2_expressions.py
       - tests/test_playbook_collections.py
+      - tests/test_playbook_features.py
       - tests/test_playbook_v2_validation.py
       - tests/test_playbook_v2_resolution.py
       - tests/test_playbook_explanation.py
@@ -342,10 +343,13 @@ areas:
     match:
       - tests/test_v2_*.py
       - tests/test_playbook_run_*.py
+      - tests/test_playbook_nested_loops.py
       - tests/test_playbook_wait_repository.py
       - tests/test_playbook_receipts.py
       - tests/test_playbook_private_values.py
       - tests/test_playbook_script_sandbox.py
+      - tests/test_playbook_state.py
+      - tests/test_playbook_state_notify.py
       - tests/test_playbook_pending_events_*.py
       - tests/test_playbook_services.py
       - tests/test_agent_task_executor.py
@@ -859,6 +863,8 @@ areas:
       - tests/test_doctor.py
       - tests/test_doctor_cli_timeout.py
       - tests/test_doctor_stall_checks.py
+      - tests/test_doctor_observations.py
+      - tests/test_observation_snapshots.py
       - tests/test_doctor_skill_checks.py
       - tests/test_doctor_perf_checks.py
       - tests/test_doctor_discord_config.py

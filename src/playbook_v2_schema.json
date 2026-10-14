@@ -3285,6 +3285,27 @@
       "title": "Trigger",
       "type": "object"
     },
+    "TrustedExecutionMetadata": {
+      "additionalProperties": false,
+      "description": "Source-derived execution pins; never caller authority or compiler output.\n\nState and script owners extend this strict model with reviewed pins. Command\nsecurity policy remains in the execution contracts, not in author assertions.",
+      "properties": {
+        "state_schema_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Schema Version"
+        }
+      },
+      "title": "TrustedExecutionMetadata",
+      "type": "object"
+    },
     "WaitStep": {
       "additionalProperties": false,
       "properties": {
@@ -3570,6 +3591,15 @@
       "title": "Purpose",
       "type": "string"
     },
+    "required_features": {
+      "default": [],
+      "items": {
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+        "type": "string"
+      },
+      "title": "Required Features",
+      "type": "array"
+    },
     "rules": {
       "items": {
         "$ref": "#/$defs/Rule"
@@ -3656,6 +3686,17 @@
       },
       "title": "Steps",
       "type": "object"
+    },
+    "trusted_execution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TrustedExecutionMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "version": {
       "minimum": 1,

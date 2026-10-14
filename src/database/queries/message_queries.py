@@ -83,6 +83,7 @@ def _row_to_message(row) -> Message:
         created_seq=row["created_seq"],
         last_notified_at=row["last_notified_at"],
         notification_attempts=row["notification_attempts"],
+        provenance=row["provenance"],
     )
 
 
@@ -91,6 +92,12 @@ class MessageQueriesMixin:
 
     async def _supervisor_recipient(self, conn, to_kind, to_id, project_id):
         """Resolve opt-in routing without changing the sender's project context."""
+        if to_kind == "session" and to_id.startswith("supervisor-"):
+            suffix = to_id.removeprefix("supervisor-")
+            if suffix != "global" and not await conn.scalar(
+                    select(projects.c.id).where(projects.c.id == suffix)):
+                if project_id:
+                    to_id = "supervisor-" + project_id
         recipient_project = None
         if to_kind == "profile" and to_id == "supervisor":
             recipient_project = project_id
@@ -159,6 +166,35 @@ class MessageQueriesMixin:
         reply_to_id: str | None = None,
         body_kind: str | None = None,
         pane_open: str | None = None,
+        provenance: dict | None = None,
+    ) -> Message:
+        """Compatibility send: own the transaction around the shared insert."""
+        async with self._engine.begin() as conn:
+            return await self.create_message_in_transaction(
+                conn, project_id=project_id, from_kind=from_kind, from_id=from_id,
+                to_kind=to_kind, to_id=to_id, body=body, subject=subject, thread_id=thread_id,
+                priority=priority, archive_after_inject=archive_after_inject,
+                reply_to_id=reply_to_id, body_kind=body_kind, pane_open=pane_open,
+                provenance=provenance,
+            )
+
+    async def create_message_in_transaction(
+        self, conn,
+        *,
+        project_id: str | None,
+        from_kind: str,
+        from_id: str,
+        to_kind: str,
+        to_id: str,
+        body: str,
+        subject: str | None = None,
+        thread_id: str | None = None,
+        priority: int = 100,
+        archive_after_inject: bool = False,
+        reply_to_id: str | None = None,
+        body_kind: str | None = None,
+        pane_open: str | None = None,
+        provenance: dict | None = None,
     ) -> Message:
         """Insert one message row and return the materialised dataclass."""
         msg = Message(
@@ -177,35 +213,36 @@ class MessageQueriesMixin:
             reply_to_id=reply_to_id,
             body_kind=body_kind,
             pane_open=pane_open,
+            provenance=provenance,
         )
-        async with self._engine.begin() as conn:
-            msg.to_kind, msg.to_id = await self._supervisor_recipient(
-                conn, msg.to_kind, msg.to_id, msg.project_id,
-            )
-            result = await conn.execute(
-                insert(messages).values(
-                    id=msg.id,
-                    project_id=msg.project_id,
-                    from_kind=msg.from_kind,
-                    from_id=msg.from_id,
-                    to_kind=msg.to_kind,
-                    to_id=msg.to_id,
-                    thread_id=msg.thread_id,
-                    subject=msg.subject,
-                    body=msg.body,
-                    priority=msg.priority,
-                    created_at=msg.created_at,
-                    delivered_at=None,
-                    read_at=None,
-                    archive_after_inject=int(msg.archive_after_inject),
-                    archived_at=None,
-                    reply_to_id=msg.reply_to_id,
-                    via=None,
-                    body_kind=msg.body_kind,
-                    pane_open=msg.pane_open,
-                ).returning(messages.c.created_seq)
-            )
-            msg.created_seq = result.scalar_one()
+        msg.to_kind, msg.to_id = await self._supervisor_recipient(
+            conn, msg.to_kind, msg.to_id, msg.project_id,
+        )
+        result = await conn.execute(
+            insert(messages).values(
+                id=msg.id,
+                project_id=msg.project_id,
+                from_kind=msg.from_kind,
+                from_id=msg.from_id,
+                to_kind=msg.to_kind,
+                to_id=msg.to_id,
+                thread_id=msg.thread_id,
+                subject=msg.subject,
+                body=msg.body,
+                priority=msg.priority,
+                created_at=msg.created_at,
+                delivered_at=None,
+                read_at=None,
+                archive_after_inject=int(msg.archive_after_inject),
+                archived_at=None,
+                reply_to_id=msg.reply_to_id,
+                via=None,
+                body_kind=msg.body_kind,
+                pane_open=msg.pane_open,
+                provenance=msg.provenance,
+            ).returning(messages.c.created_seq)
+        )
+        msg.created_seq = result.scalar_one()
         return msg
 
     async def get_message(self, message_id: str) -> Message | None:

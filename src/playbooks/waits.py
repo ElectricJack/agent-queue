@@ -47,6 +47,7 @@ class WaitSpec:
     run_id: str
     step_id: str
     iteration: int = -1
+    iteration_path: str = ""
     kind: str = "event"
     event_type: str = ""
     match: Mapping[str, Any] = field(default_factory=dict)
@@ -79,6 +80,7 @@ class WaitSpec:
             "run_id": self.run_id,
             "step_id": self.step_id,
             "iteration": self.iteration,
+            "iteration_path": self.iteration_path,
             "kind": self.kind,
             "event_type": self.event_type,
             "match": dict(self.match),
@@ -93,6 +95,7 @@ class WaitSpec:
             run_id=data["run_id"],
             step_id=data["step_id"],
             iteration=int(data.get("iteration", -1)),
+            iteration_path=data.get("iteration_path", ""),
             kind=data.get("kind", "event"),
             event_type=data.get("event_type", ""),
             match=dict(data.get("match") or {}),
@@ -113,6 +116,7 @@ class WaitClaim:
     snapshot_version: int
     claimed_event_id: str | None
     claimed_at: float
+    iteration_path: str = ""
     expired: bool = False
     event_type: str = ""
     event_fields: Mapping[str, Any] = field(default_factory=dict)

@@ -32,6 +32,13 @@ from src.tools.command_catalogue import render_command_catalogue
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "tests/fixtures/contracts/legacy-command-descriptors.json"
+C2_CHANGES = ROOT / "tests/fixtures/contracts/observation-contract-changes.json"
+
+
+def _observation_changes():
+    changes = json.loads(C2_CHANGES.read_text())
+    assert set(changes["contracts"]) == {"list_projects", "list_tasks", "get_stuck_tasks"}
+    return changes
 
 
 def _digest(value):
@@ -49,10 +56,15 @@ def _snapshot(*, handlers=(), explicit=(), fallback=None, typed=None, plugins=()
 
 def test_legacy_execution_documents_and_fingerprints():
     fixture = json.loads(GOLDEN.read_text())
+    changes = _observation_changes()["contracts"]
     for name, old in fixture["legacy_contracts"].items():
+        expected = changes.get(name, old)
+        if name in changes:
+            assert expected["previous_fingerprint"] == old["fingerprint"]
+            assert expected["fingerprint"] != old["fingerprint"]
         contract = CONTRACTS.require(name).contract
-        assert canonical_execution_document(contract.execution) == old["execution"], name
-        assert contract.fingerprint() == old["fingerprint"], name
+        assert canonical_execution_document(contract.execution) == expected["execution"], name
+        assert contract.fingerprint() == expected["fingerprint"], name
     assert set(fixture["legacy_contracts"]) - command_snapshot().handler_names == {
         "count_project_memory_files", "read_project_memory_file", "git_diff",
         "memory_save", "memory_search",
@@ -66,11 +78,17 @@ def test_legacy_execution_documents_and_fingerprints():
 
 def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     fixture = json.loads(GOLDEN.read_text())
+    changes = _observation_changes()
     snapshot = command_snapshot()
     for name, digest in fixture["transport_definitions"].items():
+        if name in changes["contracts"]:
+            approved = changes["contracts"][name]
+            assert approved["previous_transport_sha256"] == digest
+            digest = approved["transport_sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
-    assert actual == fixture["cli_catalogue_sha256"]
+    assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
+    assert actual == changes["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
@@ -79,7 +97,16 @@ def test_transport_views_and_cli_serialization_preserve_golden_evidence():
 
 
 def test_legacy_playbook_fixtures_are_unchanged():
+    changes = _observation_changes()["playbook_fixtures"]
+    assert set(changes) == {
+        "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json",
+        "tests/fixtures/playbooks/v2/review-pipeline.artifact.json",
+        "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json",
+    }
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
+        if path in changes:
+            assert changes[path]["previous_sha256"] == digest
+            digest = changes[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 

@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 #: Defaults for ``playbooks.v2_max_result_bytes`` / ``v2_max_snapshot_bytes``.
 DEFAULT_MAX_RESULT_BYTES = 262_144
 DEFAULT_MAX_SNAPSHOT_BYTES = 4_194_304
+MAX_LOOP_DEPTH = 4
+MAX_ITERATION_ENTRIES = 100_000
 
 
 # --------------------------------------------------------------------------
@@ -359,6 +361,7 @@ class OperatorDecision:
     raised_at: float
     decision_id: str = ""
     turn_index: int = -1
+    iteration_path: str = ""
     options: tuple[str, ...] = ("accept_outcome", "retry", "fail", "cancel")
 
 
@@ -386,6 +389,11 @@ class LoopFrame:
     last_step_id: str | None = None
     last_outcome: str | None = None
     last_failed: bool | None = None
+    collection: Any = None  # None only for legacy snapshots, resolved once on resume.
+    body_step_ids: tuple[str, ...] = ()
+    private: bool = False
+    succeeded: int = 0
+    failed: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,7 +448,10 @@ class RunSnapshot:
     #: here rather than re-reading the receipt table keeps the boundary a
     #: single write and survives a restart with the snapshot.
     attempts: Mapping[str, int] = field(default_factory=dict)
-    loop: LoopFrame | None = None
+    loop: LoopFrame | None = None  # Compatibility view of the innermost frame.
+    loop_stack: tuple[LoopFrame, ...] = ()
+    iteration_entries: int = 0
+    iteration_paths: bool = False
     wait: WaitSpec | None = None
     pending_wait_claims: tuple[WaitClaim, ...] = ()
     budget: RunBudget = field(default_factory=RunBudget)
@@ -462,6 +473,13 @@ class RunSnapshot:
     completed_at: float | None = None
 
     def __post_init__(self) -> None:
+        stack = self.loop_stack or ((self.loop,) if self.loop is not None else ())
+        if len(stack) > MAX_LOOP_DEPTH:
+            raise ValueError("loop depth exceeds 4")
+        if not 0 <= self.iteration_entries <= MAX_ITERATION_ENTRIES:
+            raise ValueError("invalid iteration-entry counter")
+        object.__setattr__(self, "loop_stack", tuple(stack))
+        object.__setattr__(self, "loop", stack[-1] if stack else None)
         if not self.run_id:
             raise ValueError("run_id is required")
         if self.mode not in RUN_MODES:
@@ -472,12 +490,20 @@ class RunSnapshot:
             object.__setattr__(self, "lifecycle", RunLifecycle(self.lifecycle))
 
     @property
+    def iteration_path(self) -> str:
+        from src.playbooks.receipts import encode_iteration_path
+
+        return encode_iteration_path([(f.step_id, f.index) for f in self.loop_stack]) \
+            if self.iteration_paths else ""
+
+    @property
     def is_terminal(self) -> bool:
         return self.lifecycle in TERMINAL_LIFECYCLES
 
     @property
     def has_private_data(self) -> bool:
-        return bool(self.private_bindings or self.sensitive or self.llm_turns)
+        return bool(self.private_bindings or self.sensitive or self.llm_turns
+                    or any(frame.private for frame in self.loop_stack))
 
     def redacted(self) -> RunSnapshot:
         """Drop plaintext sensitive values.  Any projection must use this."""
@@ -514,7 +540,9 @@ class RunSnapshot:
             "bindings": dict(self.bindings),
             "sensitive": {key: private(value) for key, value in self.sensitive.items()},
             "attempts": dict(self.attempts),
-            "loop": asdict(self.loop) if self.loop is not None else None,
+            "loop_stack": [asdict(frame) for frame in self.loop_stack],
+            "iteration_entries": self.iteration_entries,
+            "iteration_paths": self.iteration_paths,
             "wait": self.wait.as_dict() if self.wait is not None else None,
             "pending_wait_claims": [asdict(claim) for claim in self.pending_wait_claims],
             "budget": asdict(self.budget),
@@ -537,8 +565,9 @@ class RunSnapshot:
             "updated_at": self.updated_at,
             "completed_at": self.completed_at,
         }
-        if self.loop is not None:
-            body["loop"]["partial"] = list(self.loop.partial)
+        for frame in body["loop_stack"]:
+            frame["partial"] = list(frame["partial"])
+            frame["body_step_ids"] = list(frame["body_step_ids"])
         if self.operator_decision is not None:
             body["operator_decision"]["options"] = list(self.operator_decision.options)
         if self.private_bindings:
@@ -556,9 +585,11 @@ class RunSnapshot:
             # without keys; only live evaluation resolves their values.
             for key in ("event", "context"):
                 body[key] = {name: private(value) for name, value in body[key].items()}
-            if body["loop"] is not None:
-                body["loop"]["partial"] = [private(item) for item in body["loop"]["partial"]]
-                body["loop"]["collection_digest"] = private(body["loop"]["collection_digest"])
+            for frame in body["loop_stack"]:
+                frame["partial"] = [private(item) for item in frame["partial"]]
+                frame["collection_digest"] = private(frame["collection_digest"])
+                if frame["collection"] is not None:
+                    frame["collection"] = private(frame["collection"])
             if body["wait"] is not None:
                 body["wait"]["match"] = {key: private(value)
                                          for key, value in body["wait"]["match"].items()}
@@ -593,22 +624,13 @@ class RunSnapshot:
             private_bindings={key: tuple(names)
                               for key, names in (body.get("private_bindings") or {}).items()},
             attempts={str(k): int(v) for k, v in (body.get("attempts") or {}).items()},
-            loop=(
-                LoopFrame(
-                    step_id=loop["step_id"],
-                    item_binding=loop["item_binding"],
-                    collection_digest=loop["collection_digest"],
-                    index=int(loop["index"]),
-                    total=int(loop["total"]),
-                    partial=tuple(loop.get("partial") or ()),
-                    resume_step_id=loop.get("resume_step_id"),
-                    last_step_id=loop.get("last_step_id"),
-                    last_outcome=loop.get("last_outcome"),
-                    last_failed=loop.get("last_failed"),
-                )
-                if loop
-                else None
+            loop_stack=tuple(
+                LoopFrame(**{**frame, "partial": tuple(frame.get("partial") or ()),
+                             "body_step_ids": tuple(frame.get("body_step_ids") or ())})
+                for frame in body.get("loop_stack", [loop] if loop else [])
             ),
+            iteration_entries=int(body.get("iteration_entries", 0)),
+            iteration_paths=bool(body.get("iteration_paths", False)),
             wait=WaitSpec.from_dict(wait) if wait else None,
             pending_wait_claims=tuple(
                 WaitClaim(
@@ -616,6 +638,7 @@ class RunSnapshot:
                     run_id=claim["run_id"],
                     step_id=claim["step_id"],
                     iteration=int(claim["iteration"]),
+                    iteration_path=claim.get("iteration_path", ""),
                     kind=claim["kind"],
                     snapshot_version=int(claim["snapshot_version"]),
                     claimed_event_id=claim.get("claimed_event_id"),
@@ -637,6 +660,7 @@ class RunSnapshot:
                     raised_at=float(decision["raised_at"]),
                     decision_id=decision.get("decision_id", ""),
                     turn_index=int(decision.get("turn_index", -1)),
+                    iteration_path=decision.get("iteration_path", ""),
                     options=tuple(decision.get("options") or ()),
                 )
                 if decision
@@ -797,7 +821,9 @@ class RunRepository(Protocol):
     ) -> list[RunSnapshot]: ...
 
     async def list_receipts(
-        self, run_id: str, *, limit: int = 500, offset: int = 0
+        self, run_id: str, *, limit: int = 500, offset: int = 0,
+        step_id: str | None = None, iteration: int | None = None,
+        iteration_path: str | None = None,
     ) -> list[StepReceipt]: ...
 
     async def list_interrupted_runs(

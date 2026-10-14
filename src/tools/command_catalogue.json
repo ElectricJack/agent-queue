@@ -131,7 +131,63 @@
       "description": "List all projects in the system.",
       "input_schema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "pagination": {
+            "anyOf": [
+              {
+                "const": "snapshot",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pagination"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Snapshot Id"
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Token"
+          },
+          "page_size": {
+            "anyOf": [
+              {
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Size"
+          }
+        }
       }
     },
     {
@@ -545,6 +601,61 @@
           "show_dependencies": {
             "type": "boolean",
             "description": "When true, each task in the result includes 'depends_on' (list of upstream tasks with id and status) and 'blocks' (list of downstream task IDs). Also adds a 'dependency_display' field with pre-formatted text showing dependency relationships. Use this when the user asks about task dependencies, blocking chains, or why a task is waiting. Default false."
+          },
+          "pagination": {
+            "anyOf": [
+              {
+                "const": "snapshot",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pagination"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Snapshot Id"
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Token"
+          },
+          "page_size": {
+            "anyOf": [
+              {
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Size"
           }
         }
       }
@@ -2353,6 +2464,61 @@
           "project_id": {
             "type": "string",
             "description": "Optional project filter.  When omitted, all projects are scanned."
+          },
+          "pagination": {
+            "anyOf": [
+              {
+                "const": "snapshot",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pagination"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Snapshot Id"
+          },
+          "page_token": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Token"
+          },
+          "page_size": {
+            "anyOf": [
+              {
+                "maximum": 500,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Size"
           }
         }
       }
@@ -10848,6 +11014,94 @@
         "type": "object"
       }
     },
+    "doctor_catalog": {
+      "name": "doctor_catalog",
+      "description": "List doctor observation audits, identity schemas, scope and coverage contracts.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    "doctor_run": {
+      "name": "doctor_run",
+      "description": "Observe one audited check or group; never repair or filter a global scan.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "check_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "group": {
+            "type": "string",
+            "minLength": 1
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "now": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 253402300799
+          },
+          "timeout_s": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 60
+          },
+          "pagination": {
+            "type": "string",
+            "enum": [
+              "snapshot"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "page_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "check_id"
+            ]
+          },
+          {
+            "required": [
+              "group"
+            ]
+          }
+        ],
+        "dependentRequired": {
+          "page_token": [
+            "snapshot_id",
+            "pagination"
+          ],
+          "snapshot_id": [
+            "page_token",
+            "pagination"
+          ],
+          "page_size": [
+            "pagination"
+          ]
+        }
+      }
+    },
     "explain_task": {
       "name": "explain_task",
       "description": "Return the ordered list of reasons *task_id* isn't running.",
@@ -14608,12 +14862,394 @@
         "type": "object"
       }
     },
+    "observation_snapshot_cleanup": {
+      "name": "observation_snapshot_cleanup",
+      "description": "Collect at most 100 expired snapshots; daemon/operator maintenance only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
     "observe_integration_source_ci": {
       "name": "observe_integration_source_ci",
       "description": "Daemon-only adapter for trusted CI observations, never a raw tool input.",
       "input_schema": {
         "type": "object",
         "properties": {}
+      }
+    },
+    "playbook_state_delete": {
+      "name": "playbook_state_delete",
+      "description": "Create a versioned KV tombstone with replay-safe CAS.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "operation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "key",
+          "expected_revision",
+          "operation_key"
+        ]
+      }
+    },
+    "playbook_state_get": {
+      "name": "playbook_state_get",
+      "description": "Read an invocation-owned typed key, including its retained revision.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "record_space": {
+            "enum": [
+              "kv",
+              "notification"
+            ]
+          }
+        },
+        "required": [
+          "key"
+        ]
+      }
+    },
+    "playbook_state_inspect": {
+      "name": "playbook_state_inspect",
+      "description": "Inspect an explicit namespace only under independent operator authority.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope_kind",
+              "scope_owner",
+              "playbook_id",
+              "state_schema_version"
+            ],
+            "properties": {
+              "scope_kind": {
+                "enum": [
+                  "system",
+                  "project",
+                  "profile"
+                ]
+              },
+              "scope_owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "playbook_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "state_schema_version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              }
+            }
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "record_space": {
+            "enum": [
+              "kv",
+              "notification"
+            ]
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "pagination": {
+            "enum": [
+              "snapshot"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "required": [
+          "namespace"
+        ]
+      }
+    },
+    "playbook_state_list": {
+      "name": "playbook_state_list",
+      "description": "Materialize immutable pre-scan state revisions and protected pages.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "record_space": {
+            "enum": [
+              "kv",
+              "notification"
+            ]
+          },
+          "prefix": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "pagination": {
+            "enum": [
+              "snapshot"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        "required": []
+      }
+    },
+    "playbook_state_notify": {
+      "name": "playbook_state_notify",
+      "description": "Atomically enqueue episode/reminder/clear messages with observation replay.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "action": {
+            "enum": [
+              "present",
+              "cleared"
+            ]
+          },
+          "observed_at": {
+            "type": "number"
+          },
+          "observation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "last_value": {},
+          "source_partition": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "repeat_after_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "message": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "to_kind": {
+                "enum": [
+                  "session",
+                  "task",
+                  "profile",
+                  "user"
+                ]
+              },
+              "to_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "body": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16384,
+                "pattern": "\\S"
+              },
+              "subject": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 512
+              }
+            },
+            "required": [
+              "to_kind",
+              "to_id",
+              "body"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "action",
+          "observed_at",
+          "observation_id",
+          "message"
+        ]
+      }
+    },
+    "playbook_state_reset": {
+      "name": "playbook_state_reset",
+      "description": "Operator reset: retain revisions/journals and warn of deliberate re-alert.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "namespace": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scope_kind",
+              "scope_owner",
+              "playbook_id",
+              "state_schema_version"
+            ],
+            "properties": {
+              "scope_kind": {
+                "enum": [
+                  "system",
+                  "project",
+                  "profile"
+                ]
+              },
+              "scope_owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "playbook_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "state_schema_version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2147483647
+              }
+            }
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "operation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "\\S"
+          }
+        },
+        "required": [
+          "namespace",
+          "expected_revision",
+          "operation_key",
+          "reason"
+        ]
+      }
+    },
+    "playbook_state_set": {
+      "name": "playbook_state_set",
+      "description": "Set a private KV value using CAS and a retained operation key.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "value": {},
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775806
+          },
+          "operation_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "expected_revision",
+          "operation_key"
+        ]
       }
     },
     "plugin_config": {

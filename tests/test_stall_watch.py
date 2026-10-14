@@ -20,6 +20,7 @@ from src.models import Agent, AgentState, TaskStatus
 from src.playbooks.definition import granted_aq_commands, load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
+from src.playbooks.private_values import PrivateValueService
 from src.profiles.capabilities import CapabilityPolicy
 from src.stall_watch import Snapshot, detect
 from tests.playbook_v2_engine_helpers import (
@@ -261,8 +262,13 @@ async def test_live_timer_queues_each_tick_then_stops_when_resolved(handler, db,
     ).read_text())
     store = InMemoryArtifactStore()
     store.put(definition)
+    # A3 requires configured protected storage before a step binds diagnostic
+    # data. Exercise the real command with a disposable encryption key.
+    private = PrivateValueService(db._engine, active_key_id="test", keys={"test": b"x" * 32})
+    db.set_playbook_private_values(private)
     engine = PlaybookEngine(
-        services=EngineServices(contracts=CONTRACTS, artifact_store=store, clock=lambda: NOW),
+        services=EngineServices(contracts=CONTRACTS, artifact_store=store, clock=lambda: NOW,
+                                private_values=private),
         runs=RecordingRunRepository(),
     )
     set_handler_provider(lambda: handler)

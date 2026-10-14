@@ -33,6 +33,7 @@ async def test_dispatch_reenters_the_engine():
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"type": "task.completed", "task_id": "t1"},
     }
     handler, engine = _handler(row)
@@ -51,12 +52,15 @@ async def test_dispatch_reenters_the_engine():
     assert engine.dispatch_event.await_args.kwargs["playbook_ids"] == ["default-pipeline"]
     assert engine.dispatch_event.await_args.kwargs["dispatch_id"] == "f88718f435a3"
     assert engine.dispatch_event.await_args.args[1].describe() == "service:playbook-pending-event"
+    # The replay observes the row's arrival time, not the moment of replay.
+    assert engine.dispatch_event.await_args.args[0]["_received_at"] == 1000.0
 
 
 async def test_dispatch_failure_restores_the_event_for_retry():
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"type": "task.completed", "task_id": "t1"},
     }
     handler, engine = _handler(row)
@@ -79,6 +83,7 @@ async def test_dispatch_cancellation_restores_the_event_before_propagating():
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"type": "task.completed", "task_id": "t1"},
     }
     handler, engine = _handler(row)
@@ -101,6 +106,7 @@ async def test_cancellation_during_failure_recovery_stops_the_batch():
         {
             "pending_event_id": f"event-{index}",
             "playbook_id": "default-pipeline",
+            "received_at": 1000.0,
             "event": {"type": "task.completed", "task_id": f"t{index}"},
         }
         for index in (1, 2)
@@ -137,6 +143,7 @@ async def test_long_dispatch_renews_its_claim(monkeypatch):
     row = {
         "pending_event_id": "event-1",
         "playbook_id": "default-pipeline",
+        "received_at": 1000.0,
         "event": {"type": "task.completed", "task_id": "t1"},
     }
     handler, engine = _handler(row)

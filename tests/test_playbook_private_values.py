@@ -2,13 +2,14 @@
 
 import base64
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import pytest
 from sqlalchemy import func, select, update
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL
 from src.config import PlaybooksConfig
+from src.models import Task, TaskStatus, TaskType, VerificationType, WorkspaceMode
 from src.database.tables import (
     playbook_pending_events,
     playbook_private_values,
@@ -16,6 +17,8 @@ from src.database.tables import (
     playbook_waits,
 )
 from src.playbooks.executors.command import LiveCommandExecutor, PreviewCommandExecutor
+from src.playbooks.engine import PlaybookEngine
+from src.playbooks.executors.base import EngineServices
 from src.playbooks.graph_projection import project_value
 from src.playbooks.invocation import _invocation_context
 from src.playbooks.private_values import (
@@ -72,6 +75,38 @@ async def test_ciphertext_round_trip_rotation_and_no_plaintext(db, service):
     missing = PrivateValueService(db._engine, active_key_id="two", keys={"two": b"2" * 32})
     with pytest.raises(PrivateValueError, match="key_unavailable"):
         await missing.read(ref, owner=OWNER, principal=TRUSTED_LOCAL)
+
+
+@pytest.mark.parametrize("already_hydrated", [False, True])
+async def test_task_event_enum_fields_survive_protected_storage(db, service, already_hydrated):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+
+    task = Task(
+        id="task-1", project_id="p", title=SECRET, description=SECRET,
+        status=TaskStatus.FAILED, task_type=TaskType.BUGFIX,
+        verification_type=VerificationType.AUTO_TEST, workspace_mode=WorkspaceMode.EXCLUSIVE,
+    )
+    registry, _ = registry_with(GATE_CREATE)
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=registry, db=SimpleNamespace(get_task=AsyncMock(return_value=task)),
+            private_values=service, clock=lambda: 1000.0,
+        ), runs=db,
+    )
+    event = {"task_id": task.id}
+    if already_hydrated:
+        event["task"] = asdict(task)
+    hydrated = await engine._hydrate_event(event)
+    for name in ("status", "task_type", "verification_type", "workspace_mode"):
+        assert hydrated["task"][name] == getattr(task, name).value
+    snapshot = make_snapshot(event=hydrated, sensitive={"body": SECRET})
+    await db.create_run(snapshot)
+    stored = await db.load_run(snapshot.run_id)
+    assert SECRET not in json.dumps(stored.to_body())
+    restored = await db.resolve_private_snapshot(stored, TRUSTED_LOCAL)
+    assert restored.event == hydrated
+    assert restored.event["task"]["title"] == SECRET
 
 
 @pytest.mark.parametrize(
@@ -394,3 +429,23 @@ async def test_namespace_read_requires_server_membership_and_current_scope(db, s
         assert await authorized.read(ref, owner=owner, principal=caller) == SECRET
         with pytest.raises(PrivateValueError, match="unauthorized"):
             await authorized.read(ref, owner=owner, principal=replace(caller, project_id="other"))
+
+
+async def test_private_pinned_collection_stays_encrypted_after_source_binding_is_reused(db, service):
+    snapshot = make_snapshot(loop_stack=(
+        LoopFrame("outer", "row", "digest", 0, 1, collection=[[SECRET]], private=True),
+        LoopFrame("inner", "cell", "digest", 0, 1, collection=[SECRET], private=True),
+    ), iteration_paths=True, iteration_entries=2)
+    await db.create_run(snapshot)
+    loaded = await db.load_run(snapshot.run_id)
+    assert all(is_reference(frame.collection) for frame in loaded.loop_stack)
+    assert SECRET not in json.dumps(loaded.to_body())
+    assert await db.resolve_private_snapshot(loaded, TRUSTED_LOCAL) == snapshot
+    wait = WaitSpec("private-loop-wait", snapshot.run_id, "body", kind="event",
+                    event_type="reply", match={"body": SECRET}, created_at=100,
+                    iteration_path=snapshot.iteration_path)
+    await db.register(wait, snapshot.version + 1)
+    await db.claim_for_event(Event("reply", "nested-arrival", {"body": SECRET}), now=101)
+    async with db._engine.connect() as conn:
+        assert SECRET not in str((await conn.execute(select(playbook_waits))).all())
+        assert SECRET not in str((await conn.execute(select(playbook_pending_events))).all())

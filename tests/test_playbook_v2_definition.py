@@ -55,8 +55,8 @@ def test_daily_cron_trigger_accepts_only_valid_local_times():
 
 #: §4.7 — pinned so a Pydantic upgrade that reorders dumps fails loudly rather
 #: than silently invalidating every stored artifact hash.
-# Refreshed with the intentional ensure_task contract change in the golden.
-GOLDEN_DIGEST = "sha256:7563817097f26dc9246d6507c25f148b63876c5f387f264944e060ff057fa131"
+# Refreshed with the intentional list_tasks observation contract change in the golden.
+GOLDEN_DIGEST = "sha256:c0e872de4f4f399efe2662343f439b7354d691bd7e817574e230e5ed14146826"
 
 
 @pytest.fixture

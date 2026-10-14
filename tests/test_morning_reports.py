@@ -29,6 +29,7 @@ from src.reports.hourly import MAX_BRIEF_BYTES
 from src.reports.morning import collect_morning_evidence, preview_until, report_window
 from src.reports.morning_due import EVENT_TYPE as MORNING_DUE
 from src.reports.morning_due import MorningDueEmitter, morning_due_event_id
+from tests._private_values_helper import private_value_service
 from tests.db_fixtures import lease_dsn
 
 FIXTURES = Path(__file__).parent / "fixtures/reports/morning"
@@ -1871,6 +1872,7 @@ async def morning_playbook(command_handler_factory, monkeypatch):
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=handler.db,
+            private_values=private_value_service(handler.db),
         ),
         runs=runs,
         waits=runs,

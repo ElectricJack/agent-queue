@@ -24,6 +24,7 @@ from src.playbooks.definition import PlaybookDefinition
 from src.playbooks.engine import ChildTaskReconciler, PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
+from tests._private_values_helper import private_value_service
 from tests.db_fixtures import lease_dsn
 from tests.fixtures.contracts.engine_contracts import registry_with
 from tests.pg_dsn import ensure_worker_postgres_dsn
@@ -113,6 +114,7 @@ async def engine_over(database: Database, artifact: PlaybookDefinition):
             clock=lambda: NOW,
             artifact_store=Store(),
             db=ProfiledDatabase(database),
+            private_values=private_value_service(database),
         ),
         runs=database,
         waits=database,
@@ -168,7 +170,10 @@ async def test_a_real_task_transition_resumes_the_run(db, status, edge, lifecycl
     await db.transition_task(CHILD, status, context="test", force=True)
 
     assert await reconciler.tick() == (run_id,)
-    stored = await db.load_run(run_id)
+    # The bound child result is a private binding: it is stored encrypted.
+    stored = await db.resolve_private_snapshot(
+        await db.load_run(run_id), ExecutionPrincipal.service("test")
+    )
     assert stored.lifecycle is lifecycle
     assert stored.wait is None
     assert await db.list_active(run_id) == []
@@ -223,6 +228,7 @@ async def engine_over_existing(database: Database):
             clock=lambda: NOW,
             artifact_store=Store(),
             db=ProfiledDatabase(database),
+            private_values=private_value_service(database),
         ),
         runs=database,
         waits=database,
@@ -288,7 +294,9 @@ async def test_a_task_wait_step_resumes_on_the_task_it_names(db):
     await db.transition_task(CHILD, TaskStatus.COMPLETED, context="test", force=True)
 
     assert await reconciler.tick() == (outcome.run_id,)
-    stored = await db.load_run(outcome.run_id)
+    stored = await db.resolve_private_snapshot(
+        await db.load_run(outcome.run_id), ExecutionPrincipal.service("test")
+    )
     assert stored.lifecycle is RunLifecycle.COMPLETED
     assert stored.bindings["review"]["status"] == "completed"
 

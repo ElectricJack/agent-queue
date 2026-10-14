@@ -114,8 +114,8 @@
         }
       },
       "transitions": {
-        "done": "inner",
-        "skipped": "inner"
+        "done": "level5",
+        "skipped": "level5"
       },
       "source": {
         "path": "system/playbooks/twin.md",
@@ -134,10 +134,76 @@
       },
       "item_binding": "leaf",
       "failure_policy": "halt",
-      "body_entry": "body",
+      "body_entry": "level3",
       "transitions": {
         "completed": "loop",
         "failed": "loop"
+      },
+      "source": {
+        "path": "system/playbooks/twin.md",
+        "start_line": 9,
+        "end_line": 9
+      }
+    },
+    "level3": {
+      "type": "foreach",
+      "rule": "r1",
+      "title": "Inner",
+      "collection": {
+        "type": "binding_ref",
+        "binding": "bound",
+        "path": "tasks"
+      },
+      "item_binding": "item3",
+      "failure_policy": "halt",
+      "body_entry": "level4",
+      "transitions": {
+        "completed": "inner",
+        "failed": "inner"
+      },
+      "source": {
+        "path": "system/playbooks/twin.md",
+        "start_line": 9,
+        "end_line": 9
+      }
+    },
+    "level4": {
+      "type": "foreach",
+      "rule": "r1",
+      "title": "Inner",
+      "collection": {
+        "type": "binding_ref",
+        "binding": "bound",
+        "path": "tasks"
+      },
+      "item_binding": "item4",
+      "failure_policy": "halt",
+      "body_entry": "level5",
+      "transitions": {
+        "completed": "level3",
+        "failed": "level3"
+      },
+      "source": {
+        "path": "system/playbooks/twin.md",
+        "start_line": 9,
+        "end_line": 9
+      }
+    },
+    "level5": {
+      "type": "foreach",
+      "rule": "r1",
+      "title": "Inner",
+      "collection": {
+        "type": "binding_ref",
+        "binding": "bound",
+        "path": "tasks"
+      },
+      "item_binding": "item5",
+      "failure_policy": "halt",
+      "body_entry": "body",
+      "transitions": {
+        "completed": "level4",
+        "failed": "level4"
       },
       "source": {
         "path": "system/playbooks/twin.md",

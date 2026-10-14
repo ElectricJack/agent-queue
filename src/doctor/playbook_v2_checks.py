@@ -401,7 +401,7 @@ async def _check_activation_stale(ctx: DoctorContext) -> CheckResult:
 
 
 async def _check_activation_invalid(ctx: DoctorContext) -> CheckResult:
-    """Name enabled activations with verified artifacts the loader cannot parse."""
+    """Name enabled artifacts with invalid definitions or unsupported features."""
     playbooks = getattr(ctx.config, "playbooks", None)
     if playbooks is None or not getattr(playbooks, "enabled", False):
         return CheckResult(
@@ -438,7 +438,11 @@ async def _check_activation_invalid(ctx: DoctorContext) -> CheckResult:
     return CheckResult(
         id=INVALID_CHECK_ID,
         severity=Severity.WARN,
-        detail=f"{len(invalid)} enabled activation(s) have invalid definitions; recompile and reactivate them",
+        detail=(
+            f"{len(invalid)} enabled activation(s) have invalid definitions or unsupported "
+            "features; upgrade all intended executors for the named features, or explicitly "
+            "restore compatible reviewed artifacts; recompile malformed definitions"
+        ),
         data={"checked": len(records), "count": len(invalid), "invalid": invalid},
     )
 

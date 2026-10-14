@@ -42,7 +42,7 @@ class PrivateOwner:
     scope_owner: str = "system"
 
     def __post_init__(self) -> None:
-        if self.kind not in {"run", "namespace"} or not self.identifier:
+        if self.kind not in {"run", "namespace", "snapshot"} or not self.identifier:
             raise PrivateValueError("private_owner_invalid")
         if self.scope_kind not in {"system", "project", "profile"} or not self.scope_owner:
             raise PrivateValueError("private_owner_invalid")
@@ -232,6 +232,11 @@ class PrivateValueService:
         from src.commands.principal import PrincipalKind
         from src.playbooks.invocation import current_invocation
 
+        if owner.kind == "snapshot":
+            from src.observations.snapshots import authorize_private_snapshot
+
+            await authorize_private_snapshot(self.engine, owner, principal)
+            return
         kind = getattr(principal, "kind", None)
         if kind in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}:
             return
@@ -246,6 +251,11 @@ class PrivateValueService:
             raise PrivateValueError("private_value_unauthorized")
         if owner.kind == "run" and invocation is not None and invocation.run_id == owner.identifier:
             return
+        if owner.kind == "namespace":
+            from src.playbooks.state import authorized_private_namespace
+
+            if authorized_private_namespace(owner, principal, invocation):
+                return
         if owner.kind == "namespace" and self._namespace_authorizer is not None:
             if await self._namespace_authorizer(owner, principal, invocation):
                 return

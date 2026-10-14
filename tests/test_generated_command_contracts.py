@@ -29,7 +29,7 @@ from src.playbooks.definition import CommandStep
 from src.playbooks.executors.command import _consume
 from src.playbooks.expressions import LiteralValue
 from src.playbooks.run_state import DEFAULT_MAX_RESULT_BYTES
-from src.profiles.capabilities import DENY_ALL
+from src.profiles.capabilities import DENY_ALL, CapabilityPolicy
 
 ROOT = Path(__file__).resolve().parents[1]
 AUDIT = ROOT / "tests/fixtures/contracts/generated-command-audit.json"
@@ -143,15 +143,23 @@ async def test_exact_denials_apply_even_to_direct_generated_invocation(name):
     assert (await registration.invoke(args, principal(None)))["error_code"] == "playbook_command_denied"
 
 
-async def test_project_filter_cannot_authorize_a_foreign_task(monkeypatch):
+@pytest.mark.parametrize("generated", [False, True])
+async def test_project_filter_cannot_authorize_a_foreign_task(monkeypatch, generated):
     from src.api.target_scope import TARGET_RESOLVERS
 
     lookup = AsyncMock(return_value=(True, "other"))
     monkeypatch.setitem(TARGET_RESOLVERS, "task_id", lookup)
     result = await authorize_resources("get_task_result", {"project_id": "p", "task_id": "t"},
-                                       principal(), db=object(), generated=True)
+                                       principal(), db=object(), generated=generated)
     assert result["error_code"] == "resource_scope_denied"
     lookup.assert_awaited_once()
+
+
+@pytest.mark.parametrize("generated", [False, True])
+async def test_session_domain_gates_do_not_admit_other_system_resources(generated):
+    caller = replace(principal(), kind=PrincipalKind.SESSION, session_id="worker")
+    result = await authorize_resources("get_config", {}, caller, db=object(), generated=generated)
+    assert result["error_code"] == "resource_scope_denied"
 
 
 async def test_scoped_reads_inherit_project_and_global_reads_require_system():
@@ -190,6 +198,29 @@ async def test_nested_dispatch_keeps_original_principal_and_scope():
     assert observed[0][1]["project_id"] == "p"
     assert observed[0][1]["kind"] == "playbook"
     assert current_principal() is None
+
+
+@pytest.mark.parametrize("kind", [PrincipalKind.SESSION, PrincipalKind.PLAYBOOK])
+async def test_untrusted_dispatch_exceptions_keep_details_in_server_logs(kind, caplog):
+    handler = CommandHandler(SimpleNamespace(db=None, bus=SimpleNamespace(emit=AsyncMock()),
+                                             plugin_registry=None), AppConfig())
+    caller = replace(principal(), kind=kind, policy=CapabilityPolicy.from_namespaces(
+        aq_commands=["get_schema"],
+    ))
+    handler._cmd_get_schema = AsyncMock(side_effect=RuntimeError("private-exception-sentinel"))
+    with principal_context(caller):
+        result = await handler.execute("get_schema", {})
+    assert result == {
+        "success": False, "error_code": "command_runtime_error", "error": "Command execution failed",
+    }
+    if kind is PrincipalKind.PLAYBOOK:
+        # Playbook calls may carry decrypted private values, so their server log
+        # keeps only the exception type (see private_call in the handler).
+        assert "err=RuntimeError" in caplog.text
+        assert "private-exception-sentinel" not in caplog.text
+    else:
+        assert "private-exception-sentinel" in caplog.text
+    assert "private-exception-sentinel" not in repr(result)
 
 
 async def test_project_paths_are_confined_to_owned_roots(tmp_path):

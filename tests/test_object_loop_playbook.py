@@ -31,6 +31,7 @@ from src.playbooks.required import DEFAULT_SYSTEM_PLAYBOOK_IDS, REQUIRED_SYSTEM_
 from src.profiles.capabilities import CapabilityPolicy
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
 from src.vault import ensure_default_formulas
+from tests._private_values_helper import private_value_service
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -127,7 +128,10 @@ async def sweep(handler, *, rule="recover"):
 
         live.register(replace(registration, invoke=invoke))
     engine = PlaybookEngine(
-        services=EngineServices(contracts=live, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=live, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=RecordingRunRepository(),
     )
     event_type = next(r.trigger.event_type for r in definition.rules if r.id == rule)
@@ -150,7 +154,10 @@ async def sweep(handler, *, rule="recover"):
         })
         previews.register(replace(registration, contract=contract, preview=preview))
     dry_engine = PlaybookEngine(
-        services=EngineServices(contracts=previews, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=previews, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=RecordingRunRepository(),
     )
     tree = await dry_engine.dry_run(ref, event, TRUSTED_LOCAL)
@@ -652,21 +659,45 @@ async def test_revised_brief_start_failure_is_visible_and_notified_once(setup):
     ref = artifact_ref_for(definition)
     store = InMemoryArtifactStore()
     store.put(definition)
-    repository = RecordingRunRepository()
+    await handler.db.upsert_playbook_artifact(
+        ref, scope="project", scope_identifier=PROJECT,
+        path=str(BUNDLE / "artifact.json"), size_bytes=(BUNDLE / "artifact.json").stat().st_size,
+    )
+    repository = handler.db
     engine = PlaybookEngine(
-        services=EngineServices(contracts=CONTRACTS, artifact_store=store, clock=time.time),
+        services=EngineServices(
+            contracts=CONTRACTS, artifact_store=store, clock=time.time,
+            private_values=private_value_service(handler.db),
+        ),
         runs=repository,
     )
+    failures = []
     for _ in range(2):
         result = await engine.run_rule(ref, "recover", {
             "event_type": "timer.5m", "project_id": PROJECT, "event_id": uuid.uuid4().hex,
         }, TRUSTED_LOCAL)
         assert result.outcome == "failed"
-        assert "pins revision 1" in result.snapshot.error
-        assert "current revision is 2 (approved)" in result.snapshot.error
-    failures = [r for r in repository.receipts if r.step_id.endswith("--start") and r.outcome == "failure"]
-    assert failures and all("pins revision 1" in r.error for r in failures)
-    assert all(r.result["error_code"] == "object_loop.start_refused" for r in failures)
+        assert result.snapshot.lifecycle.value == "failed"
+        assert result.snapshot.error in (None, "private_run_error")
+        stored = await repository.load_run(result.run_id)
+        restored = await repository.resolve_private_snapshot(stored, TRUSTED_LOCAL)
+        refusal = restored.bindings["started"]
+        assert refusal["error_code"] == "object_loop.start_refused"
+        assert "pins revision 1" in refusal["error"]
+        assert "current revision is 2 (approved)" in refusal["error"]
+        receipts = await repository.list_receipts(result.run_id)
+        failures.extend(r for r in receipts if r.step_id.endswith("--start")
+                        and r.outcome == "failure")
+        public = json.dumps({
+            "snapshot": result.snapshot.redacted().to_body(), "stored": stored.to_body(),
+            "receipts": [{"inputs": r.inputs, "result": r.result, "error": r.error}
+                         for r in receipts],
+        })
+        for protected in ("pins revision 1", "current revision is 2 (approved)", H, B):
+            assert protected not in public
+    assert len(failures) == 2
+    assert all(set(r.result) == {"__redacted__"} and r.result["__redacted__"] > 0
+               for r in failures)
     async with handler.db._engine.connect() as conn:
         notices = (await conn.execute(select(messages).where(
             messages.c.from_id == "object-loop",

@@ -27,6 +27,7 @@ class PlaybookInvocation:
     rule_id: str
     step_id: str
     attempt: int
+    iteration_path: str = ""
     #: The AQ commands the invoking artifact grants
     #: (:func:`~src.playbooks.definition.granted_aq_commands`), so a command
     #: restricted to one kind of playbook can check the artifact without
@@ -58,6 +59,7 @@ def _invocation_context(ctx: StepContext) -> Iterator[PlaybookInvocation]:
         rule_id=ctx.rule_id,
         step_id=ctx.step_id,
         attempt=ctx.attempt,
+        iteration_path=ctx.iteration_path,
         aq_commands=granted_aq_commands(getattr(ctx, "artifact", None)),
         private_values=ctx.services.private_values,
     )

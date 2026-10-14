@@ -302,10 +302,12 @@
         "tests/test_doctor.py",
         "tests/test_doctor_cli_timeout.py",
         "tests/test_doctor_discord_config.py",
+        "tests/test_doctor_observations.py",
         "tests/test_doctor_perf_checks.py",
         "tests/test_doctor_skill_checks.py",
         "tests/test_doctor_stall_checks.py",
-        "tests/test_health_platform.py"
+        "tests/test_health_platform.py",
+        "tests/test_observation_snapshots.py"
       ]
     },
     "document-reviews": {
@@ -928,6 +930,7 @@
         "tests/test_playbook_artifact_store.py",
         "tests/test_playbook_collections.py",
         "tests/test_playbook_explanation.py",
+        "tests/test_playbook_features.py",
         "tests/test_playbook_graph_projection.py",
         "tests/test_playbook_v2_definition.py",
         "tests/test_playbook_v2_expressions.py",
@@ -945,6 +948,7 @@
         "tests/test_llm_executor.py",
         "tests/test_manual_playbook_runs.py",
         "tests/test_pkg5_scenarios.py",
+        "tests/test_playbook_nested_loops.py",
         "tests/test_playbook_pending_events_commands.py",
         "tests/test_playbook_pending_events_policy.py",
         "tests/test_playbook_private_values.py",
@@ -953,6 +957,8 @@
         "tests/test_playbook_run_repository.py",
         "tests/test_playbook_script_sandbox.py",
         "tests/test_playbook_services.py",
+        "tests/test_playbook_state.py",
+        "tests/test_playbook_state_notify.py",
         "tests/test_playbook_wait_repository.py",
         "tests/test_v2_dry_run.py",
         "tests/test_v2_engine.py",
@@ -5896,6 +5902,32 @@
         "parametrize"
       ],
       "summary": "Subject schedule/hold diagnostics and the retained App trust check."
+    },
+    "tests/test_doctor_observations.py": {
+      "areas": [
+        "doctor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:38e0f2584cf9a1d626b94157b301e40889b92c52209d3c91447fc7faca624955",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands.command_inventory",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.doctor.models",
+        "src.doctor.observations",
+        "src.doctor.pool_checks",
+        "src.doctor.runner",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Scope-first observation, producer completeness and stable identities."
     },
     "tests/test_doctor_perf_checks.py": {
       "areas": [
@@ -11258,15 +11290,16 @@
         "migrations"
       ],
       "default_arm": false,
-      "digest": "sha256:c8be8c21daf9daee49fca1c488c569dfde5fcfa0c46c560f04ea9d9223a66b13",
+      "digest": "sha256:2c97101e27a4724fcd3a15d807eea3f5850a4c85f347bf7ba766c8df0bfb7b68",
       "imports": [
         "src.database",
-        "src.database.tables"
+        "src.database.tables",
+        "src.models"
       ],
       "markers": [
         "migration"
       ],
-      "summary": "A3's additive encrypted-value migration on disposable PostgreSQL."
+      "summary": "Additive encrypted-value and iteration-path migrations on disposable PostgreSQL."
     },
     "tests/test_migration_playbook_v2.py": {
       "areas": [
@@ -11774,6 +11807,39 @@
       ],
       "summary": "AQ-3: real command traces, replayed through V2's write-free dry runner."
     },
+    "tests/test_observation_snapshots.py": {
+      "areas": [
+        "doctor"
+      ],
+      "default_arm": true,
+      "digest": "sha256:9945c14131dcebf07198e0c6c207c6dc25faee66e96db8a65e3ad50141b120d9",
+      "imports": [
+        "src.api.models.project",
+        "src.api.models.system",
+        "src.api.models.task",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.observation_snapshot_queries",
+        "src.database.queries.stall_watch_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.observations",
+        "src.doctor.runner",
+        "src.models",
+        "src.observations.snapshots",
+        "src.playbooks.private_values",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Immutable pages, current authorization and atomic quotas on real PostgreSQL."
+    },
     "tests/test_onboarding_queries.py": {
       "areas": [
         "database",
@@ -12204,6 +12270,33 @@
       ],
       "summary": "Intent is a pure projection of the contract that a node would invoke."
     },
+    "tests/test_playbook_features.py": {
+      "areas": [
+        "playbook-definition"
+      ],
+      "default_arm": true,
+      "digest": "sha256:0a7ca10e2e09a86a7e5392ab9805dc87f608fea629444e0f26996b5dffdaadc4",
+      "imports": [
+        "src.commands.principal",
+        "src.doctor.playbook_v2_checks",
+        "src.playbooks",
+        "src.playbooks.activation",
+        "src.playbooks.artifact_diff",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.features",
+        "src.playbooks.proposal",
+        "src.playbooks.run_state",
+        "src.playbooks.semantic_diff",
+        "src.playbooks.validation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Feature pins preserve legacy bytes and refuse unsupported effects independently."
+    },
     "tests/test_playbook_graph_projection.py": {
       "areas": [
         "playbook-definition"
@@ -12223,6 +12316,30 @@
       "markers": [],
       "summary": ""
     },
+    "tests/test_playbook_nested_loops.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f9e56c397272144d3468c5def69b2c7742b8db6df57228af10ac0acadcbd9b21",
+      "imports": [
+        "src.commands.contracts.models",
+        "src.commands.principal",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.executors.foreach",
+        "src.playbooks.executors.llm",
+        "src.playbooks.expressions",
+        "src.playbooks.invocation",
+        "src.playbooks.receipts",
+        "src.playbooks.run_state"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Durable nested traversal, identities, bounded state and observation context."
+    },
     "tests/test_playbook_pending_events_commands.py": {
       "areas": [
         "playbook-engine"
@@ -12241,7 +12358,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:72682a82b88c2ccc44bd25d31dbbc304005998df6c50bc55ced40ce3b14c6dbc",
+      "digest": "sha256:724d28214f83a995c4e457f56949c9aef298b4bb48bd7d6f7faa96ca92ece52f",
       "imports": [
         "src.commands.playbook_v2_commands",
         "src.commands.principal",
@@ -12256,6 +12373,7 @@
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.playbooks.run_state",
+        "src.playbooks.runtime",
         "src.playbooks.services"
       ],
       "markers": [
@@ -12268,7 +12386,7 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:d4a4254c9bb37bc5d89de904631ea36a50a0ea1e671a4e5981f9de70fc62d326",
+      "digest": "sha256:b8e10dddb696754b22618098edd0a3ad3378b5a2085af129d7f3206fb2b95ebe",
       "imports": [
         "src.commands.contracts.generated",
         "src.commands.contracts.registry",
@@ -12276,6 +12394,7 @@
         "src.commands.principal",
         "src.config",
         "src.database.tables",
+        "src.models",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
         "src.playbooks.executors.command",
@@ -12378,6 +12497,65 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_playbook_state.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d0e582a5178922699c667484f8d7c3590b756bb4401908e1fba17b07d766bdc7",
+      "imports": [
+        "src.commands.handler",
+        "src.commands.playbook_state_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.playbook_state_queries",
+        "src.database.tables",
+        "src.observations.snapshots",
+        "src.playbooks.artifact_store",
+        "src.playbooks.definition",
+        "src.playbooks.invocation",
+        "src.playbooks.private_values",
+        "src.playbooks.state",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "D1 state boundaries and transaction races against disposable PostgreSQL."
+    },
+    "tests/test_playbook_state_notify.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c15275941d5c1ce3556e3a8e341fe076443ca16060ca6dddd1cc115f527d6445",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.playbook_state_queries",
+        "src.database.tables",
+        "src.messages.service",
+        "src.models",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.executors.command",
+        "src.playbooks.expressions",
+        "src.playbooks.private_values",
+        "src.playbooks.state",
+        "src.playbooks.state_notify",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "D2 authority, atomicity, observation ordering and database-free preview proofs."
     },
     "tests/test_playbook_v2_api_dtos.py": {
       "areas": [
@@ -15982,7 +16160,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:22ce75c1d88d6b3db131e288f8044d889df830f9c9e5c6a918ded30e15cd8a1c",
+      "digest": "sha256:10591d68eb7fc216dd194a067f200b514b80f7ed029cbc318456a07fc620ab60",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
@@ -15996,6 +16174,7 @@
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
+        "src.playbooks.private_values",
         "src.profiles.capabilities",
         "src.stall_watch"
       ],

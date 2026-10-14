@@ -21,7 +21,7 @@ reload_config migrate_profiles profile_audit profile_drift profile_reseed check_
 list_available_tools list_mcp_tool_catalog list_prompts read_prompt plugin_config
 plugin_disable plugin_enable plugin_info plugin_install plugin_list plugin_prompts
 plugin_reload plugin_remove plugin_reset_prompts plugin_update policy_apply policy_diff
-policy_export doctor db_preflight_hierarchy digest_facts digest_post digest_preview
+policy_export doctor doctor_run observation_snapshot_cleanup db_preflight_hierarchy digest_facts digest_post digest_preview
 digest_status discord_purge_channel read_logs scan_stub_staleness vault_rebuild_index
 list_projects list_active_tasks_all_projects orchestrator_control pool_status pool_scale pool_rename
 pool_set_enabled pool_set_lifecycle provider_allocation_apply provider_history
@@ -42,7 +42,7 @@ run_command shutdown restart_daemon update_and_restart
 # Handlers with no resource data (schemas/catalogues only).
 PUBLIC_COMMANDS = frozenset("""
 get_schema playbook_commands find_applicable_tool load_tools
-formula_list formula_show list_workspace_kinds
+formula_list formula_show list_workspace_kinds doctor_catalog
 """.split())
 
 # Session-lifecycle commands require an actual session. Held-work commands also
@@ -95,10 +95,25 @@ review_withdraw create_task_graph formula_cook task_batch_propose task_batch_upd
 dashboard_state_get dashboard_state_list dashboard_state_put dashboard_state_reset
 """.split())
 
+# Session callers retain the independently verified domain gates. These
+# commands use live claims, tagged recipients, project selections or operator
+# grants that cannot be replaced by a generic argument-to-row ownership test.
+SESSION_HANDLER_RESOURCE_GATES = frozenset("""
+task_show task_route task_handoff create_task provider_allocation_apply
+provider_allocation_preview object_loop_inputs test_selection_show test_selection_list
+supervisor_inbox_status supervisor_inbox_history escalation_create escalation_get
+escalation_list escalation_reply escalation_update escalation_apply_reply
+job_get job_cancel job_result job_logs message_send message_reply message_status
+run_playbook dry_run_playbook playbook_activate
+digest_facts digest_preview digest_status bind_project_repository
+edit_intelligence_class delete_intelligence_class list_profiles list_intelligence_classes
+test_selection_policy_show
+""".split()) | PUBLIC_COMMANDS | SESSION_COMMANDS | HELD_COMMANDS
+
 # Explicit read audit, not a command-name heuristic. Unannotated effects remain
 # destructive and non-retryable; a read observation may still report unhealthy.
 AUDITED_READS = frozenset("""
-archive_settings check_profile claude_usage db_preflight_hierarchy digest_facts digest_preview
+archive_settings check_profile claude_usage db_preflight_hierarchy doctor_catalog doctor_run digest_facts digest_preview
  digest_status explain_task find_applicable_tool find_merge_conflict_workspaces formula_list
  formula_show gate_list gate_show get_agent get_agent_error get_benchmark_report get_chain_health
 get_chat_analyzer_metrics get_config get_config_schema get_costs get_git_identity
@@ -120,7 +135,18 @@ session_list session_logs session_peek session_show show_effective_profile show_
 """.split())
 
 
+STATE_COMMANDS = frozenset({
+    "playbook_state_get", "playbook_state_list", "playbook_state_set",
+    "playbook_state_delete", "playbook_state_inspect", "playbook_state_reset",
+    "playbook_state_notify",
+})
+STATE_PREVIEW_COMMANDS = STATE_COMMANDS - {"playbook_state_inspect", "playbook_state_reset"}
+AUDITED_READS |= {"playbook_state_get", "playbook_state_list", "playbook_state_inspect"}
+
+
 def resource_requirements(name: str) -> tuple[str, ...]:
+    if name in STATE_COMMANDS:
+        return ("invocation_namespace_or_operator",)
     if name in SESSION_COMMANDS:
         return ("live_session",)
     if name in HELD_COMMANDS:
@@ -176,6 +202,26 @@ async def authorize_resources(
         return deny("playbook_command_denied")
     if not principal.enforced:
         return None
+    if principal.kind is PrincipalKind.SESSION and command in SESSION_HANDLER_RESOURCE_GATES:
+        return None
+    if principal.kind is PrincipalKind.SESSION:
+        from src.commands.operator_authority import operator_grant
+
+        if operator_grant(command) is not None:
+            return None
+        from src.api.auth import RequestScope
+        from src.api.scope import (
+            _PLAYBOOK_COMPILER_COMMANDS, _has_live_playbook_compiler_assignment,
+        )
+
+        if command in _PLAYBOOK_COMPILER_COMMANDS:
+            scope = RequestScope(
+                kind="session", session_id=principal.session_id, task_id=principal.task_id,
+                project_id=principal.project_id, elevated=principal.elevated,
+                session_instance_token=principal.session_instance_token,
+            )
+            if await _has_live_playbook_compiler_assignment(db, scope):
+                return None
     if principal.kind is PrincipalKind.PLAYBOOK and command in {
         "review_decide", "review_delegate", "review_import_edits", "approve_pull_request",
         "promote_approve", "operator_execute", "operator_preflight",
@@ -183,6 +229,22 @@ async def authorize_resources(
         return deny("unauthorized")
     if command in SESSION_COMMANDS | HELD_COMMANDS and principal.kind is PrincipalKind.PLAYBOOK:
         return deny("session_required")
+    # Typed adapters already implement their domain's ownership language and
+    # outcome protocol. In particular, stale repair inputs, tagged message
+    # recipients and operator preflights must reach those independent gates.
+    if not generated:
+        from src.commands.contracts import CONTRACTS
+
+        if command in CONTRACTS.typed_contracts():
+            return None
+    if command == "message_send" and principal.kind is PrincipalKind.PLAYBOOK:
+        # Shared submission validation resolves recipient ownership and derives
+        # sender provenance. Authored sender fields cannot become resource authority.
+        return None
+    if command in STATE_COMMANDS:
+        # This handler derives namespace membership from a pinned invocation;
+        # no injected project argument or recursive interpretation of private values.
+        return None
     project = principal.project_id
     if project is not None and args.get("project_id") not in (None, project):
         return deny()

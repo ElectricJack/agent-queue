@@ -51,6 +51,9 @@ AUTHORITATIVE_FIELDS: Final[frozenset[str]] = frozenset(
         "compiled_at",
         "compiler_build",
         "compiled_against",
+        "required_features",
+        "trusted_execution",
+        "state_schema_version",
         "enabled",
         "triggers",
         "cooldown_seconds",
@@ -374,10 +377,29 @@ def propose(
             steps=semantic.steps,
             integration_policy=policy,
         )
+        from src.playbooks.features import execution_metadata_from_source, infer_required_features
+
+        artifact = artifact.model_copy(update={
+            "trusted_execution": execution_metadata_from_source(source.frontmatter, artifact),
+        })
+        artifact = artifact.model_copy(update={
+            "required_features": infer_required_features(artifact, contracts=contracts),
+        })
     except (KeyError, ValueError, ValidationError) as exc:
         diagnostics.append(Diagnostic("error", "ambiguous_prose", str(exc)))
         digest = source_digest(source.raw)
         return CompileProposal(None, diagnostics, [], digest, None, COMPILER_BUILD, None, None)
+    metadata = artifact.trusted_execution
+    old_metadata = baseline.trusted_execution if baseline is not None else None
+    if metadata is not None and metadata.state_schema_version is not None:
+        old_version = old_metadata.state_schema_version if old_metadata is not None else 1
+        if metadata.state_schema_version != old_version:
+            diagnostics.append(Diagnostic(
+                "warning", "state_namespace_migration",
+                "Changing state_schema_version selects a new namespace and resets suppression. "
+                "An operator must review the migration and explicitly provision that namespace; "
+                "activation never deletes or migrates the previous namespace.",
+            ))
     artifact = _snapshots(artifact, contracts, profiles)
     diagnostics.extend(
         validate_definition(

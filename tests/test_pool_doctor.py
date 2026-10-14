@@ -138,7 +138,7 @@ async def test_doctor_default_branch_discovery_uses_recorded_repository(
     )
 
 
-async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db):
+async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db, monkeypatch):
     """Claimed workers and a pane that is still changing are not findings."""
     from src.sessions.harness_parser import Harness
     from src.sessions.harness_registry import HarnessRegistry
@@ -210,6 +210,12 @@ async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db)
         )
     )
 
+    # Exercise rounding without depending on how long database setup takes.
+    find_sessions = pool_checks._find_sessions_awaiting_input
+    monkeypatch.setattr(
+        pool_checks, "_find_sessions_awaiting_input",
+        lambda ctx: find_sessions(ctx, now=now + 1.6),
+    )
     finding = await pool_checks.run_check(
         db,
         "pools.session_awaiting_input",
@@ -228,16 +234,13 @@ async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db)
                 "profile_id": "worker",
                 "harness": "codex",
                 "signature": "model-upgrade-menu",
-                "unchanged_seconds": pytest.approx(600, abs=2),
+                "unchanged_seconds": 601.6,
                 "ready_tasks": 1,
             }
         ],
     }
-    # The detail renders the elapsed time the check measured, not a literal the
-    # test picked: under load the check reads its clock a second or more after
-    # the fixture was written, so pinning "600s" here failed on a busy box
-    # while the structured assertion above still held.
-    measured = int(finding.data["sessions"][0]["unchanged_seconds"])
+    # The detail rounds the structured elapsed time to the nearest second.
+    measured = f"{finding.data['sessions'][0]['unchanged_seconds']:.0f}"
     assert f"unchanged {measured}s, 1 READY" in finding.detail
     provider.peek.assert_awaited_once()
 

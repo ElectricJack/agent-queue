@@ -14,16 +14,42 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:c9a22e0fc26c61d2c33e0989fbf8f4f6beba7b429f225ca70a6e7762ed163d0a` |
+| Contract fingerprint | `sha256:50db7ab8cbe97b54fac0fbfdef01eacb9b90d367526469016e81899e51971c07` |
 
 ## Parameters
 
-This command takes no parameters.
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `pagination` | `"snapshot" \| null` | no | `null` | — |
+| `snapshot_id` | `string \| null` | no | `null` | — |
+| `page_token` | `string \| null` | no | `null` | — |
+| `page_size` | `integer \| null` | no | `null` | — |
 
 ## Result
 
 | Field | Type | Description |
 |---|---|---|
+| `success` | `boolean` | — |
+| `complete` | `boolean \| null` | — |
+| `execution_status` | `string \| null` | — |
+| `error` | `string \| null` | — |
+| `error_code` | `string \| null` | — |
+| `reasons` | `string[]` | — |
+| `snapshot_id` | `string \| null` | — |
+| `producer` | `string \| null` | — |
+| `producer_version` | `integer \| null` | — |
+| `observed_at` | `number \| null` | — |
+| `materialized_at` | `number \| null` | — |
+| `expires_at` | `number \| null` | — |
+| `interval_started_at` | `number \| null` | — |
+| `interval_finished_at` | `number \| null` | — |
+| `coverage` | `object[]` | — |
+| `identity_manifest` | `object[]` | — |
+| `page_tokens` | `object[]` | — |
+| `artifacts` | `object[]` | — |
+| `page_count` | `integer` | — |
+| `page_kind` | `string \| null` | — |
+| `page_index` | `integer \| null` | — |
 | `projects` | `object[]` | Projects |
 
 ## Outcomes
@@ -39,7 +65,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using no arguments | — | always |
+| Read using pagination, snapshot_id, page_token, page_size | — | always |
 
 <!-- aq:generated:end -->
 

@@ -133,6 +133,7 @@ def _as_playbook(playbook_id: str = ROUTER_ID, commands=("task_route_plan", "tas
     ctx = SimpleNamespace(
         run_id="run-1", dispatch_id="dispatch-1", artifact_ref=_ref(playbook_id),
         artifact=artifact, rule_id="route-task", step_id="apply_a", attempt=1,
+        iteration_path="", services=SimpleNamespace(private_values=None),
     )
     with _invocation_context(ctx) as invocation:
         yield invocation
@@ -1240,10 +1241,12 @@ async def test_a_worker_filing_may_name_a_preference(handler, orch):
     )
     from src.profiles.capabilities import CapabilityPolicy
 
+    await _create(orch.db, "held", status=TaskStatus.IN_PROGRESS)
+    await _session(orch.db, "worker-1", task_id="held")
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
         policy=CapabilityPolicy.from_namespaces(aq_commands=["create_task"]),
-        session_id="worker-1", project_id="p",
+        session_id="worker-1", project_id="p", task_id="held",
     )
     with principal_context(principal):
         result = await handler.execute("create_task", {

@@ -43226,7 +43226,7 @@
     "write_file": "458b181b602087d47fd3718be8a59a8882a394f914052d36a17984534b1f11ca",
     "write_note": "8e0325108bb47b0338c95ab5b5612640a85634b108a929ec507e6fe6b49e1d5d"
   },
-  "cli_catalogue_sha256": "4d32466dd20519b362f1ef5491215084251b48519c3261cb213e7022ff34fe50",
+  "cli_catalogue_sha256": "98da93493310f9012a6d0d972047c42c31d393864c25f80821053f1d1c804d5c",
   "playbook_fixtures": {
     "tests/fixtures/playbooks/v2/agent-queue-parent-integration/artifact.json": "6bac753c97dddfb8683ebab844c1b9af8ed273d00e334d7d29a75e3e5c10042c",
     "tests/fixtures/playbooks/v2/agent-queue-parent-integration/diagnostics.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
@@ -43287,7 +43287,7 @@
     "tests/fixtures/playbooks/v2/invalid/loop_ref_outside_loop.json": "363b4349802013d818ebeb56247569f5fac783c57656effb22a632e9f5fd32ee",
     "tests/fixtures/playbooks/v2/invalid/loop_variable_shadow.json": "79d75fdc4a7e6cf597899f339b86575931595ccb933eb23addb7b4c3831ec501",
     "tests/fixtures/playbooks/v2/invalid/narrowing_not_subset.json": "b57e9d78394cdf52368cc043fd83650c55764f63f6f80071303c9de0549f7333",
-    "tests/fixtures/playbooks/v2/invalid/nested_loop.json": "f86524be159a197d456f224a88da3b0c5fbab066fffe71260d4251a48314bcee",
+    "tests/fixtures/playbooks/v2/invalid/nested_loop.json": "652f035218cb9c8233eee337f8c09ed7434e2705b439df4af5f00bc03d3d0ae0",
     "tests/fixtures/playbooks/v2/invalid/no_terminal_path.json": "b2de812ca20377df9a855b88bbd41bde0bf91c9cf362402f05bd0c3f1b9cd7ac",
     "tests/fixtures/playbooks/v2/invalid/orphan_step.json": "ac71992a2427ca1ecc800b30797f94e1f653b721f0cfda1aea365b26d49c1ede",
     "tests/fixtures/playbooks/v2/invalid/outcome_enum_mismatch.json": "65c340f1b7cde30d067a5ced860d27866a4837e368899d6c7d89c4fee1e1d0e3",

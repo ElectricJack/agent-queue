@@ -659,10 +659,15 @@ def s18_surfaces(monkeypatch, request):
             assert args == {"project_id": smoke.PROJECT}
             return {"supervisor_enabled": request.param}
         if command == "list_playbook_runs":
-            return {"runs": [{"run_id": "triage-run"}]}
+            closed = any(args[:2] == ("task", "close") for args, _ in calls)
+            runs = [{"run_id": "previous-run"}]
+            if closed:
+                runs.append({"run_id": "triage-run"})
+            return {"runs": runs}
         if command == "inspect_playbook_run":
+            assert args == {"run_id": "triage-run"}
             return {"run": {
-                "run_id": "triage-run", "event": {"task_id": "triage-task"},
+                "run_id": "triage-run",
                 "lifecycle": "completed",
             }}
         if command == "message_list":

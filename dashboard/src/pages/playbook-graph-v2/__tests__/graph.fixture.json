@@ -2,9 +2,9 @@
   "success": true,
   "artifact": {
     "playbook_id": "default-pipeline",
-    "artifact_sha256": "sha256:7563817097f26dc9246d6507c25f148b63876c5f387f264944e060ff057fa131",
+    "artifact_sha256": "sha256:c0e872de4f4f399efe2662343f439b7354d691bd7e817574e230e5ed14146826",
     "schema_generation": 2,
-    "contract_fingerprint": "sha256:565d015d06fea62c297544d45fc32cb6740ea04ea5f48b548f8911ece2b20c58",
+    "contract_fingerprint": "sha256:0c0c9e473bdd0291b820e556c54e1a3baced8bff0d15daa71497ff61333d782f",
     "source_digest": "sha256:6f1c0d2b9a4e7f38c5b1de20a7f4c8931ee5b0a6d2c74f9138ab5e0c7d41928f",
     "compiler_build": "fixture",
     "compiled_at": "2026-09-01T00:00:00+00:00",
@@ -44,7 +44,7 @@
         "sweep-on-spec-approved"
       ],
       "node_count": 6,
-      "edge_count": 13
+      "edge_count": 14
     }
   ],
   "rules": [
@@ -1576,6 +1576,14 @@
             "target_title": "Sweep failed",
             "reserved": true,
             "terminal_outcome": "failed"
+          },
+          {
+            "outcome": "rejected",
+            "label": "Rejected",
+            "target_step_id": "sweep-failed",
+            "target_title": "Sweep failed",
+            "reserved": false,
+            "terminal_outcome": "failed"
           }
         ],
         "contract_fingerprint": null,
@@ -1626,7 +1634,8 @@
           "save_result_as": "downstream",
           "transitions": {
             "listed": "for-each-task",
-            "runtime_error": "sweep-failed"
+            "runtime_error": "sweep-failed",
+            "rejected": "sweep-failed"
           }
         },
         "resolved_inputs": [
@@ -1692,7 +1701,7 @@
           }
         }
       ],
-      "out_degree": 2,
+      "out_degree": 3,
       "position": {
         "x": 4,
         "y": 0
@@ -2901,6 +2910,18 @@
       "label": "Runtime Error",
       "kind": "runtime_error",
       "reserved": true,
+      "condition": null
+    },
+    {
+      "id": "sweep-on-spec-approved::list-downstream::rejected",
+      "rule_id": "sweep-on-spec-approved",
+      "source": "list-downstream",
+      "source_port": "rejected",
+      "target": "sweep-failed",
+      "outcome": "rejected",
+      "label": "Rejected",
+      "kind": "failure",
+      "reserved": false,
       "condition": null
     },
     {

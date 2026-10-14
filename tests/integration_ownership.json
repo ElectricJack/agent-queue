@@ -8653,6 +8653,24 @@
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.transition_task": {
       "reason": "Public lifecycle transition observes current Git delivery outside the transaction and passes request-scoped evidence to the locked mutation guard; no persisted delivery projection or ref replay authority."
+    },
+    "src/api/target_scope.py::_target_project": {
+      "reason": "Shared resource ownership lookup used by integration target checks; read-only, without publication or lifecycle state."
+    },
+    "src/api/target_scope.py::target_references": {
+      "reason": "Shared command reference discovery including integration targets; no storage or authority mutation."
+    },
+    "src/commands/resource_authorization.py::SYSTEM_COMMANDS": {
+      "reason": "Audited system resource commands including integration service controls; declares authorization requirements only."
+    },
+    "src/commands/resource_authorization.py::SESSION_HANDLER_RESOURCE_GATES": {
+      "reason": "Session commands retaining independent domain resource checks, including operator repository binding; declares no publication authority."
+    },
+    "src/commands/resource_authorization.py::authorize_resources": {
+      "reason": "Shared principal resource authorization for integration and other commands; consults owners and exact operator grants without modifying branch state or lifecycle."
+    },
+    "src/commands/resource_authorization.py::principal_scope": {
+      "reason": "Derives the scope compatibility view used by integration controls from the original principal; never creates trusted operator authority."
     }
   },
   "exclusions": {
@@ -8750,7 +8768,11 @@
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
-    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
+    "src/database/queries/observation_snapshot_queries.py::task_rows": "Generic protected-snapshot projection of ordinary task rows; integration_mode is an existing task column copied verbatim. No integration storage, lifecycle or ref authority.",
+    "src/doctor/stall_checks.py::_SUBJECTS['completed_undelivered']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['continuous_promotion_lag']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/doctor/stall_checks.py::_SUBJECTS['integration_unknown_facts']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -13166,130 +13188,130 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
-      "line": 304,
+      "line": 349,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "67cfcb57e491d8877109ad2455218c74aacce1a7b84071e7f989253d5f8eb275",
+      "owner_fingerprint": "5dc55fcf2c76ee0fb86a1a5137845a77e6eb0ba841ea0841c67e0dd334799ead",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
-      "line": 311,
+      "line": 356,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "67cfcb57e491d8877109ad2455218c74aacce1a7b84071e7f989253d5f8eb275",
+      "owner_fingerprint": "5dc55fcf2c76ee0fb86a1a5137845a77e6eb0ba841ea0841c67e0dd334799ead",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_dir'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_dir' Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
-      "line": 316,
+      "line": 361,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "67cfcb57e491d8877109ad2455218c74aacce1a7b84071e7f989253d5f8eb275",
+      "owner_fingerprint": "5dc55fcf2c76ee0fb86a1a5137845a77e6eb0ba841ea0841c67e0dd334799ead",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: key"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: key Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
-      "line": 297,
+      "line": 342,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "67cfcb57e491d8877109ad2455218c74aacce1a7b84071e7f989253d5f8eb275",
+      "owner_fingerprint": "5dc55fcf2c76ee0fb86a1a5137845a77e6eb0ba841ea0841c67e0dd334799ead",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_add_dependency::a4b11d12e44641f31dec92eda6c8cd14f1b9c6975b961f527226962bd27130a5": {
-      "line": 3921,
+      "line": 3947,
       "owner": "TaskCommandsMixin._cmd_add_dependency",
       "call": "log_event",
-      "owner_fingerprint": "304a86ec2394b330aa6d49c5a0a4c489217994a0ef4df3c611efa9f15f4f0fdc",
+      "owner_fingerprint": "c24d8f9e23cb63fa1fe9c0db25f352448fdf85f6cb19356d1aba8fae6f073f76",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Dependency changes log the caller, reason and edge as ordinary task-graph audit evidence after worker container admission; the event authorizes neither ref replay nor integration publication."
+      "reason": "Dependency changes log the caller, reason and edge as ordinary task-graph audit evidence after worker container admission; the event authorizes neither ref replay nor integration publication. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::513842f306aa56e3e63cfa84b52c59c27b3f94d7c784a662f64170e6c03e1d30": {
-      "line": 5057,
+      "line": 5073,
       "owner": "TaskCommandsMixin._cmd_archive_task",
       "call": "log_event",
-      "owner_fingerprint": "3f6b02c6918a50172220ac426f3e992e80d989e550c704eecd4158a82ab70627",
+      "owner_fingerprint": "e391777ba3ee5538d108e4c3c668e2c81b869dc29f3b53fcb1c1473a5b321e51",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Bulk task_archived notification after successful guarded archive; records task identity only, with no ref replay authority."
+      "reason": "Bulk task_archived notification after successful guarded archive; records task identity only, with no ref replay authority. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::b611360d398cc725e9ada50f9112d9c7be31f747e1251e86de6d9f03c44ab5f7": {
-      "line": 4982,
+      "line": 4997,
       "owner": "TaskCommandsMixin._cmd_archive_task",
       "call": "log_event",
-      "owner_fingerprint": "3f6b02c6918a50172220ac426f3e992e80d989e550c704eecd4158a82ab70627",
+      "owner_fingerprint": "e391777ba3ee5538d108e4c3c668e2c81b869dc29f3b53fcb1c1473a5b321e51",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Single task_archived notification after successful guarded archive; records task identity only, with no ref replay authority."
+      "reason": "Single task_archived notification after successful guarded archive; records task identity only, with no ref replay authority. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_edit_task::b6009fee9d6fc35151315162ef7595d81bde3db54b069841732e5140523619ff": {
-      "line": 4155,
+      "line": 4198,
       "owner": "TaskCommandsMixin._cmd_edit_task",
       "call": "set_task_meta",
-      "owner_fingerprint": "40dd8be1df667ab7e91f3f8f7d4b7e4b30dc603c6e6ddd0e548a4cc26fa49172",
+      "owner_fingerprint": "2361863ce8efdcfedec25b365a2f74a602213c7651242a4f693cbf5af05f1d9e",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention' Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_provide_input::0f34c5a5cf7ffa0b7470a2802a0e0a7b49b19ff72d497f0aad42650f0e0ae892": {
-      "line": 4978,
+      "line": 5203,
       "owner": "TaskCommandsMixin._cmd_provide_input",
       "call": "log_event",
-      "owner_fingerprint": "93932469ba02b7545e0c058c0459dfc5334e88bbdb2e53f2d7a574baf7cf97aa",
+      "owner_fingerprint": "13fd7f7a031f58b82006d0099726841f1235e6d0f758ce418920fe9f6d14aa53",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_remove_dependency::1a08ef791aced41453b664c03655d329ac97c44ad54bc8079a0e8061b3e7eb93": {
-      "line": 3928,
+      "line": 4008,
       "owner": "TaskCommandsMixin._cmd_remove_dependency",
       "call": "log_event",
-      "owner_fingerprint": "8a7d1dccb3b73c545c8f64bbecbffcf8864961501a08ba32c1e5288c7f80c317",
+      "owner_fingerprint": "07083975f1063606902d4c788c394882ebbadd6576dc6510c121ff25cafa48f5",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_reopen_with_feedback::223d0f7e6c4889256e3ed2ac86b057584987bd73625610bcb54d446246a0bbcb": {
-      "line": 4705,
+      "line": 4745,
       "owner": "TaskCommandsMixin._cmd_reopen_with_feedback",
       "call": "log_event",
-      "owner_fingerprint": "2d234344811fbd47b77a377ea126c0ea16f14d5ad0520a7603863c88c7f8e087",
+      "owner_fingerprint": "fd71dc1445d5e42ff8e76cbef35aefe0d036a0c8ce85c63ac9e13d2c3cc06490",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_reopen_with_feedback::d0a23678072f424218ac0a4925ebf887c82e58359a4b99b3a16f86a3e1b51529": {
-      "line": 4758,
+      "line": 4798,
       "owner": "TaskCommandsMixin._cmd_reopen_with_feedback",
       "call": "log_event",
-      "owner_fingerprint": "2d234344811fbd47b77a377ea126c0ea16f14d5ad0520a7603863c88c7f8e087",
+      "owner_fingerprint": "fd71dc1445d5e42ff8e76cbef35aefe0d036a0c8ce85c63ac9e13d2c3cc06490",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::0dfb7d71a735cf01bf69eb2924994003433c6ecb4da10f0c4921536d9b0bfd9a": {
-      "line": 3010,
+      "line": 3030,
       "owner": "TaskCommandsMixin._create_task",
       "call": "log_event",
-      "owner_fingerprint": "41dd3d5519e7aa6695c867050a7c6295b010ec51150016ee181b98b9d296e1f7",
+      "owner_fingerprint": "6fbccf1301420ab558a3e6627d5e002dc6d9e8a8f5b14395abd3d0e2476c4e45",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Task label.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle."
+      "reason": "Task label.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::410a02b90473dd130b922788f002d371e50f4de6ba4daff1847591088f3deff6": {
-      "line": 3001,
+      "line": 3021,
       "owner": "TaskCommandsMixin._create_task",
       "call": "log_event",
-      "owner_fingerprint": "41dd3d5519e7aa6695c867050a7c6295b010ec51150016ee181b98b9d296e1f7",
+      "owner_fingerprint": "6fbccf1301420ab558a3e6627d5e002dc6d9e8a8f5b14395abd3d0e2476c4e45",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Task dependency.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle."
+      "reason": "Task dependency.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._emit_task_graph_change::49364bafd150cdc68036fcf280efa5d6ef80b0f72ce84d78634c8766f6431278": {
       "line": 1026,
@@ -15137,31 +15159,31 @@
       "reason": "Immutable project.repository_bound audit in the same transaction as the first repository URL CAS. Records operator, reason and old/new authorization only; no ref-operation replay, delivery assertion or duplicate integration lifecycle."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_archive_task::c43d1fbacba8bf45fb56f8735c1bd09f0da6f4f40860abee9ff01a8d7b669d4d": {
-      "line": 4988,
+      "line": 5003,
       "owner": "TaskCommandsMixin._cmd_archive_task",
       "call": "log_event",
-      "owner_fingerprint": "3f6b02c6918a50172220ac426f3e992e80d989e550c704eecd4158a82ab70627",
+      "owner_fingerprint": "e391777ba3ee5538d108e4c3c668e2c81b869dc29f3b53fcb1c1473a5b321e51",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator task.delivery_abandoned audit after a reasoned archive; records the task identity and the chosen disposition, not ref mutation or replay state."
+      "reason": "Operator task.delivery_abandoned audit after a reasoned archive; records the task identity and the chosen disposition, not ref mutation or replay state. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._keep_for_delivery::e1c6bc5706b2248baa0f518cec6fe5c9457f7459885dd70390548c8ff888ecea": {
-      "line": 5280,
+      "line": 5305,
       "owner": "TaskCommandsMixin._keep_for_delivery",
       "call": "log_event",
-      "owner_fingerprint": "2d41c5fb25e34d552de1c6405473a4f66d5e80b6334612a14a3fc85b8fb71932",
+      "owner_fingerprint": "f81ecfd983ec4f7b748850582cc569a4067af6a860f0a6023dd5897dc891b807",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Operator task.delivery_disposition audit for a deliver decision that archives nothing; records the task identity and how many holders wait, not ref mutation, replay or delivery state."
+      "reason": "Operator task.delivery_disposition audit for a deliver decision that archives nothing; records the task identity and how many holders wait, not ref mutation, replay or delivery state. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._restart_repair_delegate::422567dd28fcecb1a80d03028773f3ba177b912a1b2e264195e8ad9a0e83101f": {
-      "line": 4495,
+      "line": 4604,
       "owner": "TaskCommandsMixin._restart_repair_delegate",
       "call": "set_task_meta",
-      "owner_fingerprint": "56c3461d62607d7f526db009179e05280f3e2b6c65bca88b9ef03cc697a16441",
+      "owner_fingerprint": "2f1f70d2ab4f5318931ebeeade51fd4084644de89942ab0fa83d887f6242d914",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary worker failure streak is restored when a fenced repair-delegate restart is refused. Existing reservation guards still decide authority; this metadata is not an integration lifecycle journal."
+      "reason": "Ordinary worker failure streak is restored when a fenced repair-delegate restart is refused. Existing reservation guards still decide authority; this metadata is not an integration lifecycle journal. Reviewed success-field-only protocol change; sink and payload unchanged."
     },
     "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::9092769dc16180050c1d7a01c5d46256c2cd0383b351f15fadc91645e2ec169a": {
       "line": 1644,
@@ -16099,7 +16121,22 @@
     "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently.",
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
-    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority."
+    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
+    "src/commands/descriptors.py::PLAYBOOK_DENIALS": "Generic playbook command denials for shell and daemon lifecycle; no integration-specific behavior.",
+    "src/profiles/capabilities.py::DENY_ALL": "Generic empty capability policy, shared by every principal kind; no integration-specific behavior.",
+    "src/api/scope.py::_PLAYBOOK_COMPILER_COMMANDS": "Generic compiler command vocabulary used for assignment-scoped authoring authority; no integration lifecycle or publication behavior.",
+    "src/api/scope.py::_has_live_playbook_compiler_assignment": "Read-only generic check of a live compiler session and held compiler task; no integration state or publication authority.",
+    "src/commands/operator_authority.py::operator_grant": "Generic context-local exact-command grant lookup; binding validates command and arguments before shared resource authorization, with no integration-specific behavior.",
+    "src/doctor/models.py::observation_context": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/models.py::observation_read_failed": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::MAX_PRODUCER_BYTES": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::MAX_ROWS": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::finding": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/doctor/observations.py::partition": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/definition.py::step_values": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/definition.py::uses_iteration_paths": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/features.py::execution_metadata_from_source": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

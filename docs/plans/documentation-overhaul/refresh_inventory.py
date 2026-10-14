@@ -684,6 +684,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "`aq doctor` check."),
     ("src/stall_watch.py", "operations", "docs/specs/stuck-task-watch.md", PRODUCTION,
      "Read-only stuck-task detection and supervisor summary formatting."),
+    ("src/observations/**", "operations", "docs/guides/observation-snapshots.md",
+     PRODUCTION, "Protected immutable observation snapshot pages and shared paging."),
     ("src/benchmark/**", "operations", "docs/guides/benchmark-routing-export.md", PRODUCTION,
      "Frozen benchmark routing and evidence export."),
     ("src/metrics/**", "operations", "docs/guides/operations.md", PRODUCTION,

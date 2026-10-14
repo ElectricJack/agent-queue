@@ -90,14 +90,15 @@ def load_invalid(code: str) -> PlaybookDefinition:
 
 
 class TestDiagnosticSet:
-    """§6.8 — the closed 48-code set.
+    """§6.8 — the closed 49-code set.
 
     47 in the child plan; ``narrowing_not_subset`` is the 48th, added with the
     authoring surface for ``AgentTaskStep.capability_narrowing``.
+    B3 adds ``unsupported_feature`` for artifact/executor compatibility.
     """
 
     def test_the_set_is_closed_and_partitioned(self):
-        assert len(DIAGNOSTIC_CODES) == 48
+        assert len(DIAGNOSTIC_CODES) == 49
         assert VALIDATOR_CODES | MODEL_CODES | COMPILER_ONLY_CODES == DIAGNOSTIC_CODES
         assert not VALIDATOR_CODES & MODEL_CODES
         assert not VALIDATOR_CODES & COMPILER_ONLY_CODES
@@ -219,8 +220,15 @@ class TestRuleClosure:
 class TestLoops:
     """§6.3."""
 
-    def test_nested_loops_are_rejected(self):
-        assert "nested_loop" in codes(check(load_invalid("nested_loop")))
+    def test_properly_nested_loops_are_accepted(self):
+        payload = load_invalid("nested_loop").model_dump(mode="json")
+        for loop_id in ("level3", "level4", "level5"):
+            payload["steps"].pop(loop_id)
+        payload["steps"]["inner"]["body_entry"] = "body"
+        payload["steps"]["body"]["transitions"] = {"done": "inner", "skipped": "inner"}
+        assert not {"nested_loop", "loop_body_escapes"} & codes(check(
+            load_definition_json(json.dumps(payload))
+        ))
 
     def test_a_body_step_may_not_leave_by_an_undeclared_exit(self):
         found = check(load_invalid("loop_body_escapes"))

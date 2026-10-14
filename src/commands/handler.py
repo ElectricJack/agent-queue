@@ -92,6 +92,8 @@ from src.commands.message_wait_commands import MessageWaitCommandsMixin
 from src.commands.session_commands import SessionCommandsMixin
 from src.commands.surface_commands import SurfaceCommandsMixin
 from src.commands.ops_commands import OpsCommandsMixin
+from src.commands.doctor_observation_commands import DoctorObservationCommandsMixin
+from src.commands.playbook_state_commands import STATE_SCHEMAS, PlaybookStateCommandsMixin
 from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
@@ -390,6 +392,8 @@ class CommandHandler(
     SessionCommandsMixin,
     SurfaceCommandsMixin,
     OpsCommandsMixin,
+    DoctorObservationCommandsMixin,
+    PlaybookStateCommandsMixin,
     WorktreeCommandsMixin,
     # -- dv2 phase 2 mixins -----------------------------------------------
     GitCommandsMixin,
@@ -963,7 +967,7 @@ class CommandHandler(
             # ``args`` unless it explicitly reads ``self._current_scope``.
             # Belt-and-braces defense — /api/execute already strips any
             # client-supplied ``_scope`` before forwarding the trusted one.
-            scope = self._current_scope
+            scope = None
             inherited_principal = current_principal()
             if isinstance(args, dict) and any(k in args for k in SERVER_OWNED_ARG_KEYS):
                 if inherited_principal is not None and inherited_principal.kind.value == "playbook":
@@ -1032,7 +1036,7 @@ class CommandHandler(
                 }
             if name.startswith("operator_"):
                 log_args = {"command": args.get("command"), "arguments": "<operator inputs>"}
-            private_call = principal.kind.value == "playbook"
+            private_call = principal.kind.value == "playbook" or name in STATE_SCHEMAS
             if private_call:
                 log_args = {key: "(redacted)" for key in args}
             if mutating:
@@ -1215,7 +1219,9 @@ class CommandHandler(
                             )
                             _emit_error = f"Plugin command failed: {detail}"
                             return {"success": False, "error_code": "command_runtime_error",
-                                    "error": "Plugin command failed"}
+                                    "error": (f"Plugin command failed: {e}"
+                                              if not principal.enforced
+                                              else "Plugin command failed")}
 
                 logger.warning(
                     "Unknown command requested: %s args=%s", name, self._preview(log_args)
@@ -1235,7 +1241,7 @@ class CommandHandler(
                 _emit_ok = False
                 _emit_error = type(e).__name__ if private_call else f"{type(e).__name__}: {e}"[:200]
                 return {"success": False, "error_code": "command_runtime_error",
-                        "error": "Command execution failed"}
+                        "error": str(e) if not principal.enforced else "Command execution failed"}
             finally:
                 # Ensure scope does not leak across commands.
                 _current_scope_var.reset(_scope_token)
