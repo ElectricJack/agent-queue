@@ -8722,6 +8722,9 @@
     },
     "src/git/manager.py::safe_git_detail": {
       "reason": "Bounds and sanitizes immutable provenance publication and exact-readback diagnostics shared with the Git transport."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_reparent_task": {
+      "reason": "Routes ordinary task reparenting through the transactional hierarchy integration guard, preserving branch origins and invalidating both parent checkpoints in hierarchy and train modes."
     }
   },
   "exclusions": {
@@ -14077,13 +14080,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/owner_recovery.py::OwnerRecovery._release::67a057ee30845b7389fde9526fa8831803349998640cab32472820f1d00a18a2": {
-      "line": 706,
+      "line": 848,
       "owner": "OwnerRecovery._release",
       "call": "log_event",
-      "owner_fingerprint": "f8d3a2afcc2890f3ae7a838e24659f46131cf5f74a5368d2af4e19aa93c2573a",
+      "owner_fingerprint": "8f2434e5e4384ea06d7f1dca9644e832f81999e2553c746bc8e23454d1fe2ed9",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Audits the fenced owner release after claim reconciliation and workspace unlock; the notification records recovery evidence and does not authorize ref replay or duplicate task lifecycle."
     },
     "src/integration/parent_adapters.py::ParentPrimitiveAdapters.clear_reopen_refusal::5ddc9362418a6772f1e8c1d284b9b85cd15f738f3ae3e9837dd8d8fc12d06a9f": {
       "line": 412,

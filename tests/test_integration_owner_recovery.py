@@ -487,6 +487,32 @@ async def test_a_branch_checked_out_where_a_live_session_works_is_refused(env):
     assert (await env.row("o7"))["handoff_state"] == "attached"
 
 
+async def test_stale_base_attachment_releases_without_touching_operator_checkout(env):
+    env.branch("aq/base-owner")
+    env.branch("aq/unrelated")
+    await env.slot("unrelated-slot", "aq/unrelated")
+    await env.session("old", work_dir=env.tmp / "gone")
+    await env.session("supervisor", work_dir=env.base, state="running", desired_state="running")
+    await env.owner("base-owner", "aq/base-owner", "old-task",
+                    session_id="old", workspace_id="ws-base")
+    (env.base / "operator.txt").write_text("uncommitted operator work\n")
+    before = git(env.base, "status", "--porcelain")
+
+    result = await env.service().recover("base-owner", principal="supervisor")
+
+    assert result.outcome == "released", result
+    assert result.evidence["ignored_base_workspace"] == "ws-base"
+    assert result.evidence["workspace_unlocked"] is False
+    assert git(env.base, "branch", "--show-current") == "main"
+    assert git(env.base, "status", "--porcelain") == before
+    assert not result.evidence.get("snapshots")
+    row = await env.row("base-owner")
+    assert row["workspace_id"] is None
+    assert row["confirmed_workspace_id"] is None
+    workspace = await env.db.get_workspace("ws-base")
+    assert workspace.enabled
+
+
 async def test_an_unreachable_origin_is_refused(env):
     env.branch("aq/t8")
     git(env.base, "remote", "set-url", "origin", str(env.tmp / "missing.git"))

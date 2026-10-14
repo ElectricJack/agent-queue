@@ -1161,19 +1161,21 @@ async def test_git_first_mutation_rejects_unknown_proof_without_receipts(active_
     assert (await db.get_task("wrong")).status is TaskStatus.COMPLETED
 
 
-async def test_git_first_reparent_guard_uses_git_view_without_receipts(active_git_world, monkeypatch):
-    """Isolate the delivery fence after the independent started/materialized fences."""
+async def test_git_first_reparent_guard_refuses_completed_work_without_receipts(active_git_world):
+    """Completed work fixes the target even before the delivery evidence fence."""
     from src.integration.hierarchy import HierarchyIntegration
 
     db, _origin, observer = active_git_world
     view = await observer.observe(["done"])
     hierarchy = HierarchyIntegration(db)
-    monkeypatch.setattr(hierarchy, "_locked_origin", AsyncMock(return_value={"materialized": False}))
-    monkeypatch.setattr(hierarchy, "_task_row", AsyncMock(return_value={"status": "READY"}))
+    repo = await db.get_repo("r")
+    assert repo is not None
+    assert (await db.get_task("done")).status is TaskStatus.COMPLETED
     async with db.immediate() as conn:
         with pytest.raises(HierarchyError) as refused:
-            await hierarchy._assert_reparentable(conn, "done", "r", delivery=view)
+            await hierarchy._assert_reparentable(conn, "done", repo, delivery=view)
     assert refused.value.code == "delivery_target_fixed"
+    assert refused.value.detail == "task has a holder or completed work"
 
 
 @pytest.mark.parametrize("contained", [True, False])

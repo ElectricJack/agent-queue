@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import and_, insert, or_, select, update
 
-from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.hierarchy_queries import HierarchyError, TransitionResult
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
@@ -1128,80 +1128,115 @@ class HierarchyIntegration:
     ) -> dict:
         if mutation != "reparent":
             raise HierarchyError("invalid", f"unsupported hierarchy mutation: {mutation}")
-        new_parent_id = arguments.get("parent_id")
-        if not new_parent_id:
+        if "parent_id" not in arguments:
             raise HierarchyError("invalid", "reparent requires parent_id")
         delivery = await self.db.observe_removal_delivery([task_id], for_mutation=True)
         async with self.db.immediate() as conn:
-            child = await self._task_row(conn, task_id)
-            project, repo = await self._enabled_route(conn, child)
-            await self.db.lock_hierarchy_project(conn, project["id"])
-            child = await self._task_row(conn, task_id)
-            old_parent_id = child["parent_task_id"]
-            if not old_parent_id or old_parent_id == new_parent_id:
-                raise HierarchyError("invalid", "reparent requires a different existing parent")
+            result, transition = await self.reparent_on(
+                conn, task_id, arguments["parent_id"], delivery=delivery,
+                expected_generations=arguments,
+            )
+        await self.db.log_blocked_flips(transition.flipped)
+        await self.db._notify_settled(transition.settled)
+        await self.db._notify_ready(transition.ready)
+        return result
+
+    async def reparent_on(
+        self, conn, task_id: str, new_parent_id: str | None, *, delivery=None,
+        expected_generations: dict | None = None, reject_live_parent: bool = False,
+    ) -> tuple[dict, TransitionResult]:
+        """Retarget an unused leaf and its origin in the caller's transaction."""
+        child = await self._task_row(conn, task_id)
+        project, repo = await self._enabled_route(conn, child)
+        await self.db.lock_hierarchy_project(conn, project["id"])
+        child = await self._task_row(conn, task_id)
+        old_parent_id = child["parent_task_id"]
+        if not old_parent_id or old_parent_id == new_parent_id:
+            raise HierarchyError("invalid", "reparent requires a different existing parent")
+        for parent_id in (old_parent_id, new_parent_id):
+            if parent_id is None:
+                continue
+            ancestors = self.db._ancestor_cte(parent_id)
+            closed = await conn.scalar(select(tasks.c.id).join(
+                ancestors, ancestors.c.id == tasks.c.id,
+            ).where(tasks.c.status == TaskStatus.COMPLETED.value).limit(1))
+            if closed is not None:
+                raise HierarchyError("container_closed", closed)
+            sealed = await conn.scalar(select(integration_batch_members.c.task_id).join(
+                integration_batches,
+                integration_batches.c.id == integration_batch_members.c.batch_id,
+            ).where(
+                integration_batch_members.c.task_id.in_(select(ancestors.c.id)),
+                integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES),
+            ).limit(1))
+            if sealed is not None:
+                raise HierarchyError("sealed", "reparent would change a sealed subtree")
+        origin = await self._assert_reparentable(conn, task_id, repo, delivery=delivery)
+        old_checkpoint = await self._locked_checkpoint(conn, old_parent_id)
+        new_checkpoint = None
+        if new_parent_id is not None:
             new_parent = await self._task_row(conn, new_parent_id)
             if new_parent["project_id"] != project["id"]:
                 raise HierarchyError("invalid", "new parent belongs to another project")
-            await self._assert_reparentable(conn, task_id, repo.id, delivery=delivery)
             await self._ensure_origin_chain(conn, new_parent_id, repo)
-            old_checkpoint = await self._locked_checkpoint(conn, old_parent_id)
             new_checkpoint = await self._locked_checkpoint(conn, new_parent_id)
-            expected_old = arguments.get("expected_old_generation")
-            expected_new = arguments.get("expected_new_generation")
-            if expected_old is None or int(old_checkpoint["generation"]) != int(expected_old):
+        expected_old = int(old_checkpoint["generation"])
+        expected_new = int(new_checkpoint["generation"]) if new_checkpoint else None
+        if expected_generations is not None:
+            if expected_generations.get("expected_old_generation") != expected_old:
                 raise HierarchyError("stale_parent", "old parent generation changed")
-            if expected_new is None or int(new_checkpoint["generation"]) != int(expected_new):
+            if (new_checkpoint is not None
+                    and expected_generations.get("expected_new_generation") != expected_new):
                 raise HierarchyError("stale_parent", "new parent generation changed")
-            now = self.clock()
-            origin = await self._locked_origin(conn, task_id, repo.id)
-            await conn.execute(
-                update(task_branch_origins)
-                .where(task_branch_origins.c.id == origin["id"])
-                .where(task_branch_origins.c.materialized.is_(False))
-                .values(retired_at=now)
-            )
-            old_generation = int(expected_old) + 1
-            new_generation = int(expected_new) + 1
-            for parent_id, expected, generation in (
-                (old_parent_id, expected_old, old_generation),
-                (new_parent_id, expected_new, new_generation),
-            ):
-                await conn.execute(
-                    update(task_integration_checkpoints)
-                    .where(task_integration_checkpoints.c.task_id == parent_id)
-                    .where(task_integration_checkpoints.c.generation == expected)
-                    .values(
-                        generation=generation,
-                        verified_sha=None,
-                        verified_generation=None,
-                        version=task_integration_checkpoints.c.version + 1,
-                        updated_at=now,
-                    )
-                )
-            await self.db.set_parent(
-                task_id, new_parent_id, conn=conn, integration_authorized=True
-            )
-            await self._reserve_origin(
-                conn,
-                task_id=task_id,
-                repository_id=repo.id,
-                parent_task_id=new_parent_id,
-                parent_ref=new_checkpoint["branch"],
-                base_sha=new_checkpoint["checkpoint_sha"],
-                generation=new_generation,
-            )
+        base_sha = (new_checkpoint["checkpoint_sha"] if new_checkpoint else
+                    await self._resolve_head(repo, repo.default_branch))
+        if origin["materialized"]:
+            if new_checkpoint is not None and base_sha != origin["base_sha"]:
+                raise HierarchyError("delivery_target_fixed", "new parent checkpoint differs")
+            base_sha = origin["base_sha"]
+        now = self.clock()
+        await conn.execute(
+            update(task_branch_origins).where(task_branch_origins.c.id == origin["id"])
+            .values(retired_at=now)
+        )
+        old_generation = expected_old + 1
+        new_generation = expected_new + 1 if expected_new is not None else None
+        for parent_id, expected, generation in (
+            (old_parent_id, expected_old, old_generation),
+            (new_parent_id, expected_new, new_generation),
+        ):
+            if parent_id is None:
+                continue
             await conn.execute(
                 update(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == task_id)
+                .where(task_integration_checkpoints.c.task_id == parent_id)
+                .where(task_integration_checkpoints.c.generation == expected)
                 .values(
-                    checkpoint_sha=new_checkpoint["checkpoint_sha"],
+                    generation=generation,
                     verified_sha=None,
                     verified_generation=None,
                     version=task_integration_checkpoints.c.version + 1,
                     updated_at=now,
                 )
             )
+        transition = await self.db.set_parent(
+            task_id, new_parent_id, conn=conn, integration_authorized=True,
+            reject_live_parent=reject_live_parent,
+        )
+        await self._reserve_origin(
+            conn, task_id=task_id, repository_id=repo.id, parent_task_id=new_parent_id,
+            parent_ref=new_checkpoint["branch"] if new_checkpoint else repo.default_branch,
+            base_sha=base_sha, generation=new_generation or 0,
+            materialized=origin["materialized"],
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == task_id)
+            .values(
+                checkpoint_sha=base_sha, verified_sha=None, verified_generation=None,
+                version=task_integration_checkpoints.c.version + 1, updated_at=now,
+            )
+        )
         return {
             "outcome": "updated",
             "task_id": task_id,
@@ -1209,7 +1244,7 @@ class HierarchyIntegration:
             "new_parent_id": new_parent_id,
             "old_parent_generation": old_generation,
             "new_parent_generation": new_generation,
-        }
+        }, transition
 
     async def _root_route(self, conn, project_id: str, *, promotion_target=None) -> tuple[dict, RepoConfig]:
         """The (project, repo) a new root in *project_id* files through."""
@@ -1568,14 +1603,26 @@ class HierarchyIntegration:
         )
 
     async def _assert_reparentable(
-        self, conn, task_id: str, repository_id: str, *, delivery=None,
-    ) -> None:
-        origin = await self._locked_origin(conn, task_id, repository_id)
-        if origin["materialized"]:
-            raise HierarchyError("delivery_target_fixed", "branch origin is already materialized")
-        task = await self._task_row(conn, task_id)
-        if task["status"] not in {TaskStatus.DEFINED.value, TaskStatus.READY.value}:
-            raise HierarchyError("delivery_target_fixed", "task already started")
+        self, conn, task_id: str, repo: RepoConfig, *, delivery=None,
+    ) -> dict:
+        # Claims lock the task before attaching its branch owner. Serialize
+        # that path before checking either ownership or liveness.
+        task = dict((await conn.execute(select(tasks).where(
+            tasks.c.id == task_id,
+        ).with_for_update())).mappings().one())
+        origin = await self._locked_origin(conn, task_id, repo.id)
+        if (task["assigned_agent_id"] is not None or task["status"] not in {
+            "DEFINED", "READY", "PAUSED", "BLOCKED", "FAILED",
+        } or len(await self.db.subtree_ids(task_id, conn=conn)) != 1):
+            raise HierarchyError("delivery_target_fixed", "task has a holder or completed work")
+        owner = await self.ownership._locked_row(
+            conn, BranchKey(repository_id=repo.id, branch=task["branch_name"]),
+        )
+        if owner is not None and (
+            owner["owner_id"] != task_id or owner["handoff_state"] not in {"reserved", "released"}
+            or owner["workspace_id"] is not None or owner["session_id"] is not None
+        ):
+            raise HierarchyError("delivery_target_fixed", "branch has an attached owner")
         _delivery_query = (
             select(workspaces.c.id).where(workspaces.c.locked_by_task_id == task_id).limit(1)
         )
@@ -1587,37 +1634,19 @@ class HierarchyIntegration:
             .limit(1)
         )
         live = (await conn.execute(_delivery_query)).first()
-        from src.integration.delivery_observer import prerequisite_observer
-
-        if prerequisite_observer(self.db) is not None:
-            await self.db.guard_integration_mutation(
-                task_id, "reparent", conn=conn, delivery=delivery,
-            )
-            delivered = False
-        else:
-            _delivery_query = (
-                select(task_delivery_receipts.c.id)
-                .where(task_delivery_receipts.c.source_task_id == task_id)
-                .limit(1)
-            )
-            delivered = (await conn.execute(_delivery_query)).first()
-        _delivery_query = (
-            select(integration_batch_members.c.task_id)
-            .select_from(
-                integration_batch_members.join(
-                    integration_batches,
-                    integration_batches.c.id == integration_batch_members.c.batch_id,
-                )
-            )
-            .where(integration_batch_members.c.task_id == task_id)
-            .where(integration_batches.c.lifecycle.in_(_ACTIVE_BATCH_STATES))
-            .limit(1)
+        await self.db.guard_integration_mutation(
+            task_id, "reparent", conn=conn, delivery=delivery,
         )
-        sealed = (await conn.execute(_delivery_query)).first()
+        delivered = await conn.scalar(
+            select(task_delivery_receipts.c.id)
+            .where(task_delivery_receipts.c.source_task_id == task_id).limit(1)
+        )
         if busy or live or delivered:
             raise HierarchyError("delivery_target_fixed", "task has started or delivered work")
-        if sealed:
-            raise HierarchyError("sealed", "task belongs to an active sealed batch")
+        if origin["materialized"]:
+            if await self._resolve_head(repo, task["branch_name"]) != origin["base_sha"]:
+                raise HierarchyError("delivery_target_fixed", "branch contains commits")
+        return origin
 
 
 __all__ = [
