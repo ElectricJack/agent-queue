@@ -211,7 +211,8 @@ async def test_standalone_bytes_and_approval_provenance_are_immutable(db):
 
 def test_revision_is_single_head_with_named_checks_jsonb_and_bare_defaults():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert script.get_heads() == ["a00000000098"]
+    assert script.get_heads() == ["a00000000099"]
+    assert script.get_revision("a00000000099").down_revision == "a00000000098"
     assert script.get_revision("a00000000098").down_revision == "a00000000097"
     assert script.get_revision("a00000000097").down_revision == "a00000000096"
     assert script.get_revision("a00000000096").down_revision == "a00000000095"
