@@ -1668,6 +1668,26 @@ class ExecutionMixin:
                                         f"{completion['outcome']}."
                                     ]
                                     ctx.verification_feedback = ctx.verification_issues[0]
+                        elif managed_parent and getattr(
+                            self.config.integration, "git_first", "shadow"
+                        ) == "active":
+                            # The train's epic lane, not a parent episode,
+                            # collects this container: it closes normally at
+                            # its exact final published head.  A refusal
+                            # writes nothing and keeps the claim live.
+                            try:
+                                await hierarchy.checkpoint_container_completion(
+                                    task.id,
+                                    head,
+                                    int(checkpoint["generation"]),
+                                    expect_claim_epoch=expect_claim_epoch,
+                                )
+                            except HierarchyError as exc:
+                                ctx.verification_retry_in_session = True
+                                ctx.verification_issues = [
+                                    f"Container checkpoint was refused: {exc}."
+                                ]
+                                ctx.verification_feedback = ctx.verification_issues[0]
                         elif managed_parent:
                             await hierarchy.checkpoint_and_suspend_parent(
                                 task.id,

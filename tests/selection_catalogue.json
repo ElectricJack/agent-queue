@@ -606,6 +606,7 @@
         "tests/test_integration_cleanup.py",
         "tests/test_integration_cli_controls_present.py",
         "tests/test_integration_completion_recovery.py",
+        "tests/test_integration_container_completion.py",
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
         "tests/test_integration_git_truth.py",
@@ -8304,6 +8305,27 @@
       ],
       "summary": ""
     },
+    "tests/test_integration_container_completion.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:08ebc8b3db22645ebb524b4c62e516c6349ba22d43bf927cbb6a4d4906cfac0e",
+      "imports": [
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.hierarchy",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.provenance",
+        "src.integration.train",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "A held writer that gains children closes at its exact final published head."
+    },
     "tests/test_integration_contracts.py": {
       "areas": [
         "integration-trains"
@@ -9522,9 +9544,10 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:838042fdd1bae05d0c789cb294beff1b2aa747a251fa25c6189d2fce7cd5be79",
+      "digest": "sha256:1542ffc4878ebc0c582d8d77d7093b96b562b289621ba8b95f8fbc53c7e9be14",
       "imports": [
         "src.claim_file",
+        "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration",
@@ -9532,6 +9555,7 @@
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.provenance",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.stranded_work",

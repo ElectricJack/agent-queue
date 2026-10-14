@@ -17,6 +17,7 @@ from src.database.queries.hierarchy_queries import HierarchyError, TransitionRes
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
+    integration_branch_owners,
     integration_parent_operation_completions,
     integration_parent_verifications,
     integration_repair_operations,
@@ -583,6 +584,147 @@ class HierarchyIntegration:
             "generation": int(checkpoint["generation"]),
             "head_sha": head_sha,
         }
+
+    async def checkpoint_container_completion(
+        self, task_id: str, head_sha: str, generation: int, *,
+        expect_claim_epoch: int | None,
+    ) -> dict:
+        """Advance a held container's checkpoint to its final published head.
+
+        Under ``integration.git_first: active`` no parent episode collects a
+        writer that gained children: the train's epic lane admits the closed
+        container from its completion and checkpoint, which must agree
+        exactly.  Every live child must already be completed with its recorded
+        source contained in ``head_sha``; anything stale, unowned, unpublished
+        or uncertain refuses before any write.
+        """
+        if not _OID.fullmatch(head_sha):
+            raise HierarchyError("dirty", "head_sha must be a lowercase 40-character Git OID")
+        if self.checkpoint_verifier is None or self.ancestry_verifier is None:
+            raise HierarchyError("dirty", "container completion verifiers are unavailable")
+        async with self.db._engine.connect() as read_conn:
+            task = await self._task_row(read_conn, task_id)
+            _project, repo = await self._enabled_route(read_conn, task)
+            observed = await self._child_provenance_on(read_conn, task_id)
+            owner = _container_owner(task_id, (await read_conn.execute(
+                select(integration_branch_owners).where(
+                    integration_branch_owners.c.repository_id == repo.id,
+                    integration_branch_owners.c.ref == (task["branch_name"] or ""),
+                )
+            )).mappings().first())
+        verified = self.checkpoint_verifier(task, repo, head_sha)
+        if inspect.isawaitable(verified):
+            verified = await verified
+        if verified != head_sha:
+            raise HierarchyError("dirty", "container checkpoint verifier returned another head")
+        for child_id, (_completion_id, source) in observed.items():
+            if source is None:
+                continue
+            contained = self.ancestry_verifier(repo, source, head_sha)
+            if inspect.isawaitable(contained):
+                contained = await contained
+            if contained is not True:
+                raise HierarchyError(
+                    "stale_head", f"container head does not contain child {child_id} source"
+                )
+        async with self.db.immediate() as conn:
+            task = await self._task_row(conn, task_id)
+            project, repo = await self._enabled_route(conn, task)
+            # Ownership before the project lock, as every fenced mutation does.  The row
+            # must be the one observed before the remote was verified: a train delivery
+            # into the branch in between moves its fence, and the verified head with it.
+            locked = _container_owner(task_id, await self.ownership._locked_row(
+                conn, BranchKey(repository_id=repo.id, branch=task["branch_name"] or ""),
+            ))
+            if locked != owner:
+                raise HierarchyError("stale", "container branch owner changed before checkpoint")
+            await self.db.lock_hierarchy_project(conn, project["id"])
+            if (
+                task["status"] != TaskStatus.IN_PROGRESS.value
+                or expect_claim_epoch is not None
+                and int(task["claim_epoch"] or 0) != expect_claim_epoch
+            ):
+                raise HierarchyError("stale", "container claim changed before checkpoint")
+            checkpoint = await self._locked_checkpoint(conn, task_id)
+            if (
+                checkpoint["repository_id"] != repo.id
+                or checkpoint["branch"] != task["branch_name"]
+            ):
+                raise HierarchyError(
+                    "delivery_target_fixed", "container checkpoint branch identity changed"
+                )
+            if int(checkpoint["generation"]) != generation:
+                raise HierarchyError(
+                    "stale", f"expected generation {generation}, found {checkpoint['generation']}"
+                )
+            if checkpoint.get("episode_id") is not None:
+                raise HierarchyError("invariant_error", "container has a parent episode")
+            if await self._child_provenance_on(conn, task_id) != observed:
+                raise HierarchyError("stale", "container children changed before checkpoint")
+            result = await conn.execute(
+                update(task_integration_checkpoints)
+                .where(task_integration_checkpoints.c.task_id == task_id)
+                .where(task_integration_checkpoints.c.version == checkpoint["version"])
+                .values(
+                    checkpoint_sha=head_sha,
+                    state="working",
+                    version=task_integration_checkpoints.c.version + 1,
+                    updated_at=self.clock(),
+                )
+            )
+            if result.rowcount != 1:
+                raise HierarchyError("stale", "container checkpoint changed concurrently")
+        return {
+            "outcome": "checkpointed",
+            "task_id": task_id,
+            "generation": generation,
+            "head_sha": head_sha,
+        }
+
+    async def _child_provenance_on(self, conn, task_id: str) -> dict:
+        """Each live child's latest pass completion id and recorded source.
+
+        A child that is not completed, or completed without a passing
+        completion record, is unresolved: the container cannot vouch for it.
+        """
+        from src.database.tables import task_completion_records
+
+        children = (await conn.execute(
+            select(tasks.c.id, tasks.c.status).where(tasks.c.parent_task_id == task_id)
+        )).all()
+        unresolved = sorted(child for child, status in children
+                            if status != TaskStatus.COMPLETED.value)
+        if unresolved:
+            raise HierarchyError(
+                "invariant_error", f"container has unresolved children: {', '.join(unresolved)}"
+            )
+        ids = [child for child, _status in children]
+        rows = (await conn.execute(
+            select(task_completion_records.c.task_id, task_completion_records.c.id,
+                   task_completion_records.c.outcome, task_completion_records.c.commits)
+            .where(task_completion_records.c.task_id.in_(ids))
+            .distinct(task_completion_records.c.task_id)
+            .order_by(task_completion_records.c.task_id,
+                      task_completion_records.c.completed_at.desc(),
+                      task_completion_records.c.id.desc())
+        )).mappings().all() if ids else []
+        latest = {row["task_id"]: row for row in rows}
+        observed = {}
+        for child in sorted(ids):
+            row = latest.get(child)
+            try:
+                commits = json.loads(row["commits"]) if row is not None else None
+            except (TypeError, ValueError):
+                commits = None
+            if (
+                row is None or row["outcome"] != "pass" or not isinstance(commits, list)
+                or not all(isinstance(oid, str) and _OID.fullmatch(oid) for oid in commits)
+            ):
+                raise HierarchyError(
+                    "invariant_error", f"child {child} has no exact passing completion provenance"
+                )
+            observed[child] = (row["id"], commits[-1] if commits else None)
+        return observed
 
     async def file_prepared_child_on(
         self,
@@ -1756,3 +1898,22 @@ __all__ = [
     "materialize_exact_branch",
     "verify_workspace_checkpoint",
 ]
+
+
+def _container_owner(task_id: str, row) -> tuple:
+    """The container's branch-owner identity, or a ``stale`` refusal.
+
+    The held writer's own reservation, or a released row (the train's fence
+    after it collected children into the branch) leave the claim as the only
+    writer; a missing row, another live owner or a pending handoff do not.
+    """
+    if row is None:
+        raise HierarchyError("stale", "container delivery branch has no owner record")
+    held = (
+        row["owner_id"] == task_id
+        and row["owner_role"] in {"worker", "verifier"}
+        and row["handoff_state"] in {"reserved", "attached"}
+    )
+    if not held and row["handoff_state"] != "released":
+        raise HierarchyError("stale", "container no longer owns its delivery branch")
+    return (row["id"], row["owner_id"], row["fence_token"], row["handoff_state"], row["updated_at"])
