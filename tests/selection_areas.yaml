@@ -347,6 +347,7 @@ areas:
       - tests/test_playbook_wait_repository.py
       - tests/test_playbook_receipts.py
       - tests/test_playbook_private_values.py
+      - tests/test_playbook_script_sandbox.py
       - tests/test_playbook_state.py
       - tests/test_playbook_state_notify.py
       - tests/test_playbook_pending_events_*.py

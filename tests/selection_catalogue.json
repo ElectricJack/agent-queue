@@ -955,6 +955,7 @@
         "tests/test_playbook_receipts.py",
         "tests/test_playbook_run_overlay.py",
         "tests/test_playbook_run_repository.py",
+        "tests/test_playbook_script_sandbox.py",
         "tests/test_playbook_services.py",
         "tests/test_playbook_state.py",
         "tests/test_playbook_state_notify.py",
@@ -12455,6 +12456,28 @@
         "parametrize"
       ],
       "summary": "Playbook V2 run state — snapshots, boundaries, receipts, cancellation."
+    },
+    "tests/test_playbook_script_sandbox.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:dfed70bd24fe445c6846a2d5f0c47550d64006a1a0a304db786743767142b5b7",
+      "imports": [
+        "src.config",
+        "src.doctor",
+        "src.git.manager",
+        "src.jobs",
+        "src.jobs.script_sandbox",
+        "src.playbooks.proposal",
+        "src.playbooks.script_inputs",
+        "src.playbooks.script_policy",
+        "src.resources.box_lock"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Pinned inputs and ordinary-process acceptance, with no host provisioning."
     },
     "tests/test_playbook_services.py": {
       "areas": [

@@ -2717,6 +2717,23 @@
         "max_concurrent_agents": 8,
         "max_pytest_processes": 24,
         "per_session_cpu_share": null,
+        "scripts": {
+          "enabled": true,
+          "env_allowlist": [],
+          "input_bytes": 67108864,
+          "input_root": "",
+          "input_storage_bytes": 2147483648,
+          "output_storage_bytes": 2147483648,
+          "per_run_storage_bytes": 67108864,
+          "queue_seconds": 300,
+          "runtime_bytes": 1073741824,
+          "runtime_manifest": "",
+          "runtime_root": "",
+          "state_root": "",
+          "stderr_bytes": 1048576,
+          "stdout_bytes": 1048576,
+          "wall_seconds": 60
+        },
         "session_nice": 10,
         "test_deselect_markers": "not perf and not migration and not slow and not tmux and not integration",
         "test_interpreters": {},
@@ -2876,6 +2893,92 @@
             "integer",
             "null"
           ]
+        },
+        "scripts": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": true,
+            "env_allowlist": [],
+            "input_bytes": 67108864,
+            "input_root": "",
+            "input_storage_bytes": 2147483648,
+            "output_storage_bytes": 2147483648,
+            "per_run_storage_bytes": 67108864,
+            "queue_seconds": 300,
+            "runtime_bytes": 1073741824,
+            "runtime_manifest": "",
+            "runtime_root": "",
+            "state_root": "",
+            "stderr_bytes": 1048576,
+            "stdout_bytes": 1048576,
+            "wall_seconds": 60
+          },
+          "properties": {
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "env_allowlist": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "input_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "input_root": {
+              "default": "",
+              "type": "string"
+            },
+            "input_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "output_storage_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "per_run_storage_bytes": {
+              "default": 67108864,
+              "type": "integer"
+            },
+            "queue_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "runtime_bytes": {
+              "default": 1073741824,
+              "type": "integer"
+            },
+            "runtime_manifest": {
+              "default": "",
+              "type": "string"
+            },
+            "runtime_root": {
+              "default": "",
+              "type": "string"
+            },
+            "state_root": {
+              "default": "",
+              "type": "string"
+            },
+            "stderr_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "stdout_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "wall_seconds": {
+              "default": 60,
+              "type": "integer"
+            }
+          },
+          "type": "object"
         },
         "session_nice": {
           "default": 10,
