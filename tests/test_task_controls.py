@@ -20,14 +20,13 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
-async def env(tmp_path, request, reuse_database, monkeypatch):
+async def env(tmp_path, request, reuse_database):
     # The fake provider has an isolated process inventory, just as its sessions
     # and repositories are isolated. Exercise the real scanner, not a constant
     # quiescence result. Tests register real children via /proc symlinks below;
     # inaccessible fixture processes must still retain the workspace.
     process_inventory = tmp_path / "proc"
     process_inventory.mkdir()
-    monkeypatch.setattr(proctable, "_PROC", process_inventory)
     db = await reuse_database("controls.db")
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
@@ -51,10 +50,14 @@ async def env(tmp_path, request, reuse_database, monkeypatch):
     orch = Orchestrator(config)
     orch.db = db
     install_already_routed(orch)
-    yield SimpleNamespace(
-        db=db, orch=orch, handler=CommandHandler(orch, config), config=config,
-        process_inventory=process_inventory,
-    )
+    # Restart tests undo their injected failures mid-test. Their monkeypatch
+    # must not also undo this fake provider's process inventory.
+    with pytest.MonkeyPatch.context() as process_patch:
+        process_patch.setattr(proctable, "_PROC", process_inventory)
+        yield SimpleNamespace(
+            db=db, orch=orch, handler=CommandHandler(orch, config), config=config,
+            process_inventory=process_inventory,
+        )
 
 
 async def command(env, name, task_id="t", **args):
@@ -1009,6 +1012,7 @@ async def test_claim_retirement_crash_keeps_reservation_until_fenced_retry(
     assert checkpoint
     assert git("show", f"{checkpoint['commit']}:work.txt") == "unstaged"
     monkeypatch.undo()
+    assert proctable._PROC == env.process_inventory
     if continuation == "successor":
         await env.db.update_workspace("workspace", generation=8)
         (repo / ".aq" / "claim.json").write_text(json.dumps({

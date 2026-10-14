@@ -350,3 +350,20 @@ process, refuse a relevant live child/marker, and preserve claims, source and
 capacity on unknown liveness. Do not replace the scanner with a constant success
 or interpret a PermissionError as termination evidence. These fixture receipts
 will not establish what the historical hosted PID was or qualify live recovery.
+
+Combined production `9e3d97dc376b35262b5c8da11e3e57adda2a8d19` passed all nine
+strict claim-performance tests with unchanged budgets. Its fresh disposable
+swarm passed all 20 scenarios, including train delivery, using test PostgreSQL
+on localhost:5534, port 18997 and `/tmp/wise87-epoch4-e2e-combined`; the wrapper
+stopped its daemon. Production file hashes were recorded before the run in
+`/tmp/wise87-epoch4-e2e-source.json`; the log is `/tmp/wise87-epoch4-e2e.log`.
+
+Hosted run 38504830259 on that exact commit completed with 13 successful jobs
+and three default-shard failures. All three were crash/restart continuations in
+`test_claim_retirement_crash_keeps_reservation_until_fenced_retry`: the test's
+`monkeypatch.undo()` also undid the fixture's process inventory and exposed it
+to unreadable host processes. The fixture now owns an independent patch context
+for its lifetime, including simulated reload, and the crash regression explicitly
+checks that inventory identity survives undoing the injected failure. This
+follow-up changes tests and this receipt only; it does not weaken the production
+liveness scanner or require a different production-source swarm receipt.
