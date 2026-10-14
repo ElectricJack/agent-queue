@@ -27,9 +27,17 @@ so deleted remote branches do not remain visible as stale local observations.
 Repository binding uses the shared GitHub identity parser, including HTTPS
 without `.git` and SSH forms, then the daemon's configured credential authority.
 It does not rewrite operator remotes. An unavailable binding or missing/mismatched
-client leaves retirement pending before any ref observation or retained-store
+client leaves GitHub retirement pending before any ref observation or retained-store
 creation. Provider failures preserve their safe diagnostic instead of becoming
 an unavailable-client error; no credential fallback is permitted.
+
+Local filesystem remotes (paths or local `file://` URLs) use plain Git transport
+against the registered repository location. Relative paths resolve from the
+registered repository checkout, never the retained store or daemon working directory.
+They require no GitHub binding and share the same durable audit, verified backup,
+live-reference guards and exact-SHA push lease. An unreachable local repository is
+a retryable transport failure, never proof that its branches are absent. Other
+non-GitHub network transports remain pending when no authenticated binding exists.
 
 Explicit materialized-origin deletes use the same retirement mechanism. Ordinary
 delete with `branches=keep` remains an explicit preservation choice. Archive's
