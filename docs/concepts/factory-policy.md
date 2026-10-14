@@ -1,11 +1,9 @@
 # Software-factory policy
 
-**Status: normative.** Approved 2026-09-11 (vault spec
-`projects/agent-queue/specs/software-factory-policy-simplification-2026-09-11.md`). This page is the
-one statement of how AQ admits, delivers and recovers work. Role instructions — shipped profiles
-(`src/profiles/defaults/`), AQ skills (`src/skills/`), prime templates (`src/prime/templates/`) and
-remembered project guidance — reference this page instead of restating workflow. Conflicting instructions
-are bugs. Historical reports, reviews and superseded specs are evidence, not directives.
+**Status: normative.** Approved 2026-09-11 (vault spec `projects/agent-queue/specs/software-factory-policy-simplification-2026-09-11.md`).
+This page is the one statement of how AQ admits, delivers and recovers work. Role instructions — shipped profiles
+(`src/profiles/defaults/`), AQ skills (`src/skills/`), prime templates (`src/prime/templates/`) and remembered project guidance —
+reference this page instead of restating workflow. Conflicting instructions are bugs. Historical reports, reviews and superseded specs are evidence, not directives.
 
 ## A. Admit authorised, executable work
 
@@ -34,13 +32,12 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   based.
 - Publication validates the exact candidate SHA; a changed candidate invalidates earlier checks. The
   project declares its required checks. A check that could not run is *unavailable*, never a pass.
-- Compatible completed sources for one delivery branch collect into one frozen candidate. A base
-  conflict and authenticated absence of the exact PR workflow do not require each author to merge
-  the default branch first. Source identity and configured review authorization still gate
-  admission; genuine red or unavailable observations remain gates. One bounded batch repair carries
-  every frozen source as an ancestor, merges all remaining members, regenerates shared artifacts
-  once, and validates the complete candidate before publication. See [the conflicting-source
-  contract](../specs/design/conflicting-source-batches.md).
+- Compatible completed sources for one delivery branch collect into one frozen candidate. A base conflict
+  and authenticated absence of the exact PR workflow do not require each author to merge the default
+  branch first. Source identity and configured review authorization still gate admission; genuine red
+  or unavailable observations remain gates. One bounded batch repair carries every frozen source as an
+  ancestor, merges all remaining members, regenerates shared artifacts once, and validates the complete
+  candidate before publication. See [the conflicting-source contract](../specs/design/conflicting-source-batches.md).
 - There is **no automatic** per-task reviewer, final reviewer, merge sweep or review-of-review
   chain, and no mandatory multi-pass gate chain. Review is optional and risk-based; when wanted it
   is one explicit task or gate.
@@ -55,8 +52,7 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
 
 ## C. Recover or retire without losing evidence
 
-- One incident per failure, one responsible owner, bounded retries with the remaining budget
-  visible.
+- One incident per failure, one responsible owner, bounded retries with the remaining budget visible.
 - No-attempt failures use a durable failure-transition generation. Comments, edits and same-status
   reconciliation preserve it; reopening then failing replaces it. Current `FAILED` incidents,
   including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
@@ -68,12 +64,11 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   and integration ownership remain binding.
 - A known transient failure retries within the existing budget. An unknown cause, an exhausted
   budget or a human-only decision holds with a concrete reason and one durable escalation.
-- Shared preparation faults (`slot_reset_failed`, missing or mismatched worktrees,
-  repeated unproved own-branch handoffs) are infrastructure incidents. Correlate
-  the exact session, claim, workspace path, Git branch and ownership evidence;
-  preserve the daemon's bounded backoff and retained preparations. Escalate one
-  incident with that evidence and the required repair. Do not mass-pause tasks
-  to suppress a system fault or override an explicit human hold during recovery.
+- Shared preparation faults (`slot_reset_failed`, missing or mismatched worktrees, repeated unproved
+  own-branch handoffs) are infrastructure incidents. Correlate the exact session, claim, workspace path,
+  Git branch and ownership evidence; preserve the daemon's bounded backoff and retained preparations.
+  Escalate one incident with that evidence and the required repair. Do not mass-pause tasks to suppress
+  a system fault or override an explicit human hold during recovery.
 - An explicitly authorized continuous integration policy may replace an exhausted repair session
   with a fresh bounded stage. It preserves previous attempts, dossiers and stopped-writer/fence
   proof; it does not reset the old session's budget. Routine CI/conflict repair continues
@@ -84,13 +79,12 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
 
 ## Testing scope
 
-Workers use `aq test` for focused and related area checks, recording exact commands. Full-suite runs belong to CI
-or tasks about the suite. Compare against a recorded known-failing baseline; do not capture one per task.
-A pre-existing failure neither fails the task nor justifies weakening or skipping tests. Task authors specify
-focused and area checks. See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
+Workers use `aq test` for focused and related area checks, recording exact commands. Full-suite runs belong to CI or tasks about the suite.
+Compare against a recorded known-failing baseline; do not capture one per task. A pre-existing failure neither fails the task nor justifies
+weakening or skipping tests. Task authors specify focused and area checks. See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
 
 ## Keeping instructions in line
 
-Shipped profiles and skills are seeded write-if-absent: edit installed profiles in the vault and re-copy
-drifted skills with `aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py`
-rejects retired stages, sibling-by-default placement, refusal bypasses and roles that omit this page.
+Shipped profiles and skills are seeded write-if-absent: edit installed profiles in the vault and re-copy drifted skills with
+`aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py` rejects retired stages,
+sibling-by-default placement, refusal bypasses and roles that omit this page.

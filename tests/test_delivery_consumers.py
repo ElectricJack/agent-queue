@@ -50,7 +50,13 @@ class Origin:
             git(self.clone, "remote", "set-url", "origin", self.url)
             return
         git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
+        # Keep the reusable template quiescent: detached maintenance can remove
+        # files while a later fixture copies its objects and refs.
+        git(self.url, "config", "maintenance.auto", "false")
+        git(self.url, "config", "gc.auto", "0")
         git(tmp_path, "clone", self.url, str(self.clone))
+        git(self.clone, "config", "maintenance.auto", "false")
+        git(self.clone, "config", "gc.auto", "0")
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
         (self.clone / "base.txt").write_text("base\n")
