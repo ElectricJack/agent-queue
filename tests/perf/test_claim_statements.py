@@ -46,6 +46,7 @@ import pytest
 from sqlalchemy import event, text
 from sqlalchemy.dialects import postgresql
 
+from src.claim_file import remove_claim_file_if_matches
 from src.models import (
     Agent,
     AgentProfile,
@@ -778,6 +779,9 @@ class TestClaimLatency:
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
             times.append(time.perf_counter() - started)
+            # The benchmark calls the database release directly, so it must
+            # also perform the CLI's claim-file cleanup before reusing the slot.
+            remove_claim_file_if_matches(_wd, res["task"]["id"], res["claim_epoch"])
         after = await measure_wire_floor(any_db)
 
         transaction_s = (before[0] + after[0]) / 2
