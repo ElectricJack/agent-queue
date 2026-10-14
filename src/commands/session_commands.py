@@ -1351,7 +1351,10 @@ class SessionCommandsMixin:
             and await self.db.get_children(task_id, limit=1)
         )
         if outcome == "pass":
-            from src.integration.completion_ci import verify_completion_ci
+            from src.integration.completion_ci import (
+                describe_completion_ci,
+                verify_completion_ci,
+            )
 
             ci = await verify_completion_ci(
                 self.db, getattr(self.orchestrator, "git", None), self.config, task, project,
@@ -1362,8 +1365,8 @@ class SessionCommandsMixin:
                     "success": False, "result": "verification_failed",
                     "code": "completion.required_ci", "ci": ci,
                     "error": (
-                        f"Required CI is {ci['state']} on {ci.get('head_sha') or 'unknown head'}. "
-                        "Keep this claim, resolve the named checks or wait for CI, then retry close."
+                        f"{describe_completion_ci(ci)} Keep this claim, resolve the named "
+                        "stage or checks or wait for CI, then retry close."
                     ),
                 }
         abandoned: list[str] = []

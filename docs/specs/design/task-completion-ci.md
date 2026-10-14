@@ -61,3 +61,19 @@ tasks separately from pending/unavailable observations; include commit, check
 names and links. This audit mutates no task and does not assert default-branch
 delivery. Ordinary workers cannot invoke it, and project supervisor scope stays
 pinned. Cache duplicate repository/SHA/policy observations within a single audit.
+
+An unknown verdict stays fail-closed but names where it came from. Both the
+close refusal and each audit row carry a `stage` (`policy`, `source_commit`,
+`repository_binding`, `published_ref`, `no_change_proof`, `check_runs`,
+`classification`, `currentness`), the reason, and a bounded `next` recovery
+step. A lookup that raised adds a redacted `lookup`: the exception type plus the
+GitHub failure's allowlisted category, HTTP status and `retry_at`, or a
+`GitHubError` code. Raw exception text is never copied; only the safe-by-contract
+GitHub failure sentence survives, scrubbed and dropped if it still holds a URL,
+query or masked secret. `published_ref` names the observed published SHA (none
+for an absent or deleted branch) and `currentness` the moved local and published
+SHAs. Observed results add `ignored_checks`: bounded counts of runs on
+other heads (a PR merge SHA), unrequired names and untrusted producers. These
+explain a verdict and never contribute to green. The refusal text names the
+stage and the failing, pending and missing checks. A credential or binding stage
+is operator recovery; the worker keeps its claim and does not retry around it.

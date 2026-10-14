@@ -5568,14 +5568,17 @@ class GitManager:
 
     async def acommit_check_runs(
         self, slug: str, sha: str, *, cwd: str | None = None,
-        repository: GitHubRepositoryBinding | None = None,
+        repository: GitHubRepositoryBinding | None = None, strict: bool = False,
     ) -> list[dict] | None:
+        """Exact-commit check runs, or None; ``strict`` raises so callers can classify."""
         try:
             client = self._github_client(repository)
             if slug != repository.full_name:
                 raise GitError("CI repository did not match authorized repository")
             return await client.commit_check_runs(sha)
         except (GitError, GitHubAccessError, ValueError):
+            if strict:
+                raise
             return None
 
     async def ajob_failed_tests(

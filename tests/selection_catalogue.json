@@ -3404,7 +3404,7 @@
         "ci-sentinel"
       ],
       "default_arm": true,
-      "digest": "sha256:518fd6fcdd9606babb3a554de1dc933dd7c68a36487db2dec75a87109dfd9370",
+      "digest": "sha256:3e2f70d9e5f534bcf2700bfd07f2bf28b4e3d6f15dc550ca7bc69a3c7f3f8a36",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -3416,7 +3416,8 @@
         "src.git.manager",
         "src.integration.completion_ci",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.projects.github"
       ],
       "markers": [
         "parametrize"

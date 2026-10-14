@@ -1814,7 +1814,10 @@ class ExecutionMixin:
                 }
 
         if outcome == "pass" and completed_ok:
-            from src.integration.completion_ci import verify_completion_ci
+            from src.integration.completion_ci import (
+                describe_completion_ci,
+                verify_completion_ci,
+            )
 
             ci = await verify_completion_ci(
                 self.db, getattr(self, "git", None), self.config, task, project,
@@ -1823,8 +1826,8 @@ class ExecutionMixin:
             if ci is not None:
                 if ci["state"] != "green":
                     feedback = (
-                        f"Required CI is {ci['state']} on {ci.get('head_sha') or 'unknown head'}; "
-                        "resolve the checks or wait for CI and retry close."
+                        f"{describe_completion_ci(ci)} Resolve the named stage or checks "
+                        "or wait for CI and retry close."
                     )
                     return {
                         "status": task.status.value, "pr_url": pr_url, "pipeline_ok": False,

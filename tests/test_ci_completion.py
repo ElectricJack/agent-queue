@@ -251,6 +251,8 @@ async def test_pipeline_changes_require_fresh_ci(setup, change):
     result = await close(handler)
     assert result["success"] is False, result
     assert result["code"] == "completion.required_ci"
+    assert (f"failing: {REQUIRED}" if change == "red" else f"missing: {REQUIRED}") in (
+        result["feedback"])
     assert (await db.get_task("t")).status is TaskStatus.IN_PROGRESS
     assert await db.get_task_completion("t") is None
     orch.release_session_task_resources.assert_not_awaited()
@@ -423,3 +425,229 @@ async def test_legacy_slug_is_unavailable_completion_ci(setup):
     await db.update_project("p", hierarchical_integration_policy=policy)
     assert (await close(handler))["ci"]["state"] == "unknown"
     git.acommit_check_runs.assert_not_awaited()
+
+
+SECRET = "ghs_" + "S" * 36
+SECRET_URL = "https://x-access-token:hunter2@github.com/example/widgets.git"
+
+
+def access_error(category, *, status=None, retry_at=None, message="GitHub request failed"):
+    from src.git.github_contracts import GitHubAccessError
+
+    return GitHubAccessError(category, message, http_status=status, retry_at=retry_at)
+
+
+def wrapped(error, text=f"Authorization: token {SECRET} via {SECRET_URL}"):
+    from src.git.manager import GitError
+
+    try:
+        raise error
+    except Exception as exc:
+        try:
+            raise GitError(text) from exc
+        except GitError as outer:
+            return outer
+
+
+@pytest.mark.parametrize("kind,stage,lookup", [
+    ("binding_auth", "repository_binding",
+     {"error_type": "GitError", "category": "credentials", "http_status": 401,
+      "detail": "authenticated repository identity did not match"}),
+    ("binding_unconfigured", "repository_binding", {"error_type": "GitError"}),
+    ("binding_transport", "repository_binding",
+     {"error_type": "GitError", "category": "transient", "http_status": 502,
+      "detail": "GitHub request failed"}),
+    ("foreign_repository", "repository_binding", None),
+    ("checks_permission", "check_runs",
+     {"error_type": "GitHubAccessError", "category": "permission", "http_status": 403,
+      "detail": "GitHub request failed"}),
+    ("checks_hidden", "check_runs",
+     {"error_type": "GitHubAccessError", "category": "not_found_or_hidden", "http_status": 404,
+      "detail": "GitHub request failed"}),
+    ("checks_rate_limited", "check_runs",
+     {"error_type": "GitHubAccessError", "category": "rate_limited", "http_status": 429,
+      "retry_at": 1_800_000_000.0, "detail": "GitHub request failed"}),
+    ("checks_pagination", "check_runs",
+     {"error_type": "GitHubAccessError", "category": "transient",
+      "detail": "GitHub pagination exceeded the page limit"}),
+    ("checks_secret_message", "check_runs",
+     {"error_type": "GitHubAccessError", "category": "other"}),
+    ("checks_unreadable", "check_runs", None),
+    ("absent_ref", "published_ref", None),
+    ("changed_ref", "published_ref", None),
+    ("ref_transport", "published_ref",
+     {"error_type": "GitError", "category": "transient", "http_status": 503,
+      "detail": "GitHub request failed"}),
+    ("old_commit", "source_commit", None),
+    ("invalid_policy", "policy", {"error_type": "ValueError"}),
+    ("stale_observation", "currentness", None),
+])
+async def test_unknown_ci_names_the_failed_stage_without_secrets(setup, kind, stage, lookup):
+    """Unknown stays fail-closed but says which lookup, source or policy step failed."""
+    import json
+
+    from src.git.manager import GitError
+
+    handler, db, git, _, _ = setup
+    kwargs = {}
+    if kind == "binding_auth":
+        git.bind_github_repository.side_effect = wrapped(access_error(
+            "credentials", status=401,
+            message="authenticated repository identity did not match"))
+    elif kind == "binding_unconfigured":
+        git.bind_github_repository.side_effect = GitError(f"no access {SECRET}")
+    elif kind == "binding_transport":
+        git.bind_github_repository.side_effect = wrapped(access_error("transient", status=502))
+    elif kind == "foreign_repository":
+        git.bind_github_repository.return_value = GitHubRepositoryBinding(999, "other/repo")
+    elif kind == "checks_permission":
+        git.acommit_check_runs.side_effect = access_error("permission", status=403)
+    elif kind == "checks_hidden":
+        git.acommit_check_runs.side_effect = access_error("not_found_or_hidden", status=404)
+    elif kind == "checks_rate_limited":
+        git.acommit_check_runs.side_effect = access_error(
+            "rate_limited", status=429, retry_at=1_800_000_000.0)
+    elif kind == "checks_pagination":
+        git.acommit_check_runs.side_effect = access_error(
+            "transient", message="GitHub pagination exceeded the page limit")
+    elif kind == "checks_secret_message":
+        git.acommit_check_runs.side_effect = access_error(
+            "novel", message=f"denied for {SECRET_URL}?token={SECRET}")
+    elif kind == "checks_unreadable":
+        git.acommit_check_runs.return_value = None
+    elif kind == "absent_ref":
+        git.aremote_branch_head.return_value = None
+    elif kind == "changed_ref":
+        git.aremote_branch_head.return_value = OTHER
+    elif kind == "ref_transport":
+        git.aremote_branch_head.side_effect = wrapped(access_error("transient", status=503))
+    elif kind == "old_commit":
+        kwargs["commit"] = OTHER
+    elif kind == "invalid_policy":
+        await db.update_project("p", hierarchical_integration_policy={"root": {
+            "required_checks": {"version": "v1", "names": [REQUIRED]}}})
+    else:
+        git.aremote_branch_head.side_effect = [HEAD, OTHER]
+
+    result = await close(handler, **kwargs)
+
+    assert result["success"] is False
+    assert result["code"] == "completion.required_ci"
+    ci = result["ci"]
+    assert ci["state"] == "unknown"
+    assert ci["stage"] == stage
+    assert ci["next"]
+    assert ci.get("lookup") == lookup
+    assert f"at {stage}" in result["error"]
+    assert ci["error"] in result["error"]
+    if stage not in {"policy", "source_commit"}:
+        assert ci["head_sha"] == HEAD
+    if kind == "absent_ref":
+        assert ci["published_sha"] is None
+    elif kind == "changed_ref":
+        assert ci["published_sha"] == OTHER
+    elif kind == "stale_observation":
+        assert (ci["local_sha"], ci["published_sha"]) == (HEAD, OTHER)
+    rendered = json.dumps(result)
+    for secret in (SECRET, "hunter2", "x-access-token", "Authorization"):
+        assert secret not in rendered
+    assert (await db.get_task("t")).status is TaskStatus.IN_PROGRESS
+    assert await db.get_task_completion("t") is None
+
+
+async def test_pending_ci_explains_checks_that_cannot_count(setup):
+    """PR merge SHA, renamed and foreign-producer checks stay pending, and say why."""
+    handler, db, git, _, _ = setup
+    git.acommit_check_runs.return_value = [
+        run(head=OTHER, job=1),
+        run("Build & test", job=2),
+        run("Check release", job=3),
+        run(producer=999, job=4),
+    ]
+    result = await close(handler)
+    assert result["success"] is False
+    ci = result["ci"]
+    assert ci["state"] == "pending"
+    assert ci["missing_checks"] == [REQUIRED]
+    assert ci["ignored_checks"] == {
+        "other_head_count": 1, "other_heads": [OTHER],
+        "not_required": ["Build & test", "Check release"],
+        "untrusted_producer": [{"name": REQUIRED, "producer_id": "999"}],
+    }
+    assert f"missing: {REQUIRED}" in result["error"]
+    assert "stage" not in ci
+    assert (await db.get_task("t")).status is TaskStatus.IN_PROGRESS
+
+
+@pytest.mark.parametrize("entries,state,label", [
+    ([run(conclusion="failure")], "red", "failing"),
+    ([run(conclusion=None, status="queued")], "pending", "pending"),
+    ([run(conclusion="cancelled")], "cancelled", "failing"),
+])
+async def test_close_refusal_names_unmet_required_checks(setup, entries, state, label):
+    handler, _, git, _, _ = setup
+    git.acommit_check_runs.return_value = entries
+    result = await close(handler)
+    assert result["ci"]["state"] == state
+    assert f"{label}: {REQUIRED}" in result["error"]
+
+
+async def test_trusted_latest_rerun_still_decides_green(setup):
+    handler, _, git, _, _ = setup
+    first = {**run(conclusion="failure", job=1), "started_at": "2026-10-01T00:00:00Z"}
+    rerun = {**run(job=2), "started_at": "2026-10-01T01:00:00Z"}
+    git.acommit_check_runs.return_value = [first, rerun, run(head=OTHER, conclusion="failure")]
+    assert (await close(handler))["success"] is True
+
+
+async def test_supervisor_audit_rows_carry_stage_and_redacted_lookup(setup):
+    import json
+
+    handler, db, git, _, _ = setup
+    await completed(db, "denied", HEAD)
+    git.acommit_check_runs.side_effect = access_error(
+        "permission", status=403, message=f"denied {SECRET}")
+    result = await handler.execute("ci_completed_status", {"project_id": "p"})
+    row = next(row for row in result["unresolved"] if row["task_id"] == "denied")
+    assert row["state"] == "unknown"
+    assert row["stage"] == "check_runs"
+    assert row["lookup"] == {"error_type": "GitHubAccessError", "category": "permission",
+                             "http_status": 403}
+    assert SECRET not in json.dumps(result)
+
+
+async def test_supervisor_audit_names_invalid_policy_stage(setup, monkeypatch):
+    handler, db, _, _, _ = setup
+    await completed(db, "invalid", HEAD)
+    import src.integration.completion_ci as completion_ci
+
+    async def invalid(*args, **kwargs):
+        raise ValueError(f"bad policy {SECRET}")
+
+    monkeypatch.setattr(completion_ci, "completion_checks", invalid)
+    result = await handler.execute("ci_completed_status", {"project_id": "p"})
+    row = next(row for row in result["unresolved"] if row["task_id"] == "invalid")
+    assert (row["state"], row["stage"]) == ("unknown", "policy")
+    assert row["lookup"] == {"error_type": "ValueError"}
+
+
+async def test_commit_check_runs_strict_raises_and_default_stays_none():
+    from src.git.manager import GitError
+
+    manager = GitManager()
+    repository = GitHubRepositoryBinding(303, "example/widgets")
+    assert await manager.acommit_check_runs("example/widgets", HEAD,
+                                            repository=repository) is None
+    with pytest.raises(GitError):
+        await manager.acommit_check_runs("example/widgets", HEAD, repository=repository,
+                                         strict=True)
+
+
+def test_lookup_failure_keeps_only_allowlisted_fields():
+    from src.integration.completion_ci import lookup_failure
+    from src.projects.github import GitHubError, GitHubErrorCode
+
+    error = GitHubError(GitHubErrorCode.AUTH_REQUIRED, f"login {SECRET}")
+    assert lookup_failure(wrapped(error)) == {"error_type": "GitError",
+                                              "code": "github_auth_required"}
+    assert lookup_failure(RuntimeError(SECRET_URL)) == {"error_type": "RuntimeError"}

@@ -320,8 +320,9 @@ class CiCommandsMixin:
                         self.orchestrator.git, url, head, required,
                     )
                 observed = cache[key]
-            except (ValueError, TypeError, KeyError):
-                observed = unavailable(head, "Required completion CI policy is invalid")
+            except (ValueError, TypeError, KeyError) as exc:
+                observed = unavailable(head, "Required completion CI policy is invalid",
+                                       stage="policy", cause=exc)
             checked += 1
             row = {"task_id": task.id, "title": task.title, "branch": task.branch_name,
                    **observed}
