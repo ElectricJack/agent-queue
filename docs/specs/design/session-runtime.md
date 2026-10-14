@@ -304,6 +304,20 @@ Repeated sweeps cannot recover the same task revision twice. The supervisor's
 assigned tasks absent from a successful, complete live-session listing; a failed
 listing is an incomplete check, never evidence that sessions are absent.
 
+For an `IN_PROGRESS` train/hierarchy task whose exact pool writer has stopped,
+the orphan sweep runs the existing fenced owner recovery through `CommandHandler`
+before the ordinary `session_not_live` fallback. It verifies the task, session
+instance, claim epoch and workspace binding under the task control lock. Recovery
+requires fresh provider confirmation of the stopped instance, preserves unpublished
+and dirty work, then releases the owner and retained claim to READY. A refusal
+keeps the task and its resources for retry; live writers, reused bindings, operator
+holds, pinned jobs and integration-owned delegates are not automatically requeued.
+`integration.owner_recovery_sweep: false` disables this automatic owner recovery.
+
+`aq integration release-owner` previews by default; `--apply` explicitly requests
+the same preservation and release. Command callers must pass `dry_run: false` to
+apply. Preview performs no publication, detach, release or audit writes.
+
 `agents.last_heartbeat` is fed from two sources: transcript `in-turn` activity (§4.5) and
 explicit `aq task heartbeat` calls (the prompt instructs agents to call it before long
 commands). A lease TTL of ~8 minutes without either marks the task **stalled** — not dead.

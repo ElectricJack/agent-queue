@@ -76,14 +76,12 @@ Conflicting instructions are bugs; historical reports, reviews and superseded sp
 - Never fabricate a pass, reset a counter, delete a branch or restart a retired operation to make
   state look healthy. Retired work is shown as retired; resource cleanup is tracked separately.
 
-## Testing scope
+## Testing and instruction upkeep
 
-Workers use `aq test` for focused and related area checks, recording exact commands. Full-suite runs belong to CI
-or tasks about the suite. Use a recorded known-failing baseline; do not capture one per task. Pre-existing failures
-neither fail the task nor justify weakening or skipping tests. Task authors specify focused and area checks.
-See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
-
-## Keeping instructions in line
+Workers use `aq test` for focused and related area checks, recording exact commands; task authors specify
+those checks. Full-suite runs belong to CI or suite tasks. Compare against a recorded known-failing baseline;
+never capture one per task. A pre-existing failure neither fails the task nor justifies weakening or
+skipping tests. See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
 
 Shipped profiles and skills are seeded write-if-absent: edit installed profiles in the vault and re-copy
 drifted skills with `aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py`

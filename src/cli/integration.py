@@ -355,15 +355,18 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
 @click.option("--task-id")
 @click.option("--owner-row-id")
 @click.option("--dry-run", is_flag=True)
+@click.option("--apply", is_flag=True, help="Preserve work and release the proved stopped owner.")
 @click.pass_context
 @_handle_errors
 def integration_release_owner(
-    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool
+    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool, apply: bool
 ) -> None:
-    """Release a stranded branch owner after proving its writer and branch safe."""
+    """Preview a stranded owner's recovery; use --apply to preserve and release."""
     if (task_id is None) == (owner_row_id is None):
         raise click.UsageError("provide exactly one of --task-id or --owner-row-id")
-    args: dict[str, Any] = {"dry_run": dry_run}
+    if dry_run and apply:
+        raise click.UsageError("--dry-run and --apply are mutually exclusive")
+    args: dict[str, Any] = {"dry_run": not apply}
     if task_id is not None:
         args["task_id"] = task_id
     else:

@@ -8713,6 +8713,12 @@
     },
     "src/database/queries/task_recovery_queries.py::import from src.database.tables import agent_questions, agents, integration_branch_owners, integration_batches, integration_owner_recoveries, integration_repair_operations, integration_repair_stages, messages, projects, project_constraints, sessions, task_branch_origins, task_comments, task_context, task_metadata, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
       "reason": "Imports integration ownership and repair tables for pool workspace reconciliation or recovery-hold deadline guards; all shared import lines remain charged to integration ownership."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin.recover_orphaned_integration_task": {
+      "reason": "Stopped pool orphan recovery delegates to fenced integration owner recovery only after exact session, epoch, agent, workspace, repository, branch and supervisor guards. Preserves retained bindings on refusal and emits ordinary task evidence after proven release; no new journal or publication path."
+    },
+    "src/commands/task_commands.py::import from src.models import BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, AgentState, DepType, ProjectStatus, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Existing charged task-command model import now includes agent and project state guards for integration orphan recovery; enum vocabulary adds no storage or publication authority."
     }
   },
   "exclusions": {
@@ -12732,7 +12738,12 @@
     "9286d2bd1ed4411cd57a776c216ccdab9a808647171f01039fb1e90e87b09cf4",
     "b21c32a8c394481661c22adf29429a69efe6e8843c531d2b8af8fb89418cf26c",
     "e0fc1cf5330bca638663d64d9289f82cf88987cea25879f3fee7aeec1ea328cf",
-    "ea6455ddf2f8a1e47396f7ca3a0ab733b9e6c43f24b60ce8072fbb5bbf37c3ad"
+    "ea6455ddf2f8a1e47396f7ca3a0ab733b9e6c43f24b60ce8072fbb5bbf37c3ad",
+    "d182371d645e692858957e59809f158abd1e533d01ca24f20cfa770be91c6c4f",
+    "e48ca4643e4ce9358e4b30188d9efe95b46df12231507a4bdaa8d8d61a6d6bd6",
+    "506027d4d7d2b4361555e56f5d57fe9f048c086036c3427b72c399b5226103ed",
+    "ac21808518fb762e3d0303005059a004f02ce73ee397f42457addba250bf1423",
+    "727333120b63a0f3a82efbb005d07d5efb43a59d1ea3a440f2e92fa6a4c6de66"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -14345,10 +14356,10 @@
       "line": 1451,
       "owner": "Orchestrator._stop_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "86ab85667e0a3358fe4e2760c7beb3510a31a23d4483b39d936531f4cf35234d",
+      "owner_fingerprint": "85e35be52272325eead4d4c17ac1a4390dd67acb06ef3080d25e249a0c4d269c",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Diagnostic needs_attention=integration_handoff_unproven marker after a refused stop handoff; resources stay bound. Re-reviewed after exact-session stop confirmation was added before assignment/workspace release: this diagnostic write is unchanged. Stores no ref/SHA, replay intent or duplicate lifecycle authority."
+      "reason": "Unchanged ordinary integration_handoff_unproven attention marker on refused stop handoff. Re-reviewed after allowing both train and hierarchy modes: stopped-writer proof still precedes resource release, with no new journal or ref replay authority."
     },
     "src/orchestrator/core.py::Orchestrator._sweep_gates::09a8c81adcd7b86401088dbc04f5d3e98384c7378264232630db2ae930f309f5": {
       "line": 3249,
@@ -14792,13 +14803,13 @@
       "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
     },
     "src/sessions/reconciler.py::SessionReconciler._step_orphans::bd56abe22d01405d7daf3f367c989c6039944b48df86b62d01fd17e0697a3b6d": {
-      "line": 2552,
+      "line": 2605,
       "owner": "SessionReconciler._step_orphans",
       "call": "set_task_meta",
-      "owner_fingerprint": "b4f8268b0e205d6092ffc0d2a404691c06c2a33e08a8f3a9cf1d83021eeb0ddb",
+      "owner_fingerprint": "003f8245704ad48ba075e2da5136501b0c3b91ee2d7625811e048df96693c0b7",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary session orphan attention state; missing-session assignments now delegate to the fenced recovery command. Existing attention metadata remains unchanged, with no ref replay authority."
+      "reason": "Unchanged ordinary session_not_live attention marker. Stopped integration writers now delegate to exact-identity fenced recovery before fallback; refusal retains bindings and bypasses this marker. No ref replay or duplicate integration lifecycle storage."
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
       "line": 2342,

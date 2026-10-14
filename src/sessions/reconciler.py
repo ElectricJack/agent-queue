@@ -2584,6 +2584,18 @@ class SessionReconciler:
                 continue
             if self._is_deferred(row.name):
                 continue
+            handler = getattr(self.orchestrator, "_command_handler", None)
+            recover = getattr(handler, "recover_orphaned_integration_task", None)
+            if recover is not None:
+                try:
+                    if await recover(task.id, row) is not None:
+                        continue
+                except Exception:
+                    logger.warning(
+                        "Stopped integration writer recovery retained task %s for retry",
+                        task.id, exc_info=True,
+                    )
+                    continue
             logger.warning(
                 "Task %s is IN_PROGRESS but session %s is %s — releasing",
                 task.id,
