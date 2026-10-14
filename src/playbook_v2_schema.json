@@ -3262,6 +3262,141 @@
       "title": "ScriptProgram",
       "type": "object"
     },
+    "ScriptStep": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "executable": false,
+          "title": "Description"
+        },
+        "environment": {
+          "additionalProperties": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
+                "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
+              }
+            ]
+          },
+          "title": "Environment",
+          "type": "object"
+        },
+        "program": {
+          "$ref": "#/$defs/ScriptProgram"
+        },
+        "rule": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Rule",
+          "type": "string"
+        },
+        "save_result_as": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Save Result As"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "title": {
+          "executable": false,
+          "title": "Title",
+          "type": "string"
+        },
+        "transitions": {
+          "additionalProperties": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Transitions",
+          "type": "object"
+        },
+        "type": {
+          "const": "script",
+          "default": "script",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "title",
+        "source",
+        "program",
+        "transitions"
+      ],
+      "title": "ScriptStep",
+      "type": "object"
+    },
     "SourceRef": {
       "additionalProperties": false,
       "description": "Where in the authoring Markdown this element came from.\n\nField-for-field identical to Package 5 §4.1's ``SourceRefDTO``.  Every field\nis presentation-only (§4.8): moving a rule down the page must not change the\nartifact's executable fingerprint.",
@@ -4086,6 +4221,7 @@
               "decision": "#/$defs/DecisionStep",
               "foreach": "#/$defs/ForEachStep",
               "llm": "#/$defs/LlmStep",
+              "script": "#/$defs/ScriptStep",
               "terminal": "#/$defs/TerminalStep",
               "wait": "#/$defs/WaitStep"
             },
@@ -4112,6 +4248,9 @@
             },
             {
               "$ref": "#/$defs/TerminalStep"
+            },
+            {
+              "$ref": "#/$defs/ScriptStep"
             }
           ]
         }

@@ -12,6 +12,7 @@ from src.api.models.playbook_v2 import PlaybookV2GraphResponse, StepExplanationD
 from src.playbooks.definition import (
     AgentTaskStep,
     CommandStep,
+    ScriptStep,
     DecisionStep,
     ForEachStep,
     LlmStep,
@@ -30,6 +31,7 @@ class GraphProjectionError(ValueError):
 
 
 STEP_LABELS = {
+    "script": "Script",
     "command": "Command",
     "llm": "AI",
     "agent_task": "Delegated task",
@@ -764,7 +766,18 @@ def _canonical_explanation(step_id: str, step: Any, definition: PlaybookDefiniti
     metadata here — but the card is not therefore empty: every family projects
     the values it reads, the binding it writes, and what it does with them.
     """
-    if isinstance(step, LlmStep):
+    if isinstance(step, ScriptStep):
+        summary = f"Run {step.program.script or step.program.executable} and wait for its job"
+        effects = [_effect("creates", "process", "Runs an ordinary process with bounded output")]
+        effects.extend(_binds_effect(step))
+        inputs = [
+            _row("Program", LiteralValue(value=step.program.shell or step.program.script
+                                         or step.program.executable)),
+            _row("Working directory", LiteralValue(value=step.program.cwd)),
+            _row("Limits", LiteralValue(value=step.program.limits.model_dump())),
+            _row("Environment names", LiteralValue(value=sorted(step.environment))),
+        ]
+    elif isinstance(step, LlmStep):
         summary, effects, inputs = _llm_explanation(step)
     elif isinstance(step, AgentTaskStep):
         summary, effects, inputs = _agent_task_explanation(step)
@@ -998,6 +1011,9 @@ def _node(
         typed_step["inputs"] = {
             name: {"type": "unresolved"} for name in typed_step.get("inputs", {})
         }
+    if isinstance(step, ScriptStep):
+        typed_step = {**typed_step, "environment": {
+            name: {"type": "redacted"} for name in step.environment}}
     retry = getattr(step, "retry", None)
     retry_dto = _plain(retry) if retry is not None else None
     idempotency = None
@@ -1043,7 +1059,24 @@ def _node(
             "timeout_step_id": step.transitions.get("timed_out"),
         }
     badges = _badges(step, registration=registration, retry=retry, diagnostics=diagnostics)
+    script = None
+    if isinstance(step, ScriptStep):
+        metadata = definition.trusted_execution
+        pin = metadata.scripts.get(step_id) if metadata else None
+        script = {
+            "program": step.program.model_dump(mode="json"),
+            "source_revision": pin.source_revision if pin else None,
+            "program_sha256": pin.program_sha256 if pin else None,
+            "runtime_sha256": pin.runtime_sha256 if pin else None,
+            "executable_sha256": pin.executable_sha256 if pin else None,
+            "input_pins": [item.model_dump() for item in pin.inputs] if pin else [],
+            "environment_names": sorted(step.environment),
+        }
+        advanced["idempotency"] = {"supported": False, "retry_safe": False}
+        badges.append({"kind": "timeout", "label": "Timeout",
+                       "value": f"{step.program.limits.wall_seconds}s"})
     return {
+        **({"script": script} if script is not None else {}),
         "id": step_id,
         "rule_id": rule.id,
         "step_kind": step.type,

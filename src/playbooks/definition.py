@@ -179,7 +179,7 @@ def scope_to_v1(scope: Any) -> str:
 # §4.5 — step common shapes
 # --------------------------------------------------------------------------
 
-StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal"]
+StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal", "script"]
 
 
 class StepBase(V2Base):
@@ -216,13 +216,26 @@ class ToolUsePolicy(V2Base):
 # --------------------------------------------------------------------------
 
 
-# E2 owns the dispatch boundary's type; E3 installs its executor and consumers.
+# Script programs are shared with the durable job dispatch boundary.
+
+
+SCRIPT_OUTCOMES: Final = frozenset({
+    "succeeded", "nonzero_exit", "timed_out", "cancelled",
+    "output_limit_exceeded", "invalid_json", "admission_denied", "admission_timed_out",
+})
 
 
 class ScriptStep(StepBase):
     type: Literal["script"] = "script"
     program: ScriptProgram
     environment: dict[str, Value] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _environment_policy(self):
+        if set(self.environment) - set(self.program.env_allowlist):
+            raise ValueError("script environment names must be in env_allowlist")
+        return self
+
     save_result_as: Identifier | None = None
     transitions: dict[str, Identifier]
 
@@ -391,12 +404,13 @@ class TerminalStep(StepBase):
 
 
 Step = Annotated[
-    CommandStep | LlmStep | AgentTaskStep | DecisionStep | WaitStep | ForEachStep | TerminalStep,
+    CommandStep | LlmStep | AgentTaskStep | DecisionStep | WaitStep | ForEachStep | TerminalStep | ScriptStep,
     Field(discriminator="type"),
 ]
 
 #: Every step model, for the invariant walks and the diff.
 STEP_MODELS: Final[tuple[type[StepBase], ...]] = (
+    ScriptStep,
     CommandStep,
     LlmStep,
     AgentTaskStep,
@@ -500,6 +514,8 @@ def business_outcomes(step: Any, *, contract_outcomes: frozenset[str] | None = N
     command's business set is empty and §6.6 has already emitted
     ``unknown_command``.
     """
+    if isinstance(step, ScriptStep):
+        return SCRIPT_OUTCOMES
     if isinstance(step, CommandStep):
         return contract_outcomes if contract_outcomes is not None else frozenset()
     if isinstance(step, LlmStep):
@@ -538,6 +554,23 @@ def _outcome_enum(step: LlmStep) -> list[str] | None:
 
 def result_schema_for(step: Any, *, command_schema: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The JSON-Schema-shaped result a step binds through ``save_result_as``."""
+    if isinstance(step, ScriptStep):
+        return {"type": "object", "properties": {
+            "stdout": {"type": ["string", "null"]},
+            "stderr": {"type": ["string", "null"]},
+            "stdout_json": {},
+            "outcome": {"type": "string"},
+            "terminal_cause": {"type": "string"},
+            "execution_id": {"type": "string"},
+            "exit_code": {"type": ["integer", "null"]},
+            "signal": {"type": ["integer", "null"]},
+            "capture_complete": {"type": "boolean"},
+            "cleanup_complete": {"type": "boolean"},
+            "inline_omitted": {"type": "boolean"},
+            "output_refs": {"type": "object", "properties": {
+                "stdout": {"type": "string"}, "stderr": {"type": "string"},
+            }},
+        }, "additionalProperties": True}
     if isinstance(step, CommandStep):
         return command_schema
     if isinstance(step, LlmStep):
@@ -658,7 +691,7 @@ def granted_aq_commands(definition: Any) -> frozenset[str]:
     found: set[str] = set()
     for step in getattr(definition, "steps", {}).values():
         if isinstance(step, ScriptStep):
-            found.add("playbook_script_run")
+            found.update(("playbook_script_run", "job_cancel"))
         command = getattr(step, "command", None)
         if isinstance(command, str) and command:
             found.add(command)

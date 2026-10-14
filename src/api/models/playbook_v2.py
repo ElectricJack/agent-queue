@@ -325,7 +325,7 @@ class PlaybookDeleteResponse(V2Model):
 # ---------------------------------------------------------------------------
 
 
-StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal"]
+StepKind = Literal["command", "llm", "agent_task", "decision", "wait", "foreach", "terminal", "script"]
 
 EdgeKind = Literal[
     "success",
@@ -504,7 +504,18 @@ class NodeBadgeDTO(V2Model):
     value: str
 
 
+class ScriptNodeDetailDTO(V2Model):
+    program: dict[str, Any]
+    source_revision: str | None = None
+    program_sha256: str | None = None
+    runtime_sha256: str | None = None
+    executable_sha256: str | None = None
+    input_pins: list[dict[str, Any]] = []
+    environment_names: list[str] = []
+
+
 class GraphNodeDTO(V2Model):
+    script: ScriptNodeDetailDTO | None = None
     id: str  # artifact-local step id
     rule_id: str
     step_kind: StepKind
@@ -809,6 +820,21 @@ class CancellationFactsDTO(V2Model):
     cancelled_child: bool = False
 
 
+class ScriptExecutionDTO(V2Model):
+    """Public execution facts and opaque handles, never process output or inputs."""
+    job_id: str
+    execution_id: str | None = None
+    terminal_cause: str | None = None
+    exit_code: int | None = None
+    signal: int | None = None
+    started_at: float | None = None
+    ended_at: float | None = None
+    json_status: str | None = None
+    capture_complete: bool | None = None
+    cleanup_complete: bool | None = None
+    output_refs: dict[str, str] = {}
+
+
 class ReceiptDTO(V2Model):
     receipt_id: str
     step_id: str
@@ -816,6 +842,8 @@ class ReceiptDTO(V2Model):
     step_kind: StepKind
     attempt: int = 1
     iteration_index: int | None = None  # set only inside a foreach body
+    iteration_path: str = ""
+    script: ScriptExecutionDTO | None = None
     outcome: str
     selected_edge_id: str | None = None  # joins GraphEdgeDTO.id
     started_at: float

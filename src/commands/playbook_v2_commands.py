@@ -543,6 +543,53 @@ class PlaybookV2CommandsMixin:
             "diagnostics": [_diagnostic_dict(diagnostic) for diagnostic in diagnostics],
         }
 
+    async def _v2_script_pins(self, source):
+        """Resolve source programs using server-configured storage and scoped roots."""
+        import asyncio
+        from src.playbooks.definition import scope_from_v1, source_digest
+        from src.git.manager import GitManager
+        from src.playbooks.proposal import pin_source_scripts
+        from src.playbooks.script_inputs import InputStore, RuntimeManifest, read_file
+        from src.playbooks.script_policy import ScriptError, ScriptLimits, ScriptProgram
+
+        programs = source.frontmatter.get("scripts", {})
+        if not programs:
+            return {}
+        settings = self.config.resources.scripts
+        manifest_path = Path(settings.runtime_manifest)
+        manifest = RuntimeManifest.model_validate_json(await asyncio.to_thread(
+            read_file, manifest_path.parent, manifest_path.name, settings.runtime_bytes))
+        store = InputStore(Path(settings.input_root), quota_bytes=settings.input_storage_bytes)
+        scope = scope_from_v1(source.frontmatter["scope"])
+        vault = self._v2_vault_root()
+        root = (vault / "projects" / scope.project_id if scope.type == "project" else
+                vault / "agent-types" / scope.agent_type if scope.type == "agent_type" else
+                vault / "system")
+        result = {}
+        for step_id, body in programs.items():
+            program = ScriptProgram.model_validate(body)
+            program.limits.narrow(ScriptLimits(wall_seconds=settings.wall_seconds,
+                stdout_bytes=settings.stdout_bytes, stderr_bytes=settings.stderr_bytes))
+            source_root, revision = root, source_digest(source.raw)
+            if program.source_kind == "repository":
+                if scope.type != "project":
+                    raise ScriptError("script_repository_requires_project_scope")
+                repos = await self.db.list_repos(scope.project_id)
+                if len(repos) != 1:
+                    raise ScriptError("script_repository_ambiguous")
+                repo = repos[0]
+                source_root = Path(repo.source_path or repo.checkout_base_path)
+                revision = (await GitManager()._arun(
+                    ["rev-parse", "--verify", f"{repo.default_branch}^{{commit}}"],
+                    cwd=str(source_root))).strip()
+            from dataclasses import replace
+
+            one = replace(source, frontmatter={**source.frontmatter, "scripts": {step_id: body}})
+            result.update(await pin_source_scripts(one, source_root=source_root,
+                source_revision=revision, store=store, runtimes={manifest.runtime: manifest},
+                max_bytes=settings.input_bytes))
+        return result
+
     async def _cmd_playbook_v2_propose(self, args: dict) -> dict:
         if not self._v2_compiler_enabled():
             return {"success": False, "error": V2_COMPILER_DISABLED_ERROR}
@@ -584,9 +631,11 @@ class PlaybookV2CommandsMixin:
         except (OSError, ValueError, DuplicateSemanticKey, json.JSONDecodeError) as exc:
             return _command_error(f"invalid semantic body: {exc}", field="semantic_body_path")
         contracts, profiles, events = await self._v2_lookups()
+        script_pins = await self._v2_script_pins(source)
         proposal = propose(
             source,
             body,
+            script_pins=script_pins,
             baseline=baseline,
             contracts=contracts,
             profiles=profiles,

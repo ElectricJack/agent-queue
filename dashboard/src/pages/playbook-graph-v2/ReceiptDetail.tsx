@@ -119,6 +119,9 @@ export default function ReceiptDetail({ receipt, missingReceiptId }: ReceiptDeta
     ["rule", <span className="font-mono">{receipt.rule_id}</span>],
     ["kind", STEP_KIND_LABELS[receipt.step_kind] ?? receipt.step_kind],
     ["attempt", receipt.attempt ?? 1],
+    ...(receipt.iteration_path
+      ? ([["iteration path", receipt.iteration_path]] as [string, React.ReactNode][])
+      : []),
     ...(receipt.iteration_index != null
       ? ([["iteration", receipt.iteration_index]] as [string, React.ReactNode][])
       : []),
@@ -173,6 +176,28 @@ export default function ReceiptDetail({ receipt, missingReceiptId }: ReceiptDeta
       {receipt.result && (
         <Block name="Receipt result">
           <Value value={receipt.result} />
+        </Block>
+      )}
+
+      {receipt.script && (
+        <Block name="Script execution">
+          <Pairs pairs={[
+            ["job", receipt.script.job_id],
+            ["execution", receipt.script.execution_id ?? "pending"],
+            ["cause", receipt.script.terminal_cause ?? "awaiting completion"],
+            ["exit code", receipt.script.exit_code ?? "—"],
+            ["signal", receipt.script.signal ?? "—"],
+            ["JSON", receipt.script.json_status ?? "—"],
+            ["process started", receipt.script.started_at == null ? "—" : formatClock(receipt.script.started_at)],
+            ["process ended", receipt.script.ended_at == null ? "—" : formatClock(receipt.script.ended_at)],
+            ["capture complete", String(receipt.script.capture_complete ?? false)],
+            ["cleanup complete", String(receipt.script.cleanup_complete ?? false)],
+          ]} />
+          {Object.entries(receipt.script.output_refs ?? {}).map(([stream, reference]) => (
+            <p key={stream} className="break-all font-mono text-xs text-gray-400">
+              Protected {stream}: {reference}
+            </p>
+          ))}
         </Block>
       )}
 

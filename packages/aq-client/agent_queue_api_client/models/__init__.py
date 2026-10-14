@@ -1572,6 +1572,11 @@ from .scan_stub_staleness_request import ScanStubStalenessRequest
 from .scan_stub_staleness_response import ScanStubStalenessResponse
 from .scan_stub_staleness_response_422 import ScanStubStalenessResponse422
 from .scoped_conftest import ScopedConftest
+from .script_execution_dto import ScriptExecutionDTO
+from .script_execution_dto_output_refs import ScriptExecutionDTOOutputRefs
+from .script_node_detail_dto import ScriptNodeDetailDTO
+from .script_node_detail_dto_input_pins_item import ScriptNodeDetailDTOInputPinsItem
+from .script_node_detail_dto_program import ScriptNodeDetailDTOProgram
 from .search_files_request import SearchFilesRequest
 from .search_files_response import SearchFilesResponse
 from .search_files_response_422 import SearchFilesResponse422
@@ -3508,6 +3513,11 @@ __all__ = (
     "ScanStubStalenessResponse",
     "ScanStubStalenessResponse422",
     "ScopedConftest",
+    "ScriptExecutionDTO",
+    "ScriptExecutionDTOOutputRefs",
+    "ScriptNodeDetailDTO",
+    "ScriptNodeDetailDTOInputPinsItem",
+    "ScriptNodeDetailDTOProgram",
     "SearchFilesRequest",
     "SearchFilesResponse",
     "SearchFilesResponse422",

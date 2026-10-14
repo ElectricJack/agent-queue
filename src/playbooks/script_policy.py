@@ -1,8 +1,8 @@
 """Reviewed script programs and limits; no process execution or authored host paths.
 
-E3 embeds ``ScriptProgram`` in its ScriptStep. Keeping this foundation independent
-of definition.py lets old artifacts remain byte-identical and unsupported scripts
-remain unactivatable until the executor ships.
+``ScriptStep`` embeds ``ScriptProgram``. Keeping the program policy independent
+of definition.py preserves legacy artifact identities and shares pin validation
+with proposal compilation and the ordinary-process job backend.
 """
 
 from __future__ import annotations

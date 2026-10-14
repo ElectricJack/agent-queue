@@ -28,6 +28,16 @@ def unpinned_workspace():
 
 
 class JobQueriesMixin:
+    async def find_script_job(self, run_id, step_id, iteration_path, attempt):
+        """Read the unique submission identity, including after a lost reply."""
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(select(jobs).where(
+                jobs.c.owner_kind == "playbook", jobs.c.playbook_run_id == run_id,
+                jobs.c.playbook_step_id == step_id, jobs.c.iteration_path == iteration_path,
+                jobs.c.attempt == attempt,
+            ))).mappings().first()
+            return dict(row) if row else None
+
     async def list_task_job_results(self, task_id: str, *, limit: int = 10) -> list[dict]:
         """Recent terminal results for prime, with no delivery acknowledgement."""
         async with self._engine.connect() as conn:
@@ -455,6 +465,10 @@ class JobQueriesMixin:
                 .where(
                     jobs.c.state.in_(TERMINAL),
                     jobs.c.cleanup_blocked.is_(False),
+                    (jobs.c.owner_kind != "playbook") | ~select(playbook_v2_runs.c.run_id).where(
+                        playbook_v2_runs.c.run_id == jobs.c.playbook_run_id,
+                        playbook_v2_runs.c.lifecycle.in_(("running", "paused", "cancelling")),
+                    ).exists(),
                     (jobs.c.output_retention != "expired") | (jobs.c.ended_at < result_cutoff),
                 )
                 .order_by(jobs.c.ended_at, jobs.c.id)
@@ -482,6 +496,12 @@ class JobQueriesMixin:
             if not job or job["state"] not in TERMINAL or job["cleanup_blocked"]:
                 return False
             if job["owner_kind"] == "playbook":
+                unsettled = await conn.scalar(select(playbook_v2_runs.c.run_id).where(
+                    playbook_v2_runs.c.run_id == job["playbook_run_id"],
+                    playbook_v2_runs.c.lifecycle.in_(("running", "paused", "cancelling")),
+                ))
+                if unsettled:
+                    return False
                 from src.database.tables import playbook_private_values
                 from src.playbooks.private_values import REFERENCE_KEY
 

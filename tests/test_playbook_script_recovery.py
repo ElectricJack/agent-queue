@@ -242,6 +242,11 @@ async def test_retirement_releases_only_settled_results_and_inputs(setup):
     atomic_json(directory / "completion.json", receipt)
     svc.settings.result_days = 0
     await svc.sweep()
+    assert await db.get_job(job["id"]) is not None  # The run has not consumed its result.
+    from tests.test_playbook_run_repository import make_receipt
+    run = await db.load_run("run-1")
+    await db.commit_boundary(replace(run, lifecycle=RunLifecycle.COMPLETED), make_receipt(run))
+    await svc.sweep()
     assert read_json(quota_file) == {}
     assert await db.get_job(job["id"]) is None
     async with db._engine.connect() as conn:
@@ -293,8 +298,7 @@ async def test_submission_requires_the_actual_pinned_script_step(variant):
                                "max_total_tokens": 200, "timeout_seconds": 10},
                        tool_use={"aq_commands": ["playbook_script_run"]},
                        transitions={"success": "done"})
-    # Unit-test the dormant boundary interface; the production definition parser
-    # must still reject ScriptStep until E3 installs its union and executor.
+    # The command checks the actual pinned step, independently of executor dispatch.
     artifact = artifact.model_copy(update={
         "steps": {**artifact.steps, step_id: step},
         "trusted_execution": TrustedExecutionMetadata(scripts={step_id: pinned}),
@@ -360,8 +364,7 @@ async def test_oversized_private_input_rejected_before_storage(setup):
     assert await db.list_jobs() == []
 
 
-def test_script_model_remains_dormant_until_engine_integration():
-    from pydantic import ValidationError
+def test_script_model_is_enabled_with_engine_integration():
     from src.playbooks.definition import PlaybookDefinition
     from tests.playbook_v2_engine_helpers import minimal_artifact
     from tests.test_playbook_script_sandbox import program
@@ -372,5 +375,4 @@ def test_script_model_remains_dormant_until_engine_integration():
         "source": {"path": "x.md", "start_line": 1, "end_line": 1},
         "program": program().model_dump(mode="json"), "transitions": {"succeeded": "done"},
     }
-    with pytest.raises(ValidationError, match="union_tag_invalid"):
-        PlaybookDefinition.model_validate(body)
+    assert PlaybookDefinition.model_validate(body).steps["ensure-review-task"].type == "script"

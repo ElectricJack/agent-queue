@@ -1,12 +1,11 @@
-# Playbook script process foundation
+# Playbook script steps
 
 Playbook scripts run as ordinary processes. The October 14, 2026 decision
 supersedes the original E1 sandbox design: no cgroups, namespaces, network
 isolation, privileged launcher, prerequisite doctor or separate host acceptance.
 `resources.scripts.enabled` defaults to **true**; setting it false refuses new
-launches. Managed job admission must also be enabled. This foundation does not
-register `ScriptStep` or advertise `script_v1`; E2 owns durable jobs and protected
-output, and E3 owns step dispatch and activation.
+launches. Managed job admission must also be enabled. `ScriptStep` is an accepted step kind and activates with the inferred
+`script_v1` feature pin.
 
 ## Programs and pins
 
@@ -31,8 +30,9 @@ not command inputs. There is no runtime image or mount: host libraries, files an
 network are accessible normally. Digest pins detect changes to declared bytes;
 they do not sandbox a program or freeze undeclared host dependencies.
 
-E3 must place pins in B3's trusted execution metadata, compare compiled steps to
-the source program and include the metadata in review identity. Compiler-authored
+Proposal compilation places server-computed pins in trusted execution metadata,
+compares compiled steps to the source program and includes the metadata in review
+identity. Compiler-authored
 digests do not establish trust. Legacy artifact and contract identities remain
 unchanged by this foundation.
 
@@ -81,7 +81,7 @@ double-acquiring capacity. The backend uses weight one, normal priority and a
 per-run lock. Queue timeout does not start a process. Cancellation of a queued
 async task also waits for acquisition cleanup before releasing its run lock.
 
-E2 must first check the original principal, scope, invocation, protected-output
+Job admission first checks the original principal, scope, invocation, protected-output
 readiness and durable launch identity. The backend retains an exclusive
 `intent-<execution_id>` file to reject local replay. E2 owns restart recovery,
 ambiguous launches, retention and deletion of those intents. `QuotaLedger`
@@ -113,10 +113,10 @@ Raw buffers remain available for encrypted storage. Parsed values reserve 4 KiB
 for settlement metadata and protected references. Incomplete capture never binds
 a stream prefix as a complete value. Public reprs omit payloads.
 
-E2 must encrypt streams and bindings with A3, attach run-authorized output
-references, enforce the final binding ceiling after metadata, and keep raw values
+Settlement encrypts streams and bindings with A3, attaches run-authorized output
+references, enforces the final binding ceiling after metadata, and keeps raw values
 out of logs, receipts and public API responses. A binding dictionary is not a
-public projection. E3 binds it only inside the authorized run.
+public projection. The engine binds it only inside the authorized run.
 
 ## Acceptance
 
@@ -158,6 +158,37 @@ the owning run and retains the active job and pins. It never authorizes another
 launch. Cancellation requests use the existing durable cancellation file. The
 ordinary-process backend's cleanup limitations still apply as described above.
 
-`script_v1` remains unsupported until the engine integration lands. This boundary
-provides the `ScriptStep` and trusted script pin types, but does not install an
-executor, add scripts to the accepted step union, or enable activation.
+## Engine waits and inspection
+
+The live executor submits through `CommandHandler` once, then pauses with a
+`job.completed` event wait. The full nested iteration path and original attempt
+identify the operation. A lost submission reply rejoins that same durable job;
+it does not allocate another attempt. Job settlement is the source of truth,
+so duplicate notifications and completion before wait registration are harmless.
+The wait scheduler also scans settled jobs after restart. Ambiguous launches keep
+the run paused with its evidence intact and never trigger automatic replay.
+
+Cancelling a run requests cancellation of its script job. Completed output cannot
+be retired while the owning run is running, paused or cancelling. After terminal
+settlement, the normal retention policy applies.
+
+Dry-run and shadow display the authored program, pinned inputs/runtime and limits,
+with symbolic outputs and no job submission. Graph inspection exposes program
+forms, cwd, environment names and all digest pins; receipts expose job/execution
+identity, nested iteration, terminal cause, timing, cleanup facts and protected
+stream handles. Resolved environment values and raw output remain private.
+Changes to program text, supporting bytes, interpreter, environment policy or
+limits appear in artifact and semantic review diffs.
+
+Declare each program in source frontmatter under `scripts.<step-id>`. The compiled
+step uses the exact same `program`, optional `environment` value expressions,
+`save_result_as`, and outcome transitions. Values in arguments, stdin and explicit
+environment entries must resolve to strings. Bindings contain `outcome`, nullable
+`stdout`/`stderr`, `stdout_json`, exit status, cleanup/capture facts and opaque
+`output_refs`. Large output is available through authorized job logs instead of
+an inline binding.
+
+```bash
+aq test tests/test_playbook_script.py
+aq test tests/test_playbook_script_recovery.py tests/test_jobs_waits.py
+```
