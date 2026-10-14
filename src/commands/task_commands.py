@@ -4389,21 +4389,35 @@ class TaskCommandsMixin:
         decision = args.get("decision")
         reason = args.get("reason")
         if (
-            decision not in ("retry", "hold")
+            decision not in ("retry", "hold", "release")
             or not isinstance(reason, str)
             or not 1 <= len(reason.strip()) <= 4000
         ):
-            return {"error": "Provide decision retry|hold and a reason of 1 to 4000 characters"}
+            return {"error": "Provide decision retry|hold|release and a reason of 1 to 4000 characters"}
+        operator_release = args.get("operator_release", False)
+        if not isinstance(operator_release, bool):
+            return {"error": "operator_release must be a boolean"}
         expected_hold_at = args.get("expected_hold_at")
         if expected_hold_at is not None and (
-            decision != "retry"
+            decision not in ("retry", "release")
             or isinstance(expected_hold_at, bool)
             or not isinstance(expected_hold_at, (int, float))
         ):
-            return {"error": "expected_hold_at requires retry and the prior hold's decided_at"}
+            return {"error": "expected_hold_at requires retry|release and the prior hold's decided_at"}
+        actor = None
+        if operator_release:
+            if decision not in ("retry", "release") or expected_hold_at is None:
+                return {"error": "operator_release requires retry|release and expected_hold_at"}
+            from src.commands.supervisor_authority import operator_or_global_supervisor
+
+            actor, refusal = await operator_or_global_supervisor(self.db)
+            if refusal:
+                return {"error": refusal}
+        elif decision == "release":
+            return {"error": "decision release requires operator_release"}
         repair_operation = await self.db.get_active_integration_repair_for_task(task_id)
         verifier_operation = await self.db.get_active_integration_verifier_for_task(task_id)
-        if repair_operation is not None or verifier_operation is not None:
+        if decision != "release" and (repair_operation is not None or verifier_operation is not None):
             operation = repair_operation or verifier_operation
             return {
                 "error": (
@@ -4414,7 +4428,6 @@ class TaskCommandsMixin:
         scope = self._current_scope or {}
         stopped_session = None
         operator_handoff = False
-        actor = None
         if decision == "retry":
             incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
             if incident.get("id") != args.get("incident_id"):
@@ -4447,6 +4460,7 @@ class TaskCommandsMixin:
             stopped_session=stopped_session,
             expected_hold_at=expected_hold_at,
             operator_handoff=operator_handoff,
+            operator_release=operator_release,
         )
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result

@@ -50,6 +50,18 @@ create or reuse one durable escalation for the infrastructure repair. Never
 mass-pause otherwise ready tasks to silence a system fault. Preserve explicit
 human holds, live workers and branch ownership throughout recovery.
 
+A held train repair blocks every delivery through that train. Diagnose and
+escalate it promptly; do not park it on an indefinite recovery hold. Supervisor
+holds on train repairs and `slot_reset_failed` escalate to project and global
+supervisors after 15 minutes while preserving the execution barrier. Ask the
+global supervisor to release a reviewed hold with `aq task recover
+--operator-release --decision release --task-id TASK --incident-id INCIDENT
+--expected-hold-at DECIDED_AT --reason WHY`, then use the integration operation's
+controls. Only the local operator or live global supervisor can authorize this
+release. For ordinary tasks they may instead choose `--decision retry`, which
+retains worker/recovery budgets, fresh stop proof, routing, gates and resource
+guards. Never clear metadata by hand or reset budgets to lift a hold.
+
 ## Transactional graph changes
 
 For any change involving multiple tasks, stage one change set with

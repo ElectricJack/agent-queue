@@ -2583,7 +2583,7 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "task_recover",
-        "description": "Decide a supervisor recovery incident: retry safely within existing budgets or hold with a recorded diagnosis. Never bypass a rejection using restart_task or status edits.",
+        "description": "Decide a supervisor recovery incident: retry safely within existing budgets, hold with a diagnosis, or explicitly release an exact hold with operator/global-supervisor authority. Never bypass a rejection using restart_task or status edits.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2592,10 +2592,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Exact recovery incident ID from the supervisor notification",
                 },
-                "decision": {"type": "string", "enum": ["retry", "hold"]},
+                "decision": {"type": "string", "enum": ["retry", "hold", "release"]},
+                "operator_release": {
+                    "type": "boolean",
+                    "description": "Local operator or live global supervisor only: release the exact prior hold. With decision release, preserve task state and integration controls; with retry, authorize a reviewed nonautomatic failure while retaining all ownership, liveness, gate and budget guards. Requires expected_hold_at.",
+                },
                 "expected_hold_at": {
                     "type": "number",
-                    "description": "Release a cleared hold by retrying this incident; exact decided_at of the prior hold. All recovery guards and remaining budgets still apply.",
+                    "description": "Exact decided_at of the prior hold. Required for operator_release; normal retry releases retain automatic recovery guards and remaining budgets.",
                 },
                 "reason": {
                     "type": "string",

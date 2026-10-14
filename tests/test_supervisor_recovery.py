@@ -1,6 +1,7 @@
 """Durable incident delivery and bounded, claim-fenced supervisor decisions."""
 
 import asyncio
+import json
 import subprocess
 from dataclasses import asdict
 from types import SimpleNamespace
@@ -15,9 +16,13 @@ from src.config import AppConfig, DatabaseConfig
 from src.database import Database
 from src.database.tables import (
     integration_branch_owners,
+    integration_batches,
     integration_owner_recoveries,
+    integration_repair_operations,
+    integration_repair_stages,
     messages,
     projects,
+    task_context,
     task_branch_origins,
     task_integration_checkpoints,
     tasks,
@@ -503,6 +508,223 @@ async def test_cleared_hold_retries_once_with_audit_and_preserved_work(env):
     comments = await env.handler.execute("task_comments", {"task_id": "t"})
     assert len(comments["comments"]) == 2
     assert "Cleared recovery hold" in comments["comments"][0]["body"]
+
+
+@pytest.mark.parametrize("reason", ["slot_reset_failed", "session_close_hard_failure"])
+async def test_operator_can_retry_reviewed_nonautomatic_hold_once(env, reason):
+    current = await incident(env, reason=reason)
+    held, _ = await supervisor_handoff_hold(env, current)
+    ordinary = await decide(env, current, expected_hold_at=held["decided_at"])
+    assert "automatic recovery is not allowed" in ordinary["error"]
+    results = await asyncio.gather(*(
+        decide(env, current, operator_release=True, expected_hold_at=held["decided_at"])
+        for _ in range(2)
+    ))
+    assert sum("error" not in result for result in results) == 1, results
+    task = await env.db.get_task("t")
+    assert task.status == TaskStatus.READY and task.retry_count == 1
+    assert task.branch_name == "aq/keep" and task.description == "Keep requirements"
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") == 1
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert recorded["operator_release"] is True
+    assert recorded["decided_by"] == "human:local-operator"
+    assert recorded["decision_history"] == [
+        {key: held[key] for key in ("decision", "decision_reason", "decided_at", "decided_by")}
+    ]
+
+
+async def test_operator_retry_can_review_nonautomatic_session_exit(env):
+    await stopped_attempt(env, reason="productive_death")
+    await env.db.set_task_meta("t", "needs_attention", "session_not_live")
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    held, _ = await supervisor_handoff_hold(env, current)
+    assert "error" in await decide(env, current, expected_hold_at=held["decided_at"])
+    result = await decide(env, current, operator_release=True, expected_hold_at=held["decided_at"])
+    assert result["status"] == "READY", result
+
+
+@pytest.mark.parametrize("guard", ["retry_budget", "recovery_budget", "gate", "routing", "live",
+                                   "resource", "pause", "project_budget", "stale_hold"])
+async def test_operator_retry_preserves_execution_and_budget_guards(env, guard):
+    current = await incident(env, reason="slot_reset_failed")
+    held, _ = await supervisor_handoff_hold(env, current)
+    if guard == "retry_budget":
+        await env.db.update_task("t", retry_count=3)
+    elif guard == "recovery_budget":
+        await env.db.set_task_meta("t", "supervisor_recovery_attempts", 2)
+    elif guard == "gate":
+        await env.db.create_gate(project_id="p", gate_type="human", title="Review",
+                                 waiter_task_ids=["t"])
+    elif guard == "routing":
+        await env.db.update_task("t", intelligence_class="standard-high")
+    elif guard == "live":
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=AsyncMock(return_value=False)
+        )
+    elif guard == "resource":
+        await env.db.create_agent(Agent(id="holder", name="Holder", profile_id="worker",
+                                        state=AgentState.BUSY, current_task_id="t"))
+    elif guard == "pause":
+        await env.db.set_task_meta("t", "manual_pause", {"reason": "human hold"})
+    elif guard == "project_budget":
+        await env.db.update_project("p", budget_limit=1, total_tokens_used=1)
+    result = await decide(env, current, operator_release=True,
+                          expected_hold_at=held["decided_at"] - int(guard == "stale_hold"))
+    assert "error" in result, result
+    assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] == "hold"
+
+
+@pytest.mark.parametrize("status", [TaskStatus.BLOCKED, TaskStatus.READY, TaskStatus.FAILED])
+async def test_release_only_preserves_task_and_other_guards(env, status):
+    current = await incident(env, reason="slot_reset_failed")
+    held, _ = await supervisor_handoff_hold(env, current)
+    if status != TaskStatus.BLOCKED:
+        await env.db.update_task("t", status=status)
+    await env.db.create_gate(project_id="p", gate_type="human", title="Review",
+                             waiter_task_ids=["t"])
+    before = await env.db.get_task("t")
+    result = await decide(env, current, "release", operator_release=True,
+                          expected_hold_at=held["decided_at"])
+    assert result["decision"] == "release", result
+    assert asdict(await env.db.get_task("t")) == asdict(before)
+    assert await env.db.get_task_meta("t", "needs_attention") == "slot_reset_failed"
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+    assert "frontier_recovery_hold" not in {
+        item["code"] for item in await env.db.claim_frontier_exclusions("t")
+    }
+    assert "error" in await decide(env, current, "release", operator_release=True,
+                                   expected_hold_at=held["decided_at"])
+
+
+@pytest.mark.parametrize("authority", ["global", "project", "stopped", "wrong_instance",
+                                       "worker", "service"])
+async def test_operator_hold_release_requires_live_global_authority(env, authority):
+    from src.commands.principal import ExecutionPrincipal, principal_context
+
+    current = await incident(env)
+    held, scope = await supervisor_handoff_hold(env, current)
+    if authority in {"global", "stopped", "wrong_instance"}:
+        await env.db.update_session("supervisor", project_id=None,
+                                    **({"state": "stopped"} if authority == "stopped" else {}))
+        scope["project_id"] = None
+    scope["session_instance_token"] = "wrong" if authority == "wrong_instance" else "supervisor"
+    if authority == "worker":
+        scope["elevated"] = False
+    if authority == "service":
+        with principal_context(ExecutionPrincipal.service("reconciler")):
+            result = await decide(env, current, "release", operator_release=True,
+                                  expected_hold_at=held["decided_at"])
+    else:
+        result = await decide(env, current, "release", operator_release=True,
+                              expected_hold_at=held["decided_at"], _scope=scope)
+    assert ("error" not in result) is (authority == "global"), result
+
+
+async def test_release_requires_flag_and_exact_hold(env):
+    current = await incident(env)
+    assert "error" in await decide(env, current, "release", operator_release=True,
+                                   expected_hold_at=1)
+    held, _ = await supervisor_handoff_hold(env, current)
+    assert "error" in await decide(env, current, "release", expected_hold_at=held["decided_at"])
+    assert "error" in await decide(env, current, "release", operator_release=True)
+    assert "error" in await decide(env, {"id": "wrong"}, "release", operator_release=True,
+                                   expected_hold_at=held["decided_at"])
+
+
+async def bind_train_repair(env):
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(integration_repair_operations).values(
+            id="train-repair", target_kind="batch", batch_id="batch", episode_id="episode",
+            state="human_required", active_stage=0, policy_snapshot={}, artifact_snapshot={},
+            required_check_version="checks", created_at=100, updated_at=100,
+        ))
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id="train-repair", ordinal=0, policy={"primary_attempts": 2},
+            repair_task_id="t", writer_kind="repair_delegate", starting_sha="a" * 40,
+            deadline_at=500, attempts=2, state="active",
+        ))
+
+
+async def test_release_only_keeps_integration_owner_stage_and_budget(env):
+    current = await incident(env)
+    held, _ = await supervisor_handoff_hold(env, current)
+    await bind_train_repair(env)
+    args = {"operator_release": True, "expected_hold_at": held["decided_at"]}
+    assert "integration operation" in (await decide(env, current, **args))["error"]
+    result = await decide(env, current, "release", **args)
+    assert result["status"] == "BLOCKED", result
+    async with env.db._engine.connect() as conn:
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+    assert operation["state"] == "human_required"
+    assert stage["attempts"] == 2 and stage["deadline_at"] == 500
+
+
+@pytest.mark.parametrize("kind", ["slot_reset_failed", "train", "legacy_train", "ordinary",
+                                  "operator_hold", "ordinary_train", "stale_train"])
+async def test_urgent_supervisor_hold_deadline_escalates_once_preserving_barrier(
+    env, monkeypatch, kind,
+):
+    import src.database.queries.task_recovery_queries as recovery
+
+    clock = [10_000.0]
+    monkeypatch.setattr(recovery.time, "time", lambda: clock[0])
+    current = await incident(env, reason="slot_reset_failed" if kind in {
+        "slot_reset_failed", "operator_hold",
+    } else "stuck_timeout")
+    if kind == "operator_hold":
+        assert "error" not in await decide(env, current, "hold")
+        held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    else:
+        held, _ = await supervisor_handoff_hold(env, current)
+    if kind in {"train", "legacy_train"}:
+        await bind_train_repair(env)
+    if kind in {"ordinary_train", "stale_train"}:
+        await env.db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE))
+        await env.db.update_task("t", repo_id="r", created_by_kind="system", created_by_id="batch",
+                                 dedup_key="repair:batch:1")
+        async with env.db.immediate() as conn:
+            await conn.execute(insert(integration_batches).values(
+                id="batch", project_id="p", repository_id="r", request_id="request",
+                target_ref="refs/heads/main", intent="open", repair_attempt_count=(
+                    2 if kind == "stale_train" else 1
+                ), source_manifest_digest="manifest", base_sha="a" * 40,
+                lifecycle="repairing", integration_branch="aq/candidate/batch",
+                policy_snapshot={}, artifact_snapshot={}, cleanup_state="pending",
+                created_at=100, updated_at=100,
+            ))
+            await conn.execute(insert(task_context).values(
+                id="t", task_id="t", type="snippet", label="Repair input", created_at=100,
+                content=json.dumps({"batch_id": "batch", "attempt": 1}),
+            ))
+    if kind == "legacy_train":
+        held.pop("decided_author_kind", None)
+        held.pop("hold_deadline_at", None)
+        await env.db.set_task_meta("t", "supervisor_recovery_incident", held)
+    await env.db.queue_task_recovery_notifications()
+    assert len(await queued_messages(env)) == 1
+    clock[0] += recovery.RECOVERY_HOLD_SECONDS
+    await asyncio.gather(env.db.queue_task_recovery_notifications(),
+                         env.db.queue_task_recovery_notifications())
+    messages_now = await queued_messages(env)
+    urgent = kind in {"slot_reset_failed", "train", "legacy_train", "ordinary_train"}
+    assert len(messages_now) == (3 if urgent else 1)
+    expired = [row for row in messages_now if "-hold-expired-" in row["id"]]
+    if urgent:
+        assert {row["to_id"] for row in expired} == {"supervisor-p", "supervisor-global"}
+        assert all(current["id"] in row["body"] and "--expected-hold-at" in row["body"]
+                   for row in expired)
+        updated = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+        assert updated["hold_deadline_at"] == held["decided_at"] + recovery.RECOVERY_HOLD_SECONDS
+        assert updated["hold_escalated_at"] == clock[0]
+        assert "deadline expired" in updated["next_action"]
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] == "hold"
+    assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
+    assert (await env.db.get_task("t")).retry_count == 0
+    await env.db.queue_task_recovery_notifications()
+    assert len(await queued_messages(env)) == len(messages_now)
 
 
 @pytest.mark.parametrize(
@@ -1609,6 +1831,19 @@ async def test_operator_handoff_explicit_supervisor_hold_release_is_fenced_and_a
     comments = await env.handler.execute("task_comments", {"task_id": "t"})
     assert "Cleared recovery hold" in comments["comments"][0]["body"]
     assert "Operator handoff evidence" in comments["comments"][0]["body"]
+
+
+@pytest.mark.parametrize("missing_audit", [False, True])
+async def test_operator_release_retains_audited_producer_handoff_proof(env, missing_audit):
+    current = await released_handoff(env)
+    held, _ = await supervisor_handoff_hold(env, current)
+    if missing_audit:
+        async with env.db.immediate() as conn:
+            await conn.execute(delete(integration_owner_recoveries))
+    result = await decide(env, current, operator_release=True, expected_hold_at=held["decided_at"])
+    assert ("error" not in result) is not missing_audit, result
+    task = await env.db.get_task("t")
+    assert task.status == (TaskStatus.BLOCKED if missing_audit else TaskStatus.READY)
 
 
 @pytest.mark.parametrize(
