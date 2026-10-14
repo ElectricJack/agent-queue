@@ -29,6 +29,11 @@
     "source_error": null
   },
   "purpose": "routine",
+  "execution_requirements": {
+    "required_features": [],
+    "required_capabilities": [],
+    "state_schema_version": null
+  },
   "event_groups": [
     {
       "event_type": "task.completed",
@@ -1821,6 +1826,7 @@
           "redacted": false,
           "type_name": null
         },
+        "max_iterations": 500,
         "item_binding": "task",
         "failure_policy": "collect",
         "body_entry_step_id": "open-gate",

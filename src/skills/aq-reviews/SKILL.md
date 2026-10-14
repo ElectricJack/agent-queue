@@ -271,14 +271,30 @@ record it so, and never claim coverage you did not observe.
   a different document, never mid-round without recording a new assignment.
 - Three rounds is a cap, not a quota.
 
-## This loop is not a playbook
+## Review commands in playbooks
 
-`review_dispatch`, `review_show` and `review_decide` are not contracted
-commands, so a V2 `command` step cannot call them. An `agent_task` reviewer is
-outside the dispatch ledger, so its comments are refused `not_dispatched`.
-`review.dispatched` has no event schema, so a rule on it fails validation
-(`unknown_event`). A playbook principal cannot decide. Do not write a playbook
-that pretends otherwise; contracting the verbs is a separate feature.
+Catalogue coverage and caller authority are independent. `review_dispatch`,
+`review_show` and `review_decide` are discoverable through generated contracts;
+coverage does not turn a PLAYBOOK principal into a supervisor or human decider.
+Consult `playbook_commands` for schemas/outcomes and the current caller gates.
+Review decisions still require current authorized human/delegated evidence.
+An ordinary `agent_task` reviewer is outside the dispatch ledger and its comments
+are refused `not_dispatched`. Unregistered event types fail `unknown_event`;
+never infer an event schema from a command name. The four universally denied
+commands are `run_command`, `shutdown`, `restart_daemon`, `update_and_restart`.
+
+For a playbook proposal, review the actual paths, predicates, thresholds,
+recipients, intervals, completeness gates and state revisions against source.
+Required capabilities are declarations, never grants. Source supplies state
+version and script manifests/policy; server code resolves digests and execution
+identity. Compiler output contains exactly `rules` and `steps`, with the existing
+source-checked integration-policy compatibility path. A state version change
+selects a new namespace and can re-alert; reset is an explicit operator decision.
+Snapshot absence is valid only after complete producer coverage and all pages.
+Scripts use ordinary processes, timeout/output caps and strict optional JSON;
+there is no sandbox prerequisite or real-host gate. Ambiguous execution cannot
+be automatically replayed. Protected streams require run-authorized job readback.
+See `docs/guides/playbook-building-blocks.md` for rollout and rollback evidence.
 
 ## Refusals you will meet
 

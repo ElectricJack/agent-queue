@@ -16,7 +16,7 @@ from src.doctor.playbook_v2_checks import _check_activation_invalid
 from src.playbooks import features
 from src.playbooks.activation import ActivationHealth, load_activation_health
 from src.playbooks.artifact_diff import diff_artifacts
-from src.playbooks.authoring import PlaybookSource
+from src.playbooks.authoring import PlaybookSource, SourceError
 from src.playbooks.definition import (
     PlaybookDefinition,
     TrustedExecutionMetadata,
@@ -207,8 +207,14 @@ def test_state_metadata_is_source_derived_and_supported(tmp_path):
 
 @pytest.mark.parametrize("value", ["true", "0", "-1", '"2"', "1.5", "null"])
 def test_source_state_version_is_strict(tmp_path, value):
-    result = proposal(tmp_path, frontmatter=f"state_schema_version: {value}\n")
-    assert result.artifact is None
+    path = tmp_path / "source.md"
+    path.write_text(
+        "---\nid: demo\nscope: system\ntriggers: [task.completed]\n"
+        f"state_schema_version: {value}\n---\nReviewed source.\n"
+    )
+    result = PlaybookSource.load(path, vault_root=tmp_path)
+    assert isinstance(result, SourceError)
+    assert "state_schema_version must be a positive integer" in result.errors
 
 
 def test_trusted_metadata_cannot_carry_authority():

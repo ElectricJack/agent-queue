@@ -294,7 +294,7 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
-    if command == "doctor_catalog":
+    if command in {"doctor_catalog", "playbook_commands"}:
         # Registered schemas/audits carry no project data. Preserve the strict
         # empty argument schema; capability enforcement still applies at dispatch.
         return None

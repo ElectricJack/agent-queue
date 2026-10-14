@@ -3847,6 +3847,15 @@
       "additionalProperties": false,
       "description": "Source-derived execution pins; never caller authority or compiler output.\n\nState and script owners extend this strict model with reviewed pins. Command\nsecurity policy remains in the execution contracts, not in author assertions.",
       "properties": {
+        "required_capabilities": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Required Capabilities",
+          "type": "array"
+        },
         "scripts": {
           "patternProperties": {
             "^[a-z0-9][a-z0-9_-]{0,63}$": {

@@ -383,6 +383,7 @@ from .event_group_dto import EventGroupDTO
 from .event_trigger import EventTrigger
 from .execute_request import ExecuteRequest
 from .execute_request_args import ExecuteRequestArgs
+from .execution_requirements_dto import ExecutionRequirementsDTO
 from .explain_reason import ExplainReason
 from .explain_task_request import ExplainTaskRequest
 from .explain_task_response import ExplainTaskResponse
@@ -2332,6 +2333,7 @@ __all__ = (
     "EventTrigger",
     "ExecuteRequest",
     "ExecuteRequestArgs",
+    "ExecutionRequirementsDTO",
     "ExplainReason",
     "ExplainTaskRequest",
     "ExplainTaskResponse",

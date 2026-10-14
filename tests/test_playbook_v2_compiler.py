@@ -377,3 +377,89 @@ def test_duplicate_semantic_keys_are_rejected_before_authority_stripping():
         pass
     else:  # pragma: no cover - makes the security boundary explicit
         raise AssertionError("duplicate key was accepted")
+
+
+def test_source_metadata_is_validated_and_pinned_without_granting_authority(tmp_path):
+    from dataclasses import replace
+
+    source = _source(tmp_path)
+    source = replace(source, frontmatter={**source.frontmatter,
+        "required_capabilities": ["demo_command"], "state_schema_version": 2})
+    proposal = propose(source, _body(), contracts=StubContracts(), profiles=StubProfiles(),
+                       events=StubEvents(), version=1)
+    assert proposal.artifact.trusted_execution.required_capabilities == ("demo_command",)
+    assert proposal.artifact.trusted_execution.state_schema_version == 2
+    assert any(d.code == "state_namespace_migration" for d in proposal.diagnostics)
+    for field, value in [("principal", {}), ("namespace_owner", "system"),
+                         ("trusted_execution", {}), ("resolved_digest", "abc"),
+                         ("required_capabilities", "demo_command"),
+                         ("state_schema_version", True), ("state_schema_version", None),
+                         ("scripts", {"execute": {"runtime": "python", "argv": ["python"],
+                                                  "program_sha256": "a" * 64}})]:
+        invalid = replace(source, frontmatter={**source.frontmatter, field: value})
+        rejected = propose(invalid, _body(), contracts=StubContracts(), profiles=StubProfiles(),
+                           events=StubEvents(), version=1)
+        assert rejected.artifact is None, field
+
+
+def test_policy_constants_and_exact_paths_need_source_evidence(tmp_path):
+    from dataclasses import replace
+
+    source = _source(tmp_path)
+    source = replace(source, frontmatter={**source.frontmatter, "required_capabilities": []})
+    body = _body()
+    body["steps"]["act"]["inputs"]["assigned_threshold_seconds"] = {
+        "type": "literal", "value": 1800}
+    body["steps"]["act"]["inputs"]["repeat_after_seconds"] = {
+        "type": "literal", "value": None}
+    proposal = propose(source, body, contracts=StubContracts(), profiles=StubProfiles(),
+                       events=StubEvents(), version=1)
+    questions = [d for d in proposal.diagnostics if d.code == "ambiguous_prose"]
+    assert any("1800" in d.message for d in questions)
+    assert any("null" in d.message for d in questions)
+    authored = replace(source, raw=source.raw +
+        "Use `assigned_threshold_seconds` = `1800`.\n"
+        "Use `repeat_after_seconds` = `null`.\n")
+    aligned = propose(authored, body, contracts=StubContracts(), profiles=StubProfiles(),
+                      events=StubEvents(), version=1)
+    assert not [d for d in aligned.diagnostics if d.code == "ambiguous_prose"]
+    body["steps"]["act"]["inputs"]["assigned_threshold_seconds"]["value"] = 7200
+    drifted = propose(authored, body, contracts=StubContracts(), profiles=StubProfiles(),
+                      events=StubEvents(), version=1)
+    assert any("7200" in d.message for d in drifted.diagnostics)
+
+
+def test_source_loader_refuses_execution_authority_and_malformed_frontmatter(tmp_path):
+    from src.playbooks.authoring import SourceError
+
+    for frontmatter in ["- not-a-mapping", "id: demo\nscope: system\ntriggers: [task.completed]\nnamespace_owner: system"]:
+        path = tmp_path / "invalid.md"
+        path.write_text(f"---\n{frontmatter}\n---\nPolicy")
+        assert isinstance(PlaybookSource.load(path, vault_root=tmp_path), SourceError)
+
+
+def test_policy_alignment_rejects_unstated_paths_predicates_and_recipients(tmp_path):
+    from dataclasses import replace
+    from src.playbooks.proposal import _source_policy_alignment
+
+    source = _source(tmp_path)
+    body = _body()
+    body["steps"]["act"]["inputs"].update({
+        "to_id": {"type": "literal", "value": "operator"},
+        "result": {"type": "binding_ref", "binding": "observed", "path": "raw.status"},
+    })
+    body["rules"][0]["guard"] = {
+        "type": "comparison", "op": "eq",
+        "left": {"type": "event_ref", "path": "task.status"},
+        "right": {"type": "literal", "value": "READY"},
+    }
+    proposal = propose(source, body, contracts=StubContracts(), profiles=StubProfiles(),
+                       events=StubEvents(), version=1, enforce_inventory=False)
+    questions = _source_policy_alignment(source, proposal.artifact)
+    assert any("operator" in d.message for d in questions)
+    assert any("raw.status" in d.message for d in questions)
+    assert any("predicate" in d.message for d in questions)
+    authored = replace(source, raw=source.raw +
+        "Use `to_id` = `operator`.\nCompare `task.status` `eq` `READY`.\n")
+    questions = _source_policy_alignment(authored, proposal.artifact)
+    assert all("Exact result path" in d.message for d in questions)

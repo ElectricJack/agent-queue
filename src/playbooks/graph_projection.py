@@ -1044,6 +1044,7 @@ def _node(
     if isinstance(step, ForEachStep):
         loop = {
             "collection": project_value(step.collection),
+            "max_iterations": step.max_iterations,
             "item_binding": step.item_binding,
             "failure_policy": step.failure_policy,
             "body_entry_step_id": step.body_entry,
@@ -1231,6 +1232,13 @@ def project_graph(
         "artifact": _artifact_dict(artifact),
         "activation": _activation_dict(activation, definition),
         "purpose": definition.purpose,
+        "execution_requirements": {
+            "required_features": list(definition.required_features),
+            "required_capabilities": list(definition.trusted_execution.required_capabilities)
+                if definition.trusted_execution else [],
+            "state_schema_version": definition.trusted_execution.state_schema_version
+                if definition.trusted_execution else None,
+        },
         "event_groups": event_groups,
         "rules": rules,
         "nodes": nodes,
