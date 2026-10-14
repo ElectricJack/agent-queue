@@ -840,6 +840,194 @@ async def test_paused_batch_is_not_released_for_a_superseded_repair(world):
             integration_batches.c.id == "repair-only")) == "paused"
 
 
+@pytest.mark.parametrize("kind", ["root", "epic"])
+async def test_removed_required_check_reseals_all_frozen_sources_and_delivers(world, kind):
+    target = MAIN
+    parent = None
+    boundary = "root"
+    if kind == "epic":
+        parent, boundary = "epic", "parent"
+        await world.db.create_task(Task(id=parent, project_id="p", repo_id="r", title=parent,
+            description="", branch_name="aq/epic", status=TaskStatus.IN_PROGRESS))
+        git(world.origin.clone, "push", "-q", "origin", "main:aq/epic")
+        target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    old_policy = {boundary: {"required_checks": {
+        "version": "v1", "names": ["Linux tests", "Native Windows build and tests"],
+        "producer_id": "101",
+    }}}
+    await world.db.update_project("p", hierarchical_integration_policy=old_policy)
+    sources = {tid: await completed(world, tid, parent=parent) for tid in ("a", "b")}
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), target=target)
+    testing = await train.visit(target)
+    assert testing.state == "testing", testing
+    store = BatchStore(world.db)
+    original = await world.db.get_integration_batch(testing.batch_id)
+    frozen = await store.members(testing.batch_id)
+    before = git(world.origin.url, "rev-parse", target.target_ref)
+    new_policy = {boundary: {"required_checks": {
+        "version": "v2", "names": ["Linux tests"], "producer_id": "101",
+    }}}
+    await world.db.update_project("p", hierarchical_integration_policy=new_policy)
+
+    # A new train instance proves detection needs no project-edit event/cache.
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), target=target)
+    released = await train.visit(target)
+    assert released.state == "blocked", released
+    blocker = released.detail["blockers"][0]
+    assert blocker["code"] == "batch_required_checks_removed"
+    assert blocker["removed_checks"] == ["Native Windows build and tests"]
+    assert blocker["released"] is True
+    assert git(world.origin.url, "rev-parse", target.target_ref) == before
+    aborted = await world.db.get_integration_batch(testing.batch_id)
+    assert aborted["intent"] == aborted["lifecycle"] == "aborted"
+    assert aborted["policy_snapshot"] == original["policy_snapshot"] == old_policy
+    assert await store.members(testing.batch_id) == frozen
+    assert aborted["ejection_record"]["operator_id"] == "service:integration-train"
+
+    replacement = await train.visit(target)
+    assert replacement.state == "testing", replacement
+    assert replacement.batch_id != testing.batch_id
+    assert await store.members(replacement.batch_id) == frozen
+    assert (await world.db.get_integration_batch(replacement.batch_id))["policy_snapshot"] == new_policy
+    assert (await train.visit(target)).batch_id == replacement.batch_id
+    checks.green.add(replacement.candidate_sha)
+    assert (await train.visit(target)).state == "delivered"
+    for source in sources.values():
+        git(world.origin.url, "merge-base", "--is-ancestor", source,
+            git(world.origin.url, "rev-parse", target.target_ref))
+
+
+@pytest.mark.parametrize("change", ["paused", "delivered", "unknown", "version", "add", "missing"])
+async def test_required_check_change_preserves_held_delivered_or_compatible_batch(
+    world, change, monkeypatch,
+):
+    original_policy = {"root": {"required_checks": {
+        "version": "v1", "names": ["Linux", "Windows"],
+    }}}
+    await world.db.update_project("p", hierarchical_integration_policy=original_policy)
+    await completed(world, "a")
+    transport = LocalGit(Path(world.origin.url))
+    train, checks, _ = lane(world, transport)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing"
+    store = BatchStore(world.db)
+    if change == "paused":
+        await store.set_intent(testing.batch_id, "paused", reason="operator hold")
+    elif change == "delivered":
+        git(world.origin.clone, "push", "-q", "origin", f"{testing.candidate_sha}:main")
+    names = ["Linux"]
+    if change == "version":
+        names = ["Windows", "Linux"]
+    elif change == "add":
+        names = ["Linux", "Windows", "Mac"]
+    current_policy = {} if change == "missing" else {"root": {"required_checks": {
+        "version": "v2", "names": names,
+    }}}
+    await world.db.update_project("p", hierarchical_integration_policy=current_policy)
+    if change == "unknown":
+        observed = await snapshot(world)
+        monkeypatch.setattr(type(observed), "contains_source", AsyncMock(return_value=None))
+        # Drive selection with unavailable containment while the real target
+        # stays unchanged; no inferred absence can authorize a release.
+        service = SimpleNamespace(store=store)
+        selected = await train.batches.open_batch(MAIN, observed, service)
+        assert selected.batch is None
+        assert selected.blockers[0]["released"] is False
+    else:
+        visit = await train.visit(MAIN)
+        assert visit.state == ("held" if change == "paused" else
+                               "delivered" if change == "delivered" else "testing"), visit
+        if change == "paused":
+            assert visit.detail["blockers"][0]["removed_checks"] == ["Windows"]
+    row = await world.db.get_integration_batch(testing.batch_id)
+    assert row["intent"] == ("paused" if change == "paused" else "open")
+    assert row["policy_snapshot"] == original_policy
+    assert not row["ejection_record"]
+
+
+async def test_removed_check_supersede_rechecks_policy_and_target(world):
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux", "Windows"]}}})
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    store = BatchStore(world.db)
+    batch = await store.get(testing.batch_id)
+    kwargs = dict(reason="removed Windows", boundary="root", removed_checks=("Windows",))
+    # The edit was reverted before acquiring the policy/batch fences.
+    assert not await store.supersede(batch, "a", **kwargs)
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux"]}}})
+    assert not await store.supersede(batch, "a", authorize=AsyncMock(return_value=False), **kwargs)
+    assert (await store.get(batch.id)).intent == "open"
+    assert not (await world.db.get_integration_batch(batch.id))["ejection_record"]
+
+
+@pytest.mark.parametrize("prefix", ["train-epic-sync-", "train-epic-refresh-"])
+async def test_removed_check_replaces_special_epic_batch_without_losing_its_purpose(world, prefix):
+    old = {"parent": {"required_checks": {"names": ["Linux", "Windows"]}}}
+    new = {"parent": {"required_checks": {"names": ["Linux"]}}}
+    await world.db.update_project("p", hierarchical_integration_policy=old)
+    source = await completed(world, "a")
+    store = BatchStore(world.db)
+    batch = Batch(prefix + "old", "p", "r", "refs/heads/aq/epic")
+    members = (BatchMember("a", source, source),)
+    batch = await store.freeze(batch, members, trees={"a": tree(world, source)})
+    await world.db.update_project("p", hierarchical_integration_policy=new)
+    assert await store.supersede(batch, "a", reason="removed Windows", boundary="parent",
+                                removed_checks=("Windows",), authorize=AsyncMock(return_value=True))
+    old_row = await world.db.get_integration_batch(batch.id)
+    replacement_id = old_row["ejection_record"]["replacement_batch_id"]
+    assert replacement_id.startswith(prefix) and replacement_id != batch.id
+    replacement = await fixture_batches(world.db).current(
+        TrainTarget("p", "r", batch.target_ref, "epic"))
+    assert replacement.id == replacement_id and replacement.intent == "open"
+    assert await store.members(replacement_id) == await store.members(batch.id) == members
+    assert old_row["policy_snapshot"] == old
+    assert (await world.db.get_integration_batch(replacement_id))["policy_snapshot"] == new
+    assert not await store.supersede(batch, "a", reason="retry", boundary="parent",
+                                    removed_checks=("Windows",))
+
+
+async def test_removed_check_preserves_promotion_pins_and_late_operator_hold(world):
+    from src.operator_decisions import OperatorDecisions
+
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux", "Windows"]}}})
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    store = BatchStore(world.db)
+    batch = await store.get(testing.batch_id)
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux"]}}})
+    assert await store.removed_required_checks(batch, "root") == ("Windows",)
+    # A human hold arriving after detection must win under the project fence.
+    await OperatorDecisions(world.db).record({
+        "object_kind": "batch", "object_id": batch.id, "operator": "operator",
+        "decision": "Keep this batch", "effect": "hold", "source": "dashboard",
+        "source_ref": "message:hold", "idempotency_key": "hold", "releases": None,
+    }, recorded_by="human:local-operator")
+    assert not await store.supersede(batch, "a", reason="removed Windows", boundary="root",
+                                    removed_checks=("Windows",))
+    held = await train.visit(MAIN)
+    assert held.state == "blocked" and not held.detail["blockers"][0]["released"]
+    assert (await store.get(batch.id)).intent == "open"
+    # Promotion sets belong to the pinned request even if the project changed.
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux", "Windows"]}}})
+    members = await store.members(batch.id)
+    promotion = await store.freeze(Batch("promotion-pins", "p", "r", "refs/heads/staging"),
+        members, trees={m.task_id: tree(world, m.source_sha) for m in members},
+        promotion={"repository_id": "r", "request_id": "promotion:r:release:1",
+                   "step": {"id": "release"}})
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux"]}}})
+    assert await store.removed_required_checks(promotion, "root") == ()
+    assert not await store.supersede(promotion, "a", reason="removed Windows", boundary="root",
+                                    removed_checks=("Windows",))
+
+
 def tree(world, sha):
     return git(world.origin.clone, "rev-parse", f"{sha}^{{tree}}")
 

@@ -14948,13 +14948,13 @@
       "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
-      "line": 440,
+      "line": 511,
       "owner": "BatchStore.supersede",
       "call": "log_event",
-      "owner_fingerprint": "06a16c2d7e881ba72610c415b04fc8d005ff1a749971a9b42aa5847cf80e9e87",
+      "owner_fingerprint": "7a501445727e0cab38e76963d5f43819f0d5caa8c541946fd7ec9f94b015eae3",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
+      "reason": "Audit of an obsolete batch superseded after prerequisite refresh or removal of frozen required checks. The batch-owned release instruction authorizes input admission; this event neither replays refs nor asserts delivery. Policy supersession rechecks the project policy, explicit holds and target freshness, queues branch retirement and atomically freezes any special epic replacement; no duplicated delivery lifecycle."
     },
     "src/integration/stacked_branches.py::EpicRefresh.refresh::85c997f17278e49c5a7a51cb1d2aaa7efb3367004ec68ae50f173b3772c77128": {
       "line": 1002,
