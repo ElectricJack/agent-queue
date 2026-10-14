@@ -20,6 +20,7 @@ from src.claim_file import (
     write_claim_file,
 )
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
 from src.models import ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
 
@@ -1124,7 +1125,8 @@ class ClaimCommandsMixin:
         return True
 
     async def _record_prepare_failure(
-        self, task, failure, *, session, slot, epoch, disposition, attempt=None
+        self, task, failure, *, session, slot, epoch, disposition, attempt=None,
+        cleanup_unproved=False,
     ) -> None:
         """Record what a permanent preparation failure observed, and who saw it.
 
@@ -1148,6 +1150,7 @@ class ClaimCommandsMixin:
             "instance_token": getattr(session, "instance_token", None),
             "claim_epoch": epoch,
             "workspace_id": slot.id if slot else None,
+            "workspace_generation": slot.generation if slot else None,
             "workspace_path": safe_text(slot.workspace_path if slot else session.work_dir),
             "disposition": disposition,
             "attempt": attempt,
@@ -1167,6 +1170,13 @@ class ClaimCommandsMixin:
             await conn.execute(stmt.on_conflict_do_update(
                 index_elements=["task_id", "key"], set_={"value": stmt.excluded.value}
             ))
+            if cleanup_unproved:
+                # Separate from diagnosis: this is durable uncertainty, never
+                # cleared by automatic retry/activation or a stale timeout.
+                hold = insert(task_metadata).values(
+                    task_id=task.id, key=PREPARE_CLEANUP_HOLD, value=json.dumps(record),
+                )
+                await conn.execute(hold.on_conflict_do_nothing())
 
     async def _prepare_and_activate_locked(
         self, session, row, task, cap=None, *, slot=None, project=_UNSET, admission=None
@@ -1192,6 +1202,8 @@ class ClaimCommandsMixin:
         # failure description names it (src/preparation_failure.py).
         stage = "workspace_lookup"
         try:
+            if await self.db.get_task_meta(task.id, PREPARE_CLEANUP_HOLD) is not None:
+                raise ProcessCleanupError("prior preparation writer cleanup remains unproved")
             stage = "workspace_binding"
             async with self.db.immediate() as identity_conn:
                 registered = await self.db.lock_claim_workspace(
@@ -1417,6 +1429,15 @@ class ClaimCommandsMixin:
                         )
             else:
                 fresh = await prepare_and_activate()
+        except asyncio.CancelledError as exc:
+            from src.preparation_failure import describe_preparation_failure
+
+            failure = describe_preparation_failure(exc, stage)
+            await self._record_prepare_failure(
+                task, failure, session=session, slot=slot, epoch=epoch,
+                disposition="cancelled",
+            )
+            raise
         except Exception as exc:
             if _retryable_preparation_error(exc):
                 # Retry only after the failed transaction unwinds; never run
@@ -1467,6 +1488,21 @@ class ClaimCommandsMixin:
                 "claim %s/%s (epoch %s, workspace %s): prepare failed: %s",
                 session.id, task.id, epoch, slot.id if slot else None, failure.reason,
             )
+            if isinstance(exc, ProcessCleanupError):
+                # A cancellation/timeout is not proof the writer stopped. Do
+                # not remove its claim file, detach its owner or release any
+                # task/workspace lock while startup/cleanup remains unknown.
+                await self._record_prepare_failure(
+                    task, failure, session=session, slot=slot, epoch=epoch,
+                    disposition="retained", cleanup_unproved=True,
+                )
+                await self.orchestrator.bus.emit("pool.prepare_failed", {
+                    "project_id": session.project_id, "profile_id": session.profile_id,
+                    "session_id": session.id, "task_id": task.id, "claim_epoch": epoch,
+                    **failure.event_fields(),
+                })
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
             if isinstance(exc, (StackPrerequisitesConflict, StackPreparationChanged)):
                 if hierarchy_attached and not await (
                     self.orchestrator.arelease_integration_writer_for_retry(

@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 from src.config import WorktreesConfig
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, RemoteRefState, _validate_ref, is_valid_git_oid
+from src.git.process import ProcessCleanupError, run_owned_process
 from src.models import (
     RepoSourceType,
     WORKTREE_SENTINEL_NAME,
@@ -958,6 +959,8 @@ class WorktreeSlotManager:
         """Best-effort ``merge/rebase/cherry-pick --abort`` + stale-lock sweep."""
         try:
             await self.git.aabort_in_progress_operations(str(slot_dir))
+        except ProcessCleanupError:
+            raise
         except Exception as e:  # best-effort by contract
             logger.debug("Abort-in-progress failed in %s: %s", slot_dir, e)
 
@@ -992,6 +995,8 @@ class WorktreeSlotManager:
                 event_bus=self.bus,
                 project_id=slot_ws.project_id,
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             logger.warning(
                 "Unpushed-work salvage failed in %s", slot_ws.workspace_path, exc_info=True
@@ -1140,6 +1145,8 @@ class WorktreeSlotManager:
             return None
         try:
             entries = await self.git.aworktree_list(base_ws.workspace_path)
+        except ProcessCleanupError:
+            raise
         except Exception as e:  # best-effort: a hint, never a hard dependency
             logger.debug(
                 "Could not list worktrees of %s for branch affinity: %s",
@@ -1194,6 +1201,8 @@ class WorktreeSlotManager:
             return await self.git.aget_default_branch(
                 base_path, repository_url=(project.repo_url if project else "") or None
             )
+        except ProcessCleanupError:
+            raise
         except Exception:
             return "main"
 
@@ -1381,31 +1390,20 @@ class WorktreeSlotManager:
             if not argv:
                 continue
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *argv,
-                    cwd=str(slot_dir),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-            except (OSError, FileNotFoundError) as e:
-                logger.warning("worktree_setup %r could not start in %s: %s", cmd, slot_dir, e)
-                continue
-            try:
-                _, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=self.config.setup_timeout_seconds
+                proc, _, stderr = await run_owned_process(
+                    *argv, cwd=str(slot_dir), timeout=self.config.setup_timeout_seconds,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 )
             except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                await proc.wait()
                 logger.warning(
                     "worktree_setup %r timed out after %ss in %s",
                     cmd,
                     self.config.setup_timeout_seconds,
                     slot_dir,
                 )
+                continue
+            except (OSError, FileNotFoundError) as e:
+                logger.warning("worktree_setup %r could not start in %s: %s", cmd, slot_dir, e)
                 continue
             if proc.returncode != 0:
                 logger.warning(
@@ -1497,6 +1495,8 @@ class WorktreeSlotManager:
                     return False
                 async with self._git_mutex(base_ws.workspace_path):
                     await self.git.aremove_worktree_exact(base_ws.workspace_path, str(slot_dir))
+        except ProcessCleanupError:
+            raise
         except Exception as exc:
             logger.warning("Slot %s reap refused; retirement not completed: %s", slot_ws.id, exc)
             return False
@@ -1580,6 +1580,8 @@ class WorktreeSlotManager:
             try:
                 async with self.db._engine.connect() as conn:
                     holds = await live_branch_references(conn)
+            except ProcessCleanupError:
+                raise
             except Exception as exc:
                 logger.warning(
                     "Skipping branch cleanup; live-ref inventory failed in %s: %s",
@@ -1681,6 +1683,8 @@ class WorktreeSlotManager:
             try:
                 if await self.ensure_git_exclude(base_path):
                     report.repaired.append(base.id)
+            except ProcessCleanupError:
+                raise
             except Exception as e:
                 logger.warning("ensure_git_exclude failed for %s: %s", base_path, e)
                 report.exclude_failures.append(
@@ -1701,11 +1705,15 @@ class WorktreeSlotManager:
                 async with self._git_mutex(base_path):
                     try:
                         before = await self.git.aworktree_list(base_path)
+                    except ProcessCleanupError:
+                        raise
                     except Exception:
                         before = []
                     await self.git.aworktree_prune(base_path)
                     try:
                         after = await self.git.aworktree_list(base_path)
+                    except ProcessCleanupError:
+                        raise
                     except Exception:
                         after = []
                 before_paths = {e.get("path") for e in before if e.get("path")}

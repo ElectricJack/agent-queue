@@ -3289,7 +3289,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:c8dbb1fda38bcad9cda7b2855be87b32f81c9b059bd24b0a1adcbb36ca105587",
+      "digest": "sha256:d0b4e6c14df7e94e069d917fe895df190371c03eaaf477f0b32e5afad13b221f",
       "imports": [
         "src.claim_file",
         "src.commands.claim_commands",
@@ -3301,6 +3301,7 @@
         "src.event_bus",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.git.process",
         "src.integration",
         "src.integration.admission",
         "src.integration.batches",
@@ -3324,6 +3325,7 @@
         "src.orchestrator",
         "src.orchestrator.workspace_claim_recovery",
         "src.orchestrator.worktree_manager",
+        "src.preparation_failure",
         "src.scheduler",
         "src.sessions",
         "src.sessions.reconciler"
@@ -6885,13 +6887,14 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:c395ef5e8c7610083db41cabad2a3e7bfa69a61318e7d7c39e0df9361975d649",
+      "digest": "sha256:10df1072d05de1a4708d823523162b72d251d9163fcfc4d3b58188bd6206fbc8",
       "imports": [
         "src.event_bus",
         "src.git",
         "src.git.github_contracts",
         "src.git.locks",
         "src.git.manager",
+        "src.git.process",
         "src.models",
         "src.orchestrator.git_ops",
         "src.orchestrator.workspace_attachments"
@@ -18202,12 +18205,13 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:a6195d1233a04b517b72db08619cc0d8f34ad222ff4f75b5bce9ff6a0def2ddd",
+      "digest": "sha256:ed3d6eacba48b6786c07728bab4405582e3faf7a8519c684631242d6231dbe0f",
       "imports": [
         "src.claim_file",
         "src.config",
         "src.event_schemas",
         "src.git.manager",
+        "src.git.process",
         "src.models",
         "src.orchestrator.execution",
         "src.orchestrator.task_checkpoint",

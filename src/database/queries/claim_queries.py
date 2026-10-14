@@ -69,6 +69,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.models import AgentProfile, AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
+from src.git.process import PREPARE_CLEANUP_HOLD
 from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, claimable_sources
 
 
@@ -1059,6 +1060,10 @@ class ClaimQueryMixin:
             conn, session_id, task_id, epoch=epoch, lock_task_status=lock_task_status,
         ) is None:
             return None
+        if await conn.scalar(select(task_metadata.c.task_id).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+        )) is not None:
+            return None
         holder = (await conn.execute(select(sessions).where(
             sessions.c.id == session_id,
         ))).mappings().one()
@@ -1284,6 +1289,12 @@ class ClaimQueryMixin:
         if row is None:
             return out
         task_id, agent_id = row["task_id"], row["agent_id"]
+        if task_id and await conn.scalar(select(task_metadata.c.task_id).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+        )) is not None:
+            # Deadline expiry, repeated refusals and daemon restart do not
+            # establish process quiescence. Preserve the source identity.
+            return out
         # Timeout observations can arrive after preparation activated. Check
         # its phase and deadline again while holding the session row lock.
         if preparation_expired_before is not None and (

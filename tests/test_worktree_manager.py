@@ -1864,3 +1864,60 @@ class TestGitExcludeConcurrency:
 
         assert exclude.read_bytes() == original
         assert not list(exclude.parent.glob("exclude.*.tmp"))
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "timeout"])
+async def test_setup_cancellation_settles_children_before_return(tmp_path, interruption):
+    from src.git.process import _group_has_writer
+    import signal
+    import shlex
+
+    if os.name != "posix":
+        pytest.skip("POSIX process groups")
+    script = tmp_path / "setup.py"
+    script.write_text(
+        "import os,pathlib,subprocess,sys,time\n"
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "pathlib.Path('ready').write_text(str(os.getpgrp()))\n"
+        "p.wait()\n"
+    )
+    mgr = WorktreeSlotManager(
+        db=None, git=GitManager(), bus=None, git_mutex=lambda _: None,
+        config=WorktreesConfig(setup_timeout_seconds=1 if interruption == "timeout" else 60),
+    )
+    request = asyncio.create_task(mgr._run_setup(
+        tmp_path, [shlex.join([sys.executable, str(script)])],
+    ))
+    pgid = None
+    try:
+        async with asyncio.timeout(5):
+            while not (tmp_path / "ready").exists():
+                await asyncio.sleep(.01)
+        pgid = int((tmp_path / "ready").read_text())
+        if interruption == "cancel":
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(request, timeout=10)
+        else:
+            await asyncio.wait_for(request, timeout=10)
+        assert not _group_has_writer(pgid)
+    finally:
+        if pgid:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+
+async def test_unknown_cleanup_cannot_be_swallowed_before_reset(mgr, base_repo, monkeypatch):
+    from src.git.process import ProcessCleanupError
+
+    monkeypatch.setattr(mgr.git, "aabort_in_progress_operations", AsyncMock(
+        side_effect=ProcessCleanupError("unproved child liveness"),
+    ))
+    with pytest.raises(ProcessCleanupError):
+        await mgr._abort_in_progress(base_repo)

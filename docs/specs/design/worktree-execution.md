@@ -207,6 +207,31 @@ reap. Missing registered paths retain that evidence for supervisor reconciliatio
 Shared workspace faults are infrastructure incidents for supervisor escalation,
 not grounds for mass-pausing otherwise ready tasks. Bounded retries still apply.
 
+**Cancellation is not writer quiescence.** On Linux/WSL, local Git and setup
+commands own an isolated process group. A timeout or cancellation, including cancellation while
+the subprocess handle is being created, must settle that group before returning
+and releasing preparation's locks. Repeated cancellation cannot interrupt this
+cleanup. Killing only Git's leader leaves hooks and filter processes able to
+write into a successor checkout. Cleanup has a separate bounded safety margin;
+if startup or termination cannot be proved complete, retain the exact claim,
+workspace acquisition receipt, claim file and integration attachment. Record a
+`prepare_cleanup_unproved` hold, using the existing scrubbed failure description.
+Neither expiry, retry nor deferred owner handoff may clear that hold. An operator
+needs fresh process/source evidence and the supported recovery owner to resolve
+it; absence of a marker or expiration of a deadline is not that proof.
+
+`swarm.prepare_timeout` is the reconciler's stale preparation threshold; it skips
+an in-flight request registered in `claim_preparations`. It is not an outer Git
+deadline. `worktrees.slot_reset_git_timeout_seconds` bounds each Git command in
+slot reset (explicit command timeouts win), while
+`worktrees.setup_timeout_seconds` bounds each setup command. A safely terminated
+setup timeout remains a nonfatal cache failure; external cancellation propagates.
+Increasing any of these values does not repair cancellation or prove the cause
+of an earlier incident. Detached, deliberately escaping operator commands and
+abrupt daemon/host death require separate process evidence. Other platforms retain
+normal successful command behavior, but an interrupted command without process-group
+proof fails closed; leader termination alone does not permit reuse.
+
 **Cause-first evidence (2026-10-13).** The pre-fix sequence `record_holder`
 (exact-path/enabled UPDATE returning no row) → agent-only workspace fallback →
 slot reset → claim-file write at the session path → session/task-only activation

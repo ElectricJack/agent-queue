@@ -1394,6 +1394,94 @@ class TestClaim:
         detail = next(r["detail"] for r in explained["reasons"] if r["code"] == "needs_attention")
         assert f"{reason} (retained; claim epoch {held.last_claim_epoch})" in detail
 
+    async def test_unproved_cleanup_retains_source_and_blocks_expiry_retry_and_handoff(
+        self, handler, db, config, tmp_path,
+    ):
+        from src.claim_file import write_claim_file
+        from src.git.manager import GitManager
+        from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
+
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, wd = await pool_session(db, tmp_path)
+        git = GitManager()
+        await git._arun(["init", "--initial-branch=aq/child"], cwd=str(wd))
+        await git._arun(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+                        "commit", "--allow-empty", "-m", "source"], cwd=str(wd))
+        await git._arun(["update-ref", "refs/aq/retained/source", "HEAD"], cwd=str(wd))
+        (wd / "staged").write_text("staged bytes")
+        await git._arun(["add", "staged"], cwd=str(wd))
+        (wd / "untracked").write_text("untracked bytes")
+
+        async def source_snapshot():
+            return (
+                await git._arun(["rev-parse", "HEAD"], cwd=str(wd)),
+                await git._arun(["diff", "--cached", "--binary"], cwd=str(wd)),
+                await git._arun(["show-ref"], cwd=str(wd)),
+                (wd / "staged").read_bytes(), (wd / "untracked").read_bytes(),
+                (wd / ".aq/claim.json").read_bytes(),
+            )
+
+        before = None
+
+        async def unproved(slot, task, **kwargs):
+            nonlocal before
+            write_claim_file(str(wd), {
+                "task_id": task.id, "claim_epoch": task.claim_epoch, "session_id": sid,
+            })
+            before = await source_snapshot()
+            try:
+                raise PermissionError("killpg denied; api_key=private-test-value")
+            except PermissionError as cause:
+                raise ProcessCleanupError("process-group cleanup unproved") from cause
+
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = unproved
+        release = AsyncMock(return_value=True)
+        handler.orchestrator.arelease_integration_writer_for_retry = release
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "prepare_failed"
+        assert "ProcessCleanupError" in result["reason"]
+        assert "PermissionError" in result["reason"]
+        assert "private-test-value" not in result["reason"]
+        release.assert_not_awaited()
+        held = await db.get_session(sid)
+        receipt = await db.get_task_meta("child", "claim_workspace")
+        hold = await db.get_task_meta("child", PREPARE_CLEANUP_HOLD)
+        assert hold["claim_epoch"] == held.last_claim_epoch
+        assert hold["workspace_generation"] == receipt["generation"]
+        assert hold["disposition"] == "retained"
+        assert hold["reason"] == result["reason"]
+        reconciler = SessionReconciler(
+            db, config, SessionProviderRegistry({}), bus=handler.orchestrator.bus,
+            orchestrator=handler.orchestrator, epoch="restarted",
+        )
+        await reconciler._step_prepare_timeout(
+            [held], held.claim_phase_at + config.swarm.prepare_timeout + 1,
+        )
+        assert (await db.get_session(sid)).task_id == "child"
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "child"
+        assert (await ownership.get_owner(fence.target))["handoff_state"] == "attached"
+        await expire_claim_refusal(db, sid)
+        retried = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert retried["result"] == "prepare_failed"
+        assert reset.await_count == 1
+        owner = await ownership.get_owner(fence.target)
+        # Even apparently reusable source cannot substitute for process proof.
+        for confirm in (
+            handler.orchestrator.aconfirm_integration_pool_owner_handoff,
+            handler.orchestrator.aconfirm_stopped_integration_pool_owner_handoff,
+            handler.orchestrator.aconfirm_integration_owner_handoff,
+            handler.orchestrator.aconfirm_integration_owner_stopped_for_repair,
+        ):
+            assert not await confirm(owner)
+        assert not await handler.orchestrator.aconfirm_integration_pool_published_repair_handoff(
+            owner, "reservation", remote_head_reader=AsyncMock(),
+        )
+        assert before == await source_snapshot()
+        assert await db.get_task_meta("child", "claim_workspace") == receipt
+        assert await db.get_task_meta("child", PREPARE_CLEANUP_HOLD) == hold
+        assert await db.get_task_meta("child", "claim_prepare_backoff_attempts") is None
+
     async def test_identical_retained_preparation_refusals_drain_after_restart(
         self, handler, db, tmp_path
     ):
@@ -5115,3 +5203,88 @@ async def test_preparation_failure_counter_fences_changed_session(handler, db, t
     ) is None
     assert (await db.get_session(sid)).claim_failure_count == 2
     assert (await db.get_workspace("ws-agent-1")).enabled
+
+
+@pytest.mark.parametrize("phase", ["before_checkout", "after_checkout", "after_claim_file"])
+async def test_cancelled_preparation_retains_identity_then_fences_successor(
+    handler, db, config, tmp_path, monkeypatch, phase,
+):
+    from src.claim_file import read_claim_file
+    from src.git.manager import GitManager
+
+    await mktask(db, "t1", profile_id="worker")
+    sid, wd = await pool_session(db, tmp_path)
+    git = GitManager()
+    await git._arun(["init", "--initial-branch=main"], cwd=str(wd))
+    await git._arun(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+                    "commit", "--allow-empty", "-m", "source"], cwd=str(wd))
+    reached = asyncio.Event()
+
+    async def interruptible_reset(*args, **kwargs):
+        if phase == "before_checkout":
+            reached.set()
+            await asyncio.Event().wait()
+        await git._arun(["switch", "-c", "aq/t1"], cwd=str(wd))
+        if phase == "after_checkout":
+            reached.set()
+            await asyncio.Event().wait()
+        return "aq/t1"
+
+    activate = db.activate_claim
+
+    async def interruptible_activate(*args, **kwargs):
+        assert read_claim_file(str(wd))["claim_epoch"] == 1
+        reached.set()
+        await asyncio.Event().wait()
+
+    if phase == "after_claim_file":
+        monkeypatch.setattr(db, "activate_claim", interruptible_activate)
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = interruptible_reset
+    request = asyncio.create_task(scoped(handler, sid)._cmd_task_claim({"next": True}))
+    try:
+        await asyncio.wait_for(reached.wait(), timeout=5)
+        old = await db.get_session(sid)
+        receipt = await db.get_task_meta("t1", "claim_workspace")
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=5)
+        record = await db.get_task_meta("t1", "prepare_failure")
+        assert record["disposition"] == "cancelled" and record["claim_epoch"] == 1
+        assert "CancelledError" in record["reason"]
+        assert await db.get_task_meta("t1", "claim_workspace") == receipt
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "t1"
+        assert await git.aget_current_branch(str(wd)) == (
+            "main" if phase == "before_checkout" else "aq/t1"
+        )
+        reconciler = SessionReconciler(
+            db, config, SessionProviderRegistry({}), bus=handler.orchestrator.bus,
+            orchestrator=handler.orchestrator, epoch="test",
+        )
+        await reconciler._step_prepare_timeout(
+            [old], old.claim_phase_at + config.swarm.prepare_timeout + 1,
+        )
+        assert (await db.get_task("t1")).status == TaskStatus.READY
+        monkeypatch.setattr(db, "activate_claim", activate)
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+            return_value="aq/t1",
+        )
+        await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "claimed"
+        current = read_claim_file(str(wd))
+        assert current["claim_epoch"] == 2 and current["session_id"] == sid
+        assert (await db.get_task_meta("t1", "claim_workspace"))["claim_epoch"] == 2
+        # A delayed failure from the first attempt cannot overwrite epoch 2.
+        from src.preparation_failure import describe_preparation_failure
+        await db.set_task_meta("t1", "prepare_failure", {"successor": True})
+        await handler._record_prepare_failure(
+            await db.get_task("t1"), describe_preparation_failure(TimeoutError(), "old"),
+            session=old, slot=await db.get_workspace("ws-agent-1"), epoch=1,
+            disposition="cancelled",
+        )
+        assert await db.get_task_meta("t1", "prepare_failure") == {"successor": True}
+        assert read_claim_file(str(wd)) == current
+    finally:
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)

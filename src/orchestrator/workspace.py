@@ -1541,6 +1541,12 @@ class WorkspaceMixin:
         else:
             await self.db.release_workspace(ws.id)
 
+    async def _integration_preparation_cleanup_unproved(self, owner: dict) -> bool:
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        task_id = owner.get("owner_id")
+        return bool(task_id and await self.db.get_task_meta(task_id, PREPARE_CLEANUP_HOLD) is not None)
+
     async def aconfirm_integration_owner_handoff(
         self, owner: dict, *, save_wip_reason: str | None = None
     ) -> bool:
@@ -1560,6 +1566,8 @@ class WorkspaceMixin:
         ordinary proof runs on the result.  A branch that cannot fast-forward
         stays fenced, for owner recovery to preserve.
         """
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         from src.orchestrator.workspace_attachments import (
@@ -1874,6 +1882,8 @@ class WorkspaceMixin:
         current READY claim epoch is evidence of a successor attempt, not a
         value to restore or overwrite.
         """
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         from src.orchestrator.workspace_attachments import (
@@ -2042,6 +2052,8 @@ class WorkspaceMixin:
         and (via ``arelease_integration_writer_for_retry``) makes the caller
         retain the claim rather than close over an unprovable handoff.
         """
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         from src.orchestrator.workspace_attachments import (
@@ -2161,6 +2173,8 @@ class WorkspaceMixin:
         """Prove a qualified candidate repair without advancing its canonical ref."""
         from src.integration.published_repair_handoff import confirm_published_pool_repair_handoff
 
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return False
         try:
             return await confirm_published_pool_repair_handoff(
                 self.db, self.git, self._git_mutex, owner, reservation_id,
@@ -2313,6 +2327,8 @@ class WorkspaceMixin:
         self, owner: dict
     ) -> dict | None:
         """Stop one exact writer without touching its retained repair checkout."""
+        if await self._integration_preparation_cleanup_unproved(owner):
+            return None
         session_id = owner.get("session_id")
         workspace_id = owner.get("workspace_id")
         if not session_id or not workspace_id or owner.get("handoff_state") != "attached":
