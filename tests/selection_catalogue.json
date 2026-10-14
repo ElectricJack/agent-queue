@@ -40,7 +40,9 @@
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
-        "tests/test_wait_migration.py"
+        "tests/test_wait_migration.py",
+        "tests/test_wait_queries.py",
+        "tests/test_waits.py"
       ]
     },
     "api-contract": {
@@ -17769,6 +17771,40 @@
         "parametrize"
       ],
       "summary": "Verified-wait DDL on fresh and pre-v2 disposable PostgreSQL schemas."
+    },
+    "tests/test_wait_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:184fc7153ab14014f42d3a0e52b76e67de7e8056751d5b9bd57118ddc320daff",
+      "imports": [
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified registration and source races on disposable PostgreSQL."
+    },
+    "tests/test_waits.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:bda862320b5b5ce4d655bef2b123dfffb939a736e8ef1255a8d384502ee0c468",
+      "imports": [
+        "src.waits.conditions",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Typed condition boundaries; no source or sleep policy is accepted as prose."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [
