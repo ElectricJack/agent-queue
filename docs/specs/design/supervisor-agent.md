@@ -370,6 +370,12 @@ turn was about. It fails closed instead:
   answer. On 2026-10-12 a supervisor's general progress about another task was posted as
   the reply to two workers' requests and cleared one worker's wait. Agents receive only
   explicit replies (`aq message reply`, `aq agent message --reply-to`).
+  `aq agent message` from a current named launch of the target's own project
+  supervisor is signed `session:supervisor-<project>`, so the worker's
+  `aq message reply` returns to that mailbox on the same thread. Any other
+  caller (the operator CLI, automation, the global supervisor, a stale launch)
+  signs `system:supervisor`, which stays unanswerable. A worker replies only
+  to its own mailboxes' messages, as that mailbox.
 - **One turn binds to at most one conversation.** If any row from another conversation
   (a different project, thread or sender, of any kind and including archived rows) was
   delivered to the same recipient within one window length either side of the request's

@@ -1693,6 +1693,183 @@ class TestScopedGlobalReports:
         assert await db.list_messages() == []
 
 
+class TestNativeGuidanceReplyRoute:
+    """noble-bridge-92: guidance signs as the caller's authenticated return route.
+
+    Only a current named launch of the target's own project supervisor gets a
+    replyable ``session:supervisor-<project>`` sender; every other caller keeps
+    the non-replyable ``system:supervisor`` announcement.
+    """
+
+    @staticmethod
+    def _worker_scope(worker: SessionRecord) -> dict:
+        return _session_scope(
+            session_id=worker.id, task_id=worker.task_id,
+            session_instance_token=worker.instance_token,
+        )
+
+    async def _guide(self, handler, db, scope, **args):
+        worker = await _create_live_worker(db, project_id="p1", suffix="w")
+        asked = await _execute_as(handler, "message_send", {
+            "to_kind": "session", "to_id": "supervisor-p1", "from_kind": "session",
+            "from_id": worker.id, "thread_id": "task-w:ask", "body": "may I?",
+        }, self._worker_scope(worker))
+        args = {"target": worker.task_id, "body": "yes", "reply_to": asked["message_id"], **args}
+        if scope is None:
+            guided = await handler.execute("agent_message", args)
+        else:
+            guided = await handler.execute("agent_message", {**args, "_scope": scope})
+        assert "error" not in guided, guided
+        return worker, await db.get_message(guided["message_id"])
+
+    async def test_project_supervisor_guidance_is_answerable_on_its_thread(self, setup):
+        handler, db, bus = setup
+        scope = await _seed_project_supervisor(db)
+        worker, guidance = await self._guide(handler, db, scope)
+        assert (guidance.from_kind, guidance.from_id) == ("session", "supervisor-p1")
+        assert guidance.thread_id == "task-w:ask"
+
+        worker_scope = self._worker_scope(worker)
+        for _ in range(2):  # the acknowledgement is idempotent
+            read = await _execute_as(
+                handler, "message_status", {"message_id": guidance.id}, worker_scope
+            )
+            assert read["state"] == "acknowledged", read
+        assert len([e for e in bus.of_type("message.delivered") if e["message_id"] == guidance.id]) == 1
+        reply = await _execute_as(handler, "message_reply", {
+            "message_id": guidance.id, "body": "done",
+        }, worker_scope)
+        row = await db.get_message(reply["reply_id"])
+        assert (row.from_kind, row.from_id, row.to_kind, row.to_id, row.project_id) == (
+            "session", worker.id, "session", "supervisor-p1", "p1",
+        )
+        assert (row.thread_id, row.reply_to_id) == ("task-w:ask", guidance.id)
+        assert len(bus.of_type("message.replied")) == 1
+
+    async def test_guidance_on_a_forwarded_user_thread_answers_the_supervisor(self, setup):
+        """A reply never jumps to whoever opened the thread — only to the sender."""
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        worker = await _create_live_worker(db, project_id="p1", suffix="w")
+        user = await handler._cmd_message_send(_send_args(thread_id="discord:9"))
+        guided = await handler.execute("agent_message", {
+            "target": worker.task_id, "body": "the user asks", "reply_to": user["message_id"],
+            "_scope": scope,
+        })
+        reply = await _execute_as(handler, "message_reply", {
+            "message_id": guided["message_id"], "body": "answer",
+        }, self._worker_scope(worker))
+        row = await db.get_message(reply["reply_id"])
+        assert (row.to_kind, row.to_id, row.thread_id) == ("session", "supervisor-p1", "discord:9")
+
+    @pytest.mark.parametrize("caller", [
+        "operator", "global supervisor", "stale launch", "stopped launch", "foreign project",
+    ])
+    async def test_callers_without_a_return_route_stay_system_and_unanswerable(
+        self, setup, caller
+    ):
+        handler, db, bus = setup
+        scope = None
+        if caller == "global supervisor":
+            await db.create_session(SessionRecord(
+                id="global-uuid", project_id=None, profile_id="supervisor", harness="codex",
+                provider="fake", name="n-supervisor--global", lifecycle="named",
+                work_dir="/tmp", epoch="test", instance_token="global-launch", started_at=1,
+                state="running",
+            ))
+            scope = _session_scope(
+                session_id="global-uuid", task_id=None, project_id=None, elevated=True,
+                session_instance_token="global-launch",
+            )
+        elif caller == "stale launch":
+            scope = {**await _seed_project_supervisor(db), "session_instance_token": "old"}
+        elif caller == "stopped launch":
+            scope = await _seed_project_supervisor(db, state="stopped")
+        elif caller == "foreign project":
+            # A p2 supervisor launch presented under p1's scope is not p1's supervisor.
+            await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+            await _seed_project_supervisor(db, project_id="p2")
+            scope = {
+                **_supervisor_scope("p1"), "session_id": "sess-sup-p2",
+                "session_instance_token": "current-launch",
+            }
+        worker, guidance = await self._guide(handler, db, scope)
+        assert (guidance.from_kind, guidance.from_id) == ("system", "supervisor")
+        comments = (await db.list_task_comments(worker.task_id, project_id="p1"))["comments"]
+        assert [(c["author_kind"], c["author_id"]) for c in comments] == [
+            ("supervisor", "supervisor")
+        ]
+        result = await _execute_as(handler, "message_reply", {
+            "message_id": guidance.id, "body": "ok",
+        }, self._worker_scope(worker))
+        assert "cannot reply to a 'system' message" in result["error"], result
+        assert bus.of_type("message.replied") == []
+
+    async def test_other_sessions_cannot_answer_or_consume_guidance(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        _worker, guidance = await self._guide(handler, db, scope)
+        other = await _create_live_worker(db, project_id="p1", suffix="x")
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        foreign = await _create_live_worker(db, project_id="p2", suffix="y")
+        for intruder in (other, foreign):
+            denied = await _execute_as(handler, "message_reply", {
+                "message_id": guidance.id, "body": "hijack",
+            }, {**self._worker_scope(intruder), "project_id": intruder.project_id})
+            assert denied == {"error": f"Message '{guidance.id}' not found"}, denied
+        assert (await db.get_message(guidance.id)).read_at is None
+        thread = await db.list_messages(thread_id="task-w:ask", include_archived=True)
+        assert {m.id for m in thread} == {guidance.reply_to_id, guidance.id}
+
+    @pytest.mark.parametrize(("from_kind", "from_id"), [
+        ("session", "supervisor-p1"), ("user", "dashboard"), ("session", "session-x"),
+    ])
+    async def test_worker_reply_identity_is_server_derived(self, setup, from_kind, from_id):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        worker, guidance = await self._guide(handler, db, scope)
+        before = len(await db.list_messages())
+        denied = await _execute_as(handler, "message_reply", {
+            "message_id": guidance.id, "body": "forged", "from_kind": from_kind,
+            "from_id": from_id,
+        }, self._worker_scope(worker))
+        assert denied == {"error": "reply identity is server-derived"}, denied
+        assert len(await db.list_messages()) == before
+
+    async def test_ordinary_system_notices_stay_unanswerable(self, setup):
+        handler, db, _bus = setup
+        worker = await _create_live_worker(db, project_id="p1", suffix="w")
+        notice = await db.create_message(
+            project_id="p1", from_kind="system", from_id="integration-train",
+            to_kind="session", to_id=worker.id, body="batch settled",
+        )
+        result = await _execute_as(handler, "message_reply", {
+            "message_id": notice.id, "body": "ok",
+        }, self._worker_scope(worker))
+        assert "cannot reply to a 'system' message" in result["error"], result
+
+    async def test_guidance_follows_the_current_claimant(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        worker = await _create_live_worker(db, project_id="p1", suffix="w")
+        await db.update_session(worker.id, state="stopped")
+        stopped = await handler.execute("agent_message", {
+            "target": worker.task_id, "body": "still there?", "_scope": scope,
+        })
+        assert stopped == {"error": f"Task '{worker.task_id}' has no live worker session"}
+        await db.create_session(SessionRecord(
+            id="session-w2", task_id=worker.task_id, agent_id=worker.agent_id,
+            project_id="p1", profile_id="worker", harness="codex", provider="fake",
+            name="s-task-w-2", lifecycle="task", work_dir="/tmp", epoch="test",
+            instance_token="token-w2", started_at=2, state="running",
+        ))
+        guided = await handler.execute("agent_message", {
+            "target": worker.task_id, "body": "carry on", "_scope": scope,
+        })
+        assert guided["target"] == {"task_id": worker.task_id, "session_id": "session-w2"}
+        assert (await db.get_message(guided["message_id"])).to_id == "session-w2"
+
+
 class _NudgeRecorder:
     """Every live target is idle; each nudge is recorded and confirmed."""
 
