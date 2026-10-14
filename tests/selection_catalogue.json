@@ -40,9 +40,12 @@
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
+        "tests/test_wait_dispatch.py",
         "tests/test_wait_graph.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_queries.py",
+        "tests/test_wait_resource_sources.py",
+        "tests/test_wait_source_queries.py",
         "tests/test_waits.py"
       ]
     },
@@ -1616,8 +1619,9 @@
         "claims"
       ],
       "default_arm": false,
-      "digest": "sha256:419e9d29082a07949fe40455378c4205584ebe542229a4384f3e1315562c61c8",
+      "digest": "sha256:23a5d5d70784f8c89af9b916b1c9e627d6e8e08b7d37babb051f7ca3f27517a6",
       "imports": [
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
         "src.intelligence_classes",
@@ -7848,7 +7852,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f9c6f7d296addf4dd8960bd50038812773b1913e99d7feed8bb7b3bffd6b9048",
+      "digest": "sha256:b55156452cf1bbcb023c022571511c90200c956a46626b3b901cb279f16979f5",
       "imports": [
         "src.database.tables",
         "src.integration.attestation",
@@ -7861,7 +7865,8 @@
         "src.integration.promotion_contracts",
         "src.integration.provenance",
         "src.integration.train",
-        "src.integration.train_sources"
+        "src.integration.train_sources",
+        "src.waits.sources"
       ],
       "markers": [
         "parametrize"
@@ -17757,6 +17762,27 @@
       ],
       "summary": "Tests for the internal vibecop plugin."
     },
+    "tests/test_wait_dispatch.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:77564ee54fcc14c44fc8b8f438dc2d099e7b030d6ca82612ece5307c81a0071f",
+      "imports": [
+        "src.database.tables",
+        "src.integration.checks",
+        "src.models",
+        "src.orchestrator.core",
+        "src.playbooks.run_state",
+        "src.playbooks.waits",
+        "src.scheduler",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Authoritative source transitions write unconditional, transactional wait events."
+    },
     "tests/test_wait_graph.py": {
       "areas": [
         "agent-waits"
@@ -17810,6 +17836,42 @@
         "parametrize"
       ],
       "summary": "Verified registration and source races on disposable PostgreSQL."
+    },
+    "tests/test_wait_resource_sources.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:85c7a299ef0bcd324d8461cfe2c80ec20044e46bf60e6bef64f7c16fc5ae0a67",
+      "imports": [
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.core",
+        "src.scheduler",
+        "src.waits.resource_sources",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Actual resource producers, persisted registry bindings and fresh service proofs."
+    },
+    "tests/test_wait_source_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:88d47673cf163d7f5a784c10dc8c60a931919862ac22ca75545990480c460dcb",
+      "imports": [
+        "src.database.queries.wait_source_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Source outbox atomicity, commit ordering, watermark and safe retention."
     },
     "tests/test_waits.py": {
       "areas": [

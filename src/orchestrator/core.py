@@ -4147,6 +4147,14 @@ class Orchestrator(
                 previous_aspect,
                 current_aspect,
             )
+        from src.waits.resource_sources import resource_invalidation
+
+        await self.db.wait_source_commit(**resource_invalidation(
+            producer="config", identity="global",
+            revision=data.setdefault("source_revision", uuid.uuid4().hex),
+            outcome_ref="config:reload",
+            payload={"changed_sections": list(data.get("changed_sections", []))},
+        ))
         logger.info(
             "Config reloaded: updated sections: %s",
             ", ".join(data.get("changed_sections", [])),

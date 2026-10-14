@@ -99,6 +99,12 @@ def assert_schema(bind):
     indexes = {idx["name"]: idx for idx in inspector.get_indexes("tasks")}
     for name in CLAIM_INDEXES:
         assert indexes[name]["column_names"][-2:] == ["effective_priority", "created_at"]
+        base = name.replace("idx_tasks_claim", "idx_tasks_base_claim")
+        assert indexes[base]["column_names"] == [
+            "priority" if col == "effective_priority" else col
+            for col in indexes[name]["column_names"]
+        ]
+        assert indexes[base].get("dialect_options", {}) == indexes[name].get("dialect_options", {})
     assert not compare_metadata(
         MigrationContext.configure(bind, opts={"compare_type": True}), metadata
     )
@@ -223,6 +229,7 @@ def assert_unique_semantics(bind):
 async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrade(legacy):
     engine = create_async_engine(await create_scratch_database("waitmigration"))
     revision = import_module("migrations.versions.a00000000097_wait_records")
+    compatibility = import_module("migrations.versions.a00000000098_base_claim_frontier_indexes")
     predecessor = import_module("migrations.versions.a00000000096_workspace_kind_limits")
     try:
         await migrate(engine, previous_revision(previous_revision(REVISION)))
@@ -296,6 +303,14 @@ async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrad
             with Operations.context(MigrationContext.configure(bind)):
                 revision.upgrade()
                 revision.upgrade()
+                compatibility.upgrade()
+                compatibility.upgrade()
+                # Repair missing compatibility indexes without rewriting rows.
+                for name in CLAIM_INDEXES:
+                    Operations(MigrationContext.configure(bind)).drop_index(
+                        name.replace("idx_tasks_claim", "idx_tasks_base_claim"), table_name="tasks"
+                    )
+                compatibility.upgrade()
                 # Missing indexes on existing tables must also be repaired.
                 for name in TABLES:
                     for index in metadata.tables[name].indexes:
@@ -306,6 +321,7 @@ async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrad
                 assert_schema(bind)
                 assert_unique_semantics(bind)
                 revision.downgrade()
+                compatibility.downgrade()
             assert_schema(bind)
             assert bind.execute(sa.text("SELECT effective_priority FROM tasks")).scalar_one() == 7
             assert (

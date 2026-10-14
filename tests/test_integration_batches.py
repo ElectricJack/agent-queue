@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select, update
 
-from src.database.tables import integration_batches, integration_subject_journal, task_delivery_receipts
+from src.database.tables import integration_batches, integration_subject_journal, task_delivery_receipts, wait_source_events
 from src.integration.batches import Batch, BatchMember, BatchService, BatchStore, candidate_ref, ordered_members
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import branch
@@ -372,3 +372,27 @@ async def test_attestation_io_cannot_override_final_authorization(batch_env, cha
     refused = await service.visit(batch, members, await snapshot())
     assert refused.state == "held"
     assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == base
+
+
+async def test_batch_source_events_follow_lifecycle_and_replay_is_silent(batch_env):
+    db, _, repo, _, _, store, batch, members, _, _, _, _ = batch_env
+    from src.waits.sources import execute_batch_mutation, record_batch_event
+
+    await store.freeze(batch, members, trees={"task": git(repo.store, "rev-parse",
+                                                         f"{members[0].source_sha}^{{tree}}")})
+    async with db._engine.begin() as conn:
+        await execute_batch_mutation(conn, update(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ).values(lifecycle="sealed", updated_at=1700000100))
+        await record_batch_event(conn, batch.id)
+    with pytest.raises(RuntimeError):
+        async with db._engine.begin() as conn:
+            await execute_batch_mutation(conn, update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+            ).values(lifecycle="failed"))
+            raise RuntimeError("abort")
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == "batch:batch",
+        ).order_by(wait_source_events.c.seq))).mappings().all()
+    assert [row["payload"]["lifecycle"] for row in rows] == ["sealing", "sealed"]

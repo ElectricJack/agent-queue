@@ -741,6 +741,9 @@ class TaskQueryMixin:
             if result.rowcount == 1 and "priority" in values:
                 await apply_base_priority_change(conn, task_id, now=values["updated_at"])
             if result.rowcount == 1 and previous_status is not None:
+                from src.waits.sources import record_task_transition
+
+                await record_task_transition(conn, task_id, previous_status, values["status"])
                 await self._record_recovery_failure_generation_on(
                     conn, task_id, TaskStatus(previous_status), TaskStatus(values["status"]),
                     values["updated_at"],
@@ -1495,6 +1498,24 @@ class TaskQueryMixin:
             if extra_values:
                 values = {**values, **extra_values}
             stmt = stmt.values(**values)
+            if current_status != new_status:
+                from src.waits.source_sql import task_transition_statement
+
+                stmt = task_transition_statement(stmt, current_status.value)
+                # The CTE returns the updated row even when the caller only
+                # needs a match count. Preserve existing returning semantics.
+                out = (await conn.execute(stmt)).mappings().fetchone()
+                if out is None and not _manual_pause_control and extra_where is None:
+                    paused = (await conn.execute(select(tasks.c.id).where(
+                        tasks.c.id == task_id, ~_not_manually_paused()
+                    ))).scalar_one_or_none()
+                    if paused:
+                        raise ManualPauseActive(f"Task {task_id} is manually paused; use resume_task.")
+                if out is not None and await record_retry() and returning:
+                    out = (await conn.execute(select(tasks).where(
+                        tasks.c.id == task_id,
+                    ))).mappings().one()
+                return out is not None, dict(out) if returning and out is not None else None
             if returning and supports_returning(conn):
                 out = (await conn.execute(stmt.returning(*tasks.c))).mappings().fetchone()
                 if out is None and not _manual_pause_control and extra_where is None:

@@ -18,6 +18,7 @@ from typing import Protocol
 
 from sqlalchemy import func, insert, select, union_all, update
 
+from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks, integration_batch_members, integration_batches, projects, tasks,
 )
@@ -267,7 +268,7 @@ class BatchStore:
             projects.c.id == batch.project_id,
         )) or {}
         retention = (policy.get("cleanup") or {}).get("successful_source_refs", "delete")
-        await conn.execute(insert(integration_batches).values(
+        await execute_batch_mutation(conn, insert(integration_batches).values(
             id=batch.id, project_id=batch.project_id, repository_id=batch.repository_id,
             target_ref=batch.target_ref, intent=batch.intent,
             repair_attempt_count=batch.repair_attempt_count,
@@ -306,7 +307,7 @@ class BatchStore:
                 source_ref=source_ref,
                 source_ref_retention=retention if source_ref else None,
             ))
-        await conn.execute(update(integration_batches).where(
+        await execute_batch_mutation(conn, update(integration_batches).where(
             integration_batches.c.id == batch.id,
         ).values(lifecycle="sealed"))
         return replace(batch, created_at=batch.created_at or now)
@@ -372,7 +373,7 @@ class BatchStore:
                            "task_id": task_id,
                            "replacement_batch_id": replacement.id if replacement else None,
                            "operator_id": operator_id, "reason": reason}
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
@@ -428,7 +429,7 @@ class BatchStore:
             instruction = {"batch_id": batch.id, "project_id": batch.project_id,
                            "task_id": task_id, "replacement_batch_id": None,
                            "operator_id": "service:integration-train", "reason": reason}
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
             ).values(intent="aborted", lifecycle="aborted",
                      human_abort_reason=reason, ejection_record=instruction,
@@ -476,7 +477,7 @@ class BatchStore:
                 )
                 if row["lifecycle"] != "aborted":
                     values["cleanup_state"] = "pending"
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch_id,
             ).values(**values))
             if intent == "aborted":
@@ -510,7 +511,7 @@ class BatchStore:
             ids = list((await conn.execute(pending.order_by(integration_batches.c.id)
                 .limit(limit).with_for_update(skip_locked=True))).scalars())
             if ids:
-                await conn.execute(update(integration_batches).where(
+                await execute_batch_mutation(conn, update(integration_batches).where(
                     integration_batches.c.id.in_(ids),
                 ).values(lifecycle="aborted", cleanup_state="pending",
                     human_abort_reason=func.coalesce(

@@ -6,6 +6,7 @@ import time
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 
+from src.waits.sources import execute_task_status_mutation
 from src.database.tables import agents, events, sessions, task_results, tasks, workspaces
 from src.models import Agent, AgentState, TaskStatus
 
@@ -284,8 +285,7 @@ class AgentQueryMixin:
                     )
                     .exists()
                 )
-                result = await conn.execute(
-                    update(tasks)
+                result = await execute_task_status_mutation(conn, update(tasks)
                     .where(
                         tasks.c.id == task_id,
                         tasks.c.status == TaskStatus.READY.value,
