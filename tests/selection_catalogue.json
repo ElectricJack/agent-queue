@@ -1260,6 +1260,7 @@
         "tests/test_task_deletion.py",
         "tests/test_task_doctor.py",
         "tests/test_task_failed_event.py",
+        "tests/test_task_lifecycle_properties.py",
         "tests/test_task_progress_stats.py",
         "tests/test_task_ready_event.py"
       ]
@@ -16697,6 +16698,26 @@
         "parametrize"
       ],
       "summary": "Committed command changes reach the dashboard without invoking routing again."
+    },
+    "tests/test_task_lifecycle_properties.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b941ff8c2c8d58539493c8e10ee6aa7612527546a9b42041ec3644b18640b573",
+      "imports": [
+        "src.database.queries.result_queries",
+        "src.database.queries.task_queries",
+        "src.git.manager",
+        "src.models",
+        "src.state_machine"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize",
+        "xfail"
+      ],
+      "summary": "Bounded lifecycle histories against PostgreSQL and the real command paths."
     },
     "tests/test_task_progress_stats.py": {
       "areas": [

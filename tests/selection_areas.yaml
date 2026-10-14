@@ -27,6 +27,7 @@ areas:
       - tests/test_stall_watch.py
       - tests/test_lifecycle_cleanup.py
       - tests/test_state_machine.py
+      - tests/test_task_lifecycle_properties.py
       - tests/test_ensure_task.py
       - tests/test_task_context.py
       - tests/test_task_controls.py
