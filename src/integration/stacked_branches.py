@@ -553,15 +553,20 @@ class StackedBranches:
                 await self.observer.git._arun(
                     ["fetch", "--no-tags", workspace, local_head], cwd=str(view.snapshot.store),
                 )
-                if not await self.observer.git.ais_ancestor(
+                if await self.observer.git.ais_ancestor(
                     view.snapshot.store, dependent_head, local_head, strict=True,
                 ):
+                    await self.observer.git._arun(
+                        ["update-ref", "refs/aq/stacks/" + local_head, local_head],
+                        cwd=str(view.snapshot.store),
+                    )
+                    dependent_head = local_head
+                elif not await self.observer.git.ais_ancestor(
+                    view.snapshot.store, local_head, dependent_head, strict=True,
+                ):
                     raise GitError("local child does not descend from its published head")
-                await self.observer.git._arun(
-                    ["update-ref", "refs/aq/stacks/" + local_head, local_head],
-                    cwd=str(view.snapshot.store),
-                )
-                dependent_head = local_head
+                # A local ancestor needs no retention: the fenced checkout
+                # step fast-forwards it to the published child in this overlay.
         if parent:
             parent_ref = parent.removeprefix("refs/heads/")
             view.watched_refs[parent_ref] = view.snapshot.source_heads.get(

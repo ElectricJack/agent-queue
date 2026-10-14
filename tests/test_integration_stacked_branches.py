@@ -21,6 +21,7 @@ from src.database.tables import (
     tasks,
 )
 from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.manager import GitError
 from src.integration.batches import SupersedeMemberUnavailable, ejection_instruction
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.provenance import CompletionIdentity, GitProvenance
@@ -163,6 +164,50 @@ async def test_single_stack_starts_at_completed_source_without_epic_delivery(sta
         )
     assert origin["base_sha"] == stack.first  # filing base remains immutable
     assert origin["stack_snapshot"]["prerequisites"]["first"]["checkpoint_sha"] == stack.first
+
+
+@pytest.mark.parametrize("relationship", ["behind", "equal", "ahead", "diverged"])
+async def test_prepare_local_child_ancestry_at_published_head(stack, tmp_path, relationship):
+    await stack.db.transition_task("child", TaskStatus.IN_PROGRESS, force=True)
+    clone = stack.origin.clone
+    git(clone, "switch", "--detach")
+    if relationship in {"behind", "diverged"}:
+        git(clone, "branch", "-f", "aq/child", stack.first)
+    workspace = tmp_path / "child-slot"
+    git(clone, "worktree", "add", str(workspace), "aq/child")
+    if relationship in {"ahead", "diverged"}:
+        (workspace / "unpublished.txt").write_text("local child work\n")
+        git(workspace, "add", "unpublished.txt")
+        git(workspace, "commit", "-qm", "unpublished child")
+    local_head = git(workspace, "rev-parse", "HEAD")
+    recorded_stack = await stack_record(stack)
+
+    if relationship == "diverged":
+        with pytest.raises(GitError, match="local child does not descend"):
+            await stack.service.prepare("child", workspace=str(workspace))
+        assert git(workspace, "rev-parse", "HEAD") == local_head
+        assert await stack_record(stack) == recorded_stack
+        return
+
+    overlay = await stack.service.prepare("child", workspace=str(workspace))
+    expected = local_head if relationship == "ahead" else stack.child
+    assert overlay["base_sha"] == expected
+    # Observation must leave the branch untouched until the fenced checkout step.
+    assert git(workspace, "rev-parse", "HEAD") == local_head
+    transport = stack.service.observer.git
+    await transport._arun(
+        ["fetch", "--no-tags", str(overlay["stack_store"]), overlay["base_sha"]],
+        cwd=str(workspace),
+    )
+    # Slot reset uses this same preparation step for preserved worker branches.
+    await transport.aprepare_child_branch(str(workspace), "aq/child", overlay["base_sha"])
+    assert git(workspace, "rev-parse", "HEAD") == expected
+    assert git(workspace, "status", "--porcelain") == ""
+    assert git(workspace, "show", "HEAD:child.txt") == "preserved child"
+    if relationship == "ahead":
+        assert (workspace / "unpublished.txt").read_text() == "local child work\n"
+    assert git(stack.origin.url, "rev-parse", "aq/child") == stack.child
+    assert await stack_record(stack) == recorded_stack
 
 
 async def test_multiple_sources_merge_on_epic_and_pin_exact_base(stack):
