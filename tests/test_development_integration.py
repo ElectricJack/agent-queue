@@ -1293,12 +1293,17 @@ async def test_corrupt_retained_source_keeps_snapshot_unknown_and_frozen_records
     git(source, "commit", "-m", "unpublished")
     unique = git(source, "rev-parse", "HEAD")
     blob = git(source, "rev-parse", "HEAD:unique.txt")
-    git(store, "fetch", str(source), "HEAD:refs/heads/local-source")
+    # Keep the new blob loose so this fixture damages its actual object body.
+    git(store, "-c", "fetch.unpackLimit=100000", "fetch",
+        str(source), "HEAD:refs/heads/local-source")
     git_dir = Path(git(store, "rev-parse", "--absolute-git-dir"))
     damaged = git_dir / "objects" / blob[:2] / blob[2:]
     damaged.parent.mkdir(parents=True, exist_ok=True)
     damaged.chmod(0o600)
-    damaged.write_bytes(b"")
+    # Nonempty corruption must remain in place; only zero-byte objects may be quarantined.
+    truncated = damaged.read_bytes()[:1]
+    assert truncated
+    damaged.write_bytes(truncated)
 
     for identity in ("root", "repair"):
         await db.create_task(Task(
@@ -1334,7 +1339,8 @@ async def test_corrupt_retained_source_keeps_snapshot_unknown_and_frozen_records
 
     async def native_fetch(path, **kwargs):
         return await service.git._afetch_origin_with_auth_to_url(
-            str(path), source_url=remote.as_uri(), token="disposable-test",
+            # The file-URL fixture needs no App credential broker.
+            str(path), source_url=remote.as_uri(), token=None,
         )
 
     monkeypatch.setattr(service.git, "afetch_origin", native_fetch)
@@ -1344,7 +1350,7 @@ async def test_corrupt_retained_source_keeps_snapshot_unknown_and_frozen_records
     assert evidence.state is DeliveryState.UNKNOWN and not evidence.satisfied
     assert await records() == before
     assert git(store, "for-each-ref", "--format=%(refname) %(objectname)") == refs
-    assert damaged.read_bytes() == b""
+    assert damaged.read_bytes() == truncated
 
     # A different, healthy store can still produce fresh native delivery proof.
     healthy = tmp_path / "healthy"

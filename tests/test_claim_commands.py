@@ -670,6 +670,8 @@ async def settled_claim(handler, args):
 
     Real Git tests assert final ownership or recovery. A no-wait HTTP response
     may arrive before checkout finishes; it must not end the test's fixture.
+    Tests that control a preparation barrier must call _cmd_task_claim directly
+    so they can inspect progress before releasing that barrier.
     """
     result = await handler._cmd_task_claim(args)
     if result.get("result") != "claim_in_progress":
@@ -5574,7 +5576,7 @@ async def test_slow_claim_returns_progress_and_joins_one_preparation(handler, db
     reset_mock = AsyncMock(side_effect=reset)
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset_mock
     with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
-        result = await settled_claim(scoped(handler, sid), {"next": True})
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
     assert result["result"] == "claim_in_progress"
     assert result["task_id"] == "t1"
     assert result["claim_timing"]["current_phase"] == "owner_lease"
@@ -5607,7 +5609,7 @@ async def test_deferred_prepare_failure_is_reported_once(handler, db, tmp_path):
 
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
     with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
-        result = await settled_claim(scoped(handler, sid), {"next": True})
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
     assert result["result"] == "claim_in_progress"
     preparation = next(iter(handler.orchestrator.claim_preparations.values()))
     peer = asyncio.create_task(scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 5}))
@@ -5637,7 +5639,7 @@ async def test_daemon_shutdown_cancels_preparation_before_resource_release(handl
 
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
     with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
-        result = await settled_claim(scoped(handler, sid), {"next": True})
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
     assert result["result"] == "claim_in_progress" and started.is_set()
     await handler.orchestrator.cancel_claim_preparations()
     assert cleaned.is_set()
@@ -5685,7 +5687,7 @@ async def test_completed_preparation_cannot_serve_a_changed_binding(handler, db,
 
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
     with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
-        response = await settled_claim(scoped(handler, sid), {"next": True})
+        response = await scoped(handler, sid)._cmd_task_claim({"next": True})
     assert response["result"] == "claim_in_progress"
     preparation = next(iter(handler.orchestrator.claim_preparations.values()))
     finish.set()
@@ -5711,11 +5713,11 @@ async def test_live_preparation_cannot_restart_after_early_notification(handler,
     prepare = AsyncMock(side_effect=retained_failure)
     handler._prepare_and_activate = prepare
     with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
-        first = await settled_claim(scoped(handler, sid), {"next": True})
+        first = await scoped(handler, sid)._cmd_task_claim({"next": True})
     assert first["result"] == "claim_in_progress"
     preparation = next(iter(handler.orchestrator.claim_preparations.values()))
     try:
-        second = await settled_claim(scoped(handler, sid), {"next": True})
+        second = await scoped(handler, sid)._cmd_task_claim({"next": True})
         assert second["result"] == "claim_in_progress"
         assert second["claim_epoch"] == first["claim_epoch"]
         assert second["claim_timing"]["claim_epoch"] == first["claim_epoch"]
