@@ -1924,18 +1924,26 @@ from .wait_bridge_response_result import WaitBridgeResponseResult
 from .wait_cancel_args import WaitCancelArgs
 from .wait_cancel_args_schema_version import WaitCancelArgsSchemaVersion
 from .wait_cancel_response_422 import WaitCancelResponse422
+from .wait_chain_edge import WaitChainEdge
 from .wait_checkpoint_args import WaitCheckpointArgs
 from .wait_checkpoint_response import WaitCheckpointResponse
 from .wait_checkpoint_response_422 import WaitCheckpointResponse422
+from .wait_deadline import WaitDeadline
 from .wait_decide_args import WaitDecideArgs
 from .wait_decide_args_decision import WaitDecideArgsDecision
 from .wait_decide_response import WaitDecideResponse
 from .wait_decide_response_422 import WaitDecideResponse422
+from .wait_effective_priority import WaitEffectivePriority
 from .wait_explain_args import WaitExplainArgs
 from .wait_explain_response import WaitExplainResponse
 from .wait_explain_response_422 import WaitExplainResponse422
-from .wait_explain_response_explanation_type_0 import WaitExplainResponseExplanationType0
-from .wait_explain_response_waits_item import WaitExplainResponseWaitsItem
+from .wait_explanation import WaitExplanation
+from .wait_explanation_continuation_type_0 import WaitExplanationContinuationType0
+from .wait_explanation_edge_history_item import WaitExplanationEdgeHistoryItem
+from .wait_explanation_escalation_type_0 import WaitExplanationEscalationType0
+from .wait_explanation_escalations_item import WaitExplanationEscalationsItem
+from .wait_explanation_owner import WaitExplanationOwner
+from .wait_explanation_reservations_item import WaitExplanationReservationsItem
 from .wait_facts_dto import WaitFactsDTO
 from .wait_facts_dto_deadline_source_type_0 import WaitFactsDTODeadlineSourceType0
 from .wait_facts_dto_wait_kind import WaitFactsDTOWaitKind
@@ -1943,9 +1951,17 @@ from .wait_get_args import WaitGetArgs
 from .wait_get_args_schema_version import WaitGetArgsSchemaVersion
 from .wait_get_response_422 import WaitGetResponse422
 from .wait_graph_args import WaitGraphArgs
+from .wait_graph_chain import WaitGraphChain
+from .wait_graph_project import WaitGraphProject
+from .wait_graph_project_branch_blockers_item import WaitGraphProjectBranchBlockersItem
+from .wait_graph_project_counts_item import WaitGraphProjectCountsItem
+from .wait_graph_project_deadlocks_item import WaitGraphProjectDeadlocksItem
+from .wait_graph_project_escalated_waits_item import WaitGraphProjectEscalatedWaitsItem
+from .wait_graph_project_held_message_backlog_item import WaitGraphProjectHeldMessageBacklogItem
+from .wait_graph_project_truncated import WaitGraphProjectTruncated
+from .wait_graph_projection import WaitGraphProjection
 from .wait_graph_response import WaitGraphResponse
 from .wait_graph_response_422 import WaitGraphResponse422
-from .wait_graph_response_graph import WaitGraphResponseGraph
 from .wait_legacy_bridge_args import WaitLegacyBridgeArgs
 from .wait_legacy_bridge_response_422 import WaitLegacyBridgeResponse422
 from .wait_lift_args import WaitLiftArgs
@@ -1968,6 +1984,12 @@ from .wait_response_condition_type_0 import WaitResponseConditionType0
 from .wait_response_decision_type_0 import WaitResponseDecisionType0
 from .wait_response_evidence_type_0 import WaitResponseEvidenceType0
 from .wait_response_wait_type_1 import WaitResponseWaitType1
+from .wait_sleep_explanation import WaitSleepExplanation
+from .wait_sleep_explanation_inputs import WaitSleepExplanationInputs
+from .wait_task_explanation import WaitTaskExplanation
+from .wait_verified_evidence import WaitVerifiedEvidence
+from .wait_verified_evidence_condition import WaitVerifiedEvidenceCondition
+from .wait_verified_evidence_facts import WaitVerifiedEvidenceFacts
 from .withheld_task import WithheldTask
 from .workspace_doctor_request import WorkspaceDoctorRequest
 from .workspace_doctor_response_422 import WorkspaceDoctorResponse422
@@ -3892,18 +3914,26 @@ __all__ = (
     "WaitCancelArgs",
     "WaitCancelArgsSchemaVersion",
     "WaitCancelResponse422",
+    "WaitChainEdge",
     "WaitCheckpointArgs",
     "WaitCheckpointResponse",
     "WaitCheckpointResponse422",
+    "WaitDeadline",
     "WaitDecideArgs",
     "WaitDecideArgsDecision",
     "WaitDecideResponse",
     "WaitDecideResponse422",
+    "WaitEffectivePriority",
     "WaitExplainArgs",
     "WaitExplainResponse",
     "WaitExplainResponse422",
-    "WaitExplainResponseExplanationType0",
-    "WaitExplainResponseWaitsItem",
+    "WaitExplanation",
+    "WaitExplanationContinuationType0",
+    "WaitExplanationEdgeHistoryItem",
+    "WaitExplanationEscalationsItem",
+    "WaitExplanationEscalationType0",
+    "WaitExplanationOwner",
+    "WaitExplanationReservationsItem",
     "WaitFactsDTO",
     "WaitFactsDTODeadlineSourceType0",
     "WaitFactsDTOWaitKind",
@@ -3911,9 +3941,17 @@ __all__ = (
     "WaitGetArgsSchemaVersion",
     "WaitGetResponse422",
     "WaitGraphArgs",
+    "WaitGraphChain",
+    "WaitGraphProject",
+    "WaitGraphProjectBranchBlockersItem",
+    "WaitGraphProjectCountsItem",
+    "WaitGraphProjectDeadlocksItem",
+    "WaitGraphProjectEscalatedWaitsItem",
+    "WaitGraphProjectHeldMessageBacklogItem",
+    "WaitGraphProjection",
+    "WaitGraphProjectTruncated",
     "WaitGraphResponse",
     "WaitGraphResponse422",
-    "WaitGraphResponseGraph",
     "WaitLegacyBridgeArgs",
     "WaitLegacyBridgeResponse422",
     "WaitLiftArgs",
@@ -3936,6 +3974,12 @@ __all__ = (
     "WaitResponseDecisionType0",
     "WaitResponseEvidenceType0",
     "WaitResponseWaitType1",
+    "WaitSleepExplanation",
+    "WaitSleepExplanationInputs",
+    "WaitTaskExplanation",
+    "WaitVerifiedEvidence",
+    "WaitVerifiedEvidenceCondition",
+    "WaitVerifiedEvidenceFacts",
     "WithheldTask",
     "WorkspaceDoctorRequest",
     "WorkspaceDoctorResponse422",

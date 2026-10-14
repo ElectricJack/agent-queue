@@ -225,6 +225,41 @@ evidence falls back to recent terminal activity.
 `agents.stuck_timeout_seconds` defaults to disabled (`0`) both with and without
 an `agents:` configuration section. Explicit configured limits still apply.
 
+## Inspect verified waits
+
+The verified-wait read surfaces show the persisted source facts independently of
+agent commentary. When the v2 runtime is installed, inspect one wait or all active
+waits on a task:
+
+```bash
+aq wait explain WAIT_ID
+aq wait explain --task TASK_ID --project PROJECT_ID
+aq wait explain --task TASK_ID --project PROJECT_ID --history
+aq wait graph --project PROJECT_ID
+aq wait graph --fleet --json
+```
+
+Explain includes lifecycle, source identity and revision, observation freshness,
+wait age (or `age_unknown`), sleep decisions and inputs, base and effective
+priority with donors, blocker chains, deadlines, reservations and continuation
+state. `Verified evidence` is labelled separately from `Agent commentary`.
+A timer observation proves its due instant; commentary about CI does not prove a
+CI result. Reads do not change a wait or enable v2 writes.
+
+The dashboard task detail includes the same Waiting on panel. The **Waiting on**
+navigation view shows separate **Verified evidence** and **Claimed commentary**
+columns. Its project selector is stored in the URL (`/waiting?project=PROJECT_ID`);
+All projects uses the fleet summary grant `waits.fleet_summary`. Query failures
+are shown as unavailable evidence rather than an empty wait graph. Summary
+sections include chains, escalations, branch blockers and reservations, and held
+message counts. Truncation notices identify omitted records or paths.
+
+The generated API routes are `POST /api/wait/explain` and
+`POST /api/wait/graph`; the dashboard uses the generated TypeScript client.
+Workers can explain their own waits. Project and fleet graphs retain the
+supervisor/local authorization checks. Before the runtime callbacks are installed,
+these reads return `wait.unavailable`.
+
 ## Turn-count evidence (2026-10-01)
 
 The operator's rolling 24-hour audit found 118 sleep commands, 267 process/output

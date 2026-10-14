@@ -44,6 +44,7 @@
         "tests/test_wait_graph.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_queries.py",
+        "tests/test_wait_surfaces.py",
         "tests/test_waits.py"
       ]
     },
@@ -17848,6 +17849,26 @@
         "parametrize"
       ],
       "summary": "Verified registration and source races on disposable PostgreSQL."
+    },
+    "tests/test_wait_surfaces.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:3e6555214a794f70a08aa3377a25b72ad911a5749547b63f5f62f423b2cd4466",
+      "imports": [
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.models.wait",
+        "src.cli.waits",
+        "src.commands.contracts.wait_v2",
+        "src.database.queries.wait_queries",
+        "src.database.tables"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The persisted wait projection survives HTTP and human CLI rendering."
     },
     "tests/test_waits.py": {
       "areas": [

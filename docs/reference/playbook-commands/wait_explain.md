@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait_v2.py`](../../../src/commands/contracts/wait_v2.py) |
-| Contract fingerprint | `sha256:e79a6166eca97fe0d7afabe9e7785ddf6a78980befcf49fc4d25247e56da82c2` |
+| Contract fingerprint | `sha256:632418598372a8776738092749eb8ac0d6c52c778ea821a28c2b9a1b1cd5c830` |
 
 ## Parameters
 
@@ -33,6 +33,10 @@
 |---|---|---|
 | `explanation` | `object \| null` | — |
 | `waits` | `object[]` | — |
+| `task` | `object \| null` | — |
+| `total` | `integer` | — |
+| `offset` | `integer` | — |
+| `truncated` | `boolean` | — |
 
 ## Outcomes
 

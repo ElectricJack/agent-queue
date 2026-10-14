@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait_v2.py`](../../../src/commands/contracts/wait_v2.py) |
-| Contract fingerprint | `sha256:cc44c96b621114a103dcc0d2ed8b6a3f9355488bc174ea757207f425f3cd631d` |
+| Contract fingerprint | `sha256:1770974b179666f6cb0f6686fe2f2489b7a326e2766248ddca1f2c8d1b9d6300` |
 
 ## Parameters
 
@@ -27,7 +27,11 @@
 
 | Field | Type | Description |
 |---|---|---|
-| `graph` | `object` | — |
+| `graph` | `object \| null` | — |
+| `projects` | `object[]` | — |
+| `total_projects` | `integer` | — |
+| `offset` | `integer` | — |
+| `truncated` | `boolean` | — |
 
 ## Outcomes
 

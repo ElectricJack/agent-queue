@@ -6,11 +6,11 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="WaitExplainResponseExplanationType0")
+T = TypeVar("T", bound="WaitSleepExplanationInputs")
 
 
 @_attrs_define
-class WaitExplainResponseExplanationType0:
+class WaitSleepExplanationInputs:
     """ """
 
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -25,10 +25,10 @@ class WaitExplainResponseExplanationType0:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        wait_explain_response_explanation_type_0 = cls()
+        wait_sleep_explanation_inputs = cls()
 
-        wait_explain_response_explanation_type_0.additional_properties = d
-        return wait_explain_response_explanation_type_0
+        wait_sleep_explanation_inputs.additional_properties = d
+        return wait_sleep_explanation_inputs
 
     @property
     def additional_keys(self) -> list[str]:

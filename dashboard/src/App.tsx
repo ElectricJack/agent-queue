@@ -40,6 +40,7 @@ const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
 const MorningReportPage = lazy(() => import("./pages/reports/MorningReportPage"));
+const WaitingOn = lazy(() => import("./pages/WaitingOn"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
 const FocusShell = lazy(() => import("./pages/focus/FocusShell"));
@@ -194,6 +195,7 @@ export default function App() {
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="conversations" element={<GlobalChat />} />
+            <Route path="waiting" element={<WaitingOn />} />
             <Route path="metrics" element={<Metrics />} />
             <Route path="host-shell" element={<HostShell />} />
             <Route path="reviews" element={<ReviewsInbox />} />
