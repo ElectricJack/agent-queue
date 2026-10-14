@@ -1202,6 +1202,7 @@ class ClaimQueryMixin:
                     claim_failure_reason=None,
                     claim_failure_at=None,
                     claim_refusal=None,
+                    failed_preparation=None,
                 )
             )
             row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()

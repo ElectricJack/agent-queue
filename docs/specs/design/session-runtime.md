@@ -270,6 +270,18 @@ disable that session's workspace. Empty-frontier polls and admission waits neith
 spend nor clear this budget; a different failure starts a new streak, and successful
 activation clears it. The count survives daemon restarts. The write is fenced by
 the session instance and preparation epoch, and cannot affect an active claim.
+Before permanent preparation cleanup, the same session row retains one bounded,
+scrubbed `failed_preparation` snapshot: selected task and creation time, designated
+repository/ref, origin identity and creation generation, checkpoint version and
+generation, session instance, preparation start and claim epoch, failure stage/reason,
+and observation time. Origin/checkpoint fields describe the persisted evidence at
+observation; missing evidence stays null. No exception locals, credentials, repository
+URLs or arbitrary metadata are copied. This is a last observation, not a journal.
+It survives binding release, cooldown, drain and daemon restart and appears in existing
+session diagnostics and failed claim responses. Successful activation clears it.
+Its write requires the exact still-preparing session/task/instance/epoch binding;
+stale, active or successor preparations cannot write it. The snapshot never supplies
+claim authority, creates a claim file, enables task mutations or authorizes recovery.
 The response is `drain_requested` and instructs the worker to run `aq session
 drain-ack` and exit. Reconciliation stops the exact session through normal guarded
 pool teardown even if the worker ignores the response. Attached branch ownership

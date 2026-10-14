@@ -1488,6 +1488,8 @@ sessions = Table(
     Column("claim_failure_count", Integer, nullable=False, server_default="0"),
     Column("claim_failure_reason", Text, nullable=True),
     Column("claim_failure_at", Float, nullable=True),
+    # Last failed preparation observation; diagnostic, never a task binding.
+    Column("failed_preparation", JSONB, nullable=True),
     # Session-wide refusal streak/cooldown, independent of a failed task's backoff.
     Column("claim_refusal", JSONB, nullable=True),
     Column("session_key", Text, nullable=True),  # harness resume key

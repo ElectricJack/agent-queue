@@ -26764,6 +26764,18 @@
               }
             ],
             "title": "Claim Phase"
+          },
+          "failed_preparation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Preparation"
           }
         },
         "type": "object",
@@ -71005,6 +71017,18 @@
               }
             ],
             "title": "Claim Failure At"
+          },
+          "failed_preparation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Preparation"
           },
           "quarantined_at": {
             "anyOf": [
