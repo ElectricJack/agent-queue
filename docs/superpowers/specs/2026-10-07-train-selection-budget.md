@@ -45,6 +45,17 @@ delivery 577.470 seconds for 24 sources, and PR admission 295.290 seconds for
 20 sources. Neither sample recorded stack refresh. The separate hibernation
 stack-refresh observation does not explain these dev timeouts.
 
+Later supervisor readbacks reported native progress on the unchanged
+`87d395` checkout: 14 roots reached settling, then batch
+`train-ba18745869fd7cb04850f1bd2be342ae` sealed those 14 inputs with existing
+repair `8027ec35`, attempt 1. The observation at `1791987380.201177` selected
+in 2.36 seconds and took 31.70 seconds overall, using warm completion/delivery
+caches and one candidate window. This successful sample supersedes any claim
+that every visit times out; it does not establish a live latency guarantee,
+remove the reproduced slow-prefix starvation risk, or show this fix deployed.
+That native batch, its membership, repair and explicit holds remain owned by
+the existing integration flow.
+
 Selection must be able to finish a safely admitted prefix without rescanning
 the same expensive prefix on every visit. New-batch selection rotates the full
 undelivered routed frontier before applying the existing member cap. A
