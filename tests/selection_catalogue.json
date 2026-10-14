@@ -1227,6 +1227,7 @@
     "task-graph-creation": {
       "description": "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants.",
       "modules": [
+        "tests/test_batch_digest.py",
         "tests/test_create_task_graph_command.py",
         "tests/test_hierarchy_graph_creator.py",
         "tests/test_task_graph.py",
@@ -3099,6 +3100,20 @@
       ],
       "markers": [],
       "summary": "The base checkout is never handed to a session."
+    },
+    "tests/test_batch_digest.py": {
+      "areas": [
+        "task-graph-creation"
+      ],
+      "default_arm": true,
+      "digest": "sha256:6bab79ed88a8d5ed170b2ff3a2d0d31a6e2f28c66213f1ad94bb8dfc5dd8fab6",
+      "imports": [
+        "src.task_graph.batch_digest"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Review identity covers live graph semantics and survives cosmetic edits."
     },
     "tests/test_blocked_state.py": {
       "areas": [
@@ -11791,8 +11806,9 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:604813a4e78edc7213f77f5c97dd88012fb79acc625852ce2263d121e0afcd6e",
+      "digest": "sha256:670696b76bdcd94bde5fa66ef83cf8f8a262fdd02500cde3a25f5ac48fecff5b",
       "imports": [
+        "src.database.tables",
         "src.models"
       ],
       "markers": [],

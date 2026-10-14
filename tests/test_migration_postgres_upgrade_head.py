@@ -1068,3 +1068,163 @@ async def test_ref_lease_upgrade_preserves_legacy_shadow_owner_and_constraints()
         await conn.close()
     # Fresh baseline already contains the new columns/constraints: upgrade is
     # inspect-guarded and idempotent for that path too (the parity test above).
+
+
+async def test_held_ingestion_upgrade_from_deployed_shape_is_idempotent():
+    """Exercise actual additive DDL, not only the live-metadata baseline."""
+    from importlib import import_module
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    dsn = await create_scratch_database("heldingest100")
+    before = _alembic_pg(dsn, "upgrade", "a00000000099")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        for table in ("ingest_batch_receipts", "ingest_batch_members", "ingest_batches"):
+            await conn.execute(f"DROP TABLE {table}")
+        await conn.execute("ALTER TABLE tasks DROP COLUMN held_batch_id")
+        await conn.execute("ALTER TABLE task_proposals DROP CONSTRAINT ck_task_proposals_status")
+        await conn.execute(
+            "ALTER TABLE task_proposals ADD CONSTRAINT ck_task_proposals_status "
+            "CHECK (status IN ('draft','ready','committed','discarded'))"
+        )
+        await conn.execute("ALTER TABLE task_dependencies DROP CONSTRAINT ck_task_deps_dep_type")
+        await conn.execute(
+            "ALTER TABLE task_dependencies ADD CONSTRAINT ck_task_deps_dep_type "
+            "CHECK (dep_type IN ('blocks','parent-child','waits-for','conditional-blocks',"
+            "'discovered-from','related','duplicates','supersedes'))"
+        )
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('keep','Keep',0)")
+        await conn.execute(
+            "INSERT INTO tasks (id, project_id, title, description, created_at, updated_at) "
+            "VALUES ('t','keep','Keep','Required',0,0)"
+        )
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    # Run the migration body again even though Alembic's stamp is already at
+    # head: checkfirst/inspection must protect an already-created baseline.
+    migration = import_module("migrations.versions.a00000000100_ingest_held_batches")
+    engine = create_async_engine(_async_dsn(dsn))
+    try:
+        async with engine.begin() as connection:
+            def repeat(sync_conn):
+                with Operations.context(MigrationContext.configure(sync_conn)):
+                    migration.upgrade()
+            await connection.run_sync(repeat)
+    finally:
+        await engine.dispose()
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT description FROM tasks WHERE id='t'") == "Required"
+        assert await conn.fetchval("SELECT held_batch_id FROM tasks WHERE id='t'") is None
+        assert await conn.fetchval("SELECT to_regclass('ix_tasks_held_batch_id')")
+        await _insert_held_batch(conn)
+        assert await conn.fetchval(
+            "SELECT structure_revision FROM ingest_batches WHERE batch_id='batch'"
+        ) == 1
+        assert await conn.fetchval("SELECT state FROM ingest_batches") == "held"
+        for column in ("check_results", "release_receipt"):
+            assert await conn.fetchval(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name='ingest_batches' AND column_name=$1", column
+            ) == "jsonb"
+        with pytest.raises(Exception, match="ck_ingest_batches_design_lineage"):
+            await conn.execute("UPDATE ingest_batches SET design_review_id='partial'")
+        await conn.execute(
+            "UPDATE ingest_batches SET design_review_id='design', design_revision=2, "
+            "design_content_sha256=repeat('d',64), lineage_kind='resolved'"
+        )
+        with pytest.raises(Exception, match="ck_ingest_batches_state"):
+            await conn.execute("UPDATE ingest_batches SET state='unknown'")
+        await conn.execute(
+            "INSERT INTO ingest_batch_members (batch_id,task_id,member_key,role,"
+            "section_anchor,primary_outcome,created_revision) "
+            "VALUES ('batch','t','code_leaf','leaf','Schema','Persist holds',1)"
+        )
+        with pytest.raises(Exception, match="uq_ingest_batch_members_key"):
+            await conn.execute(
+                "INSERT INTO ingest_batch_members (batch_id,task_id,member_key,role,"
+                "section_anchor,primary_outcome,created_revision) "
+                "VALUES ('batch','other','code_leaf','leaf','Schema','Persist holds',1)"
+            )
+        for receipt_id, passing in (("fail1", False), ("fail2", False), ("pass1", True)):
+            await _insert_batch_receipt(conn, receipt_id, passing)
+        with pytest.raises(Exception, match="uq_ingest_batch_receipts_passing"):
+            await _insert_batch_receipt(conn, "pass2", True)
+        await conn.execute("UPDATE tasks SET held_batch_id='batch' WHERE id='t'")
+        await conn.execute(
+            "INSERT INTO tasks (id,project_id,title,description,created_at,updated_at) "
+            "VALUES ('op','keep','Observe','Observe delivery',0,0)"
+        )
+        await conn.execute(
+            "INSERT INTO task_dependencies (task_id,depends_on_task_id,dep_type) "
+            "VALUES ('op','t','delivery-of')"
+        )
+        # Retired membership/receipts survive removal of a live task row.
+        await conn.execute("DELETE FROM task_dependencies WHERE task_id='op'")
+        await conn.execute("UPDATE ingest_batch_members SET state='retired', "
+                           "retired_reason='duplicate',retired_revision=2")
+        await conn.execute("DELETE FROM tasks WHERE id='t'")
+        assert await conn.fetchval("SELECT task_id FROM ingest_batch_members") == "t"
+        assert await conn.fetchval("SELECT count(*) FROM ingest_batch_receipts") == 3
+    finally:
+        await conn.close()
+
+
+async def _insert_held_batch(conn):
+    await conn.execute(
+        "INSERT INTO task_proposals (id,project_id,source,payload,status,created_at,updated_at) "
+        "VALUES ('batch','keep','spec:source','{}','held',0,0)"
+    )
+    await conn.execute(
+        "INSERT INTO ingest_batches (batch_id,project_id,source_review_id,source_revision,"
+        "source_content_sha256,decision_id,lineage_kind,idempotency_key,structure_digest,"
+        "created_at,updated_at) "
+        "VALUES ('batch','keep','review',1,repeat('a',64),'decision','none','key',"
+        "repeat('b',64),0,0)"
+    )
+
+
+async def _insert_batch_receipt(conn, receipt_id, passing):
+    await conn.execute(
+        "INSERT INTO ingest_batch_receipts (receipt_id,batch_id,structure_revision,"
+        "structure_digest,reviewer_task_id,reviewer_session_id,passing,section_verdicts,"
+        "reverse_coverage_verdict,walkthrough_verdict,structural_findings,created_at) "
+        "VALUES ($1,'batch',1,repeat('b',64),'reviewer','session',$2,"
+        "'{\"Schema\":{\"verdict\":\"faithful\"}}'::jsonb,'faithful','faithful','[]'::jsonb,0)",
+        receipt_id, passing,
+    )
+
+
+@pytest.mark.parametrize("state", ["held", "reviewing", "needs_scope"])
+async def test_held_ingestion_downgrade_refuses_pending_batches_atomically(state):
+    dsn = await create_scratch_database("helddowngrade100")
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        await conn.execute("INSERT INTO projects (id,name,created_at) VALUES ('keep','Keep',0)")
+        await _insert_held_batch(conn)
+        await conn.execute("UPDATE ingest_batches SET state=$1", state)
+    finally:
+        await conn.close()
+    refused = _alembic_pg(dsn, "downgrade", "a00000000099")
+    assert refused.returncode != 0
+    assert "release or explicitly retire them before downgrading" in refused.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT state FROM ingest_batches") == state
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000100"
+        assert await conn.fetchval("SELECT to_regclass('ingest_batch_receipts')")
+        await conn.execute("UPDATE ingest_batches SET state='retired'")
+        await conn.execute("UPDATE task_proposals SET status='discarded'")
+    finally:
+        await conn.close()
+    allowed = _alembic_pg(dsn, "downgrade", "a00000000099")
+    assert allowed.returncode == 0, allowed.stderr
