@@ -51,7 +51,7 @@ from src.pool_claims import (
     pool_claim_cap,
     pool_claim_loop_stall_seconds,
 )
-from src.sessions.context import harness_progress, store_lower_bound
+from src.sessions.context import completed_turn_at, harness_progress, store_lower_bound
 from src.sessions.exit_classifier import (
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     ExitVerdict,
@@ -1856,6 +1856,16 @@ class SessionReconciler:
                 await self.db.set_task_meta(row.task_id, META_STALL_LAST_ACTION, str(resumed))
         return False, resumed or 0.0
 
+    async def _pool_completed_turn(self, row: SessionRecord) -> float | None:
+        """An ended pool turn can be idle even while its terminal repaints."""
+        if row.lifecycle != "pool" or row.claim_phase != "active":
+            return None
+        at = await completed_turn_at(row, base_dir=self.transcript_base_dir)
+        if at is None:
+            return None
+        agent = await self.db.get_agent(row.agent_id) if row.agent_id else None
+        return max(at, (agent.last_heartbeat or 0.0) if agent else 0.0)
+
     async def _screen_digest(self, provider, row: SessionRecord) -> str | None:
         """A digest of everything this session's pane is showing, read-only.
 
@@ -2254,6 +2264,9 @@ class SessionReconciler:
                             ):
                                 continue
             last = max(row.last_activity or row.started_at or 0.0, resumed)
+            completed = await self._pool_completed_turn(row)
+            if completed is not None:
+                last = max(completed, resumed)
             wedged: OpenCodeActivity | None = None
             if now - last <= ttl:
                 # A pane that keeps painting is not evidence that anything is
@@ -3085,7 +3098,8 @@ class SessionReconciler:
         force-killed just for being old.
         """
         limit = float(getattr(self.config.agents_config, "stuck_timeout_seconds", 0) or 0)
-        if limit <= 0:
+        idle_limit = float(self.sessions_config.idle_claim_timeout_seconds)
+        if limit <= 0 and idle_limit <= 0:
             return
         for row in live:
             if row.lifecycle not in ("task", "pool") or not row.task_id:
@@ -3097,8 +3111,13 @@ class SessionReconciler:
                 continue
             if resumed and now - resumed <= float(self.sessions_config.lease_ttl_seconds):
                 continue  # one full lease interval to consume the result
+            effective_limit = limit
             if row.lifecycle == "pool":
                 last = row.last_activity if row.last_activity is not None else row.started_at
+                completed = await self._pool_completed_turn(row)
+                if completed is not None and idle_limit > 0:
+                    last = completed
+                    effective_limit = min(limit, idle_limit) if limit > 0 else idle_limit
                 last = max(last or 0.0, resumed)
                 elapsed = now - (last or now)
             else:
@@ -3110,7 +3129,7 @@ class SessionReconciler:
                         baseline = resumed_at
                 baseline = max(baseline or 0.0, resumed)
                 elapsed = now - (baseline or now)
-            if elapsed <= limit:
+            if effective_limit <= 0 or elapsed <= effective_limit:
                 continue
             fresh = await self._still_live(row)
             if fresh is None:
@@ -3123,11 +3142,17 @@ class SessionReconciler:
                         "orchestrator is wired — skipping", row.id,
                     )
                     continue
+                # The transcript or claim may have changed while the probes
+                # yielded. Never stop a newly resumed turn from an older read.
+                if completed is not None:
+                    current = await self._pool_completed_turn(row)
+                    if current is None or now - max(current, resumed) <= effective_limit:
+                        continue
                 task = await self.db.get_task(row.task_id)
                 logger.warning(
-                    "Pool session %s exceeded stuck_timeout_seconds (%ss) — terminating",
+                    "Pool session %s exceeded inactivity bound (%ss) — terminating",
                     row.id,
-                    limit,
+                    effective_limit,
                 )
                 if task is not None:
                     record = await self._record_worker_failure(row, task, "stuck_timeout", now)

@@ -12751,7 +12751,7 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:328cbc14d184ff9552902b7dfc31da11a9e7fe7690611206db0f56471a3e96d4",
+      "digest": "sha256:4293a9075a63f1ec0f95f142285221ac39d24c857388ea61fae2c41c46d4ca50",
       "imports": [
         "src.commands.claim_commands",
         "src.config",
@@ -12763,6 +12763,7 @@
         "src.models",
         "src.orchestrator",
         "src.sessions",
+        "src.sessions.context",
         "src.sessions.exit_classifier",
         "src.sessions.fake",
         "src.sessions.provider",

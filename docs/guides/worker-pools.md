@@ -318,6 +318,22 @@ usage-limit screen ends with reason `usage_limit_screen` instead and records a
 rate-limit exit against the provider, so two such workers trip it and pool
 sizing stops relaunching into the limit (provider-failover D13).
 
+**A worker holding a claim must keep working or close it.** Supervisors must not
+park holders on source mapping, integration controls or delivery paperwork.
+With the train off, its controls are not worker publication/close prerequisites;
+the supervisor handles actual refusals through the owning surface. A necessary
+execution question uses concrete guidance or one bounded durable wait.
+
+For Claude and Codex, an explicit completion of the current claim's turn opens
+the stall ladder even if tmux keeps repainting. After
+`sessions.idle_claim_timeout_seconds` of quiet (default 900, 0 disables this
+additional bound), the backstop stops the exact worker and releases its claim
+through guarded pool teardown. New input, tools and turns invalidate the
+completion evidence; unreadable evidence is not a reason to release. Task
+heartbeats, questions and durable waits retain their grace/exemptions. Attached
+integration ownership remains fenced, and repeated failures use the existing
+bounded recovery budget instead of relaunching forever.
+
 ### Repeated claim preparation refusals
 
 The session cooldown guard (§4) drains idle workers on their second identical

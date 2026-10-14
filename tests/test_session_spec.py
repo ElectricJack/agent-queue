@@ -746,6 +746,9 @@ class TestPromptDelivery:
             instance_token="t1",
         )
         prompt = spec.prompt
+        assert "Never tell a worker to hold idle" in prompt
+        assert "with the train off, train controls" in prompt
+        assert "one bounded durable message wait" in prompt
         assert "As your FIRST action on a cold start" in prompt
         assert prompt.index("As your FIRST action") < prompt.index("Run `aq message inbox")
         assert "list the scheduled jobs" in prompt

@@ -308,6 +308,25 @@ listing is an incomplete check, never evidence that sessions are absent.
 explicit `aq task heartbeat` calls (the prompt instructs agents to call it before long
 commands). A lease TTL of ~8 minutes without either marks the task **stalled** — not dead.
 
+An active pool holder whose native transcript explicitly ends its current turn
+(`end_turn` for Claude, `task_complete` for Codex) uses that transcript's quiet
+clock instead of tmux repaints for the stall ladder and the
+`sessions.idle_claim_timeout_seconds` backstop (15 minutes by default, 0 disables).
+The independent `agents.stuck_timeout_seconds` bound remains honored when enabled.
+New input, tool
+activity, a new turn, partial/unreadable evidence or a pre-claim completion
+invalidates the observation. Recent task heartbeats and wait-result consumption
+give fresh grace; live questions and bounded durable waits retain their existing
+exemptions. Recovery still stops the exact process before releasing resources,
+preserves integration ownership and uses the task's bounded failure streak.
+An unregistered instruction to wait for integration paperwork grants no exemption.
+
+Supervisors keep workers executing or closing their work while the integration
+owner handles delivery controls. With the train off, train controls are not a
+worker publication/close prerequisite. Actual command refusals and explicit
+human holds remain binding; a necessary execution question gets concrete
+guidance or one bounded durable wait, never an indefinite idle hold.
+
 Stalled tasks climb a ladder, each rung a typed event:
 
 1. **Nudge** (`task.stalled` → `task.nudged`): inject *"No progress for N min on task
