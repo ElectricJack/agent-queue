@@ -7,6 +7,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.task_detail_display_state_type_0 import TaskDetailDisplayStateType0
+from ..models.task_detail_status import TaskDetailStatus
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -38,7 +39,7 @@ class TaskDetail:
         child_state_counts (None | TaskDetailChildStateCountsType0 | Unset):
         descendant_state_counts (None | TaskDetailDescendantStateCountsType0 | Unset):
         description (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
+        status (TaskDetailStatus | Unset):  Default: TaskDetailStatus.VALUE_0.
         priority (int | Unset):  Default: 0.
         assigned_agent (None | str | Unset):
         retry_count (int | Unset):  Default: 0.
@@ -85,7 +86,7 @@ class TaskDetail:
     child_state_counts: None | TaskDetailChildStateCountsType0 | Unset = UNSET
     descendant_state_counts: None | TaskDetailDescendantStateCountsType0 | Unset = UNSET
     description: str | Unset = ""
-    status: str | Unset = ""
+    status: TaskDetailStatus | Unset = TaskDetailStatus.VALUE_0
     priority: int | Unset = 0
     assigned_agent: None | str | Unset = UNSET
     retry_count: int | Unset = 0
@@ -173,7 +174,9 @@ class TaskDetail:
 
         description = self.description
 
-        status = self.status
+        status: str | Unset = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
 
         priority = self.priority
 
@@ -550,7 +553,12 @@ class TaskDetail:
 
         description = d.pop("description", UNSET)
 
-        status = d.pop("status", UNSET)
+        _status = d.pop("status", UNSET)
+        status: TaskDetailStatus | Unset
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = TaskDetailStatus(_status)
 
         priority = d.pop("priority", UNSET)
 

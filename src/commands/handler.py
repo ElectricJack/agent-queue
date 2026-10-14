@@ -36,6 +36,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from src.config import AppConfig
+from src.state_machine import InvalidTransition
 from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
@@ -1170,6 +1171,10 @@ class CommandHandler(
                 _emit_ok = False
                 _emit_error = f"Unknown command: {name}"
                 return {"error": f"Unknown command: {name}"}
+            except InvalidTransition as e:
+                _emit_ok = False
+                _emit_error = str(e)
+                return {"success": False, "code": e.code, "error": str(e)}
             except Exception as e:
                 logger.error(
                     "Command %s failed: args=%s err=%s",

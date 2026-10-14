@@ -34,6 +34,7 @@ from src.database.queries.task_queries import (
 from src.deliverables import REVIEW_TARGETS
 from src.notifications.render import classify_error
 from src.models import (
+    SUSPENDED_TASK_STATUSES,
     BLOCKING_DEP_TYPES,
     DEP_TYPE_VALUES,
     INTEGRATION_MODES,
@@ -1016,14 +1017,20 @@ class TaskCommandsMixin:
     ) -> None:
         """Publish a committed graph edit; subscriber failures cannot undo it.
 
-        Persist the small identity-only audit row for reconnect replay. The bus
+        Persist the small identity/status audit row for reconnect replay. The bus
         uses the usual task base fields (never description or command arguments).
         This intentionally does not emit task.created, which triggers routing.
         """
         pid = project_id or task.project_id
         seq = None
+        payload = None
+        if event_type == "task.updated":
+            details["status"] = task.status.value
+            payload = json.dumps({"status": task.status.value})
         try:
-            seq = await self.db.log_event(event_type, project_id=pid, task_id=task.id)
+            seq = await self.db.log_event(
+                event_type, project_id=pid, task_id=task.id, payload=payload,
+            )
         except Exception:
             logger.warning(
                 "Could not persist graph change %s for %s", event_type, task.id, exc_info=True
@@ -1494,6 +1501,7 @@ class TaskCommandsMixin:
         )
         claimed = moved is None or moved.status in (
             TaskStatus.IN_PROGRESS,
+            *SUSPENDED_TASK_STATUSES,
             TaskStatus.COMPLETED,
             TaskStatus.FAILED,
         ) or moved.assigned_agent_id is not None
@@ -4017,7 +4025,10 @@ class TaskCommandsMixin:
         refusal = _filing_refusal("edit_task", args)
         if refusal is not None:
             return refusal
-        claimed = task.status == TaskStatus.IN_PROGRESS or bool(task.assigned_agent_id)
+        claimed = (
+            task.status in (TaskStatus.IN_PROGRESS, *SUSPENDED_TASK_STATUSES)
+            or bool(task.assigned_agent_id)
+        )
         if "intelligence_class" in args and claimed:
             return {"error": "Task is running or claimed; stop the task before changing its class hint."}
 
@@ -4200,10 +4211,11 @@ class TaskCommandsMixin:
                 "monorepo support. Use 'exclusive' instead ('branch-isolated' is "
                 "deprecated and now behaves identically to 'exclusive')."
             )
-        await self._emit_task_graph_change("task.updated", task)
+        refreshed = await self.db.get_task(task.id) or task
+        await self._emit_task_graph_change("task.updated", refreshed)
         if updates.get("project_id", task.project_id) != task.project_id:
             await self._emit_task_graph_change(
-                "task.updated", task, project_id=updates["project_id"]
+                "task.updated", refreshed, project_id=task.project_id
             )
         return result
 
@@ -5215,6 +5227,9 @@ class TaskCommandsMixin:
                     "code": "integration.completion_provenance_required",
                 }
         await self.db.transition_task(task_id, TaskStatus(new_status), context="admin_set_status")
+        refreshed = await self.db.get_task(task_id)
+        if refreshed:
+            await self._emit_task_graph_change("task.updated", refreshed)
         return {
             "task_id": task_id,
             "old_status": old_status,

@@ -1716,12 +1716,18 @@
             "enum": [
               "DEFINED",
               "READY",
+              "ASSIGNED",
               "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
               "COMPLETED",
               "FAILED",
               "BLOCKED"
             ],
-            "description": "New status \u2014 admin override, bypasses state machine (optional)"
+            "description": "New lifecycle status (optional); suspended states require wait controls"
           },
           "max_retries": {
             "type": "integer",

@@ -92,6 +92,7 @@ LIVE_TASK_STATUSES = (
     TaskStatus.ASSIGNED.value,
     TaskStatus.IN_PROGRESS.value,
     TaskStatus.WAITING_INPUT.value,
+    TaskStatus.WAITING.value, TaskStatus.HIBERNATED.value, TaskStatus.RESUME_PENDING.value,
     TaskStatus.PAUSED.value,
 )
 #: Journal states that still owe work to the revisions their manifest names.

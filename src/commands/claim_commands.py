@@ -20,7 +20,7 @@ from src.claim_file import (
     write_claim_file,
 )
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
-from src.models import ClaimResult, TaskStatus
+from src.models import SUSPENDED_TASK_STATUSES, ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
 
 logger = logging.getLogger(__name__)
@@ -691,6 +691,12 @@ class ClaimCommandsMixin:
                         f"session holds task '{row.task_id}', which no longer exists",
                         row,
                         cap,
+                    )
+                if task.status in SUSPENDED_TASK_STATUSES:
+                    # The wait/continuation owns this binding. Claim-loop
+                    # recovery must neither release it nor re-serve the task.
+                    return self._simple(
+                        ClaimResult.NOT_ADMISSIBLE, "wait.task_suspended", row, cap
                     )
                 if (
                     task.status is not TaskStatus.IN_PROGRESS

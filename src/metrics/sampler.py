@@ -867,7 +867,10 @@ def _fold_sessions(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
 
 #: Statuses the tab graphs explicitly.  Anything else is summed into
 #: ``other`` rather than dropped, so the totals still add up.
-_GRAPHED_STATUSES = ("READY", "IN_PROGRESS", "ASSIGNED", "PAUSED", "BLOCKED", "WAITING_INPUT")
+_GRAPHED_STATUSES = (
+    "READY", "IN_PROGRESS", "ASSIGNED", "PAUSED", "BLOCKED", "WAITING_INPUT",
+    "WAITING", "HIBERNATED", "RESUME_PENDING",
+)
 
 
 def _fold_tasks(counts: Mapping[str, int]) -> dict[str, int]:
