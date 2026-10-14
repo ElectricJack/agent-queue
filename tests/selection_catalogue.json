@@ -16522,7 +16522,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:6b5ba083df0ff836653578ad5bd43524e52ea5d1af536c7a28b3a83ba0f48a9e",
+      "digest": "sha256:6162917356b0b933b7ef09278f4367218e9a501a7a8eca9d05c38681c16ad291",
       "imports": [
         "src",
         "src.api.auth",
@@ -16543,8 +16543,10 @@
         "src.orchestrator.task_checkpoint",
         "src.orchestrator.worktree_manager",
         "src.scheduler",
+        "src.sessions",
         "src.sessions.fake",
         "src.sessions.harness_registry",
+        "src.sessions.proctable",
         "src.sessions.reconciler",
         "src.sessions.spec",
         "src.vault"

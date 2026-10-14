@@ -5385,3 +5385,45 @@ async def test_activation_rechecks_mutable_holder_evidence(handler, db, tmp_path
         )
         assert activated is None
     assert (await db.get_session(sid)).claim_phase == "preparing"
+
+
+@pytest.mark.parametrize("pending,captured,retired", [
+    (False, 0, True), (True, 0, False), (False, 1, False), (False, 2, False),
+    ("false", 0, False), (False, "0", False), (False, 0.0, False), (False, None, False),
+])
+@pytest.mark.parametrize("accepted", [False, True])
+async def test_activation_retires_only_accepted_completed_older_stop(
+    handler, db, tmp_path, pending, captured, retired, accepted,
+):
+    await mktask(db, "receipt-task", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    handler._prepare_and_activate = AsyncMock(return_value={"result": "preparing"})
+    await scoped(handler, sid)._cmd_task_claim({"next": True})
+    task = await db.get_task("receipt-task")
+    assert task.claim_epoch == 1
+    stop = {"cleanup_pending": pending, "identity": {"task": {"claim_epoch": captured}}}
+    await db.set_task_meta(task.id, "retained_workspace_stop", stop)
+    await db.set_task_meta(task.id, "needs_attention", {"reason": "old"})
+    await db.add_task_context(task.id, type="retained_workspace_checkpoint",
+                              label="saved", content="durable")
+    async with db.immediate() as conn:
+        proof = await db.lock_claim_workspace_proof(conn, sid, task.id, epoch=task.claim_epoch)
+        assert proof is not None
+        if not accepted:
+            # Mutate under our own lock to exercise the actual session CAS, not
+            # an earlier proof refusal or a mocked activation return value.
+            from sqlalchemy import update
+            from src.database.tables import sessions
+            await conn.execute(update(sessions).where(sessions.c.id == sid).values(
+                desired_state="draining",
+            ))
+        result = await db.activate_claim(
+            sid, task.id, epoch=task.claim_epoch, now=NOW, conn=conn, workspace_proof=proof,
+        )
+    assert (result is not None) is accepted
+    assert await db.get_task_meta(task.id, "retained_workspace_stop") == (
+        None if retired and accepted else stop
+    )
+    assert (await db.get_task_meta(task.id, "needs_attention") is None) is accepted
+    contexts = await db.get_task_contexts(task.id)
+    assert any(c["type"] == "retained_workspace_checkpoint" and c["content"] == "durable" for c in contexts)

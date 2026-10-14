@@ -8722,6 +8722,42 @@
       "reason": "Command adapter for the reviewed workspace cutover transaction, including integration-owner guards; no independent mutation authority.",
       "landing_span": null,
       "baseline_span": null
+    },
+    "src/database/queries/retained_workspace_queries.py::finish": {
+      "reason": "Exact snapshot revalidation and native owner/session/workspace release after preservation and fresh termination proof; successor and operation fences retained."
+    },
+    "src/database/queries/retained_workspace_queries.py::import from src.database.tables import agents, integration_branch_owners, job_workspace_pins, repos, sessions, task_context, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "reason": "Shared schema imports for fenced retained-workspace handoff and checkpoint evidence."
+    },
+    "src/database/queries/retained_workspace_queries.py::snapshot": {
+      "reason": "Binds current retained-workspace source, acquisition generation, session instance, claim, pins and native integration owner before cleanup."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._pause_owners": {
+      "reason": "Captures exact integration owner identities for pause fencing."
+    },
+    "src/orchestrator/retained_workspace.py::stop_retained_workspace": {
+      "reason": "Qualified retained stop coordinates fresh writer proof, durable checkpoint/claim retirement, nondestructive source detachment and fenced native owner release."
+    },
+    "src/orchestrator/task_checkpoint.py::capture_checkpoint": {
+      "reason": "Captures full retained source using isolated index; may store preparation cleanup uncertainty, never remote-ref replay authority."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin.recover_missing_session_task": {
+      "reason": "Orphan recovery calls retained-source capture under task control lock and revalidates exact session and resource identities before release; no remote ref publication."
+    },
+    "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace": {
+      "reason": "Managed pause requires full durable capture, exact source identity and fresh provider/process proof before cleanup; bounded retry exhaustion cannot release an uncaptured managed slot."
+    },
+    "src/orchestrator/retained_workspace.py::import from src.orchestrator.task_checkpoint import capture_checkpoint": {
+      "reason": "Imports full-source capture for guarded retained-workspace stop; captured checkpoint is preservation evidence, not publication authority."
+    },
+    "src/orchestrator/task_checkpoint.py::validate_checkpoint_branch": {
+      "reason": "Source identity gate rejects foreign attached branches and preserves detached identity without inferring a restorable branch."
+    },
+    "src/orchestrator/core.py::Orchestrator._salvage_paused_workspace": {
+      "reason": "Partial-source salvage validates the stopped task and exact workspace/branch before recording context; it does not qualify managed-slot release without a full checkpoint."
+    },
+    "src/orchestrator/task_checkpoint.py::salvage_checkpoint": {
+      "reason": "Preserves best-effort patch using an isolated index with fresh repository/branch validation; explicit partial evidence grants no restoration or ref publication authority."
     }
   },
   "exclusions": {
@@ -13235,40 +13271,40 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
-      "line": 304,
+      "line": 362,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "67cfcb57e491d8877109ad2455218c74aacce1a7b84071e7f989253d5f8eb275",
+      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary control metadata operations with protected pause/stop snapshots guarded; no ref publication or replay authority."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::8513b8ad44440cd5bfaed1abc65ab824b7856f8b84f009f84e3bd7f9a0f86647": {
-      "line": 311,
+      "line": 369,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "67cfcb57e491d8877109ad2455218c74aacce1a7b84071e7f989253d5f8eb275",
+      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_dir'"
+      "reason": "Ordinary control metadata operations with protected pause/stop snapshots guarded; no ref publication or replay authority."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::cc1e1a1a54bb465b81b098e4b9a03d3717342bf5a286fd44dbf8b548c7a49003": {
-      "line": 316,
+      "line": 374,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "set_task_meta",
-      "owner_fingerprint": "67cfcb57e491d8877109ad2455218c74aacce1a7b84071e7f989253d5f8eb275",
+      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: key"
+      "reason": "Ordinary control metadata operations with protected pause/stop snapshots guarded; no ref publication or replay authority."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::efc628222166414397713182d90d1198aedc0c7804e05b3ccfd55c64a58c99f5": {
-      "line": 297,
+      "line": 355,
       "owner": "SurfaceCommandsMixin._cmd_task_set",
       "call": "log_event",
-      "owner_fingerprint": "67cfcb57e491d8877109ad2455218c74aacce1a7b84071e7f989253d5f8eb275",
+      "owner_fingerprint": "a6b6dd1611742d4376e3527271bb6e9a670ccb122b1d4adb43efb91be5bc04d1",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Ordinary control metadata operations with protected pause/stop snapshots guarded; no ref publication or replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_add_dependency::a4b11d12e44641f31dec92eda6c8cd14f1b9c6975b961f527226962bd27130a5": {
       "line": 3921,
@@ -13442,13 +13478,13 @@
       "reason": "Audit of an exact stopped pool claim release: session id, claim epoch and prior task status only; no git ref replay or duplicate integration lifecycle authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1331,
+      "line": 1356,
       "owner": "ClaimQueryMixin.activate_claim",
       "call": "delete",
-      "owner_fingerprint": "b76710fb942c49e071ea7f33aef09eb092ffcdd111106a88a75c739758137421",
+      "owner_fingerprint": "7667da57a7d30f008aba676b6d8680d1aa7778ef3e5d92b196b764ec24d23747",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary deletion of stale attention and preparation-backoff metadata after guarded PostgreSQL claim activation. Re-reviewed for clearing both session refusal budgets atomically: locks and admission guards remain before writes, with no remote OID, publication intent, ref replay or duplicate delivery lifecycle authority. Re-reviewed with byte-exact workspace/acquisition-generation/session-instance guards and obsolete diagnostic-key cleanup: successful activation remains the sole authority for deleting stale preparation records; no acquisition evidence, retained checkpoint or retry budget is erased on failure. Re-reviewed transaction-scoped holder proof reuse: task admission, assignment, receipt and cleanup hold are rechecked; the deletion CTE depends on successful session activation."
+      "reason": "Ordinary metadata retirement in the accepted activation CTE after locked identity rechecks; only completed older stop receipts are retired, pending receipts and durable checkpoint context remain. No remote ref authority or duplicate delivery lifecycle."
     },
     "src/database/queries/event_queries.py::EventQueryMixin._insert_event_row::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "line": 50,
@@ -13595,13 +13631,13 @@
       "reason": "Ordinary claim-ownership marker cleanup for a claim whose every holder session is proved stopped with matching claim epoch, instance token and desired state, and whose workspace and branch ownership are already released. Metadata key: 'claimed_by_session'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1178,
+      "line": 1419,
       "owner": "TaskQueryMixin._resume_locked",
       "call": "delete",
-      "owner_fingerprint": "c3509903f9344bc47d9ec0ad03e8aa289a933f663272c29527def2f6248461ec",
+      "owner_fingerprint": "8ec653f5146188407bf24adb8aab07cf5f1f31bd18ed246666588aa91a1c87e2",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Removes ordinary manual-pause and attention metadata on resume; proposal transactions may defer graph projection, while managed integration episodes remain paused without verifier wake authority. No ref replay state."
+      "reason": "Ordinary manual-pause continuation cleanup under task identity guards; no integration ref replay journal."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.delete_task_meta::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2208,
@@ -14342,13 +14378,13 @@
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
     },
     "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::2a67d31d352ea3e6d723c1927b29f55f52d855576c04aa1ff9899093637f01ad": {
-      "line": 1165,
+      "line": 1422,
       "owner": "Orchestrator._checkpoint_paused_workspace",
       "call": "set_task_meta",
-      "owner_fingerprint": "4a89cfc0a475893ea371a1166642587fa6ff2364664a72d2481acde6762615a2",
+      "owner_fingerprint": "89cc2b8db7ebe15d17ccb17c1cf37afe86a91efb283285010ee907428ea99e28",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PAUSE_CHECKPOINT_RETRY_META"
+      "reason": "Ordinary full-source pause checkpoint and exact claim-retirement intent, retained until fenced cleanup completes; not a second integration publication lifecycle."
     },
     "src/orchestrator/core.py::Orchestrator._finish_manual_pause::42aa00e8ced31b193cf50efcb0d356bb67a4fdf96c0380cd95c85329ab1acf31": {
       "line": 1084,
@@ -14369,13 +14405,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/core.py::Orchestrator._stop_task_locked::d86ccbef339ede4d738a06fe782e380b5a8f344ba31c80022f4f060258184622": {
-      "line": 1451,
+      "line": 1644,
       "owner": "Orchestrator._stop_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "86ab85667e0a3358fe4e2760c7beb3510a31a23d4483b39d936531f4cf35234d",
+      "owner_fingerprint": "7271a7281e0a1f330e379a4e85137befbca4e763b9172b149572582700f43ad6",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Diagnostic needs_attention=integration_handoff_unproven marker after a refused stop handoff; resources stay bound. Re-reviewed after exact-session stop confirmation was added before assignment/workspace release: this diagnostic write is unchanged. Stores no ref/SHA, replay intent or duplicate lifecycle authority."
+      "reason": "Ordinary diagnostic needs_attention on refused handoff; exact source remains retained, no ref replay authority."
     },
     "src/orchestrator/core.py::Orchestrator._sweep_gates::09a8c81adcd7b86401088dbc04f5d3e98384c7378264232630db2ae930f309f5": {
       "line": 3249,
@@ -14639,13 +14675,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/orchestrator/task_checkpoint.py::capture_checkpoint::8e044d0f2e71617726b80ce70cfd0a2f3e2443a520fe7fafb7c1deba317b5496": {
-      "line": 63,
+      "line": 123,
       "owner": "capture_checkpoint",
       "call": "set_task_meta",
-      "owner_fingerprint": "29d82e1fff1c4feb1d0fac306eea09b3039fbba0c51844c59e6e177d3beaa4f1",
+      "owner_fingerprint": "bb5ddc25cf589cb7f05d3706467d264f2165ef4ec89fa75bbd4f1a475b27c440",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: CHECKPOINT_META"
+      "reason": "Ordinary cleanup-uncertainty marker after capture process cleanup cannot be proved; retains original source and claim, no replay permission."
     },
     "src/orchestrator/workspace.py::WorkspaceMixin.arecover_completed_integration_pool_claim::1320846324f64b9a88c33a5a658ca64eaa3257d89135ad3028fb672a9cc9a076": {
       "line": 2031,
@@ -15348,6 +15384,24 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "One bounded, scrubbed canonical prepare_failure diagnostic attributes a permanent failure to the observing session instance and task claim epoch. A task row lock checks that epoch and holds it through this insert-or-update; a late completion cannot replace a newer claim diagnostic. It grants no release/reset authority, consumes no retry budget and stores no Git ref replay or duplicate integration lifecycle. Also records PREPARE_CLEANUP_HOLD when subprocess quiescence is unproved; this bounded identity/diagnostic hold prevents release or reset and is never ref replay authority."
+    },
+    "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace::cda00a809de8dac8c704f9da910433579b679b64df6e34c7ec8b86d4e6dc3882": {
+      "line": 1465,
+      "owner": "Orchestrator._checkpoint_paused_workspace",
+      "call": "set_task_meta",
+      "owner_fingerprint": "89cc2b8db7ebe15d17ccb17c1cf37afe86a91efb283285010ee907428ea99e28",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary full-source pause checkpoint and exact claim-retirement intent, retained until fenced cleanup completes; not a second integration publication lifecycle."
+    },
+    "src/orchestrator/core.py::Orchestrator._finish_manual_pause_resources::42aa00e8ced31b193cf50efcb0d356bb67a4fdf96c0380cd95c85329ab1acf31": {
+      "line": 1236,
+      "owner": "Orchestrator._finish_manual_pause_resources",
+      "call": "set_task_meta",
+      "owner_fingerprint": "034652b642c58c46e84312846e1f568f2a6e78066bcc3f706ff0ff60778d89ac",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary durable preparation-cleanup uncertainty marker when a writer cannot be proved stopped; retains ownership, not publication authority."
     }
   },
   "generic_dependencies": {
@@ -16230,7 +16284,11 @@
     "src/git/process.py::PREPARE_CLEANUP_HOLD": "Generic string key naming an unproved preparation cleanup hold. It performs no reads or writes; integration consumers and metadata writers remain inventoried.",
     "src/models.py::KIND_MODE_WORKTREE": "Generic workspace mode string constant, with no integration policy, storage or ref authority.",
     "src/workspace_disable.py::OPERATOR": "Generic workspace disable-provenance string constant. It neither changes state nor grants integration authority.",
-    "src/workspace_disable.py::kind_slot_cap": "Generic pure capacity arithmetic for a workspace kind and project limit; no integration storage, ownership or delivery authority."
+    "src/workspace_disable.py::kind_slot_cap": "Generic pure capacity arithmetic for a workspace kind and project limit; no integration storage, ownership or delivery authority.",
+    "src/claim_file.py::CLAIM_FILE": "Generic claim-file basename, with no integration state or policy.",
+    "src/preparation_failure.py::safe_text": "Generic bounded diagnostic scrubber, with no ref/owner or lifecycle authority.",
+    "src/projects/github.py::scrub_secrets": "Generic transport secret redaction, with no ref mutation or lifecycle authority.",
+    "src/sessions/proctable.py::workspace_quiescent": "Generic read-only process liveness proof; caller owns integration/workspace release decisions."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

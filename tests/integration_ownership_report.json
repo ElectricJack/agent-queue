@@ -9793,6 +9793,42 @@
       "reason": "Command adapter for the reviewed workspace cutover transaction, including integration-owner guards; no independent mutation authority.",
       "landing_span": null,
       "baseline_span": null
+    },
+    "src/database/queries/retained_workspace_queries.py::finish": {
+      "reason": "Exact snapshot revalidation and native owner/session/workspace release after preservation and fresh termination proof; successor and operation fences retained."
+    },
+    "src/database/queries/retained_workspace_queries.py::import from src.database.tables import agents, integration_branch_owners, job_workspace_pins, repos, sessions, task_context, task_integration_checkpoints, task_metadata, tasks, workspaces": {
+      "reason": "Shared schema imports for fenced retained-workspace handoff and checkpoint evidence."
+    },
+    "src/database/queries/retained_workspace_queries.py::snapshot": {
+      "reason": "Binds current retained-workspace source, acquisition generation, session instance, claim, pins and native integration owner before cleanup."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._pause_owners": {
+      "reason": "Captures exact integration owner identities for pause fencing."
+    },
+    "src/orchestrator/retained_workspace.py::stop_retained_workspace": {
+      "reason": "Qualified retained stop coordinates fresh writer proof, durable checkpoint/claim retirement, nondestructive source detachment and fenced native owner release."
+    },
+    "src/orchestrator/task_checkpoint.py::capture_checkpoint": {
+      "reason": "Captures full retained source using isolated index; may store preparation cleanup uncertainty, never remote-ref replay authority."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin.recover_missing_session_task": {
+      "reason": "Orphan recovery calls retained-source capture under task control lock and revalidates exact session and resource identities before release; no remote ref publication."
+    },
+    "src/orchestrator/core.py::Orchestrator._checkpoint_paused_workspace": {
+      "reason": "Managed pause requires full durable capture, exact source identity and fresh provider/process proof before cleanup; bounded retry exhaustion cannot release an uncaptured managed slot."
+    },
+    "src/orchestrator/retained_workspace.py::import from src.orchestrator.task_checkpoint import capture_checkpoint": {
+      "reason": "Imports full-source capture for guarded retained-workspace stop; captured checkpoint is preservation evidence, not publication authority."
+    },
+    "src/orchestrator/task_checkpoint.py::validate_checkpoint_branch": {
+      "reason": "Source identity gate rejects foreign attached branches and preserves detached identity without inferring a restorable branch."
+    },
+    "src/orchestrator/core.py::Orchestrator._salvage_paused_workspace": {
+      "reason": "Partial-source salvage validates the stopped task and exact workspace/branch before recording context; it does not qualify managed-slot release without a full checkpoint."
+    },
+    "src/orchestrator/task_checkpoint.py::salvage_checkpoint": {
+      "reason": "Preserves best-effort patch using an isolated index with fresh repository/branch validation; explicit partial evidence grants no restoration or ref publication authority."
     }
   },
   "shared_state": {

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import (
     Float,
+    Numeric,
     and_,
     case,
     cast,
@@ -1333,22 +1334,28 @@ class ClaimQueryMixin:
             # activation rejected by any guard changes no task diagnostics.
             accepted = exists(select(activated.c.id))
             stale_keys = ["needs_attention"]
-            raw_stop = await c.scalar(select(task_metadata.c.value).where(
-                task_metadata.c.task_id == task_id,
+            # Evaluate the receipt in the accepted write, after acquiring the
+            # task lock. Folding a read into the earlier locking SELECT could
+            # retain its pre-wait snapshot; a separate read costs a round trip.
+            stop = cast(case(
+                (task_metadata.c.key == "retained_workspace_stop", task_metadata.c.value),
+                else_="{}",
+            ), JSONB)
+            captured_epoch = stop["identity"]["task"]["claim_epoch"]
+            integer_epoch = and_(
+                func.jsonb_typeof(captured_epoch) == "number",
+                captured_epoch.astext.op("~")(r"^-?[0-9]+$"),
+            )
+            completed_older_stop = and_(
                 task_metadata.c.key == "retained_workspace_stop",
-            ))
-            stop = json.loads(raw_stop) if raw_stop is not None else {}
-            stopped_epoch = stop.get("identity", {}).get("task", {}).get("claim_epoch")
-            if (stop.get("cleanup_pending") is False and isinstance(stopped_epoch, int)
-                    and stopped_epoch < epoch):
-                # Successful activation owns the new epoch. Retire the old
-                # completed control receipt; its checkpoint context remains.
-                # Pending cleanup never loses its identity at this boundary.
-                stale_keys.append("retained_workspace_stop")
+                stop["cleanup_pending"] == cast(literal("false"), JSONB),
+                cast(case((integer_epoch, captured_epoch.astext)), Numeric) < epoch,
+            )
             if clear_preparation_metadata:
                 stale_keys.extend(CLAIM_PREPARATION_METADATA_KEYS)
             clear = delete(task_metadata).where(
-                task_metadata.c.task_id == task_id, task_metadata.c.key.in_(stale_keys),
+                task_metadata.c.task_id == task_id,
+                or_(task_metadata.c.key.in_(stale_keys), completed_older_stop),
                 accepted,
             ).cte("clear_preparation")
             statement = select(activated).add_cte(clear)

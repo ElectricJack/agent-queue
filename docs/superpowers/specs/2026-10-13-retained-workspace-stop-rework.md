@@ -317,3 +317,36 @@ candidate requires focused lifecycle, claim, integration-repair and acquisition
 checks, the existing performance/ownership ratchets without relaxed budgets,
 and its own final-source disposable swarm. Independent branch receipts cannot
 serve as that combined verification. No further idle coordination wait is needed.
+
+## Source-CI rework, epoch 4
+
+This is new source rework under the current claim, not release of the original
+live acceptance hold. Guarded native pulls restored exact `b393925c8` then merged
+qualified `69a45b259`; merge `3f491171b` has those exact parents. The earlier
+independent-source receipts remain historical, not combined-source validation.
+
+The combined claim path measures 21 statements against the unchanged budget of
+20; release now passes its unchanged budget. The additional completed-stop read
+must be folded into the existing accepted activation statement, with retirement
+still conditioned on a successful CAS, a completed receipt and an older epoch.
+Pending receipts and checkpoint context must remain durable, including across
+rejected activation and successor races.
+
+All eight failed default jobs in exact run 38502536614 were read through the
+primary job-log API (the CLI formatted-log endpoint returned empty output).
+Failures include stale parent/preparation fixtures, process-inventory uncertainty,
+missing preparation-safety methods on an integration test double, retired-slot
+reaper expectations, and ownership/spawn manifests. Each must be reconciled with
+the actual safety contract; no baseline or deadline may be raised.
+
+The hosted process error proves a live same-user `/proc` entry was unreadable;
+it does not identify that process or prove it unrelated. Production must continue
+to retain the workspace on such uncertainty. Lifecycle tests use a fake provider,
+so their process inventory must be explicitly isolated along with that provider,
+while still exercising the real scanner. Register real detached test children in
+that inventory and add deterministic inaccessible-process cases. The same scanner
+must distinguish a positively observed different UID from an unknown same-user
+process, refuse a relevant live child/marker, and preserve claims, source and
+capacity on unknown liveness. Do not replace the scanner with a constant success
+or interpret a PermissionError as termination evidence. These fixture receipts
+will not establish what the historical hosted PID was or qualify live recovery.

@@ -10,6 +10,7 @@ from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig
 from src.models import Agent, AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from src.sessions import proctable
 from tests.assignment_routing_helpers import install_already_routed
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
@@ -19,7 +20,14 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
-async def env(tmp_path, request, reuse_database):
+async def env(tmp_path, request, reuse_database, monkeypatch):
+    # The fake provider has an isolated process inventory, just as its sessions
+    # and repositories are isolated. Exercise the real scanner, not a constant
+    # quiescence result. Tests register real children via /proc symlinks below;
+    # inaccessible fixture processes must still retain the workspace.
+    process_inventory = tmp_path / "proc"
+    process_inventory.mkdir()
+    monkeypatch.setattr(proctable, "_PROC", process_inventory)
     db = await reuse_database("controls.db")
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
@@ -43,7 +51,10 @@ async def env(tmp_path, request, reuse_database):
     orch = Orchestrator(config)
     orch.db = db
     install_already_routed(orch)
-    yield SimpleNamespace(db=db, orch=orch, handler=CommandHandler(orch, config), config=config)
+    yield SimpleNamespace(
+        db=db, orch=orch, handler=CommandHandler(orch, config), config=config,
+        process_inventory=process_inventory,
+    )
 
 
 async def command(env, name, task_id="t", **args):
@@ -859,6 +870,7 @@ async def test_retained_stop_waits_for_unmarked_detached_child(env, tmp_path):
     )
     try:
         assert await asyncio.wait_for(child.stdout.readline(), 5) == b"ready\n"
+        (env.process_inventory / str(child.pid)).symlink_to(f"/proc/{child.pid}")
         result = await command(env, "stop_task")
         assert "process still uses" in result.get("error", ""), result
         assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
@@ -867,6 +879,54 @@ async def test_retained_stop_waits_for_unmarked_detached_child(env, tmp_path):
         child.terminate()
         await child.wait()
     assert "error" not in await command(env, "stop_task")
+
+
+@pytest.mark.parametrize("control", ["stop_task", "pause_task"])
+@pytest.mark.parametrize("source_user", [False, True])
+async def test_inaccessible_live_process_retains_source_until_fresh_proof(
+    env, tmp_path, monkeypatch, control, source_user,
+):
+    """CI's PermissionError is unknown, even with an apparently unrelated cwd."""
+    from pathlib import Path
+
+    repo, git, _, _ = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("staged\n")
+    git("add", "work.txt")
+    (repo / "work.txt").write_text("unstaged\n")
+    (repo / "new.txt").write_text("untracked\n")
+    before = (git("rev-parse", "HEAD"), git("write-tree"), git("show-ref"))
+    claim = (repo / ".aq" / "claim.json").read_bytes()
+    if control == "stop_task":
+        await command(env, "set_task_status", status="BLOCKED")
+    proc = env.process_inventory / "123456789"
+    proc.mkdir()
+    (proc / "stat").write_text("123456789 (inaccessible) S 1")
+    (proc / "environ").write_bytes(b"")
+    (proc / "cwd").symlink_to(repo if source_user else tmp_path)
+    (proc / "fd").mkdir()
+    read = Path.read_bytes
+
+    def inaccessible(path):
+        if path == proc / "environ":
+            raise PermissionError("fixture process environment unavailable")
+        return read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", inaccessible)
+    result = await command(env, control)
+    assert "error" in result, result
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 0
+    assert (repo / ".aq" / "claim.json").read_bytes() == claim
+    assert (git("rev-parse", "HEAD"), git("write-tree"), git("show-ref")) == before
+    assert (repo / "work.txt").read_text() == "unstaged\n"
+    assert (repo / "new.txt").read_text() == "untracked\n"
+    monkeypatch.setattr(Path, "read_bytes", read)
+    if source_user:
+        assert "error" in await command(env, control)
+        assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 0
+        # Fresh terminal evidence, not the earlier PermissionError, permits reuse.
+        (proc / "stat").write_text("123456789 (inaccessible) Z 1")
+    assert "error" not in await command(env, control)
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 1
 
 
 async def test_managed_pause_returns_capacity_only_after_full_checkpoint(env, tmp_path):
