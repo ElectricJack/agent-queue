@@ -35,6 +35,17 @@ GOLDEN = ROOT / "tests/fixtures/contracts/legacy-command-descriptors.json"
 C2_CHANGES = ROOT / "tests/fixtures/contracts/observation-contract-changes.json"
 
 
+@pytest.fixture(autouse=True)
+def isolated_handler_provider():
+    # Golden evidence describes offline discovery. Earlier daemon tests can
+    # leave a live provider whose plugin definitions include runtime metadata.
+    set_handler_provider(None)
+    try:
+        yield
+    finally:
+        set_handler_provider(None)
+
+
 def _observation_changes():
     changes = json.loads(C2_CHANGES.read_text())
     assert set(changes["contracts"]) == {"list_projects", "list_tasks", "get_stuck_tasks"}
