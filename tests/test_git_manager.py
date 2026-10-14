@@ -41,6 +41,15 @@ def _head_sha(cwd: str) -> str:
     return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
+def _disable_auto_maintenance(repo: str) -> None:
+    # Detached maintenance can remove objects/maintenance.lock during copytree.
+    # Local receive-pack does not inherit command-line config from the clone,
+    # so disable housekeeping in both repositories before writing seed objects.
+    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
+    for key, value in settings:
+        _git(["config", key, value], cwd=repo)
+
+
 @pytest.fixture(scope="session")
 def _git_repo_seed(tmp_path_factory):
     """Create a bare remote + working clone for testing."""
@@ -51,8 +60,10 @@ def _git_repo_seed(tmp_path_factory):
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(str(remote))
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", str(remote), str(clone)], check=True, capture_output=True)
+    _disable_auto_maintenance(str(clone))
     # Create initial commit
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
