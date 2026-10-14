@@ -880,7 +880,7 @@ class TestClaim:
 
         result = await scoped(handler, sid)._cmd_task_claim({"next": True})
 
-        assert result["result"] == "prepare_failed"
+        assert result["result"] == ("drain_requested" if disagreement == "disabled" else "prepare_failed")
         assert (await db.get_session(sid)).claim_phase != "active"
         assert (await db.get_session(sid)).claims == 0
         assert (await db.get_task("t1")).branch_name is None
@@ -5288,3 +5288,100 @@ async def test_cancelled_preparation_retains_identity_then_fences_successor(
         if not request.done():
             request.cancel()
         await asyncio.gather(request, return_exceptions=True)
+
+
+@pytest.mark.parametrize("requirements,primary", [
+    ([], "project-repo"), (["vault"], "project-repo"),
+    (["project-repo", "vault"], "project-repo"), (["native"], "native"),
+    (["native", "vault"], "native"), (["missing"], None),
+    (["readonly-dir"], None), (["native", "project-repo"], None),
+    (["native", "native"], None),
+])
+@pytest.mark.parametrize("held_kind", ["project-repo", "native"])
+async def test_pool_claim_kind_uses_actual_held_workspace(
+    handler, db, tmp_path, requirements, primary, held_kind,
+):
+    from dataclasses import replace
+
+    native = await db.resolve_workspace_kind(PROJECT_ID, "project-repo")
+    await db.upsert_workspace_kind(replace(native, id="native", project_id=PROJECT_ID))
+    await mktask(db, "kind-task", profile_id="worker")
+    await db.add_task_workspace_requirements("kind-task", [(k, None) for k in requirements])
+    sid, _ = await pool_session(db, tmp_path)
+    await db.update_workspace("ws-agent-1", kind_id=held_kind)
+    demand = await db.count_ready_by_profile(PROJECT_ID, by_workspace_kind=True)
+    assert demand == ({("worker", primary): 1} if primary else {})
+    worker = scoped(handler, sid)
+    if primary != held_kind:
+        assert (await worker._cmd_task_claim({"task_id": "kind-task"}))["result"] == "claim_conflict"
+        assert (await worker._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
+        assert (await db.get_task("kind-task")).claim_epoch == 0
+    else:
+        result = await worker._cmd_task_claim({"task_id": "kind-task"})
+        assert result["result"] == "claimed", result
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "kind-task"
+
+
+async def test_disabled_workspace_keeps_held_claim_but_drains_before_next(handler, db, tmp_path):
+    await mktask(db, "kind-task", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    worker = scoped(handler, sid)
+    assert (await worker._cmd_task_claim({"next": True}))["result"] == "claimed"
+    await db.update_workspace("ws-agent-1", enabled=False)
+    assert (await worker._cmd_task_claim({"next": True}))["result"] == "claimed"
+    assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "kind-task"
+
+
+async def test_disabled_idle_workspace_drains_without_taking_task(handler, db, tmp_path):
+    await mktask(db, "kind-task", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    await db.update_workspace("ws-agent-1", enabled=False)
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["result"] == "drain_requested", result
+    assert (await db.get_task("kind-task")).claim_epoch == 0
+
+
+async def test_holder_proof_cannot_be_reused_after_its_transaction(handler, db, tmp_path):
+    """A proof confers no authority once its session/workspace locks end."""
+    await mktask(db, "proof-task", profile_id="worker")
+    sid, _wd = await pool_session(db, tmp_path)
+    handler._prepare_and_activate = AsyncMock(return_value={"result": "preparing"})
+    await scoped(handler, sid)._cmd_task_claim({"next": True})
+    task = await db.get_task("proof-task")
+    async with db.immediate() as conn:
+        proof = await db.lock_claim_workspace_proof(
+            conn, sid, task.id, epoch=task.claim_epoch, lock_task_status=False,
+        )
+        assert proof is not None
+    async with db.immediate() as conn:
+        assert await db.activate_claim(
+            sid, task.id, epoch=task.claim_epoch, now=NOW, conn=conn, workspace_proof=proof,
+        ) is None
+    assert (await db.get_session(sid)).claim_phase == "preparing"
+    assert await db.activate_claim(sid, task.id, epoch=task.claim_epoch, now=NOW) is not None
+
+
+@pytest.mark.parametrize("changed", ["receipt", "assignment", "cleanup"])
+async def test_activation_rechecks_mutable_holder_evidence(handler, db, tmp_path, changed):
+    """Reset's key-share task lock cannot freeze later admission evidence."""
+    await mktask(db, "proof-task", profile_id="worker")
+    sid, _wd = await pool_session(db, tmp_path)
+    handler._prepare_and_activate = AsyncMock(return_value={"result": "preparing"})
+    await scoped(handler, sid)._cmd_task_claim({"next": True})
+    task = await db.get_task("proof-task")
+    async with db.immediate() as conn:
+        proof = await db.lock_claim_workspace_proof(
+            conn, sid, task.id, epoch=task.claim_epoch, lock_task_status=False,
+        )
+        assert proof is not None
+        if changed == "receipt":
+            await db.set_task_meta(task.id, "claim_workspace", {"superseded": True})
+        elif changed == "cleanup":
+            await db.set_task_meta(task.id, "prepare_cleanup_unproved", {"writer": "unknown"})
+        else:
+            await db.update_task(task.id, assigned_agent_id=None)
+        activated = await db.activate_claim(
+            sid, task.id, epoch=task.claim_epoch, now=NOW, conn=conn, workspace_proof=proof,
+        )
+        assert activated is None
+    assert (await db.get_session(sid)).claim_phase == "preparing"

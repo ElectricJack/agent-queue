@@ -1117,7 +1117,11 @@ async def test_pause_keeps_workspace_owned_until_pool_preparation_finishes(
     import asyncio
 
     provider, task = await running_session(env, tmp_path)
-    await env.db.update_session("s", claim_phase="preparing")
+    async with env.db.immediate() as conn:
+        await env.db.record_holder(
+            conn, session_id="s", task_id=task.id, claim_epoch=task.claim_epoch,
+            agent_id="agent", work_dir=str(tmp_path), now=1.0,
+        )
     session = await env.db.get_session("s")
     entered, proceed = asyncio.Event(), asyncio.Event()
 

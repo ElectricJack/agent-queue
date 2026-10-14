@@ -8,9 +8,12 @@ within a base workspace, and the worktree default for newly inserted kinds.
 from __future__ import annotations
 
 import json
+from importlib import import_module
 
 import pytest
 import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 
 from src.database import Database
 from tests.db_fixtures import lease_dsn
@@ -96,6 +99,42 @@ async def test_new_rows_get_the_shipped_worktree_default(database):
         ))).one()
         assert mode == KIND_MODE_WORKTREE
         assert json.loads(setup) == []
+
+
+async def test_kind_limits_upgrade_existing_rows_idempotently(database):
+    revision = import_module("migrations.versions.a00000000096_workspace_kind_limits")
+
+    def verify(conn):
+        with Operations.context(MigrationContext.configure(conn)):
+            revision.downgrade()
+            conn.execute(sa.text(
+                "INSERT INTO workspace_kinds "
+                "(project_id, id, description, writable, lockable, is_git_repo, "
+                "auto_attach, created_at, updated_at) "
+                "VALUES ('__system__', 'native', '', true, true, true, false, 0, 0)"
+            ))
+            revision.upgrade()
+            revision.upgrade()
+            query = sa.text("SELECT max_slots FROM workspace_kinds WHERE id = 'native'")
+            assert conn.execute(query).scalar_one() is None
+            conn.execute(sa.text("UPDATE workspace_kinds SET max_slots = 2 WHERE id = 'native'"))
+            assert conn.execute(query).scalar_one() == 2
+            for invalid in (0, -1):
+                with pytest.raises(sa.exc.IntegrityError), conn.begin_nested():
+                    conn.execute(sa.text(
+                        "UPDATE workspace_kinds SET max_slots = :cap WHERE id = 'native'"
+                    ), {"cap": invalid})
+            revision.downgrade()
+            assert conn.execute(sa.text(
+                "SELECT mode FROM workspace_kinds WHERE id = 'native'"
+            )).scalar_one() == KIND_MODE_WORKTREE
+            assert "max_slots" not in {
+                c["name"] for c in sa.inspect(conn).get_columns("workspace_kinds")
+            }
+            revision.upgrade()
+
+    async with database._engine.begin() as conn:
+        await conn.run_sync(verify)
 
 
 def test_workspace_kind_model_defaults():

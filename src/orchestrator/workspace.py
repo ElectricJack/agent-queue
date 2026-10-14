@@ -1193,11 +1193,12 @@ class WorkspaceMixin:
         return a single ``warming`` bool computed *before* growth ran, which
         made all three indistinguishable — see :class:`SlotGrowth`.
         """
-        cap = self._project_slot_cap(project)
-
         kind = await self.db.resolve_workspace_kind(project.id, kind_id)
         if kind is None or not kind.is_git_repo or kind.mode != KIND_MODE_WORKTREE:
             return SlotGrowth()
+        from src.workspace_disable import kind_slot_cap
+
+        cap = kind_slot_cap(self._project_slot_cap(project), kind)
 
         base = await self.db.find_worktree_base(project.id, kind.id)
         if base is None:
@@ -1326,7 +1327,8 @@ class WorkspaceMixin:
         from src.orchestrator.worktree_manager import task_branch_name
 
         branch = await self._resume_branch_for(task) or task_branch_name(task.id)
-        cap = self._project_slot_cap(project)
+        from src.workspace_disable import slot_cap
+
         affinity: dict[str, str] = {}
         seen: set[str] = set()
         for req in await effective_requirements(self.db, task):
@@ -1343,7 +1345,7 @@ class WorkspaceMixin:
                 slots = [
                     s
                     for s in await self.db.list_slots_for_base(base.id)
-                    if (s.slot_index or 0) < cap
+                    if s.enabled and (s.slot_index or 0) < slot_cap(project, kind)
                 ]
                 holder = await self._worktree_slots().find_slot_holding_branch(
                     base, slots, branch

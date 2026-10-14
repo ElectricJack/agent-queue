@@ -37,6 +37,7 @@ _UPSERT_UPDATE_COLS = (
     "auto_attach",
     "mode",
     "worktree_setup",
+    "max_slots",
     "updated_at",
 )
 
@@ -68,6 +69,7 @@ class WorkspaceKindQueryMixin:
             "auto_attach": kind.auto_attach,
             "mode": kind.mode or KIND_MODE_WORKTREE,
             "worktree_setup": json.dumps(list(kind.worktree_setup or [])),
+            "max_slots": kind.max_slots,
             "created_at": kind.created_at or now,
             "updated_at": now,
         }
@@ -188,6 +190,7 @@ class WorkspaceKindQueryMixin:
             auto_attach=bool(row["auto_attach"]),
             mode=row["mode"] or KIND_MODE_WORKTREE,
             worktree_setup=cls._decode_worktree_setup(row["worktree_setup"]),
+            max_slots=row["max_slots"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 class WorktreeCommandsMixin:
     """Worktree command methods mixed into CommandHandler."""
 
+    async def _cmd_workspace_cutover(self, args: dict) -> dict:
+        from src.commands.workspace_cutover import cutover
+
+        return await cutover(self, args)
+
     async def _cmd_workspace_doctor(self, args: dict) -> dict:
         """Diagnose workspace inventory.  Read-only unless ``fix`` is set.
 
@@ -278,14 +283,15 @@ class WorktreeCommandsMixin:
         projects = [p for p in projects if p.id == project_id]
         for project in projects:
             workspaces = await self.db.list_workspaces(project_id=project.id)
-            cap = project.max_concurrent_agents or 0
+            from src.workspace_disable import kind_slot_cap
             for ws in workspaces:
                 if not ws.is_slot:
                     continue
                 if ws.locked_by_task_id or ws.locked_by_agent_id:
                     skipped.append({"id": ws.id, "reason": "locked"})
                     continue
-                if (ws.slot_index or 0) < cap:
+                kind = await self.db.resolve_workspace_kind(project.id, ws.kind_id or "project-repo")
+                if (ws.slot_index or 0) < kind_slot_cap(project.max_concurrent_agents or 0, kind):
                     skipped.append({"id": ws.id, "reason": "within cap"})
                     continue
                 ok = await mgr.reap_slot(ws, reason="cli:workspace_reap all_retired")
