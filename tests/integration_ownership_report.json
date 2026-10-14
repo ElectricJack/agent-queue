@@ -10510,5 +10510,38 @@
       "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d"
     ],
     "reason": "Reviewed the pool preparation reconciliation merged into the failed PR candidate. Three adapters remain charged to integration; six current metadata writes are ordinary preparation diagnostics/attention. Two replaced call AST identities were removed. Immutable baseline, landing measurements, allowance, caps and ratchet assertions remain unchanged."
+  },
+  "frozen_batch_repair": {
+    "starting_sha": "1e41a7288f0398149e0ef00bd0db486b594cedda",
+    "reviewed_storage_sites": {
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
+        "line": 1421,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "7538eb4115db7ac17fcc674f6041d8e4255f4f56486a529aee9bc55c435b793a",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary attention marker when a stack preparation conflict cannot safely release its attached writer. Metadata key: needs_attention; stores the exception code, while retained branch evidence stays with the existing guarded ownership mechanism. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
+        "line": 1516,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "7538eb4115db7ac17fcc674f6041d8e4255f4f56486a529aee9bc55c435b793a",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer. Metadata key: needs_attention; stores integration_prepare_failed_attached without publication intent, authoritative ref OIDs or replay authority. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
+        "line": 1474,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "7538eb4115db7ac17fcc674f6041d8e4255f4f56486a529aee9bc55c435b793a",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: needs_attention; stores repair_target_unpublished without publication intent, authoritative ref OIDs or replay authority. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery."
+      }
+    },
+    "reason": "Combined reviewed ownership additions without changing the pinned baseline, landing measurements, allowances or caps. Three unchanged ordinary attention-write identities have refreshed enclosing fingerprints after preparation diagnostics were merged."
   }
 }
