@@ -121,7 +121,7 @@ class AgentQueryMixin:
                     (
                         TaskStatus.ASSIGNED.value,
                         TaskStatus.IN_PROGRESS.value,
-                        TaskStatus.WAITING_INPUT.value,
+                        TaskStatus.WAITING_INPUT.value, TaskStatus.WAITING.value,
                     )
                 ),
             )
@@ -184,7 +184,7 @@ class AgentQueryMixin:
                     (
                         TaskStatus.ASSIGNED.value,
                         TaskStatus.IN_PROGRESS.value,
-                        TaskStatus.WAITING_INPUT.value,
+                        TaskStatus.WAITING_INPUT.value, TaskStatus.WAITING.value,
                     )
                 ),
             )

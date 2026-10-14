@@ -487,7 +487,8 @@ def register_resources(mcp_server: FastMCP) -> None:
     async def list_active_tasks() -> str:
         """List all currently active tasks (IN_PROGRESS, ASSIGNED, READY)."""
         db = await _db(mcp_server)
-        active_statuses = [TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.READY]
+        active_statuses = [TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.READY,
+                           TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING]
         all_tasks = await db.list_tasks()
         active = [t for t in all_tasks if t.status in active_statuses]
         return json.dumps([task_to_dict(t) for t in active], indent=2)

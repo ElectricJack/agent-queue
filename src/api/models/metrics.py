@@ -125,6 +125,9 @@ class TaskMetrics(BaseModel):
     PAUSED: float = 0
     BLOCKED: float = 0
     WAITING_INPUT: float = 0
+    WAITING: float = 0
+    HIBERNATED: float = 0
+    RESUME_PENDING: float = 0
     other: float = 0
     total: float = 0
 

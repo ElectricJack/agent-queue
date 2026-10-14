@@ -31879,7 +31879,7 @@
               }
             ],
             "title": "Status",
-            "description": "New status \u2014 admin override, bypasses state machine (optional)"
+            "description": "New lifecycle status (optional); suspended states require wait controls"
           },
           "max_retries": {
             "anyOf": [
@@ -37264,6 +37264,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -48529,6 +48544,9 @@
               "PAUSED": 0.0,
               "BLOCKED": 0.0,
               "WAITING_INPUT": 0.0,
+              "WAITING": 0.0,
+              "HIBERNATED": 0.0,
+              "RESUME_PENDING": 0.0,
               "other": 0.0,
               "total": 0.0
             }
@@ -72267,6 +72285,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -72621,6 +72654,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           }
@@ -72693,6 +72741,21 @@
           "WAITING_INPUT": {
             "type": "number",
             "title": "Waiting Input",
+            "default": 0
+          },
+          "WAITING": {
+            "type": "number",
+            "title": "Waiting",
+            "default": 0
+          },
+          "HIBERNATED": {
+            "type": "number",
+            "title": "Hibernated",
+            "default": 0
+          },
+          "RESUME_PENDING": {
+            "type": "number",
+            "title": "Resume Pending",
             "default": 0
           },
           "other": {
@@ -73842,6 +73905,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -74341,6 +74419,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },

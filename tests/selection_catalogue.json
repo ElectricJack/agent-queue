@@ -39,7 +39,9 @@
       "modules": [
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
-        "tests/test_agent_waits.py"
+        "tests/test_agent_waits.py",
+        "tests/test_wait_migration.py",
+        "tests/test_waits.py"
       ]
     },
     "api-contract": {
@@ -17752,6 +17754,43 @@
         "asyncio"
       ],
       "summary": "Tests for the internal vibecop plugin."
+    },
+    "tests/test_wait_migration.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:a699ed3975e1d07ff6f7bee0f703f6e17c9c3c925f57194d482d2db5921bbcf4",
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Verified-wait DDL on fresh and pre-v2 disposable PostgreSQL schemas."
+    },
+    "tests/test_waits.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:92161fc4886d9bb61263b3d8d89839b58580a4d223b23f1ae31d7acbed08afb4",
+      "imports": [
+        "src.api.models.task",
+        "src.commands.task_commands",
+        "src.database.queries.metrics_queries",
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.events",
+        "src.sessions.obsolete",
+        "src.state_machine"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified-wait lifecycle vocabulary (implementation §6; services remain opt-in)."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [
