@@ -64,7 +64,7 @@ jobs:
     # The cache-miss install and the tests each have their own step deadline;
     # this total is their sum plus setup and cleanup, so a slow PyPI cannot
     # spend the tests' time (eight jobs in runs up to 36831813696 did).
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -257,9 +257,11 @@ jobs:
       - name: Run tests
         id: tests
         # Run 38601833262 exhausted ten minutes while default shards were
-        # still progressing (collection alone took up to three minutes).
+        # still progressing (collection alone took up to three minutes), and
+        # run 38612265340 exhausted fifteen on a slow runner at 92% of a shard
+        # that had finished in under nine minutes one run earlier.
         # Keep the per-test timeout below; leave time for the final diagnostics.
-        timeout-minutes: 15
+        timeout-minutes: 20
         # Include fixture setup/teardown in the per-test deadline. Keep the
         # failed/error node IDs and the slowest phases visible in every arm.
         run: ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE

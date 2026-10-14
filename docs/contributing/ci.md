@@ -107,15 +107,17 @@ See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeou
 for marker precedence and timeout behavior.
 
 `fail-fast: false`, so one red arm does not hide the others. A cache-miss
-dependency install has a 12-minute step deadline and the test step a 15-minute
+dependency install has a 12-minute step deadline and the test step a 20-minute
 one (11 minutes for an E2E scenario group, a minute above its 600-second test
 limit); each job times out at their sum plus three minutes for checkout,
-PostgreSQL, migrations and cleanup (30 minutes, 26 for `e2e-cli`). A shared 10-minute total let a slow PyPI spend the
+PostgreSQL, migrations and cleanup (35 minutes, 26 for `e2e-cli`). A shared 10-minute total let a slow PyPI spend the
 tests' time: in the 40 runs up to 36831813696, eight jobs were cancelled after
 installs of 306–600 seconds, while no test or scenario step took over 332
 seconds. Run 38601833262 later exhausted the ten-minute test step on two
-progressing default shards, with collection taking up to three minutes. The
-15-minute step limit leaves time for completion and pytest's failure diagnostics;
+progressing default shards, with collection taking up to three minutes, and
+run 38612265340 exhausted fifteen minutes on a slow runner (collection 3:06,
+PostgreSQL checkpoints of 270 s) at 92% of a shard that took 8:37 one run
+earlier. The 20-minute step limit leaves time for completion and pytest's failure diagnostics;
 the 120-second per-test deadline remains in force. These limits bound failures
 and improve diagnostics. Profiling on 2026-09-26 measured the
 unsharded default suite at about 21 minutes; it now runs in eight shards as
