@@ -9,6 +9,7 @@ import time
 import uuid
 from collections import Counter
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -29,7 +30,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.git.manager import GitError, repository_urls_match
+from src.git.manager import GitError, is_valid_git_oid, repository_urls_match
 from src.integration.branch_discard import BranchDiscardService, _bundle
 from src.integration.delivery_branches import (
     LIVE_TASK_STATUSES,
@@ -47,6 +48,76 @@ SUPERSEDED = "retirement attempt was superseded"
 # A claimed attempt stays leased for one ref-lease term, so a concurrent drain
 # does not claim a decision again while its attempt is still in flight.
 ATTEMPT_LEASE_SECONDS = DEFAULT_TTL_SECONDS
+
+
+def _local_repository_url(url, checkout_base_path):
+    """Pin local transport to the registered location, independent of store config."""
+    if not url:
+        return None
+    if url.startswith("file://"):
+        parsed = urlsplit(url)
+        if (parsed.netloc not in {"", "localhost"} or parsed.query or parsed.fragment
+                or not parsed.path.startswith("/")):
+            raise GitError("retirement requires a local file repository URL")
+        path = Path(unquote(parsed.path))
+    else:
+        if ":" in url and not url.startswith(("/", "./", "../", "~/")):
+            return None
+        path = Path(url).expanduser()
+        base = Path(checkout_base_path) if checkout_base_path else None
+        if not (path.is_absolute() or url.startswith(("./", "../", "~/"))
+                or (base is not None and (base / path).exists())):
+            return None
+        if not path.is_absolute():
+            if base is None:
+                raise GitError("relative retirement repository requires a registered checkout")
+            path = base / path
+    return path.resolve().as_uri()
+
+
+class _LocalRetirementTransport:
+    """Local-only Git reads, exact object fetches and lease deletes."""
+
+    def __init__(self, git, store, url):
+        self.git, self.store, self.url = git, store, url
+
+    async def _run(self, *args, authority_deadline=None):
+        timeout = None
+        if authority_deadline is not None:
+            timeout = int(authority_deadline - asyncio.get_running_loop().time())
+            if timeout <= 0:
+                raise GitError("retirement deletion authority expired")
+        result = await self.git.arun_git_result(
+            ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always", *args],
+            cwd=str(self.store), timeout=timeout,
+        )
+        if result.returncode:
+            raise GitError(result.stderr or result.stdout or "local retirement Git failed")
+        return result.stdout.strip()
+
+    async def exact_head_ref(self, branch):
+        ref = "refs/heads/" + branch
+        output = await self._run("ls-remote", "--heads", self.url, ref)
+        if not output:
+            return None
+        entries = [line.split("\t") for line in output.splitlines()]
+        if (len(entries) != 1 or len(entries[0]) != 2 or entries[0][1] != ref
+                or not is_valid_git_oid(entries[0][0])):
+            raise GitError("local retirement remote returned an invalid head")
+        return entries[0][0]
+
+    async def afetch_repository_oid(self, checkout, *, repository, oid, destination_ref):
+        await self._run("fetch", "--no-tags", "--force", self.url, f"{oid}:{destination_ref}")
+        return oid
+
+    async def adelete_repository_ref(
+        self, checkout, *, repository, branch, expected_old_oid, authority_deadline=None,
+    ):
+        ref = "refs/heads/" + branch
+        await self._run(
+            "push", f"--force-with-lease={ref}:{expected_old_oid}", self.url, ":" + ref,
+            authority_deadline=authority_deadline,
+        )
 
 
 def retirement_report(results) -> list[str]:
@@ -400,11 +471,17 @@ class BranchRetirementService(BranchDiscardService):
         repository = await self.db.get_repo(row["repository_id"])
         if repository is None:
             raise GitError("retirement repository is unavailable")
-        binding = await self._binding(repository)
-        client = await self._github_client(binding) if binding else None
-        if client is None:
-            raise GitError("authenticated retirement transport is unavailable")
         store = self.retained_store(repository.id)
+        local_url = _local_repository_url(repository.url, repository.checkout_base_path)
+        if local_url is not None:
+            binding = None
+            client = transport = _LocalRetirementTransport(self.git, store, local_url)
+        else:
+            binding = await self._binding(repository)
+            client = await self._github_client(binding) if binding else None
+            if client is None:
+                raise GitError("authenticated retirement transport is unavailable")
+            transport = self.git
         await self._ensure_store(store)
         paths = await self._checkout_paths(row, repository)
         locks = BranchLock(self.db, clock=self.clock)
@@ -438,6 +515,7 @@ class BranchRetirementService(BranchDiscardService):
                     bundle = await self._backup_before_delete(
                         {**row, "task_id": row["task_id"] or row["request_id"]},
                         binding=binding, branch=row["branch"], head=head, main_head=main_head,
+                        fetch_oid=transport.afetch_repository_oid,
                     )
                     remote = {"sha": head, "state": "observed",
                               "bundle": str(bundle) if bundle else None,
@@ -486,7 +564,7 @@ class BranchRetirementService(BranchDiscardService):
                             or remote["state"] in {"deleted", "absent"}):
                             raise RetirementConflict("remote branch changed after audit")
                         try:
-                            await self.git.adelete_repository_ref(
+                            await transport.adelete_repository_ref(
                                 str(store), repository=binding, branch=row["branch"],
                                 expected_old_oid=remote["sha"],
                                 authority_deadline=asyncio.get_running_loop().time()
@@ -535,6 +613,7 @@ class BranchRetirementService(BranchDiscardService):
                 raise BranchBusy(SUPERSEDED)
 
     async def _checkout_paths(self, row, repository):
+        local_url = _local_repository_url(repository.url, repository.checkout_base_path)
         async with self.db._engine.connect() as conn:
             candidates = list((await conn.execute(select(workspaces.c.workspace_path).where(
                 workspaces.c.project_id == row["project_id"],
@@ -557,7 +636,17 @@ class BranchRetirementService(BranchDiscardService):
                 continue
             if Path(common) != self.retained_store(repository.id):
                 url = await self.git.aget_remote_url(common)
-                if not url or not repository_urls_match(url, repository.url, base=common):
+                if not url:
+                    continue
+                if local_url is not None:
+                    try:
+                        matches = _local_repository_url(url, common) == local_url
+                    except GitError:
+                        # A foreign/invalid file URL cannot identify this checkout.
+                        continue
+                else:
+                    matches = repository_urls_match(url, repository.url, base=common)
+                if not matches:
                     # Do not inspect other repositories in a multi-repo workspace.
                     continue
             paths.add(str(Path(common).resolve()))

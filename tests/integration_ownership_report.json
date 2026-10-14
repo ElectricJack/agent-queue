@@ -9753,13 +9753,28 @@
       "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
-      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation."
+      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
+      "landing_span": [
+        1036,
+        1106
+      ],
+      "baseline_span": null
     },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
-      "reason": "Claim queries import integration ownership, repair and origin tables alongside ordinary workspace/session tables; includes managed job pins used by the retained-binding guard."
+      "reason": "Claim queries import integration ownership, repair and origin tables alongside ordinary workspace/session tables; includes managed job pins used by the retained-binding guard.",
+      "landing_span": [
+        53,
+        71
+      ],
+      "baseline_span": null
     },
     "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
-      "reason": "Read-only integration owner and managed job pin probe fences missing-slot recreation. Attached/pending ownership prevents removal of its Git registration; no lifecycle, storage or ref write."
+      "reason": "Read-only integration owner and managed job pin probe fences missing-slot recreation. Attached/pending ownership prevents removal of its Git registration; no lifecycle, storage or ref write.",
+      "landing_span": [
+        634,
+        648
+      ],
+      "baseline_span": null
     },
     "src/commands/supervisor_authority.py::operator_or_global_supervisor": {
       "reason": "Authority gate for audited recovery-hold release, including train delegates; checks local operator or live global supervisor identity without granting publication authority."
