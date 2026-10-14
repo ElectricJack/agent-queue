@@ -5094,6 +5094,48 @@
       }
     },
     {
+      "path": "aq integration recover-completed-container",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_recover_completed_container",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "task_id",
+          "--project",
+          "--repository",
+          "--branch"
+        ],
+        "optional": [
+          "--apply",
+          "--head",
+          "--completion",
+          "--generation",
+          "--version",
+          "--origin-sha256",
+          "--snapshot-sha256",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration redrive-child",
       "registration": "handwritten",
       "owner_kind": "core",
