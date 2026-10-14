@@ -18,11 +18,11 @@ table; §6 numbers identify the restored acceptance scenarios, not old DB rows.
 | PR opened once; body lists children (328-332) | 1 | Open; Replay |
 | Repeated open returns already_open (333-335) | 1 | Move; Replay |
 | GitHub human approval identity (349) | 2 | Gate; Replay; policy choice, §2.3 |
-| Not due before 300 s; due at deadline (350-352) | 5 | Cadence; Cap |
+| Not due before 300 s; due at deadline (350-352) | 5 | Cadence; Cap: superseded by immediate idle dispatch |
 | Sealed with exact epic, tree and ref (354, 359, 361-362) | 2, 3 | Replay |
 | Frozen review_evidence_id points at approval (360) | 2 | Gate; see R1 below |
 | Distinct built candidate pushed at exact OID (377-379) | 3 | Replay; Hosted |
-| Red CI leaves tested_candidate_sha empty (419-422) | 3, 7 | Replay; Red |
+| Pending/red CI binds the exact candidate without granting publication | 3, 7 | Replay; Red |
 | Promotion refused without candidate CI (439) | 3 | Replay; Hosted |
 | Old candidate revision marked superseded (460-467) | — | R2: §2.3 |
 | Repair rebuild uses repaired OID on same ref (469-470) | 3, 7 | Replay |
@@ -45,8 +45,8 @@ table; §6 numbers identify the restored acceptance scenarios, not old DB rows.
 | Open | test_train_opens_three_child_epic_pr_from_completion_ref |
 | Move | test_epic_branch_move_resettles_completion_and_existing_pr |
 | Gate | test_root_pr_gate_refuses_before_freeze_then_admits_exact_green_head |
-| Cadence | test_root_cadence_uses_latest_admission_and_survives_restart |
-| Cap | test_root_settling_cap_bounds_continuous_admissions_across_restart |
+| Cadence | test_root_busy_queue_and_frozen_batch_survive_restart_without_cadence |
+| Cap | test_root_busy_queue_has_no_size_or_time_cap_across_restart |
 | Hosted | test_hosted_lane_publishes_only_the_exact_candidate_github_passed |
 | Red | test_hosted_red_candidate_files_one_repair_and_never_publishes |
 | Git | test_train_opens_three_child_epic_pr_from_completion_ref |
@@ -79,7 +79,7 @@ Process coverage beyond the old replay: §6 test 6's leaf root follows Gate
 through GitHub's merged report. Test 7's bounded debug/human escalation is
 ``test_integration_train.py::
 test_repair_escalation_debug_then_one_supervisor_incident_and_green_recovery``.
-Test 8 is ``test_train_eject_preserves_frozen_members_pr_and_readmits_after_cadence``.
+Test 8 is ``test_train_eject_preserves_frozen_members_pr_and_readmits_on_settle``.
 Test 9's rewritten-source exception is
 ``test_promoted_train_bundles_rewritten_member_without_deleting_it``; its
 abort-only cleanup is
@@ -117,6 +117,7 @@ from src.database.tables import (
     sessions,
     task_branch_origins,
     task_integration_checkpoints,
+    task_metadata,
     tasks,
     workspaces,
 )
@@ -142,7 +143,7 @@ from src.integration.delivery_observer import DeliveryObserver
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
-from src.integration.models import BranchKey, Fence
+from src.integration.models import BranchKey, Fence, IntegrationTrainPolicy
 from src.integration.ownership import BranchBusy
 from src.integration.regeneration import DEFAULT_REGENERATE_COMMAND
 from src.integration.repair import OrdinaryRepairService
@@ -1636,11 +1637,11 @@ async def test_other_edges_do_not_authorize_a_stack_and_delivery_clears_blocker(
     assert [m.task_id for m in await BatchStore(world.db).members(testing.batch_id)] == ["q"]
     assert [b["code"] for b in testing.detail["blockers"]] == ["undeclared_stack_base"]
     checks.green.add(testing.candidate_sha)
-    assert (await train.visit(MAIN)).state == "delivered"
+    next_visit = await train.visit(MAIN)
+    assert next_visit.detail["settled_batch_id"] == testing.batch_id
     git(world.origin.url, "merge-base", "--is-ancestor", final,
         git(world.origin.url, "rev-parse", "refs/heads/main"))
     # Once the base is really in the target, P can land without an edge.
-    next_visit = await train.visit(MAIN)
     assert next_visit.state == "testing" and not (next_visit.detail or {}).get("blockers")
     assert [m.task_id for m in await BatchStore(world.db).members(next_visit.batch_id)] == ["p"]
 async def test_open_reuses_one_candidate_scan_and_filters_before_root_proof(world, monkeypatch):
@@ -1676,7 +1677,7 @@ async def test_open_reuses_one_candidate_scan_and_filters_before_root_proof(worl
     service.freeze.assert_not_awaited()
 
 
-async def test_candidate_limit_applies_after_root_delivery_and_rechecks_new_work(world):
+async def test_root_frontier_excludes_delivered_work_and_rechecks_all_new_work(world):
     await completed(world, "owed")
     await completed(world, "recent-landed", land=True)
     async with world.db._engine.begin() as conn:
@@ -1689,7 +1690,7 @@ async def test_candidate_limit_applies_after_root_delivery_and_rechecks_new_work
     async with world.db._engine.begin() as conn:
         await conn.execute(update(tasks).where(tasks.c.id == "new")
                            .values(updated_at=time.time() + 200))
-    assert await batches._candidate_ids(MAIN, await snapshot(world)) == ["new"]
+    assert set(await batches._candidate_ids(MAIN, await snapshot(world))) == {"new", "owed"}
 
 
 @pytest.mark.parametrize("mode", ["development", "train", "hierarchy"])
@@ -2025,7 +2026,7 @@ async def test_selection_quantum_rotates_past_slow_refusals_and_the_member_cap(w
         if tid != "independent":
             assert selected.batch is None
             assert any(b["code"] == "selection_deferred" for b in selected.blockers)
-            assert metrics.counts["candidate_work_deferred"] == 1
+            assert metrics.counts["candidate_work_deferred"] == len(sources) - 1
         else:
             assert [(m.task_id, m.source_sha) for m in selected.members] == [
                 (tid, sources[tid])]
@@ -2133,47 +2134,38 @@ async def test_cancelled_git_proof_advances_selection_without_reusing_mutable_in
     assert not writes
 
 
-async def test_rotating_admission_windows_retain_exact_source_cadence(world):
+async def test_root_admission_ignores_legacy_member_window_and_cadence(world):
     for tid in ("a", "b"):
         await completed(world, tid)
-    now = 1000.0
-    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now, settling=True)
-    batches = train.batches
-    batches.limit = 1
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: 1000, settling=True)
+    train.batches.limit = 1
     service = (await train.lane_for(MAIN)).service
-    for index in range(4):
-        selected = await batches.open_batch(MAIN, await snapshot(world), service)
-        assert selected.batch is None and selected.detail["reason"] == "settling"
-        assert selected.detail["first_admission_at"] == 1000 + (index % 2) * 100
-        now += 100
-    selected = await batches.open_batch(MAIN, await snapshot(world), service)
-    assert selected.batch is not None and selected.members[0].task_id == "a"
+    selected = await train.batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None
+    assert [m.task_id for m in selected.members] == ["a", "b"]
+    assert not (selected.detail or {}).get("seal_at")
 
-
-async def test_rotating_cadence_resets_evaluated_refusal_and_preserves_unseen_hint(world):
+async def test_root_admission_refusal_does_not_delay_an_independent_ready_input(world):
     for tid in ("a", "b"):
         await completed(world, tid)
-    now = 1000.0
-    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now, settling=True)
-    batches = train.batches
-    batches.limit = 1
-    service = (await train.lane_for(MAIN)).service
-    assert (await batches.open_batch(MAIN, await snapshot(world), service)).detail[
-        "first_admission_at"] == 1000
-    now = 1100
-    assert (await batches.open_batch(MAIN, await snapshot(world), service)).detail[
-        "first_admission_at"] == 1100
-    batches.pr_gate = AsyncMock(return_value={"code": "unknown", "ref": "a", "task_id": "a"})
-    now = 1200
-    assert (await batches.open_batch(MAIN, await snapshot(world), service)).batch is None
-    batches.pr_gate = green_pr
-    now = 1300
-    assert (await batches.open_batch(MAIN, await snapshot(world), service)).detail[
-        "first_admission_at"] == 1100  # b was not evaluated during a's refusal.
-    now = 1500
-    selected = await batches.open_batch(MAIN, await snapshot(world), service)
-    assert selected.batch is None and selected.detail["first_admission_at"] == 1500
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: 1000,
+                            settling=True)
+    train.batches.limit = 1
 
+    async def gate(target, member):
+        if member.task_id == "a":
+            return {"code": "unknown", "ref": "a", "task_id": "a"}
+
+    train.batches.pr_gate = gate
+    first = await train.visit(MAIN)
+    assert first.state == "testing"
+    assert [m.task_id for m in await BatchStore(world.db).members(first.batch_id)] == ["b"]
+    assert first.detail["blockers"][0]["task_id"] == "a"
+    train.batches.pr_gate = green_pr
+    checks.green.add(first.candidate_sha)
+    successor = await train.visit(MAIN)
+    assert successor.state == "testing" and successor.batch_id != first.batch_id
+    assert [m.task_id for m in await BatchStore(world.db).members(successor.batch_id)] == ["a"]
 
 async def test_frozen_batch_selection_does_not_probe_unrelated_completed_roots(world, monkeypatch):
     await completed(world, "frozen")
@@ -2272,7 +2264,9 @@ async def test_completed_root_queued_behind_a_live_batch_names_that_batch(world)
     # A member is never queued behind its own batch.
     assert await queued("a") == []
     checks.green.add(testing.candidate_sha)
-    assert (await train.visit(MAIN)).state == "delivered"
+    departed = await train.visit(MAIN)
+    assert departed.state == "testing" and departed.detail["settled_batch_id"] == testing.batch_id
+    assert [m.task_id for m in await BatchStore(world.db).members(departed.batch_id)] == ["later"]
     assert await queued("later") == []
 
 
@@ -3207,81 +3201,70 @@ def lane(world, transport, *, regenerate=DEFAULT_REGENERATE_COMMAND, target=MAIN
     return train, checks, retained(command())
 
 
-async def test_root_cadence_uses_latest_admission_and_survives_restart(world):
+async def test_root_busy_queue_and_frozen_batch_survive_restart_without_cadence(world):
     now = [1000.0]
-    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
-                       settling=True)
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0], settling=True)
     await completed(world, "a")
     first = await train.visit(MAIN)
-    assert first.state == "settling" and first.batch_id is None
-    assert first.detail["seal_at"] == 1300
+    assert first.state == "testing"
     now[0] = 1010
-    await completed(world, "b")
+    await completed(world, "later")
     second = await train.visit(MAIN)
-    assert second.detail["first_admission_at"] == 1000
-    assert second.detail["latest_admission_at"] == 1010
-    assert second.detail["seal_at"] == 1310
-    # A fresh source and train instance must recover the original timing hints.
-    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
-                            settling=True)
-    for moment in (1300, 1309.99):
-        now[0] = moment
-        waiting = await train.visit(MAIN)
-        assert waiting.state == "settling" and waiting.detail["seal_at"] == 1310
-        assert await train.batches.current(MAIN) is None
-    now[0] = 1310
-    sealed = await train.visit(MAIN)
-    assert sealed.state == "testing", sealed
-    assert {m.task_id for m in await BatchStore(world.db).members(sealed.batch_id)} == {"a", "b"}
-    checks.green.add(sealed.candidate_sha)
+    assert second.batch_id == first.batch_id
+    assert [m["task_id"] for m in second.detail["dispatch"]["queued_members"]] == ["later"]
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0], settling=True)
+    restarted = await train.visit(MAIN)
+    assert restarted.batch_id == first.batch_id and restarted.candidate_sha == first.candidate_sha
+    assert [m["task_id"] for m in restarted.detail["dispatch"]["queued_members"]] == ["later"]
+    checks.green.add(first.candidate_sha)
+    successor = await train.visit(MAIN)
+    assert successor.state == "testing" and successor.batch_id != first.batch_id
+    assert successor.target_sha == first.candidate_sha
+    assert [m.task_id for m in await BatchStore(world.db).members(successor.batch_id)] == ["later"]
+    checks.green.add(successor.candidate_sha)
     assert (await train.visit(MAIN)).state == "delivered"
-    # A subsequent generation of work gets its own quiet period.
-    now[0] = 1400
     await completed(world, "c")
-    assert (await train.visit(MAIN)).detail["seal_at"] == 1700
+    assert (await train.visit(MAIN)).state == "testing"
 
-
-async def test_root_settling_cap_bounds_continuous_admissions_across_restart(world):
+async def test_root_busy_queue_has_no_size_or_time_cap_across_restart(world):
     now = [1000.0]
-    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
-                       settling=True)
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0], settling=True)
+    first = None
     for index in range(9):
         now[0] = 1000 + index * 200
         await completed(world, f"root-{index}")
         waiting = await train.visit(MAIN)
-        assert waiting.state == "settling" and waiting.batch_id is None
-        assert waiting.detail["seal_at"] == min(now[0] + 300, 2800)
+        first = first or waiting
+        assert waiting.batch_id == first.batch_id and waiting.state == "testing"
+        assert len(await BatchStore(world.db).members(first.batch_id)) == 1
+        assert len(waiting.detail["dispatch"]["queued_members"]) == index
         if index == 4:
-            train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
-                               settling=True)
-    now[0] = 2799.99
-    assert (await train.visit(MAIN)).state == "settling"
-    now[0] = 2800
-    sealed = await train.visit(MAIN)
-    assert sealed.state == "testing", sealed
+            train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
+                                    settling=True)
+    checks.green.add(first.candidate_sha)
+    successor = await train.visit(MAIN)
+    assert successor.state == "testing" and successor.batch_id != first.batch_id
+    assert len(await BatchStore(world.db).members(successor.batch_id)) == 8
     async with world.db._engine.connect() as conn:
-        assert len((await conn.execute(select(integration_batches.c.id))).all()) == 1
-    assert len(await BatchStore(world.db).members(sealed.batch_id)) == 9
+        assert len((await conn.execute(select(integration_batches.c.id))).all()) == 2
 
-
-@pytest.mark.parametrize("cadence,cap,due", [(40, 1800, 1050), (300, 90, 1090)])
-async def test_root_cadence_and_cap_follow_project_policy(world, cadence, cap, due):
-    now = [1000.0]
+@pytest.mark.parametrize("cadence,cap", [(40, 1800), (300, 90)])
+async def test_root_legacy_cadence_and_cap_parse_but_do_not_delay_dispatch(world, cadence, cap):
     await world.db.update_project("p", hierarchical_integration_policy={
         "train": {"cadence_seconds": cadence, "settling_cap_seconds": cap},
     })
-    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
-                       settling=True)
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: 1000, settling=True)
+    parsed = IntegrationTrainPolicy.model_validate({
+        "cadence_seconds": cadence, "settling_cap_seconds": cap,
+    })
+    assert (parsed.cadence_seconds, parsed.settling_cap_seconds) == (cadence, cap)
     await completed(world, "a")
-    assert (await train.visit(MAIN)).state == "settling"
-    now[0] = 1010
-    await completed(world, "b")
-    assert (await train.visit(MAIN)).detail["seal_at"] == due
-    now[0] = due - 0.01
-    assert (await train.visit(MAIN)).batch_id is None
-    now[0] = due
-    assert (await train.visit(MAIN)).state == "testing"
-
+    first = await train.visit(MAIN)
+    assert first.state == "testing"
+    await completed(world, "later")
+    queued = await train.visit(MAIN)
+    assert queued.batch_id == first.batch_id
+    assert [m["task_id"] for m in queued.detail["dispatch"]["queued_members"]] == ["later"]
 
 async def test_seal_now_is_one_call_and_preserves_pr_and_candidate_gates(world):
     now = [1000.0]
@@ -3297,32 +3280,38 @@ async def test_seal_now_is_one_call_and_preserves_pr_and_candidate_gates(world):
     # Forced sealing cannot bypass a refused PR's observation backoff.
     assert (await train.visit(MAIN, seal_now=True)).detail["blockers"][0]["code"] == "pr_checks_red"
     now[0] = 1060
-    assert (await train.visit(MAIN)).detail["seal_at"] == 1360
+    ordinary = await train.visit(MAIN)
+    assert ordinary.state == "testing"
     sealed = await train.visit(MAIN, seal_now=True)
+    assert sealed.batch_id == ordinary.batch_id
     assert sealed.state == "testing", sealed
     assert sealed.checks == "pending"
     assert git(world.origin.url, "rev-parse", "main") != sealed.candidate_sha
 
 
-async def test_root_cadence_resets_for_a_new_completion_identity(world):
-    now = [1000.0]
+async def test_root_legacy_admission_hint_does_not_delay_new_completion_identity(world):
     head = await completed(world, "a")
-    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now[0],
-                       settling=True)
-    assert (await train.visit(MAIN)).detail["seal_at"] == 1300
-    now[0] = 1299
-    await close(world.db, "a", [head], close_id="reopened-generation", origin=world.origin)
-    waiting = await train.visit(MAIN)
-    assert waiting.state == "settling" and waiting.detail["seal_at"] == 1599
-    now[0] = 1300
-    assert (await train.visit(MAIN)).state == "settling"
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: 1000, settling=True)
+    async with world.db._engine.begin() as conn:
+        await conn.execute(insert(task_metadata).values(
+            task_id="a", key=train.batches._admission_key(MAIN),
+            value=json.dumps({"identity": ["old", head], "admitted_at": 999}),
+        ))
+    revised = world.origin.work("a", "new completion")
+    await close(world.db, "a", [revised], close_id="reopened-generation", origin=world.origin)
+    selected = await train.visit(MAIN)
+    assert selected.state == "testing" and revised != head
+    assert [m.source_sha for m in await BatchStore(world.db).members(selected.batch_id)] == [revised]
 
-
-async def test_mature_settling_hint_never_substitutes_for_current_pr_eligibility(world):
+async def test_legacy_admission_hint_never_substitutes_for_current_pr_eligibility(world):
     now = [1000.0]
     train, github, _ = await hosted_train(world, clock=lambda: now[0], settling=True)
     head = await completed(world, "a")
-    assert (await train.visit(MAIN)).state == "settling"
+    async with world.db._engine.begin() as conn:
+        await conn.execute(insert(task_metadata).values(
+            task_id="a", key=train.batches._admission_key(MAIN),
+            value=json.dumps({"identity": ["old", head], "admitted_at": now[0]}),
+        ))
     now[0] = 1300
     github.pr_runs[head] = "failure"
     for forced in (False, True):
@@ -3331,7 +3320,6 @@ async def test_mature_settling_hint_never_substitutes_for_current_pr_eligibility
         assert blocked.detail["blockers"][0]["code"] == "pr_checks_red"
     async with world.db._engine.connect() as conn:
         assert (await conn.execute(select(integration_batches.c.id))).first() is None
-
 
 async def test_seal_now_direct_batch_hook_and_epic_immediacy(world):
     await world.db.create_task(Task(id="epic", project_id="p", repo_id="r", title="epic",
@@ -3352,8 +3340,10 @@ async def test_seal_now_direct_batch_hook_and_epic_immediacy(world):
     collected = await batches.open_batch(epic, await snapshot(world, epic), service)
     assert [m.task_id for m in collected.members] == ["child"]
     assert collected.batch is not None
-    assert (await batches.open_batch(MAIN, await snapshot(world), service)).batch is None
+    ordinary = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert ordinary.batch is not None
     sealed = await batches.open_batch(MAIN, await snapshot(world), service, seal_now=True)
+    assert sealed.batch.id == ordinary.batch.id
     assert sealed.batch is not None and [m.task_id for m in sealed.members] == ["root"]
 
 
@@ -7324,7 +7314,7 @@ async def test_fidelity_replay_pr_repair_promotion_cleanup(collected_epic, tmp_p
     assert (red.state, red.checks) == ("repair", "red")
     assert red.repair["outcome"] == "filed"
     assert (await train.visit(MAIN)).repair["task_id"] == red.repair["task_id"]
-    assert (await db.get_integration_batch(testing.batch_id))["tested_candidate_sha"] is None
+    assert (await db.get_integration_batch(testing.batch_id))["tested_candidate_sha"] == testing.candidate_sha
     assert git(origin.url, "rev-parse", "main") == case.base
     assert github.records[-1]["head_sha"] == head  # Only the epic has been attested.
 
@@ -7744,7 +7734,7 @@ async def test_train_pause_resume_controls_preview_and_fence_green_publication(w
 
 
 @pytest.mark.parametrize("paused", [False, True])
-async def test_train_eject_preserves_frozen_members_pr_and_readmits_after_cadence(world, paused):
+async def test_train_eject_preserves_frozen_members_pr_and_readmits_on_settle(world, paused):
     from src.commands.integration_commands import IntegrationCommandsMixin
 
     now = [1000.0]
@@ -7790,11 +7780,8 @@ async def test_train_eject_preserves_frozen_members_pr_and_readmits_after_cadenc
     tested = await train.visit(MAIN)
     assert tested.batch_id == replacement and tested.state == "testing", tested
     checks.green.add(tested.candidate_sha)
-    assert (await train.visit(MAIN)).state == "delivered"
-    waiting = await train.visit(MAIN)
-    assert waiting.state == "settling" and waiting.detail["task_ids"] == ["c"]
-    now[0] += 300
     readmitted = await train.visit(MAIN)
+    assert readmitted.detail["settled_batch_id"] == replacement
     assert readmitted.state == "testing", readmitted
     assert readmitted.batch_id not in {visit.batch_id, replacement}
     assert [m.task_id for m in await store.members(readmitted.batch_id)] == ["c"]
@@ -7810,8 +7797,6 @@ async def test_train_ejected_singleton_gets_new_identity_on_readmission(world):
     result = await TrainControls(world.db).eject(visit.batch_id, "a", service=service,
         dry_run=False, operator_id="operator", reason="retry alone")
     assert result["replacement_batch_id"] is None
-    assert (await train.visit(MAIN)).state == "settling"
-    now[0] += 300
     next_visit = await train.visit(MAIN)
     assert next_visit.state == "testing" and next_visit.batch_id != visit.batch_id
 
@@ -7856,7 +7841,7 @@ async def test_train_eject_refuses_dependency_and_rolls_back_changed_source(worl
     assert len(await service.store.members(visit.batch_id)) == 2
 
 
-async def test_train_seal_now_command_previews_and_bypasses_cadence_once(world):
+async def test_train_seal_now_command_previews_without_changing_ordinary_dispatch(world):
     from src.commands.integration_commands import IntegrationCommandsMixin
     from src.database.tables import task_metadata
 
@@ -7882,7 +7867,7 @@ async def test_train_seal_now_command_previews_and_bypasses_cadence_once(world):
     checks.green.add(visit.candidate_sha)
     assert (await train.visit(MAIN)).state == "delivered"
     await completed(world, "next-leaf")
-    assert (await train.visit(MAIN)).state == "settling"
+    assert (await train.visit(MAIN)).state == "testing"
 
 
 async def test_train_seal_now_command_preserves_red_pr_gate(world):
@@ -8769,7 +8754,8 @@ async def test_root_leaf_close_wakes_idle_lane_without_synthetic_epic(world):
 
 
 @pytest.mark.parametrize("event", ["task.closed", "git.push", "label.removed",
-                                  "integration.ci_completed", "integration.readiness_changed"])
+                                  "integration.ci_completed", "integration.readiness_changed",
+                                  "integration.publication_verified"])
 async def test_readiness_events_wake_service_without_waiting_for_interval(event):
     from src.event_bus import EventBus
     from src.integration.service import IntegrationService

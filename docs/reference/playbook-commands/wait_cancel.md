@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait.py`](../../../src/commands/contracts/wait.py) |
-| Contract fingerprint | `sha256:e4daf859327d0c9e56e18437cccc884a5ce43a640d4f4084c42c7c24dfdd8dd1` |
+| Contract fingerprint | `sha256:ed72eada93b352853f38e9b933af206660fc05bbce092ad2e96159570b359c97` |
 
 ## Parameters
 
@@ -26,6 +26,8 @@
 | `session_id` | `string \| null` | no | `null` | — |
 | `wait_id` | `string` | yes | — | — |
 | `claim_epoch` | `integer \| null` | no | `null` | — |
+| `owner_kind` | `"scheduler" \| "integration" \| "playbook" \| null` | no | `null` | — |
+| `owner_id` | `string \| null` | no | `null` | — |
 
 ## Result
 
@@ -82,7 +84,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Resolve using schema_version, project_id, task_id, session_id, wait_id, claim_epoch | — | always |
+| Resolve using schema_version, project_id, task_id, session_id, wait_id, claim_epoch, owner_kind, owner_id | — | always |
 
 <!-- aq:generated:end -->
 

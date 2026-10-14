@@ -1962,6 +1962,7 @@ async def test_event_during_visit_survives_stale_refusal_backoff():
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
     notified = asyncio.Event()
+    now = [1000.0]
 
     async def visit(target):
         calls.append(target)
@@ -1972,6 +1973,7 @@ async def test_event_during_visit_survives_stale_refusal_backoff():
                           detail={"reason": "held"})
 
     runtime = train(Targets(ROOT), Batches(), {}, event_driven=True)
+    runtime.clock = lambda: now[0]
     runtime.visit = visit
     runtime.on_wake = notified.set
     await runtime.tick()
@@ -1984,3 +1986,9 @@ async def test_event_during_visit_survives_stale_refusal_backoff():
     await runtime.drain()
     assert len(calls) == 2
     assert (await runtime.tick())["started"] == []
+    # A lost event still gets a finite due observation, without a tight idle loop.
+    now[0] = runtime.status()[0]["deferred_until"]
+    assert now[0] > 1000
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    assert len(calls) == 3

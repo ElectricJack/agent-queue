@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import asyncio
 import json
 import os
@@ -807,6 +809,14 @@ async def _offer(runtime, **kwargs) -> bool:
     return await runtime.accept_integration_event(
         row["event_type"], dict(row["payload"]), row["id"], **kwargs
     )
+
+
+async def test_publication_bus_copy_does_not_bypass_durable_acceptance(db, tmp_path):
+    runtime = _runtime(db, tmp_path / "compiled")
+    runtime._dispatch = AsyncMock()
+    runtime._on_event({"_event_type": "integration.publication_verified", "project_id": "p"})
+    assert not runtime._tasks
+    runtime._dispatch.assert_not_called()
 
 
 @pytest.mark.parametrize("event_type", sorted(UNSUBSCRIBED_EVENT_TYPES))

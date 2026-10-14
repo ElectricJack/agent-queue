@@ -2264,6 +2264,7 @@ class Orchestrator(
         self.integration_outbox = IntegrationOutbox(
             self.db, accept_integration_event,
             project_max_wait=project_max_wait,
+            publication_wake=self.bus.emit,
         )
         github_clients = {}
 

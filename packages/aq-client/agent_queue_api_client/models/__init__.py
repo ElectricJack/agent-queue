@@ -2083,6 +2083,7 @@ from .wait_ack_response_422 import WaitAckResponse422
 from .wait_bridge_response import WaitBridgeResponse
 from .wait_bridge_response_result import WaitBridgeResponseResult
 from .wait_cancel_args import WaitCancelArgs
+from .wait_cancel_args_owner_kind_type_0 import WaitCancelArgsOwnerKindType0
 from .wait_cancel_args_schema_version import WaitCancelArgsSchemaVersion
 from .wait_cancel_response_422 import WaitCancelResponse422
 from .wait_chain_edge import WaitChainEdge
@@ -4265,6 +4266,7 @@ __all__ = (
     "WaitBridgeResponse",
     "WaitBridgeResponseResult",
     "WaitCancelArgs",
+    "WaitCancelArgsOwnerKindType0",
     "WaitCancelArgsSchemaVersion",
     "WaitCancelResponse422",
     "WaitChainEdge",

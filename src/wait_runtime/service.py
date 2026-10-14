@@ -15,6 +15,7 @@ from src.waits.decisions import WaitDecisions
 from src.waits.human import HumanWaits
 from src.wait_runtime.lifecycle import WaitLifecycle
 from src.wait_runtime.scheduler import SchedulerWaitService
+from src.wait_runtime.cancellation import cancel
 
 
 class WaitService:
@@ -25,6 +26,7 @@ class WaitService:
         self.registry = getattr(orch, "wait_registry", None) or build_registry(
             clock=clock, resource_reader=getattr(orch, "wait_resource_reader", None)
             or self.scheduler.reader,
+            ci_reader=getattr(orch, "wait_ci_reader", None),
         )
         self.listener = WaitSourceListener(self, clock=clock, owner=owner, connect=connect)
         self.timers = WaitTimerDriver(self, clock=clock)
@@ -52,6 +54,8 @@ class WaitService:
                                ("wait_decide", self.decisions.decide),
                                ("wait_lift", self.human.lift),
                                ("wait_register", self.lifecycle.register),
+                               ("wait_cancel", self.cancel),
+                               ("wait_explain", self.explain),
                                ("wait_graph", self.graph),
                                ("wait_ack", self.lifecycle.acknowledge),
                                ("wait_resume_dispatch", self.lifecycle.resume.dispatch),
@@ -75,6 +79,10 @@ class WaitService:
             # AdmissionReader observes current typed constraints under the
             # dispatcher's graph/owner lock. Events never supply its verdict.
             return
+        if condition.kind in {"ci_check", "ci_run"}:
+            callback = getattr(self.orch, "wait_ci_lock_source", None)
+            if callback is not None:
+                return await callback(conn, condition)
         await lock_database_source(conn, condition)
 
     async def graph(self, args, *, principal, scope, handler):
@@ -87,6 +95,30 @@ class WaitService:
                 now=self.lifecycle.clock(),
             )
         return {'success': True, 'graph': result}
+
+    async def cancel(self, args, *, principal, scope, handler):
+        return await cancel(self, args, principal=principal, scope=scope)
+
+    async def explain(self, args, *, principal, scope, handler):
+        from src.database.queries.wait_queries import wait_explain
+        from sqlalchemy import select
+        from src.database.tables import tasks, wait_records
+
+        async with self.orch.db._engine.connect() as conn:
+            project_id = scope.get("project_id")
+            if project_id is None:
+                project_id = await conn.scalar(
+                    select(wait_records.c.project_id).where(
+                        wait_records.c.id == args["wait_id"],
+                    ) if args.get("wait_id") else select(tasks.c.project_id).where(
+                        tasks.c.id == args["task_id"],
+                    )
+                )
+            return await wait_explain(
+                conn, project_id=project_id, wait_id=args.get("wait_id"),
+                task_id=args.get("task_id"), history=args.get("history", False),
+                now=self.lifecycle.clock(),
+            )
 
     async def escalation_deadline(self, conn, deadline, wait, *, now, handler):
         callback = (self.scheduler.deadline_locked if wait["origin"] == "scheduler"

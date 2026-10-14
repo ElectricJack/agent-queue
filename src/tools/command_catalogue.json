@@ -9264,6 +9264,35 @@
             ],
             "default": null,
             "title": "Claim Epoch"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Id"
           }
         },
         "required": [
