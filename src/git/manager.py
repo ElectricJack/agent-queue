@@ -735,13 +735,14 @@ class GitManager:
         """
         effective_timeout = self._command_timeout(timeout)
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await self._spawn_isolated_git(
                 "git",
                 *args,
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._env_for(args),
+                start_new_session=True,
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -751,11 +752,7 @@ class GitManager:
             except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
                 # Cancellation (including daemon shutdown) must not leave a
                 # reset writing after its claim request has gone away.
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass  # Process already exited before we could kill it
-                await proc.wait()
+                await self._kill_app_git_group(proc)
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 raise GitError(
@@ -822,25 +819,24 @@ class GitManager:
         effective_timeout = self._command_timeout(timeout)
         command = ["git", *args]
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await self._spawn_isolated_git(
                 *command,
                 cwd=cwd,
                 stdin=asyncio.subprocess.PIPE if stdin is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env={**self._SUBPROCESS_ENV, **self.commit_identity_env(args), **env},
+                start_new_session=True,
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(None if stdin is None else stdin.encode("utf-8")),
                     timeout=effective_timeout,
                 )
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                await proc.wait()
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+                await self._kill_app_git_group(proc)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 raise GitError(
                     f"git {' '.join(args)} timed out after {effective_timeout}s"
                 )
@@ -2198,8 +2194,9 @@ class GitManager:
         the destination's refs matching *patterns* (all refs when empty) are
         named under ``refs/aq/have/`` so fetch negotiation reports them as
         held.  Runs credential-free, before the network fetch.  Returns how
-        many distinct tips were named; on failure it names none and the fetch
-        downloads everything, which is slow but correct.
+        many distinct tips were named. Before advertising any tip, verify the
+        lender's objects, including blobs and local-only refs. An unavailable
+        lender is never silently treated as an empty, healthy repository.
         """
         alternates = imported / "objects" / "info" / "alternates"
         alternates.parent.mkdir(parents=True, exist_ok=True)
@@ -2209,36 +2206,64 @@ class GitManager:
              f"--count={self._FETCH_HAVE_LIMIT}", "--format=%(objectname)", *patterns],
             home=home, deadline=deadline,
         )
-        tips = sorted({
-            line for line in listed.decode("ascii", errors="replace").splitlines()
-            if _OID_RE.fullmatch(line)
-        })
+        lines = listed.decode("ascii", errors="replace").splitlines()
+        if any(not _OID_RE.fullmatch(line) for line in lines):
+            raise GitError("retained Git tip inventory is invalid")
+        tips = sorted(set(lines))
         if not tips:
+            # An origin fetch only advertises origin/provenance/tag tips, but
+            # local-only refs still hold required sources. Check them even
+            # when there are no matching tips to advertise. With no refs at
+            # all, an incomplete unreferenced commit can still be fetched.
+            if patterns:
+                retained = await self._run_isolated_import_git(
+                    [f"--git-dir={destination_git_dir}", "for-each-ref", "--count=1",
+                     "--format=%(objectname)"],
+                    home=home, deadline=deadline,
+                )
+                if retained:
+                    if not _OID_RE.fullmatch(retained.decode("ascii", errors="replace")):
+                        raise GitError("retained Git tip inventory is invalid")
+                    await self._averify_retained_objects(
+                        destination_git_dir, home=home, deadline=deadline,
+                    )
             return 0
-        try:
-            await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "update-ref", "--stdin"],
-                home=home, deadline=deadline,
-                input="".join(
-                    f"update refs/aq/have/{index} {oid}\n" for index, oid in enumerate(tips)
-                ).encode("ascii"),
-            )
-        except GitError:
-            logger.warning(
-                "authenticated fetch could not name %d destination tips; "
-                "downloading the full history instead", len(tips),
-            )
-            return 0
+        await self._averify_retained_objects(destination_git_dir, home=home, deadline=deadline)
+        await self._run_isolated_import_git(
+            [f"--git-dir={imported}", "update-ref", "--stdin"],
+            home=home, deadline=deadline,
+            input=("start\n" + "".join(
+                f"update refs/aq/have/{index} {oid}\n" for index, oid in enumerate(tips)
+            ) + "prepare\ncommit\n").encode("ascii"),
+        )
         return len(tips)
 
+    async def _averify_retained_objects(
+        self, git_dir: str, *, home: Path, deadline: float,
+    ) -> None:
+        """Read-only integrity gate, never permission to repair or replace a store.
+
+        Connectivity-only fsck does not read blob bodies. Full fsck also checks
+        local/unpublished and unreachable objects; neither exit zero nor a valid
+        remote tip is sufficient proof. Do not cache this result across writes.
+        The caller must separately fence repository identity and all writers
+        before using any inspection as a recovery precondition.
+        """
+        await self._run_isolated_import_git(
+            [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
+             "--no-reflogs", "--no-progress"],
+            home=home, deadline=deadline, verify_integrity=True,
+        )
+
     async def _aholds_complete_commit(
-        self, imported: Path, oid: str, *, home: Path, deadline: float
+        self, imported: Path, oid: str, *, home: Path, deadline: float,
+        lender_verified: bool = False,
     ) -> bool:
         """Whether *imported* already holds commit *oid* and everything it references.
 
-        The same check ``git fetch`` makes before transferring anything, run
-        credential-free: the walk stops at the named tips, whose history the
-        destination holds.  A commit left without its trees or parents (an
+        Walk the exact closure credential-free, without excluding seeded tips.
+        A ref does not prove
+        its history is present. A commit left without its trees or parents (an
         interrupted unpack) is not held, so it is still fetched.
         """
         try:
@@ -2250,12 +2275,15 @@ class GitManager:
             if peeled.decode("ascii", errors="replace") != oid:
                 return False
             await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "rev-list", "--objects", "--quiet", oid,
-                 "--not", "--all"],
+                [f"--git-dir={imported}", "rev-list", "--objects", "--quiet", oid],
                 home=home, deadline=deadline,
             )
         except GitError:
             return False
+        if not lender_verified:
+            # With no named tips, the lender may contain just an unreferenced
+            # commit. rev-list detects absent objects but not truncated blobs.
+            await self._averify_retained_objects(str(imported), home=home, deadline=deadline)
         return True
 
     async def _areceived_objects(
@@ -4413,7 +4441,7 @@ class GitManager:
                     patterns=(), home=home, deadline=deadline,
                 )
                 held = await self._aholds_complete_commit(
-                    imported, oid, home=home, deadline=deadline
+                    imported, oid, home=home, deadline=deadline, lender_verified=seeded_tips > 0,
                 )
             mode = (
                 "local" if held
@@ -4869,6 +4897,7 @@ class GitManager:
         home: Path,
         deadline: float | None = None,
         input: bytes | None = None,
+        verify_integrity: bool = False,
     ) -> bytes:
         """Run a credential-free Git import/verification command safely."""
         process: asyncio.subprocess.Process | None = None
@@ -4887,17 +4916,30 @@ class GitManager:
                     cwd=str(home),
                     stdin=asyncio.subprocess.PIPE if input is not None else None,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
                     env=self._app_git_environment(home),
                     start_new_session=True,
                 )
-                stdout, _ = await process.communicate(input)
+                stdout, stderr = await process.communicate(input)
         except BaseException as exc:
             if process is not None:
                 await self._kill_app_git_group(process)
             if isinstance(exc, (FileNotFoundError, asyncio.TimeoutError)):
                 raise GitError("authenticated Git push preparation failed") from exc
             raise
+        # Git can print integrity errors while returning zero. Keep untrusted
+        # paths/content out of the exception, but never discard that evidence.
+        diagnostics = stdout + b"\n" + stderr
+        if verify_integrity:
+            unexpected = [line for line in diagnostics.splitlines()
+                          if line.strip() and line != b"notice: No default references"
+                          and not re.fullmatch(
+                              rb"notice: HEAD points to an unborn branch \([^\r\n]+\)", line,
+                          )]
+            if process.returncode != 0 or unexpected:
+                raise GitError("retained Git object integrity is unavailable")
+        elif process.returncode == 0 and re.search(rb"(?m)^(?:error|fatal):", stderr):
+            raise GitError("isolated Git command reported errors")
         if process.returncode != 0:
             raise GitError("authenticated Git push preparation failed")
         return stdout.strip()
