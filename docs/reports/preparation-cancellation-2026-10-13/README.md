@@ -117,6 +117,35 @@ No real providers, tmux agents, external messaging or operator database were use
 Logs: `/tmp/wise87-final-focused.log`, `/tmp/wise87-area.log`,
 `/tmp/wise87-swarm.log`.
 
+## Supervisor evidence received before close
+
+The close guard delivered additional reports after verification. These were read
+from this task/session's mailboxes; no foreign host, file, API or task was opened.
+
+- `msg-2130c4b29bef47c4920c35b224776cc3` reports a nonretryable, 52-second
+  `slot_reset_failed` attempt with no deadline and disagreement between repair
+  attribution and the native session's preparing task. This does not establish
+  that a timeout fired; changing the threshold is not an explanation.
+- `msg-9ddba54617e346ba86abefa9a49accea` reports an AQ-local repair projection
+  at epoch 11 while its named native session has no task/claim phase, and a
+  reserved owner without a session/workspace. Projection attribution is not
+  an exact active writer proof and does not authorize cleanup or replay.
+- Supervisor comments `comment-a185cf27a47f4e7195ac20aa9e0a5316` and
+  `comment-6f64aee1d03a4de5bba6c223329c133f` retain Matter-reported detached slots
+  without markers, preparing sessions, and repeated own-branch handoff refusal.
+  The latter reports Vivid slot 2 at `4427a094e83206baf40e682a012784f2646a5ec7`,
+  with a zero-byte `index.lock` and no claim marker. Its cause and current writer
+  ownership remain unproved; the reporter directed preservation and stopped
+  further preparation attempts. The real-filter fixture demonstrates a possible
+  surviving lock mechanism, not attribution of that particular lock.
+
+These observations reinforce the negative cases in the preparation identity,
+successor-epoch and lock-preservation fixtures. They do not change the tested
+implementation or justify new operational retries, metadata changes, lock removal,
+source cleanup, gate waivers, or duplicate diagnosis. The original acceptance
+remains unmet. The earlier supervisor comment `comment-380d30e0b03f45ee9b91f7454958dca2`
+also explicitly preserved the published ancestry and original acceptance.
+
 ## Incident closure and recovery evidence still required
 
 Use the existing supervisor escalation and related supported recovery work; do
