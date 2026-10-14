@@ -17983,7 +17983,7 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:9cbf9c09ff2a7f4de572a1c5fca3f25e3fd2f6b251f5b877eeb21aa4b1f2799e",
+      "digest": "sha256:88c9628c0062288030b84bd4767a785a6e66d51febf0a5d94ef45f1a5c966df3",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -17994,7 +17994,9 @@
         "src.runtimes.base",
         "src.sessions.proctable"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "add_workspace kind_id parameter + list_workspace_kinds. Spec §10."
     },
     "tests/test_workspace_control_file_exclude.py": {
