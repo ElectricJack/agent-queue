@@ -228,6 +228,22 @@ async def expire_claim_refusal(db, sid, task_id=None):
         await db.set_task_meta(task_id, "claim_prepare_backoff_until", time.time() - 1)
 
 
+async def test_preparation_reads_current_project_with_both_claim_fences(handler, db, tmp_path):
+    await mktask(db, "t1", profile_id="worker")
+    sid, _wd = await pool_session(db, tmp_path)
+    claimed = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert claimed["result"] == "claimed"
+    task = await db.get_task("t1")
+    await db.update_session(sid, claim_phase="preparing")
+    await db.update_project(PROJECT_ID, name="changed after admission")
+
+    current, project = await db.claim_preparation_state(sid, task.id, task.claim_epoch)
+    assert current and project.name == "changed after admission"
+    assert await db.claim_preparation_state(sid, task.id, task.claim_epoch + 1) == (False, None)
+    await db.update_session(sid, desired_state="stopped")
+    assert await db.claim_preparation_state(sid, task.id, task.claim_epoch) == (False, None)
+
+
 async def stopped_slot_reset_claim(handler, db, tmp_path, *, detached=False, stopped=True):
     """The retained claim left by a stopped worker after a reset incident."""
     await mktask(db, "t1", profile_id="worker")

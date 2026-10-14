@@ -1134,22 +1134,14 @@ class ClaimCommandsMixin:
         self, session, row, task, cap=None, *, slot=None, admission=None
     ) -> dict:
         async with self.orchestrator._task_control_lock(task.id):
-            # The fence read and the project re-read run back to back with
-            # nothing awaited between them, so they share one checkout.  The
-            # project is still *re-read* rather than reused from the outer
-            # admission loop: that loop's copy can be a whole ``--wait``
-            # window old, and the value taken from it decides whether this
-            # claim attaches a hierarchy branch fence.  What this drops is
-            # the second pooled connection, not the freshness.
+            # Read the current project with the preparation fence. Admission
+            # may be a whole --wait window old; this joined read preserves
+            # fresh integration settings without a second projects SELECT.
             for attempt in range(len(_PREPARATION_RETRY_DELAYS) + 1):
                 try:
                     async with self.db.immediate() as conn:
-                        current = await self.db.claim_preparation_is_current(
+                        current, project = await self.db.claim_preparation_state(
                             session.id, task.id, task.claim_epoch, conn=conn
-                        )
-                        project = (
-                            await self.db.get_project(task.project_id, conn=conn)
-                            if current else _UNSET
                         )
                     if not current:
                         self._resolve_claim_waiters(session.id, task.claim_epoch, "prepare_failed")
@@ -1369,8 +1361,8 @@ class ClaimCommandsMixin:
         inside the claim transaction (spec §15); it is only re-read here for
         callers that did not have one.
 
-        *project* is the row :meth:`_prepare_and_activate` read on the same
-        checkout as the fence, for the same reason; ``_UNSET`` (not
+        *project* is the row :meth:`_prepare_and_activate` joined to the
+        preparation fence; ``_UNSET`` (not
         ``None`` — a missing project is a real answer) means read it here.
         """
         epoch = task.claim_epoch
