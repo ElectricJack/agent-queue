@@ -33,6 +33,7 @@ but development happens on Windows, so no separator is ever assumed.
 from __future__ import annotations
 
 from src.jobs.workspace import guard_workspace
+from src.claim_timing import claim_phase, timed_claim_phase
 
 
 import asyncio
@@ -874,10 +875,13 @@ class WorktreeSlotManager:
         default_branch = await self._default_branch(base_path, project_id=slot_ws.project_id)
         start_point = base_branch or default_branch
 
-        async with self._git_mutex(base_path):
+        with claim_phase("repository_lock"):
+            await self._git_mutex(base_path).acquire()
+        try:
             start_ref = await self._fetch_and_resolve_start_ref(
                 base_path, start_point, required=preserve_branch, cwd=str(slot_dir),
                 project_id=slot_ws.project_id,
+                refresh_refs=preserve_branch or target_branch is None,
             )
 
             # Hard reset + clean.  The sentinel is exempted so a reset never
@@ -918,6 +922,9 @@ class WorktreeSlotManager:
                 await self._switch_to_branch(
                     slot_dir, branch, start_ref, resume=bool(resume_branch), incoming_task_id=task.id,
                 )
+
+        finally:
+            self._git_mutex(base_path).release()
 
         if kind is not None:
             desired = worktree_setup_hash(kind.worktree_setup)
@@ -1307,6 +1314,7 @@ class WorktreeSlotManager:
         required: bool,
         cwd: str | None = None,
         project_id: str | None = None,
+        refresh_refs: bool = False,
     ) -> str:
         """Fetch in the base and return the ref new work should start from.
 
@@ -1315,6 +1323,13 @@ class WorktreeSlotManager:
         (``required=True``) still needs a resolvable start point or it fails
         so the task takes the no-workspace PAUSED backoff.
         """
+        # Exact origins are already proved by the integration owner. If the
+        # immutable commit is present in this shared object store, refetching
+        # every remote branch under the slot mutex cannot improve that proof.
+        # Preservation/retry paths still need current mutable remote branch tips.
+        if (not refresh_refs and is_valid_git_oid(branch)
+                and await self._ref_exists(cwd or base_path, branch)):
+            return branch
         fetch_failed = False
         try:
             if await self.git.ahas_remote(base_path):
@@ -1393,6 +1408,11 @@ class WorktreeSlotManager:
         if base_ws is None:
             return
         entries = await self.git.aworktree_list(base_ws.workspace_path)
+        mine = _norm_path(slot_dir)
+        entries = [entry for entry in entries if entry.get("path")
+                   and entry.get("branch") == branch and _norm_path(entry["path"]) != mine]
+        if not entries:
+            return
         managed = {
             _norm_path(ws.workspace_path): ws
             for ws in await self.db.list_workspaces(project_id=base_ws.project_id)
@@ -1434,6 +1454,7 @@ class WorktreeSlotManager:
                 return await self._base_of(ws)
         return None
 
+    @timed_claim_phase("setup")
     async def _run_setup(self, slot_dir: Path, commands: list[str] | None) -> None:
         """Run the kind's ``worktree_setup`` commands inside the slot.
 

@@ -155,6 +155,8 @@ from .ci_repair_adopt_response import CiRepairAdoptResponse
 from .ci_repair_adopt_response_422 import CiRepairAdoptResponse422
 from .ci_test_policy import CITestPolicy
 from .claim_session_summary import ClaimSessionSummary
+from .claim_timing_detail import ClaimTimingDetail
+from .claim_timing_detail_phases import ClaimTimingDetailPhases
 from .claimed_by import ClaimedBy
 from .claude_usage_request import ClaudeUsageRequest
 from .claude_usage_response import ClaudeUsageResponse
@@ -2176,6 +2178,8 @@ __all__ = (
     "CITestPolicy",
     "ClaimedBy",
     "ClaimSessionSummary",
+    "ClaimTimingDetail",
+    "ClaimTimingDetailPhases",
     "ClaudeUsageRequest",
     "ClaudeUsageResponse",
     "ClaudeUsageResponse422",

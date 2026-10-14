@@ -570,7 +570,33 @@ is the contract). When the phase resolves:
   transcript never claimed;
 - session terminated → `out_of_scope`;
 - `wait` elapsed → `claim_in_progress` `{task_id, claim_epoch, claim_phase,
-  claim_phase_at}`; the caller retries. `wait = 0` returns this immediately.
+  claim_phase_at}`; the caller retries. `wait = 0` uses the bounded preparation
+  allowance below.
+
+**Preparation latency and diagnostics (2026-10-13).** Selection commits its
+holder transaction before starting a daemon-owned asynchronous preparation task.
+A warm preparation may finish within a 0.5 second response allowance; otherwise
+`wait=0` returns `claim_in_progress`, and a long poll waits only through its
+remaining deadline. Request cancellation never cancels the owned reset. The
+existing preparation registry remains the liveness fence used by recovery;
+daemon/session teardown can explicitly cancel the registered task. Concurrent
+callers join the same generation and observe its actual failure or success.
+A notification cannot restart a still-live preparation. Deferred responses are
+fenced to their session instance and claim binding, and one failed preparation
+records one refusal even when several callers await its result.
+
+Each attempt logs monotonic phase start/completion and total timing, including
+frontier selection, owner/lease checks, fetch, checkout, reset, setup and shared
+repository lock waits. Command arguments and credentials are omitted. The claim
+response carries `claim_timing`; task explain and its dashboard show live progress
+and the last completed timing saved in task metadata. Nested totals are inclusive,
+not additive. Diagnostics cannot change a claim outcome if their persistence fails.
+A locally available exact origin SHA needs no full origin fetch when resetting
+an exact target to that immutable commit. Child preservation, retry/continuation
+branches, branch-valued origins and missing origins still refresh remote refs. All origin, owner, retained-source,
+checkpoint and activation guards apply. The warm-slot p50 target is under 15s;
+measure requests with already-ready work. Idle long polls are separate samples;
+their request total includes waiting for the frontier.
 
 **Long-poll — subscribe first, then check.** With `wait > 0`, two waits share the budget:
 

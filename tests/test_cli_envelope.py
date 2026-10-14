@@ -1138,6 +1138,39 @@ class TestErrorDetailsPlumbing:
         finally:
             await client._http.aclose()
 
+    async def test_explain_timeout_and_subsequent_task_read_keep_independent_outcomes(self):
+        import httpx
+
+        from src.cli.client import CLIClient
+        from src.cli.exceptions import CommandResponseError
+
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            command = json.loads(request.content)["command"]
+            calls.append(command)
+            if command == "explain_task":
+                assert request.extensions["timeout"]["read"] == 120.0
+                raise httpx.ReadTimeout("explanation unavailable", request=request)
+            return httpx.Response(200, json={"ok": True, "result": {"id": "own-task"}})
+
+        client = CLIClient(base_url="http://x")
+        client._http = httpx.AsyncClient(base_url="http://x", transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(CommandResponseError) as exc:
+                await client._execute_generic("explain_task", {"task_id": "own-task"})
+            assert exc.value.details == {
+                "outcome": "unknown", "automatic_retry": False,
+                "failure_kind": "ReadTimeout", "read_timeout_seconds": 120.0,
+            }
+            assert await client._execute_generic("get_task", {"task_id": "own-task"}) == {
+                "id": "own-task",
+            }
+            assert calls == ["explain_task", "get_task"]
+            assert exc.value.details["outcome"] == "unknown"
+        finally:
+            await client._http.aclose()
+
     async def test_client_maps_403_to_scope_denied(self):
         import httpx
 

@@ -113,6 +113,55 @@ class TestAddWorkspaceKindId:
         assert "does-not-exist" in result["error"]
 
 
+@pytest.mark.parametrize("stage", ["avalidate_checkout", "aget_current_branch", "ahas_uncommitted_changes"])
+async def test_slow_workspace_annotations_do_not_block_independent_inventory_reads(
+    setup, monkeypatch, stage,
+):
+    handler, db, tmp_path = setup
+    path = tmp_path / "owned-source"
+    path.mkdir()
+    protected = path / "checkpoint.txt"
+    protected.write_text("preserved source\n")
+    await db.create_workspace(_Workspace(
+        id="owned-workspace", project_id="p1", workspace_path=str(path),
+        source_type=RepoSourceType.LINK, kind_id="game-repo",
+    ))
+    git = handler.orchestrator.git
+    git.avalidate_checkout = AsyncMock(return_value=True)
+    git.aget_current_branch = AsyncMock(return_value="sample")
+    git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def stalled(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with monkeypatch.context() as fault:
+        fault.setattr(git, stage, stalled)
+        request = asyncio.create_task(handler._cmd_list_workspaces({"project_id": "p1"}))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            assert [ws.id for ws in await db.list_workspaces(project_id="p1")] == [
+                "owned-workspace",
+            ]
+            kinds = await handler._cmd_list_workspace_kinds({"project_id": "p1"})
+            assert any(kind["id"] == "game-repo" for kind in kinds["workspace_kinds"])
+            assert not request.done()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert cancelled.is_set()
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    complete = await handler._cmd_list_workspaces({"project_id": "p1"})
+    assert complete["workspaces"][0]["branch"] == "sample"
+    assert protected.read_text() == "preserved source\n"
+
+
 class TestListWorkspaceKinds:
     async def test_lists_system_plus_project(self, setup):
         handler, db, _ = setup

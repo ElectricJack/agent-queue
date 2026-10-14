@@ -26770,6 +26770,65 @@
         "title": "ClaimSessionSummary",
         "description": "The calling session's claim bookkeeping, echoed back on every ``task_claim`` reply."
       },
+      "ClaimTimingDetail": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "total_seconds": {
+            "type": "number",
+            "title": "Total Seconds"
+          },
+          "phases": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Phases",
+            "default": {}
+          },
+          "current_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Phase"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "total_seconds"
+        ],
+        "title": "ClaimTimingDetail"
+      },
       "ClaimedBy": {
         "properties": {
           "session_id": {
@@ -36205,6 +36264,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PhaseHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "claim_timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimTimingDetail"
               },
               {
                 "type": "null"
@@ -74351,6 +74420,49 @@
           "session": {
             "$ref": "#/components/schemas/ClaimSessionSummary",
             "default": {}
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "claim_phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Phase"
+          },
+          "claim_phase_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Phase At"
+          },
+          "claim_timing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimTimingDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "reason": {
             "anyOf": [
