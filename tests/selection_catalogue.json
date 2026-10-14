@@ -1629,8 +1629,9 @@
         "claims"
       ],
       "default_arm": false,
-      "digest": "sha256:419e9d29082a07949fe40455378c4205584ebe542229a4384f3e1315562c61c8",
+      "digest": "sha256:23a5d5d70784f8c89af9b916b1c9e627d6e8e08b7d37babb051f7ca3f27517a6",
       "imports": [
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
         "src.intelligence_classes",
@@ -3491,7 +3492,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:46efb5bf20f09e7ecc12aa3fc43d532791f2248ab907d7338d03b5d8e97c7f07",
+      "digest": "sha256:b9d799ef3923635a6c2e53b62ffe02258f3288f61b1594e32244973428dab952",
       "imports": [
         "src.api.models.session",
         "src.api.models.task",
@@ -3500,6 +3501,7 @@
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
+        "src.database.queries.ingest_hold",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.pool_checks",
