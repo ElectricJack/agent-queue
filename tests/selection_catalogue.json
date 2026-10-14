@@ -15724,7 +15724,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:e8e5c0735009b765fbc1a1407661affbc3efc9101cede952926d6f257b193470",
+      "digest": "sha256:c065b9dd969ed04375633500c5a8cbdee3dce7f6fc066c93f4be0dad2f8def1a",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -15766,7 +15766,8 @@
         "src.vault"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Session commands, the completion protocol, and the C1 end-to-end path."
     },

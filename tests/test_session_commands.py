@@ -4309,7 +4309,23 @@ class TestEndToEndOnFakeProvider:
         close surface ever stops threading it through, a read-only reviewer
         is back to being refused for a PR it was never going to open.
         """
-        import asyncio
+        await self._assert_no_op_close(db, real_orch, real_handler, tmp_path, monkeypatch)
+
+    @pytest.mark.perf
+    async def test_no_op_close_latency_budget(
+        self, perf_strict, db, real_orch, real_handler, tmp_path, monkeypatch
+    ):
+        """Measure the two-second close budget only on an opted-in quiet box."""
+        await self._assert_no_op_close(
+            db, real_orch, real_handler, tmp_path, monkeypatch, close_timeout=2
+        )
+
+    async def _assert_no_op_close(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, *, close_timeout=120
+    ):
+        # The default test always checks the real command and durable outcome.
+        # The 120-second backstop catches hangs; PostgreSQL latency belongs to the
+        # separate perf_strict budget test, not the default CI shard.
 
         await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
         session = await db.get_session_for_task("t1")
@@ -4331,7 +4347,7 @@ class TestEndToEndOnFakeProvider:
                     "summary": "Reviewed; nothing to ship.",
                 },
             ),
-            timeout=2,
+            timeout=close_timeout,
         )
         assert close["success"] is True and close["status"] == "COMPLETED"
         assert seen == {"work_outcome": "no-op"}
