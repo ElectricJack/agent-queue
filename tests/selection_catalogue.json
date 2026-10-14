@@ -41,6 +41,7 @@
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
         "tests/test_wait_migration.py",
+        "tests/test_wait_queries.py",
         "tests/test_waits.py"
       ]
     },
@@ -17771,12 +17772,31 @@
       ],
       "summary": "Verified-wait DDL on fresh and pre-v2 disposable PostgreSQL schemas."
     },
+    "tests/test_wait_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:184fc7153ab14014f42d3a0e52b76e67de7e8056751d5b9bd57118ddc320daff",
+      "imports": [
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified registration and source races on disposable PostgreSQL."
+    },
     "tests/test_waits.py": {
       "areas": [
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:92161fc4886d9bb61263b3d8d89839b58580a4d223b23f1ae31d7acbed08afb4",
+      "digest": "sha256:f581ac56616efbce581113c7f0e2a8db267a6a128c7870bbb4e7efc628365a25",
       "imports": [
         "src.api.models.task",
         "src.commands.task_commands",
@@ -17785,7 +17805,9 @@
         "src.models",
         "src.orchestrator.events",
         "src.sessions.obsolete",
-        "src.state_machine"
+        "src.state_machine",
+        "src.waits.conditions",
+        "src.waits.registry"
       ],
       "markers": [
         "parametrize"
