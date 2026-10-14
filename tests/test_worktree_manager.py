@@ -76,6 +76,12 @@ def _base_repo_seed(tmp_path_factory) -> Path:
     subprocess.run(
         ["git", "clone", str(origin), str(base)], check=True, capture_output=True
     )
+    # The shared seeds must stay quiescent while base_repo copies them. In
+    # particular, receive-pack can leave background maintenance running after
+    # the initial push, racing copytree over transient locks and object files.
+    for repo in (origin, base):
+        _git(["config", "maintenance.auto", "false"], cwd=repo)
+        _git(["config", "gc.auto", "0"], cwd=repo)
     (base / "README.md").write_text("init\n")
     (base / ".gitignore").write_text("node_modules/\n")
     _git(["add", "-A"], cwd=base)
