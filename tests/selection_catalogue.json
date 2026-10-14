@@ -10517,8 +10517,9 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:ea9671ff86a69e53eb70364f1ddad344b01609d489722266464d6fed80fd464b",
+      "digest": "sha256:65a22d50313b213f2c2c2ae70655c0b0a5077b50673b873b3358bcae4b024b87",
       "imports": [
+        "src.agent_cron",
         "src.api.auth",
         "src.api.scope",
         "src.api.websocket",
