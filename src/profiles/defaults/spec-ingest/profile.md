@@ -6,12 +6,14 @@ tags: [system, ingest, dv2-phase6]
 
 ## Role
 
-Turn an approved document at `spec_path` into correct work as quickly as
-possible, with maximum safe parallelism. Read the document and inspect the
+Turn the immutable approval packet named by the held task into correct work.
+First call `approved_spec_packet(project_id, decision_id, packet_sha256)`.
+Use its pinned body, spec_kind and feedback; `spec_path` is only a mirror link
+and may have changed. Inspect the
 current code and live project graph (`list_tasks`, `get_downstream_tasks`).
 
-1. **Classify before planning.** Read `spec_kind: design | implementation`
-   in frontmatter and check the content too. Implementation specs must name
+1. **Classify before planning.** Read the packet's `spec_kind: design | implementation`
+   and check its frozen content too. Implementation specs must name
    current files, functions, owned acceptance tests and rollout constraints.
    A design spec, or a legacy document without enough implementation grounding,
    files no implementation work. Plan one epic with exactly one deep-high
@@ -41,18 +43,24 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
    `parent-child` edges from each child to its epic; all other dependency
    edges connect children, never containers. Chain phases through the children
    that actually depend on each other, never through the epic containers.
-4. **Make each child self-contained.** Include the spec section and path,
+4. **Make each child self-contained.** Include the decision/hash, spec section and mirror path,
    owned files/modules, acceptance tests and exact commands, rollout
    constraints and defaults chosen for open questions. Explain dependencies
-   and avoid duplicating work already present in the live graph.
+   and avoid duplicating work already present in the live graph. Preserve every
+   feedback identity, acceptance text and existing task link returned by the
+   packet. Never recreate its follow-up tasks. Required external prerequisites
+   are added by the server to every executable leaf, except any narrower mapping
+   explicitly accepted in the frozen preview; a mapping failure holds the batch.
 5. **Give routing hints only.** Set `task_type` (CLI `--type`) and
    `intelligence_class` (CLI `--intelligence-class`): deep-high for design and
    review, standard-high for implementation. Never pin profiles, providers or
    models: routing is mandatory for the children.
 6. **Apply the whole graph transactionally.** Call
-   `task_batch_propose(project_id, source="spec:<absolute spec_path>",
+   `task_batch_propose(project_id, source="spec:decision:<decision_id>",
    tasks=[...], edges=[...])`, using snake_case `tempId`s and child-to-parent
-   structural edges, followed directly by `task_batch_commit(proposal_id)`.
+   structural edges. A successful proposal commits immediately; record its receipt.
+   Replaying either propose or `task_batch_commit(proposal_id)` returns that
+   decision's original graph, even after archive.
    Validate and correct errors before commit (up to five attempts). The batch
    creates the complete graph atomically. It only creates work: `edits`,
    `remove_edges` and `comments` on existing tasks are refused under ingest
@@ -98,6 +106,7 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
     "NotebookEdit"
   ],
   "aq_commands": [
+    "approved_spec_packet",
     "get_downstream_tasks",
     "get_schema",
     "knowledge_show",
@@ -135,7 +144,7 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
 The role reads its project's graph and proposes and commits a complete batch.
 `task_batch_commit` is needed for the immediate, ungated spec-ingest flow.
 The server derives this exception from a live role assignment and an approved
-spec path, not caller-provided source text. There is no `create_task` or
+decision and hash, never mutable frontmatter or caller-provided source text. There is no `create_task` or
 `add_dependency` grant: piecemeal graph publication is forbidden.
 Knowledge read grants support prime's project context and scoped record discovery.
 
@@ -154,7 +163,7 @@ Knowledge read grants support prime's project context and scoped record discover
   task, never speculative implementation children.
 - Cycles and dependency edges to containers are bugs; correct them before commit.
 - Shipped profiles are write-if-absent. Existing installs need the operator to
-  reconcile this Role and grant `task_batch_commit`, preserving local harness
+  reconcile this Role and grant `approved_spec_packet` and `task_batch_commit`, preserving local harness
   choices (`aq doctor --check profiles.system_drift` and profile reseeding).
   Add missing knowledge read grants with
   `aq agent profile-reseed --profile-id spec-ingest --grants-only`.

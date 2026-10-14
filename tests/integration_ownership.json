@@ -8725,6 +8725,79 @@
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_reparent_task": {
       "reason": "Routes ordinary task reparenting through the transactional hierarchy integration guard, preserving branch origins and invalidating both parent checkpoints in hierarchy and train modes."
+    },
+    "src/asks/sources.py::IntegrationAdapter": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        456,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.apply_on": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        517,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.read": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        460,
+        485
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.snapshot": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        486,
+        516
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.source_kind": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        459,
+        459
+      ]
+    },
+    "src/asks/sources.py::authorize_source": {
+      "reason": "Human source authorization includes exact integration gate/escalation binding and application authority.",
+      "landing_span": [
+        66,
+        151
+      ]
+    },
+    "src/asks/sources.py::import from src.database.tables import gates, integration_subjects, task_gates, task_proposals, tasks": {
+      "reason": "Integration subject table import used by the human-decision adapter.",
+      "landing_span": [
+        26,
+        32
+      ]
+    },
+    "src/asks/sources.py::source_adapters": {
+      "reason": "Static adapter registration includes the integration human-decision adapter.",
+      "landing_span": [
+        877,
+        889
+      ]
+    },
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_transaction": {
+      "reason": "Source decision transaction boundary used by the integration adapter alongside other human sources.",
+      "landing_span": [
+        187,
+        198
+      ]
+    },
+    "src/commands/gate_commands.py::GateCommandsMixin._gate_ask_source": {
+      "reason": "Maps integration subject gates to their exact human source identity.",
+      "landing_span": [
+        19,
+        30
+      ]
+    },
+    "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
+      "reason": "Project ownership resolver table import includes integration targets alongside generic human ask targets. Integration table dependencies remain charged; human identity and decision evidence retain generic storage ownership."
     }
   },
   "exclusions": {
@@ -8822,7 +8895,12 @@
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
-    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
+    "src/commands/ask_communication_commands.py::AskCommunicationCommandsMixin._cmd_ask_show": "Generic audience-scoped human request, review evidence and notification-transport display for all ask sources. delivery_status describes external messages; integration source authorization and adapters remain independently charged.",
+    "src/database/queries/ask_delivery_queries.py::AskDeliveryQueriesMixin.ask_delivery_status": "Notification root and reconciliation-case observations for every ask source; delivery_status is transport receipt state, with no Git, branch, integration gate or publication authority.",
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_service": "Generic registry/service assembly for reviews, specifications and all human sources. Static integration adapter registration and IntegrationAdapter are independently charged; no integration decision or domain write occurs here.",
+    "src/asks/source_operations.py::apply": "Generic human-source operation leasing, pause gating and reconciliation, dispatching through the registered source adapter. No integration branch, subject, gate or policy state is interpreted or written here; IntegrationAdapter and authorize_source retain the charged integration authority and receipts.",
+    "src/asks/source_operations.py::import from src.asks.sources import authorize_source, finish_on": "Generic human-source authorization and completion imports; the integration branch of authorize_source remains independently charged, and finish_on only updates ask operations/projections."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -13132,7 +13210,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::56578aa26104563e627d6920b6ab71ed75c43b52451419defe2a62b353044c31": {
       "line": 1465,
@@ -13141,7 +13219,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::660e646c2bc73a87acbd9635c6d7c2d7bfb27bc207880247753c79164914ad87": {
       "line": 1849,
@@ -13150,7 +13228,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ae11c6bd4fb43bd6de75c4c48200714e0e53b8fabfe707dbbd4107030938735a": {
       "line": 1453,
@@ -13159,7 +13237,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::be73c4ceb2c880e944a4b02d2f545fec23c5e2b042151119ccb55a6a109bcd41": {
       "line": 1455,
@@ -13168,7 +13246,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ca3f2cdcd35a7a2089869aaff868b1ed242d5a4dc3a16c2f22bbee657ab3d40f": {
       "line": 1723,
@@ -13177,7 +13255,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::da4a85ceaecac9a0a1152f3e0883f7f88015afbe1b94fb6f5e36892a01f386b4": {
       "line": 1449,
@@ -13186,7 +13264,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::dc542d68e996f280c4f1a0ad5174d7f358d5e33051a34bae65de5a76b92faf40": {
       "line": 1463,
@@ -13195,7 +13273,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::e6420f7ac1c540cf49ce31f733f1e46efaca47d04099608408916ce1c06433ab": {
       "line": 1521,
@@ -13204,7 +13282,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f27f9aaff90d2f291ca36b29a447e4ecbd3822acfd900bbda99ee4792c8e586f": {
       "line": 1459,
@@ -13213,7 +13291,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f3b4697bfd97ba0305066ae8ff852bfbb7c8f4a9737eb15f0d6b36946b634acd": {
       "line": 1705,
@@ -13222,7 +13300,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
       "line": 304,
@@ -13333,22 +13411,22 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::0dfb7d71a735cf01bf69eb2924994003433c6ecb4da10f0c4921536d9b0bfd9a": {
-      "line": 3010,
+      "line": 3015,
       "owner": "TaskCommandsMixin._create_task",
       "call": "log_event",
-      "owner_fingerprint": "41dd3d5519e7aa6695c867050a7c6295b010ec51150016ee181b98b9d296e1f7",
+      "owner_fingerprint": "4339f109fa53d3f387e7357db211f228ebf012b83502da833cb5b0922e81abea",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Task label.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle."
+      "reason": "Task label.added audit only; source-owned pre-create locking hooks change the enclosing task creation AST, not this call or payload. No ref replay or duplicate integration lifecycle."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::410a02b90473dd130b922788f002d371e50f4de6ba4daff1847591088f3deff6": {
-      "line": 3001,
+      "line": 3008,
       "owner": "TaskCommandsMixin._create_task",
       "call": "log_event",
-      "owner_fingerprint": "41dd3d5519e7aa6695c867050a7c6295b010ec51150016ee181b98b9d296e1f7",
+      "owner_fingerprint": "4339f109fa53d3f387e7357db211f228ebf012b83502da833cb5b0922e81abea",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Task dependency.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle."
+      "reason": "Task dependency.added audit only; source-owned pre-create locking hooks change the enclosing task creation AST, not this call or payload. No ref replay or duplicate integration lifecycle."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._emit_task_graph_change::49364bafd150cdc68036fcf280efa5d6ef80b0f72ce84d78634c8766f6431278": {
       "line": 1026,
@@ -14728,13 +14806,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _dismiss_key(q['id'])"
     },
     "src/sessions/questions.py::AgentQuestionService.answer::b9447634eee2e9f8306f54b9e7df0b083226e4ffc77b0675af9cb69cd594f187": {
-      "line": 764,
+      "line": 788,
       "owner": "AgentQuestionService.answer",
       "call": "set_task_meta",
-      "owner_fingerprint": "f593f68a0e88040f681373aefea548d194d310c2096267fd284002be9f213810",
+      "owner_fingerprint": "3f56bf454359e646b53b4caa98f84288c439886814dd49d5f6fbdf29c7e5a8dc",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _answered_key(question_id)"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _answered_key(question_id) Owner now also fences accepted ask decisions and domain receipts."
     },
     "src/sessions/reconciler.py::SessionReconciler._apply_pool_verdict::672b462b5108595d73e5b020839bafa231daab0955a6d595626fa61eb403bb47": {
       "line": 1524,
@@ -15401,6 +15479,25 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit event for re-leasing a detached task's own expired origin reservation before its drain cut (sound-willow-55); ordinary audit storage, no ref replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::2000800a19f07b12dcfd441b364b958149789c935756a56406678e50d5d7e2c8": {},
+    "src/asks/operations.py::ReviewOperations.run_stage::8eb7f5847f71846e2a5b665e5cfb37fd46ad0e184cbe0da1769b716b1506a40a": {
+      "line": 876,
+      "owner": "ReviewOperations.run_stage",
+      "call": "log_event",
+      "owner_fingerprint": "fb6c6eaebbc9494a54cda797ffd3dceb63f4f2cf09f25254f0e704096a4b6226",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Review decision, gate resolution and task blocked/unblocked event audit. The source-owned ask operation stores the event sequence for idempotent emission; it neither replays Git refs nor duplicates integration lifecycle state."
+    },
+    "src/asks/ingestion.py::dispatch::a4bd4fa14cba00a4c04093b1d29646ee56e0b4a57163e7b4979ac91c97e90ab9": {
+      "line": 147,
+      "owner": "dispatch",
+      "call": "log_event",
+      "owner_fingerprint": "0b1686bbf15c56d7d17df49e7f3c3c333bb4dbd0dba0cccf09cefda0c825e027",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Approved-document dispatch audit records the immutable decision identity and event sequence in its source-owned ingestion operation. Retries cannot authorize work without the approved application receipt; no Git ref replay or integration delivery lifecycle state."
     }
   },
   "generic_dependencies": {
@@ -16279,7 +16376,39 @@
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
     "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
     "src/preparation_failure.py::describe_preparation_failure": "Generic dependency: pure description of a preparation exception (stage, type, scrubbed bounded message, cause chain); no storage, fence or publication authority.",
-    "src/projects/github.py::scrub_secrets": "Generic credential scrubber shared by GitHub clients, authentication diagnostics and Git transport; contains no integration policy or state."
+    "src/projects/github.py::scrub_secrets": "Generic credential scrubber shared by GitHub clients, authentication diagnostics and Git transport; contains no integration policy or state.",
+    "src/main.py::_bind_report_outbox": "Generic startup binding of human request, conversation and report notification services to their transport; no integration subject, branch, publication state or ref authority. Integration orchestration in run remains independently charged.",
+    "src/asks/models.py::digest": "Generic canonical JSON hashing for all ask sources; no integration state, policy or ref authority. Integration adapters remain independently charged.",
+    "src/asks/review.py::authenticated_actor": "Generic authenticated principal construction shared by reviews and all ask sources; no integration state or authority decision. Integration authorization remains independently charged.",
+    "src/asks/operations.py::get_operation": "Generic decision-operation lookup in escalation_actions, shared by all ask sources; no integration subject, branch or lifecycle state.",
+    "src/asks/operations.py::succeed": "Generic ask operation completion on the caller connection; source adapters own and independently charge every integration effect and receipt.",
+    "src/asks/sources.py::finish_on": "Generic ask operation/projection completion for every source kind; no integration state or ref authority. IntegrationAdapter remains independently charged.",
+    "src/asks/authority.py::authorize_input_actor": "Generic stored human-input identity, source binding, audience and live supervisor checks shared by every ask source. No integration subject, branch, gate or publication state is interpreted; authorize_source and IntegrationAdapter remain independently charged.",
+    "src/commands/contracts/ask.py::GATEWAY_COMMANDS": "Generic gateway capability names for human request transport; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
+    "src/commands/contracts/ask.py::OPERATOR_COMMANDS": "Generic operator capability names for human request maintenance; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
+    "src/commands/contracts/ask.py::register_ask_contracts": "Generic command registration and result/effect schemas shared by every ask source. Delegates to CommandHandler without interpreting integration state; integration source handlers and the builtin registry remain independently charged.",
+    "src/database/tables.py::human_asks": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/database/tables.py::ask_decision_previews": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/asks/authority.py::public_allowed": "Generic audience and authenticated-principal predicate shared by every ask source; integration source authorization remains independently charged.",
+    "src/asks/buttons.py::authorize_button_actor": "Generic external button actor evidence and audience checks; no integration subject or publication policy is interpreted.",
+    "src/asks/buttons.py::decide": "Generic opaque-token, root, mode and version fences for external human decisions. Source effects are delegated through the shared decision handler; IntegrationAdapter and authorize_source remain independently charged.",
+    "src/asks/delivery.py::config_fingerprint": "Generic notification-destination configuration hashing; no integration state or ref authority.",
+    "src/asks/delivery.py::destination": "Generic notification channel identity for all human asks; no integration branch or delivery lifecycle.",
+    "src/asks/intake.py::input_values": "Generic human discussion input normalization, reply binding and provenance; integration source effects remain independently charged.",
+    "src/asks/service.py::new_id": "Generic random prefixed identifier generation for human request records; no integration state or authority.",
+    "src/asks/service.py::version_of": "Generic human request decision, feedback, display and source version projection; integration gate/version interpretation remains in the charged source adapter.",
+    "src/cli/formatters.py::format_ask_detail": "Generic human request detail, document, discussion and receipt presentation shared by all ask sources; no integration authority or state transition.",
+    "src/cli/formatters.py::format_ask_list": "Generic human request list and pagination presentation shared by all ask sources; no integration authority or state transition.",
+    "src/cli/formatters.py::format_ask_preview": "Generic prepared human decision packet presentation; integration effects remain in the charged source adapter.",
+    "src/cli/formatters.py::format_ask_receipt": "Generic human request receipt presentation; no integration lifecycle or ref authority.",
+    "src/database/queries/ask_input_queries.py::text_hash": "Generic UTF-8 human input hashing; no integration state or authority.",
+    "src/database/queries/ask_queries.py::ask_audience_predicate": "Generic SQL audience filtering shared by every ask source; integration source authority remains independently charged.",
+    "src/database/tables.py::ask_external_bindings": "Generic external notification root, receipt and generation storage for every ask source; no integration branch, gate lifecycle or ref replay authority.",
+    "src/database/tables.py::ask_reconciliation_cases": "Generic source/transport evidence conflicts and explicit repair receipts for every ask source; no integration subject journal or ref replay authority.",
+    "src/database/tables.py::ask_source_aliases": "Generic human request source identity and alias reconciliation shared by every source kind; integration source interpretation remains independently charged.",
+    "src/database/tables.py::review_feedback_obligations": "Generic accepted review feedback, ownership and completion evidence; no integration branch, publication state or ref replay authority.",
+    "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

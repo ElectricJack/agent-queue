@@ -28,32 +28,28 @@ Ships three rules:
 
 Trigger: `spec.approved`. No guard.
 
-1. Call `ensure_task` in the event's `project_id` with `dedup_key`
-   `spec-ingest:{event.spec_path}` (the `spec_path` the event carries), `title`
-   `Ingest spec {event.spec_path}`,
-   `profile_id` `spec-ingest`, and `intelligence_class` `deep-high`.
-   The `description` names the absolute `spec_path` and instructs the agent to
-   classify `spec_kind` and check implementation grounding. Design specs get
-   one deep-high implementation-spec authoring child in an epic, submitted
-   to Jack's review queue. Require authors to follow `docs/templates/spec.md`
-   and the Spec supersession checklist in `docs/guides/reviews.md`: identify
-   approved specs replaced or overlapped, cite approved revisions, and list
-   every predecessor goal as `kept`, `changed` or `dropped` with replacement
-   evidence and reasons. Flag every drop in the review; each requires Jack's
-   explicit sign-off for the goal and replacement revision. Check the accounting
-   before deriving implementation work; report missing accounting or unsigned
-   drops to the supervisor and do not commit affected work. Delegated or general
-   approval alone does not authorize dropping a goal.
-   Implementation specs get parallel phase epics
-   and self-contained children; validate, then `task_batch_propose` followed
-   directly by `task_batch_commit`, without a human proposal gate. The dedup key is
-   what makes this exactly one ingest task per approved spec file. The
-   `spec-ingest` profile makes this a role task: `ensure_task` creates it with
-   `route_source` `role` and the role profile's `default_class` as its execution
-   class. The supplied `deep-high` is recorded as a class hint, not the
-   route. A role task needs no routing decision even though `ensure_task`
-   suppresses `task.created`.
-   `created` and `reused` end the rule `completed`.
+1. Call `ensure_spec_ingest` with the event's `project_id`, `decision_id`
+   and `packet_sha256`. The server verifies the immutable approved application
+   receipt and creates a `spec-ingest` role task with transactional decision
+   metadata and dedup key `spec-ingest:decision:<id>`. `spec_path` is a display
+   mirror only. Callers cannot supply a role, description, or approval stamp.
+   `created` and `reused` end the rule `completed`. Replays return the same
+   task receipt even after archive. A durable dispatch operation retries until
+   this task receipt exists; bus delivery alone does not complete ingestion.
+   The role reads the approved packet and preserves all feedback obligations
+   and existing follow-up links. Design approvals create only an epic and an
+   implementation-spec authoring child; implementation approvals create the
+   grounded graph. Accepted external prerequisites cover every executable leaf
+   unless the decision preview explicitly accepted narrower coverage. Edges
+   and the decision's graph receipt commit with the complete graph.
+   Require authors to follow `docs/templates/spec.md` and the Spec supersession
+   checklist in `docs/guides/reviews.md`: identify approved specs replaced or
+   overlapped, cite approved revisions, and list every predecessor goal as
+   `kept`, `changed` or `dropped` with replacement evidence and reasons. Each
+   drop requires Jack's explicit sign-off for the goal and replacement revision.
+   Check this accounting before deriving implementation work; report missing
+   accounting or unsigned drops to the supervisor and do not commit affected
+   work. Delegated or general approval alone does not authorize dropping a goal.
 
 ## Rule: proposal-ready-gate
 

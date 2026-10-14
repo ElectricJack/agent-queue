@@ -9796,6 +9796,79 @@
     },
     "src/commands/task_commands.py::TaskCommandsMixin._cmd_reparent_task": {
       "reason": "Routes ordinary task reparenting through the transactional hierarchy integration guard, preserving branch origins and invalidating both parent checkpoints in hierarchy and train modes."
+    },
+    "src/asks/sources.py::IntegrationAdapter": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        456,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.apply_on": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        517,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.read": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        460,
+        485
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.snapshot": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        486,
+        516
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.source_kind": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        459,
+        459
+      ]
+    },
+    "src/asks/sources.py::authorize_source": {
+      "reason": "Human source authorization includes exact integration gate/escalation binding and application authority.",
+      "landing_span": [
+        66,
+        151
+      ]
+    },
+    "src/asks/sources.py::import from src.database.tables import gates, integration_subjects, task_gates, task_proposals, tasks": {
+      "reason": "Integration subject table import used by the human-decision adapter.",
+      "landing_span": [
+        26,
+        32
+      ]
+    },
+    "src/asks/sources.py::source_adapters": {
+      "reason": "Static adapter registration includes the integration human-decision adapter.",
+      "landing_span": [
+        877,
+        889
+      ]
+    },
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_transaction": {
+      "reason": "Source decision transaction boundary used by the integration adapter alongside other human sources.",
+      "landing_span": [
+        187,
+        198
+      ]
+    },
+    "src/commands/gate_commands.py::GateCommandsMixin._gate_ask_source": {
+      "reason": "Maps integration subject gates to their exact human source identity.",
+      "landing_span": [
+        19,
+        30
+      ]
+    },
+    "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
+      "reason": "Project ownership resolver table import includes integration targets alongside generic human ask targets. Integration table dependencies remain charged; human identity and decision evidence retain generic storage ownership."
     }
   },
   "shared_state": {
@@ -10734,5 +10807,21 @@
       }
     },
     "reason": "Reviewed actual merged definitions and six preparation diagnostic writes; targeted definition ASTs match the qualified donor, without merging its unrelated changes. Owns the complete workspace reconciliation and retained-binding surfaces, classifies ordinary preparation metadata, and preserves immutable baseline, landing measurements, phase, allowance and all caps. No production claim behavior change, integration journal, storage exclusion or waiver."
+  },
+  "human_ask_storage_review": {
+    "source_revision": "f2b8e4532168ef90bcd3d44480d5e23048f7fc48",
+    "design": "2026-10-11-one-place-to-ask-jack-cohesive-human-communication-in-aq.md section 9",
+    "reason": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "generic_dependencies": {
+      "src/database/tables.py::human_asks": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+      "src/database/tables.py::ask_decision_previews": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+      "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged."
+    },
+    "charged_import": "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections",
+    "retained_authority": [
+      "src/asks/sources.py::IntegrationAdapter",
+      "src/asks/sources.py::authorize_source"
+    ],
+    "budget": "Pinned baseline, 15000-line allowance, table predicate and all caps unchanged."
   }
 }

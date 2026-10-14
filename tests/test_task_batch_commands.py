@@ -5,6 +5,7 @@ Phase 6 Tasks 2 + 3 (design §8, spec ingestion).
 from __future__ import annotations
 
 import time
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from src.database.queries.proposal_queries import detect_cycles, existing_graph_
 from src.api.auth import RequestScope
 from src.api.scope import check_request_scope
 from src.models import (
-    Agent, AgentProfile, AgentState, SessionRecord, Task, TaskStatus, TaskType,
+    Agent, AgentProfile, AgentState, SessionRecord, TaskStatus, TaskType,
 )
 
 
@@ -1159,7 +1160,8 @@ async def test_change_set_postcommit_notifications_match_event_contracts(handler
     assert {"task.created", "task.updated", "task.reparented", "task.archived", "notify.task_comment"} <= set(notices)
 
 
-async def _ingest_assignment(handler, spec_kind="implementation"):
+async def _ingest_assignment(handler, spec_kind="implementation", *, feedback=None, coverage=None,
+                             required=True):
     from src.vault import ensure_default_intelligence_classes
 
     ensure_default_intelligence_classes(handler.config.data_dir)
@@ -1170,31 +1172,57 @@ async def _ingest_assignment(handler, spec_kind="implementation"):
     path.write_text(f"---\nstatus: approved\nspec_kind: {spec_kind}\n---\n# Approved spec\n")
     await handler.db.create_profile(AgentProfile(
         id="spec-ingest", name="Spec Ingest", harness="codex",
-        aq_commands=["task_batch_propose", "task_batch_commit", "list_tasks"],
+        default_class="deep-high", needs_workspace=False,
+        aq_commands=["task_batch_propose", "task_batch_commit", "list_tasks", "approved_spec_packet"],
     ))
+    if feedback is None:
+        decision = await handler.execute("spec_approve", {"project_id": "p1", "spec_path": str(path)})
+    else:
+        from tests.test_review_feedback import accept, comment, prepared
+
+        submitted = await handler.execute("review_submit", {
+            "project_id": "p1", "kind": "spec", "title": "Immutable approval",
+            "content": f"---\nspec_kind: {spec_kind}\n---\n# Approved spec\n",
+        })
+        assert submitted["success"], submitted
+        rid = submitted["review_id"]
+        cid = await comment(handler, rid, feedback)
+        disposition = {"feedback_key": cid, "disposition": "follow_up",
+                       "required_before_release": required, "external_prerequisite": required,
+                       "reason": "External implementation work; the approved document stays valid"}
+        if coverage is not None:
+            disposition["coverage"] = coverage
+        args, preview = await prepared(handler, rid, dispositions=[disposition])
+        decision = await accept(handler, args, preview)
+        assert decision["success"], decision
+        decision["packet_sha256"] = preview["packet_sha256"]
+        path = Path(handler.config.vault_root) / (await handler.db.get_review(rid))["vault_path"]
+    assert decision["success"], decision
+    ensured = await handler.execute("ensure_spec_ingest", {
+        "project_id": "p1", "decision_id": decision["decision_id"],
+        "packet_sha256": decision["packet_sha256"],
+    })
+    assert ensured["success"], ensured
+    ingest_id = ensured["task_id"]
     await handler.db.create_agent(Agent(id="ingester", name="Ingester", profile_id="spec-ingest"))
-    await handler.db.create_task(Task(
-        id="ingest", project_id="p1", title="Ingest approved spec", description=str(path),
-        status=TaskStatus.IN_PROGRESS, profile_id="spec-ingest", route_source="role",
-        assigned_agent_id="ingester", dedup_key=f"spec-ingest:{path}",
-    ))
-    await handler.db.update_agent("ingester", state=AgentState.BUSY, current_task_id="ingest")
+    await handler.db.update_task(ingest_id, status=TaskStatus.IN_PROGRESS, assigned_agent_id="ingester")
+    await handler.db.update_agent("ingester", state=AgentState.BUSY, current_task_id=ingest_id)
     await handler.db.create_session(SessionRecord(
-        id="s-ingest", task_id="ingest", project_id="p1", agent_id="ingester",
+        id="s-ingest", task_id=ingest_id, project_id="p1", agent_id="ingester",
         profile_id="spec-ingest", harness="codex", provider="fake", name="ingest",
         lifecycle="task", state="running", desired_state="running", work_dir=str(path.parent),
         epoch="test", instance_token="instance", started_at=time.time(), last_claim_epoch=0,
     ))
     scope = RequestScope(
         kind="session", session_id="s-ingest", session_instance_token="instance",
-        project_id="p1", task_id="ingest",
+        project_id="p1", task_id=ingest_id,
     )
-    return path, scope
+    return path, scope, decision
 
 
-def _implementation_graph(path):
+def _implementation_graph(path, decision):
     return {
-        "project_id": "p1", "source": f"spec:{path}",
+        "project_id": "p1", "source": f"spec:decision:{decision['decision_id']}",
         "tasks": [
             {"tempId": "core", "title": "Core epic", "description": str(path)},
             {"tempId": "api", "title": "API", "description": f"{path}: API files and tests",
@@ -1216,8 +1244,8 @@ def _implementation_graph(path):
     }
 
 
-async def _ingest_propose(handler, path, scope, graph=None):
-    args = graph or _implementation_graph(path)
+async def _ingest_propose(handler, path, scope, decision, graph=None):
+    args = graph or _implementation_graph(path, decision)
     assert await check_request_scope("task_batch_propose", args, scope, db=handler.db) is None
     result = await handler.execute("task_batch_propose", {**args, "_scope": asdict(scope)})
     assert result["success"], result
@@ -1251,8 +1279,8 @@ async def test_approved_implementation_spec_publishes_live_tasks_without_a_commi
     Nothing waits on a second command: no ready proposal, no human gate, no
     operator running ``task_batch_commit`` by hand.
     """
-    path, scope = await _ingest_assignment(handler)
-    result = await _ingest_propose(handler, path, scope)
+    path, scope, decision = await _ingest_assignment(handler)
+    result = await _ingest_propose(handler, path, scope, decision)
 
     assert result["committed"] is True
     assert len(result["task_ids"]) == 6
@@ -1261,7 +1289,7 @@ async def test_approved_implementation_spec_publishes_live_tasks_without_a_commi
     assert proposal["payload"]["spec_ingest"]["task_ids"] == result["task_ids"]
     # Every proposed task is a real row the graph already serves.
     assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {
-        "ingest", *result["task_ids"]
+        scope.task_id, *result["task_ids"]
     }
     assert await existing_graph_edges(handler.db, "p1")
     emitted = [event for event in _emitted(handler) if event[0].startswith("proposal")]
@@ -1275,9 +1303,9 @@ async def test_approved_implementation_spec_publishes_live_tasks_without_a_commi
 
 
 async def test_design_ingestion_only_files_implementation_spec_for_review(handler):
-    path, scope = await _ingest_assignment(handler, "design")
+    path, scope, decision = await _ingest_assignment(handler, "design")
     # Even a recorded implementation graph cannot implement an explicit design.
-    result = await _ingest_propose(handler, path, scope)
+    result = await _ingest_propose(handler, path, scope, decision)
     assert not [event for event in _emitted(handler) if event[0] == "proposal.ready"]
     epic, child = [await handler.db.get_task(tid) for tid in result["task_ids"]]
     assert child.parent_task_id == epic.id
@@ -1299,8 +1327,8 @@ async def test_design_ingestion_only_files_implementation_spec_for_review(handle
 
 
 async def test_implementation_ingestion_commits_epics_and_leaf_dependencies_without_gate(handler):
-    path, scope = await _ingest_assignment(handler)
-    result = await _ingest_propose(handler, path, scope)
+    path, scope, decision = await _ingest_assignment(handler)
+    result = await _ingest_propose(handler, path, scope, decision)
     ids = dict(zip(["core", "api", "ui", "docs", "draft", "final"], result["task_ids"], strict=True))
     for leaf, parent in [("api", "core"), ("ui", "core"), ("draft", "docs"), ("final", "docs")]:
         task = await handler.db.get_task(ids[leaf])
@@ -1327,7 +1355,7 @@ async def test_implementation_ingestion_commits_epics_and_leaf_dependencies_with
 
 
 async def test_ingest_transaction_hides_partial_graph_and_rolls_back_every_row(handler, monkeypatch):
-    path, scope = await _ingest_assignment(handler)
+    path, scope, decision = await _ingest_assignment(handler)
     original = handler.db.create_task
     original_recompute = handler.db.recompute_blocked
     created = []
@@ -1336,7 +1364,7 @@ async def test_ingest_transaction_hides_partial_graph_and_rolls_back_every_row(h
         await original(task, **kwargs)
         created.append(task.id)
         # A separate connection cannot see the inserted task or the proposal.
-        assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {"ingest"}
+        assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {scope.task_id}
         assert await _proposal_rows(handler) == []
 
     async def fail_after_dependency(*args, **kwargs):
@@ -1347,10 +1375,10 @@ async def test_ingest_transaction_hides_partial_graph_and_rolls_back_every_row(h
     monkeypatch.setattr(handler.db, "create_task", record_creation)
     monkeypatch.setattr(handler.db, "recompute_blocked", fail_after_dependency)
     result = await handler.execute(
-        "task_batch_propose", {**_implementation_graph(path), "_scope": asdict(scope)}
+        "task_batch_propose", {**_implementation_graph(path, decision), "_scope": asdict(scope)}
     )
     assert not result["success"] and "injected failure" in result["error"]
-    assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {"ingest"}
+    assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {scope.task_id}
     assert len(created) == 6
     assert await existing_graph_edges(handler.db, "p1") == []
     # Nothing survives for an operator to commit by hand either.
@@ -1358,19 +1386,21 @@ async def test_ingest_transaction_hides_partial_graph_and_rolls_back_every_row(h
     assert not [event for event in _emitted(handler) if event[0] == "proposal.status_changed"]
     monkeypatch.setattr(handler.db, "create_task", original)
     monkeypatch.setattr(handler.db, "recompute_blocked", original_recompute)
-    retried = await _ingest_propose(handler, path, scope)
+    retried = await _ingest_propose(handler, path, scope, decision)
     assert retried["committed"] is True
 
 
 @pytest.mark.parametrize(
-    "invalid", ["flat", "container-edge", "duplicate-parent", "profile", "edit"],
+    "invalid", ["flat", "container-edge", "duplicate-parent", "profile", "edit", "existing-edge"],
 )
 async def test_ingestion_refuses_invalid_graph_before_publishing(handler, invalid):
-    path, scope = await _ingest_assignment(handler)
-    graph = _implementation_graph(path)
+    path, scope, decision = await _ingest_assignment(handler)
+    graph = _implementation_graph(path, decision)
     if invalid == "edit":
         # Ingest authority is ungated, so it may only create work.
-        graph["edits"] = [{"task_id": "ingest", "title": "Renamed by ingestion"}]
+        graph["edits"] = [{"task_id": scope.task_id, "title": "Renamed by ingestion"}]
+    elif invalid == "existing-edge":
+        graph["edges"].append({"from": scope.task_id, "to": "api", "dep_type": "blocks"})
     elif invalid == "flat":
         graph["edges"] = []
     elif invalid == "container-edge":
@@ -1382,14 +1412,16 @@ async def test_ingestion_refuses_invalid_graph_before_publishing(handler, invali
     result = await handler.execute("task_batch_propose", {**graph, "_scope": asdict(scope)})
     assert not result["success"], result
     assert len(await handler.db.list_tasks(project_id="p1")) == 1
-    assert (await handler.db.get_task("ingest")).title == "Ingest approved spec"
+    assert (await handler.db.get_task(scope.task_id)).title == (
+        f"Ingest approved decision {decision['decision_id']}"
+    )
     # A refused batch leaves no staged proposal behind.
     assert await _proposal_rows(handler) == []
 
 
 async def test_source_text_cannot_grant_ungated_authority(handler):
-    path, scope = await _ingest_assignment(handler)
-    ordinary = await handler.execute("task_batch_propose", _implementation_graph(path))
+    path, scope, decision = await _ingest_assignment(handler)
+    ordinary = await handler.execute("task_batch_propose", _implementation_graph(path, decision))
     refused = await handler.execute("task_batch_commit", {"proposal_id": ordinary["proposal_id"]})
     assert refused["not_approved"]
     assert await check_request_scope(
@@ -1397,14 +1429,14 @@ async def test_source_text_cannot_grant_ungated_authority(handler):
     ) == "out of scope: proposal does not belong to held ingestion task"
     await handler.db.update_agent("ingester", state=AgentState.IDLE, current_task_id=None)
     refused = await handler.execute(
-        "task_batch_propose", {**_implementation_graph(path), "_scope": asdict(scope)},
+        "task_batch_propose", {**_implementation_graph(path, decision), "_scope": asdict(scope)},
     )
     assert not refused["success"]
     assert "live role assignment" in refused["error"]
 
 
 async def test_ingestion_scope_pins_project_session_and_approved_source(handler):
-    path, scope = await _ingest_assignment(handler)
+    path, scope, decision = await _ingest_assignment(handler)
     assert await check_request_scope("list_tasks", {}, scope, db=handler.db) is None
     assert await check_request_scope(
         "list_tasks", {"project_id": "other"}, scope, db=handler.db,
@@ -1412,12 +1444,179 @@ async def test_ingestion_scope_pins_project_session_and_approved_source(handler)
     assert await check_request_scope(
         "task_batch_propose", {"session_id": "other"}, scope, db=handler.db,
     ) == "out of scope: session_id mismatch"
-    graph = _implementation_graph(path)
+    graph = _implementation_graph(path, decision)
     graph["source"] = "spec:another-path"
     refused = await handler.execute("task_batch_propose", {**graph, "_scope": asdict(scope)})
     assert not refused["success"] and "source must match" in refused["error"]
     path.write_text("---\nstatus: draft\nspec_kind: implementation\n---\n# Unapproved\n")
     refused = await handler.execute(
-        "task_batch_propose", {**_implementation_graph(path), "_scope": asdict(scope)},
+        "task_batch_propose", {**_implementation_graph(path, decision), "_scope": asdict(scope)},
     )
-    assert not refused["success"] and "approved document" in refused["error"]
+    assert refused["success"] and refused["committed"], refused
+
+
+async def test_ingest_packet_is_pinned_scoped_and_replay_deduplicates_archived_graph(handler):
+    path, scope, decision = await _ingest_assignment(handler)
+    args = {"project_id": "p1", "decision_id": decision["decision_id"],
+            "packet_sha256": decision["packet_sha256"]}
+    path.unlink()
+    read = await handler.execute("approved_spec_packet", {**args, "_scope": asdict(scope)})
+    assert read["success"] and "# Approved spec" in read["body"], read
+    refused = await handler.execute("approved_spec_packet", args)
+    assert not refused["success"]
+    for override in ({"packet_sha256": "0" * 64}, {"decision_id": "other"},
+                     {"project_id": "other"}):
+        refused = await handler.execute("approved_spec_packet", {
+            **args, **override, "_scope": asdict(scope),
+        })
+        assert not refused.get("success"), refused
+    result = await _ingest_propose(handler, path, scope, decision)
+    for tid in reversed(result["task_ids"]):
+        await handler.db.update_task(tid, status=TaskStatus.COMPLETED)
+    for tid in result["task_ids"]:
+        if await handler.db.get_task(tid):
+            assert await handler.db.archive_task(tid)
+    replay = await _ingest_propose(handler, path, scope, decision)
+    assert replay["already_committed"] and replay["task_ids"] == result["task_ids"]
+    assert len(await handler.db.list_tasks(project_id="p1")) == 1
+    await handler.db.update_task(scope.task_id, status=TaskStatus.COMPLETED)
+    await handler.db.update_session(scope.session_id, state="stopped", desired_state="stopped")
+    await handler.db.update_agent("ingester", state=AgentState.IDLE, current_task_id=None)
+    assert await handler.db.archive_task(scope.task_id)
+    ensured = await handler.execute("ensure_spec_ingest", args)
+    assert ensured == {"success": True, "task_id": scope.task_id, "created": False}
+    assert await handler.db.list_tasks(project_id="p1") == []
+
+
+@pytest.mark.parametrize("coverage", [None, {"leaf_keys": ["api", "final"]}])
+async def test_accepted_external_prerequisite_covers_leaves_atomically(handler, coverage):
+    path, scope, decision = await _ingest_assignment(
+        handler, feedback="Required external prerequisite for implementation", coverage=coverage,
+    )
+    args = {"project_id": "p1", "decision_id": decision["decision_id"],
+            "packet_sha256": decision["packet_sha256"], "_scope": asdict(scope)}
+    path.write_text("---\nstatus: draft\n---\nA completely changed mirror")
+    packet = await handler.execute("approved_spec_packet", args)
+    assert packet["success"] and "# Approved spec" in packet["body"], packet
+    [obligation] = packet["feedback"]
+    target = obligation["task_id"]
+    before = {t.id for t in await handler.db.list_tasks(project_id="p1")}
+    result = await _ingest_propose(handler, path, scope, decision)
+    ids = dict(zip(["core", "api", "ui", "docs", "draft", "final"], result["task_ids"], strict=True))
+    edges = await existing_graph_edges(handler.db, "p1")
+    covered = {frm for frm, to, kind in edges if to == target and kind == "blocks"}
+    expected = (coverage or {"leaf_keys": ["api", "ui", "draft", "final"]})["leaf_keys"]
+    assert covered == {ids[key] for key in expected}
+    assert {t.id for t in await handler.db.list_tasks(project_id="p1")} == before | set(ids.values())
+    proposal = await get_proposal(handler.db, result["proposal_id"])
+    assert proposal["payload"]["spec_ingest"]["feedback"] == [obligation]
+    for tid in covered:
+        assert (await handler.db.get_task(tid)).is_blocked
+    replay = await _ingest_propose(handler, path, scope, decision)
+    assert replay["task_ids"] == result["task_ids"]
+
+
+async def test_nonblocking_feedback_keeps_archived_work_identity_without_recreating_it(handler):
+    path, scope, decision = await _ingest_assignment(
+        handler, feedback="Add an example to the operator guide", required=False,
+    )
+    async with handler.db._engine.connect() as conn:
+        [original] = await handler.db.list_review_feedback_obligations(decision["decision_id"], conn=conn)
+    target = original["task_id"]
+    await handler.db.update_task(target, status=TaskStatus.COMPLETED)
+    assert await handler.db.archive_task(target)
+    packet = await handler.execute("approved_spec_packet", {
+        "project_id": "p1", "decision_id": decision["decision_id"],
+        "packet_sha256": decision["packet_sha256"], "_scope": asdict(scope),
+    })
+    assert packet["success"], packet
+    [obligation] = packet["feedback"]
+    assert obligation["task_id"] == target and obligation["acceptance_text"]
+    result = await _ingest_propose(handler, path, scope, decision)
+    assert {t.id for t in await handler.db.list_tasks(project_id="p1")} == {
+        scope.task_id, *result["task_ids"],
+    }
+    for tid in result["task_ids"]:
+        stamp = await handler.db.get_task_meta(tid, "spec_ingest")
+        assert stamp["feedback"] == [obligation]
+    assert not any(to == target for _, to, _ in await existing_graph_edges(handler.db, "p1"))
+
+
+async def test_withdrawn_review_only_replays_existing_ingestion_receipt(handler):
+    from sqlalchemy import update
+    from src.database.tables import doc_reviews
+
+    path, scope, decision = await _ingest_assignment(
+        handler, feedback="Add an example to the operator guide", required=False,
+    )
+    # Model a historical source transition. Current review commands correctly
+    # forbid withdrawing an approved review; its durable receipt is still inert.
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(
+            doc_reviews.c.id == decision["review_id"],
+        ).values(state="withdrawn"))
+    args = {"project_id": "p1", "decision_id": decision["decision_id"],
+            "packet_sha256": decision["packet_sha256"]}
+    assert await handler.execute("ensure_spec_ingest", args) == {
+        "success": True, "created": False, "task_id": scope.task_id,
+    }
+    refused = await handler.execute("task_batch_propose", {
+        **_implementation_graph(path, decision), "_scope": asdict(scope),
+    })
+    assert not refused["success"], refused
+    assert await _proposal_rows(handler) == []
+
+
+@pytest.mark.parametrize("damage", ["failed", "archived", "container", "cross-project", "coverage"])
+async def test_invalid_external_prerequisite_refuses_entire_graph(handler, damage):
+    path, scope, decision = await _ingest_assignment(
+        handler, feedback="Required external prerequisite",
+        coverage={"leaf_keys": ["nonexistent"]} if damage == "coverage" else None,
+    )
+    async with handler.db._engine.connect() as conn:
+        obligations = await handler.db.list_review_feedback_obligations(decision["decision_id"], conn=conn)
+    target = obligations[0]["task_id"]
+    if damage == "failed":
+        await handler.db.update_task(target, status=TaskStatus.FAILED)
+    elif damage == "archived":
+        await handler.db.update_task(target, status=TaskStatus.COMPLETED)
+        assert await handler.db.archive_task(target)
+    elif damage == "container":
+        from src.models import Task
+        await handler.db.create_task(Task(id="prereq-child", project_id="p1", title="Child", description="",
+                                          parent_task_id=target))
+    elif damage == "cross-project":
+        await handler.execute("create_project", {"id": "p2", "name": "p2"})
+        await handler.db.update_task(target, project_id="p2")
+    before = {t.id for t in await handler.db.list_tasks(project_id="p1")}
+    result = await handler.execute("task_batch_propose", {
+        **_implementation_graph(path, decision), "_scope": asdict(scope),
+    })
+    assert not result["success"], result
+    assert {t.id for t in await handler.db.list_tasks(project_id="p1")} == before
+    assert await _proposal_rows(handler) == []
+
+
+async def test_legacy_assignment_only_replays_its_existing_committed_receipt(handler):
+    from sqlalchemy import delete, update
+    from src.database.tables import task_metadata, task_proposals
+
+    path, scope, decision = await _ingest_assignment(handler)
+    result = await _ingest_propose(handler, path, scope, decision)
+    proposal = await get_proposal(handler.db, result["proposal_id"])
+    proposal["payload"]["spec_ingest"] = {"task_id": scope.task_id, "spec_path": str(path)}
+    async with handler.db.immediate() as conn:
+        await conn.execute(delete(task_metadata).where(
+            task_metadata.c.task_id == scope.task_id, task_metadata.c.key == "spec_ingest",
+        ))
+        await conn.execute(update(task_proposals).where(task_proposals.c.id == result["proposal_id"])
+                           .values(payload=json.dumps(proposal["payload"])))
+    await handler.db.update_task(scope.task_id, dedup_key=f"spec-ingest:{path}")
+    inventory = await handler.execute("spec_ingest_legacy_inventory", {"project_id": "p1"})
+    assert inventory["success"] and [r["id"] for r in inventory["assignments"]] == [scope.task_id]
+    replay = await _ingest_commit(handler, result["proposal_id"], scope)
+    assert replay["already_committed"] and replay["task_ids"] == result["task_ids"]
+    refused = await handler.execute("task_batch_propose", {
+        **_implementation_graph(path, decision), "_scope": asdict(scope),
+    })
+    assert not refused["success"], refused

@@ -481,7 +481,7 @@ class TestNoArgumentlessCommandsByAccident:
         expected = {
             "explain_task": {"task_id"},
             "gate_show": {"gate_id"},
-            "gate_resolve": {"gate_id", "resolved_by"},
+            "gate_resolve": {"gate_id"},
             "gate_create": {"project_id", "gate_type", "title"},
         }
         for name, required in expected.items():

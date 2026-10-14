@@ -576,6 +576,65 @@ def _review_text(value: Any, key: str, default: str = "—") -> str:
     return default if result is None or result == "" else str(result)
 
 
+def format_ask_list(data: Any) -> Group:
+    label = {"waiting": "Waiting on AQ", "history": "History"}.get(data.get("view"), "Needs you")
+    table = Table(title=f"{label}: {data['count']} · {data['source_health']}")
+    for label in ("Request", "Question", "Project", "Severity", "Version", "Status"):
+        table.add_column(label)
+    for ask in data["items"]:
+        table.add_row(*[Text(str(value)) for value in (
+            ask["id"], ask["context"].get("title", ""), ask.get("project_id", ""), ask.get("severity", ""),
+            ask["decision_generation"],
+            "Held while paused" if ask.get("held_while_paused") else ask.get("decision_state", ""),
+        )])
+    return Group(table, Text(f"Snapshot: {data['snapshot_at']}"),
+                 Text(f"Next cursor: {data['next_cursor']}" if data.get("next_cursor") else ""))
+
+
+def format_ask_detail(data: Any) -> Group:
+    ask = data["ask"]
+    context = ask["context"]
+    lines = [Text(context.get("title", ask["id"]), style="bold"),
+             Text(context.get("why", "")), Text(context.get("waiting_effect", "")),
+             Text(f"Version: {data['expected']}"),
+             Text(f"Application: {ask.get('application_state', 'unknown')}")]
+    for action in data["actions"]:
+        if action.get("option_key"):
+            lines.append(Text(f"{action['label']}: {action['effect']}"))
+        if action.get("disabled_reason"):
+            lines.append(Text(action["disabled_reason"], style="yellow"))
+    if data.get("decision"):
+        lines.append(Text(f"Decision receipt: {data['decision']['id']}"))
+    import json
+    for name in ("document", "inputs", "history", "obligations", "operations"):
+        if data.get(name):
+            lines.extend([Text(name.title(), style="bold"),
+                          Text(json.dumps(data[name], ensure_ascii=False, indent=2))])
+    for name in ("requested_by", "blocked_work", "links"):
+        if context.get(name):
+            lines.append(Text(f"{name}: {json.dumps(context[name], ensure_ascii=False)}"))
+    lines.append(Text(f"Prepare: aq ask prepare --ask-id {ask['id']} --expected '<version JSON>' "
+                      "--option-key <choice>"))
+    return Group(*lines)
+
+
+def format_ask_preview(data: Any) -> Group:
+    import json
+
+    preview = data["preview"]
+    return Group(Text("Prepared decision — review all effects and feedback", style="bold"),
+                 Text(f"Preview: {preview['id']} · expires {preview.get('expires_at', 'unknown')}"),
+                 Text(json.dumps(preview["packet"], ensure_ascii=False, indent=2)),
+                 Text(f"Packet SHA-256: {preview['packet_sha256']}"))
+
+
+def format_ask_receipt(data: Any) -> Group:
+    import json
+
+    return Group(Text("Request receipt", style="bold"),
+                 Text(json.dumps(data, ensure_ascii=False, indent=2)))
+
+
 def format_review_detail(data: Any) -> Group:
     """Render a review's selected revision and, when requested, its comments."""
     review = _review_value(data, "review", {})

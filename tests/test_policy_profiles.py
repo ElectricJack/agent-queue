@@ -21,6 +21,7 @@ from src.policy_profiles.archive import files, pack, read_bundle, write_bundle
 from src.policy_profiles.models import Bundle, PromotionPolicy, TemplatePolicy
 from src.policy_profiles.service import item
 from src.profiles.sync import sync_profile_text_to_db
+from tests.test_review_commands import decide
 
 MORNING = Path("tests/fixtures/playbooks/v2/morning-report")
 FLOW = [{"id": "release", "source": "main", "target": "stable", "type": "request"}]
@@ -157,8 +158,8 @@ async def reviewed(handler, vault, identifier="morning-report"):
         },
     )
     assert submitted["success"], submitted
-    approved = await handler.execute(
-        "review_decide", {"review_id": submitted["review_id"], "revision": 1, "decision": "approve"}
+    approved = await decide(
+        handler, {"review_id": submitted["review_id"], "revision": 1, "decision": "approve"}
     )
     assert approved["success"] and approved["playbook"]["activated"], approved
 
@@ -436,8 +437,8 @@ nodes:
     review = await handler.db.get_review_revision(applied["reviews"][0]["review_id"], 1)
     assert review["playbook"]["playbook_id"] == "target.morning-report"
     assert not review["playbook"]["activate_on_approval"]
-    approved = await handler.execute(
-        "review_decide",
+    approved = await decide(
+        handler,
         {"review_id": applied["reviews"][0]["review_id"], "revision": 1, "decision": "approve"},
     )
     assert (
@@ -768,8 +769,8 @@ async def test_system_assignment_router_default_pipeline_and_routing_preferences
             },
         )
         assert submitted["success"], submitted
-        approved = await handler.execute(
-            "review_decide",
+        approved = await decide(
+            handler,
             {"review_id": submitted["review_id"], "revision": 1, "decision": "approve"},
         )
         assert approved["success"] and approved["playbook"]["activated"], approved

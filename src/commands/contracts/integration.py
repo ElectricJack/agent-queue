@@ -80,6 +80,29 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
 )
 
 
+def _outcomes(names, successes):
+    return tuple(
+        OutcomeSpec(
+            name=name,
+            classification=OutcomeClass.SUCCESS if name in successes else OutcomeClass.FAILURE,
+        )
+        for name in names
+    )
+
+
+def _natural_execution(*, name, args_model, result_model, **kwargs):
+    defaults = {"receipt_projection": tuple(result_model.model_fields)}
+    return ExecutionContract(
+        name=name,
+        args_model=args_model,
+        result_model=result_model,
+        capability=name,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        **(defaults | kwargs),
+    )
+
+
 class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
 
@@ -1070,29 +1093,15 @@ def _operational_contract(
         else (UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),)
     )
     return CommandContract(
-        execution=ExecutionContract(
+        execution=_natural_execution(
             name=name,
             args_model=args_model,
             result_model=result_model,
-            outcomes=tuple(
-                OutcomeSpec(
-                    name=outcome,
-                    classification=(
-                        OutcomeClass.SUCCESS
-                        if outcome in successes
-                        else OutcomeClass.FAILURE
-                    ),
-                )
-                for outcome in outcomes
-            ),
-            capability=name,
+            outcomes=_outcomes(outcomes, successes),
             side_effect=side_effect,
-            idempotency=IdempotencySpec(mode="natural"),
-            retry_safe=True,
             supports_preview=supports_preview,
             effects=effects,
             sensitive_args=frozenset({"reason"}) if "reason" in args_model.model_fields else frozenset(),
-            receipt_projection=tuple(result_model.model_fields),
         ),
         presentation=CommandPresentation(
             title=name.replace("_", " ").title(),
@@ -1405,20 +1414,15 @@ INTEGRATION_CLOSE_DELIVERED_PR = _operational_contract(
 
 
 INTEGRATION_TRANSFER_OWNER = CommandContract(
-    execution=ExecutionContract(
+    execution=_natural_execution(
         name="integration_transfer_owner",
         args_model=IntegrationTransferOwnerArgs,
         result_model=IntegrationTransferOwnerValue,
-        outcomes=(
-            OutcomeSpec(name="transferred", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="busy", classification=OutcomeClass.FAILURE),
-            OutcomeSpec(name="stale_owner", classification=OutcomeClass.FAILURE),
-            OutcomeSpec(name="human_required", classification=OutcomeClass.FAILURE),
+        outcomes=_outcomes(
+            ("transferred", "busy", "stale_owner", "human_required"),
+            {"transferred"},
         ),
-        capability="integration_transfer_owner",
         side_effect=SideEffectClass.UPDATE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
         effects=(UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),),
         sensitive_args=frozenset({"expected_token", "next_owner_id"}),
         sensitive_result_fields=frozenset({"fence"}),
@@ -1469,29 +1473,15 @@ def _repair_contract(
         "already_terminal",
     }
     return CommandContract(
-        execution=ExecutionContract(
+        execution=_natural_execution(
             name=name,
             args_model=args_model,
             result_model=result_model,
-            outcomes=tuple(
-                OutcomeSpec(
-                    name=outcome,
-                    classification=(
-                        OutcomeClass.SUCCESS
-                        if outcome in successes
-                        else OutcomeClass.FAILURE
-                    ),
-                )
-                for outcome in outcomes
-            ),
-            capability=name,
+            outcomes=_outcomes(outcomes, successes),
             side_effect=SideEffectClass.COMPOSITE,
-            idempotency=IdempotencySpec(mode="natural"),
-            retry_safe=True,
             effects=effects,
             sensitive_args=sensitive_args,
             sensitive_result_fields=sensitive_results,
-            receipt_projection=tuple(result_model.model_fields),
         ),
         presentation=CommandPresentation(
             title=name.replace("_", " ").title(), summary=summary
@@ -1559,18 +1549,12 @@ INTEGRATION_REPAIR_TIMEOUT = _repair_contract(
 
 
 DELIVERY_RECEIPTS = CommandContract(
-    execution=ExecutionContract(
+    execution=_natural_execution(
         name="delivery_receipts",
         args_model=DeliveryReceiptsArgs,
         result_model=DeliveryReceiptsValue,
-        outcomes=(
-            OutcomeSpec(name="found", classification=OutcomeClass.SUCCESS),
-            OutcomeSpec(name="not_found", classification=OutcomeClass.SUCCESS),
-        ),
-        capability="delivery_receipts",
+        outcomes=_outcomes(('found', 'not_found'), {'found', 'not_found'}),
         side_effect=SideEffectClass.READ,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
         effects=(ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),),
         receipt_projection=(),
     ),
@@ -1582,38 +1566,19 @@ DELIVERY_RECEIPTS = CommandContract(
 
 
 INTEGRATION_CLEANUP = CommandContract(
-    execution=ExecutionContract(
+    execution=_natural_execution(
         name="integration_cleanup",
         args_model=IntegrationCleanupArgs,
         result_model=IntegrationCleanupValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(
-                    OutcomeClass.SUCCESS
-                    if name in {"materialized", "advanced", "complete", "already_complete"}
-                    else OutcomeClass.FAILURE
-                ),
-            )
-            for name in (
-                "materialized",
-                "advanced",
-                "complete",
-                "already_complete",
-                "wait",
-                "retryable",
-                "conflict",
-                "failed",
-                "stale",
-                "invariant_error",
-            )
+        outcomes=_outcomes(
+            (
+                "materialized", "advanced", "complete", "already_complete", "wait", "retryable",
+                "conflict", "failed", "stale", "invariant_error",
+            ),
+            {"materialized", "advanced", "complete", "already_complete"},
         ),
-        capability="integration_cleanup",
         side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
         effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
-        receipt_projection=tuple(IntegrationCleanupValue.model_fields),
     ),
     presentation=CommandPresentation(
         title="Advance integration cleanup",
@@ -1631,27 +1596,13 @@ def _root_subject_contract(
     title: str,
 ) -> CommandContract:
     return CommandContract(
-        execution=ExecutionContract(
+        execution=_natural_execution(
             name=name,
             args_model=args_model,
             result_model=value_model,
-            outcomes=tuple(
-                OutcomeSpec(
-                    name=outcome,
-                    classification=(
-                        OutcomeClass.SUCCESS
-                        if outcome in successes
-                        else OutcomeClass.FAILURE
-                    ),
-                )
-                for outcome in outcomes
-            ),
-            capability=name,
+            outcomes=_outcomes(outcomes, successes),
             side_effect=SideEffectClass.COMPOSITE,
-            idempotency=IdempotencySpec(mode="natural"),
-            retry_safe=True,
             effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
-            receipt_projection=tuple(value_model.model_fields),
         ),
         presentation=CommandPresentation(title=title, summary=title),
     )
@@ -1689,21 +1640,12 @@ INTEGRATION_RELEASE = _root_subject_contract(
 
 
 INTEGRATION_FILE_CHILDREN = CommandContract(
-    execution=ExecutionContract(
+    execution=_natural_execution(
         name="integration_file_children",
         args_model=IntegrationFileChildrenArgs,
         result_model=IntegrationFileChildrenValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(OutcomeClass.SUCCESS if name == "filed" else OutcomeClass.FAILURE),
-            )
-            for name in ("filed", "stale_parent", "invalid")
-        ),
-        capability="integration_file_children",
+        outcomes=_outcomes(('filed', 'stale_parent', 'invalid'), {'filed'}),
         side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
         effects=(
             UpdateClause(subject=EffectSubject.TASK_GRAPH),
             UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
@@ -1718,25 +1660,15 @@ INTEGRATION_FILE_CHILDREN = CommandContract(
 
 
 INTEGRATION_CHECKPOINT_PARENT = CommandContract(
-    execution=ExecutionContract(
+    execution=_natural_execution(
         name="integration_checkpoint_parent",
         args_model=IntegrationCheckpointParentArgs,
         result_model=IntegrationCheckpointParentValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(
-                    OutcomeClass.SUCCESS
-                    if name in {"checkpointed", "already_waiting"}
-                    else OutcomeClass.FAILURE
-                ),
-            )
-            for name in ("checkpointed", "already_waiting", "dirty", "stale")
+        outcomes=_outcomes(
+            ("checkpointed", "already_waiting", "dirty", "stale"),
+            {"checkpointed", "already_waiting"},
         ),
-        capability="integration_checkpoint_parent",
         side_effect=SideEffectClass.UPDATE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
         effects=(UpdateClause(subject=EffectSubject.TASK),),
         sensitive_args=frozenset({"head_sha"}),
         sensitive_result_fields=frozenset({"head_sha"}),
@@ -1751,25 +1683,12 @@ INTEGRATION_CHECKPOINT_PARENT = CommandContract(
 
 def _parent_contract(name, args_model, result_model, outcomes, *, side_effect, summary):
     return CommandContract(
-        execution=ExecutionContract(
+        execution=_natural_execution(
             name=name,
             args_model=args_model,
             result_model=result_model,
-            outcomes=tuple(
-                OutcomeSpec(
-                    name=outcome,
-                    classification=(
-                        OutcomeClass.SUCCESS
-                        if outcome in {"ready", "verified", "completed", "already_completed"}
-                        else OutcomeClass.FAILURE
-                    ),
-                )
-                for outcome in outcomes
-            ),
-            capability=name,
+            outcomes=_outcomes(outcomes, {'ready', 'verified', 'completed', 'already_completed'}),
             side_effect=side_effect,
-            idempotency=IdempotencySpec(mode="natural"),
-            retry_safe=True,
             effects=(
                 ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE)
                 if side_effect is SideEffectClass.READ
@@ -1781,7 +1700,6 @@ def _parent_contract(name, args_model, result_model, outcomes, *, side_effect, s
             sensitive_result_fields=frozenset(
                 {"head_sha", "checkpoint_sha"} & set(result_model.model_fields)
             ),
-            receipt_projection=tuple(result_model.model_fields),
         ),
         presentation=CommandPresentation(
             title=name.replace("_", " ").title(),
@@ -1799,23 +1717,15 @@ INTEGRATION_DELIVERY_READINESS = _parent_contract(
     summary="Read whether every child of one parent has delivered, changing nothing.",
 )
 INTEGRATION_RECORD_NOOP = CommandContract(
-    execution=ExecutionContract(
+    execution=_natural_execution(
         name="integration_record_noop",
         args_model=IntegrationRecordNoopArgs,
         result_model=IntegrationRecordNoopValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(
-                    OutcomeClass.SUCCESS if name == "recorded" else OutcomeClass.FAILURE
-                ),
-            )
-            for name in ("recorded", "stale_head", "invalid", "delivery_target_fixed")
+        outcomes=_outcomes(
+            ("recorded", "stale_head", "invalid", "delivery_target_fixed"),
+            {"recorded"},
         ),
-        capability="integration_record_noop",
         side_effect=SideEffectClass.UPDATE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
         effects=(
             UpdateClause(subject=EffectSubject.DELIVERY_EVIDENCE),
             UpdateClause(subject=EffectSubject.TASK),
@@ -1859,21 +1769,15 @@ INTEGRATION_COMPLETE_PARENT = _parent_contract(
 
 
 INTEGRATION_MUTATE_HIERARCHY = CommandContract(
-    execution=ExecutionContract(
+    execution=_natural_execution(
         name="integration_mutate_hierarchy",
         args_model=IntegrationMutateHierarchyArgs,
         result_model=IntegrationMutateHierarchyValue,
-        outcomes=tuple(
-            OutcomeSpec(
-                name=name,
-                classification=(OutcomeClass.SUCCESS if name == "updated" else OutcomeClass.FAILURE),
-            )
-            for name in ("updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid")
+        outcomes=_outcomes(
+            ("updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid"),
+            {"updated"},
         ),
-        capability="integration_mutate_hierarchy",
         side_effect=SideEffectClass.COMPOSITE,
-        idempotency=IdempotencySpec(mode="natural"),
-        retry_safe=True,
         effects=(
             UpdateClause(subject=EffectSubject.TASK_GRAPH),
             UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
@@ -1896,72 +1800,16 @@ INTEGRATION_MUTATE_HIERARCHY = CommandContract(
 async def _transfer_adapter(
     args: IntegrationTransferOwnerArgs, ctx: CommandContext | None
 ) -> CommandResult[IntegrationTransferOwnerValue]:
-    # Keep the dependency direction one-way: builtin imports this registration
-    # at startup, while its legacy handler provider is reached only on invoke.
-    from src.commands.contracts.builtin import _handler
-
-    payload = args.model_dump(mode="json")
-    if ctx is None:
-        raw = await _handler().execute("integration_transfer_owner", payload)
-    else:
-        with principal_context(ctx):
-            raw = await _handler().execute("integration_transfer_owner", payload)
-    outcome = raw.get("outcome")
-    if outcome not in {"transferred", "busy", "stale_owner", "human_required"}:
-        return CommandResult(
-            outcome="contract_violation",
-            value=IntegrationTransferOwnerValue(),
-            summary="integration_transfer_owner returned an invalid outcome",
-        )
-    try:
-        value = IntegrationTransferOwnerValue(fence=raw.get("fence"))
-    except Exception as exc:
-        return CommandResult(
-            outcome="contract_violation",
-            value=IntegrationTransferOwnerValue(),
-            summary=f"integration_transfer_owner result did not match its contract: {exc}",
-        )
-    return CommandResult(outcome=outcome, value=value, summary=str(raw.get("error") or outcome))
-
-
-async def _invoke_adapter(
-    command: str,
-    args: CommandArgs,
-    ctx: CommandContext | None,
-    value_model: type[CommandValue],
-    outcomes: set[str],
-) -> CommandResult:
-    from src.commands.contracts.builtin import _handler
-
-    payload = args.model_dump(mode="json")
-    if ctx is None:
-        raw = await _handler().execute(command, payload)
-    else:
-        with principal_context(ctx):
-            raw = await _handler().execute(command, payload)
-    outcome = raw.get("outcome")
-    if outcome not in outcomes | {"unauthorized", "runtime_error"}:
-        return CommandResult(
-            outcome="contract_violation",
-            value=value_model(),
-            summary=f"{command} returned an invalid outcome",
-        )
-    fields = set(value_model.model_fields)
-    try:
-        value = value_model(**{key: raw[key] for key in fields if key in raw})
-    except Exception as exc:
-        return CommandResult(
-            outcome="contract_violation",
-            value=value_model(),
-            summary=f"{command} result did not match its contract: {exc}",
-        )
-    return CommandResult(outcome=outcome, value=value, summary=str(raw.get("error") or outcome))
+    return await _hierarchy_adapter(
+        "integration_transfer_owner", args, ctx, IntegrationTransferOwnerValue,
+        {"transferred", "busy", "stale_owner", "human_required"}, failure_outcomes=frozenset(),
+    )
 
 
 async def _receipts_adapter(
     args: DeliveryReceiptsArgs, ctx: CommandContext | None
 ) -> CommandResult:
-    return await _invoke_adapter(
+    return await _hierarchy_adapter(
         "delivery_receipts", args, ctx, DeliveryReceiptsValue, {"found", "not_found"}
     )
 
@@ -2035,6 +1883,7 @@ async def _hierarchy_adapter(
     value_model: type[CommandValue],
     outcomes: set[str],
     aliases: dict[str, str] | None = None,
+    *, failure_outcomes: frozenset[str] = frozenset({"unauthorized", "runtime_error"}),
 ) -> CommandResult:
     from src.commands.contracts.builtin import _handler
 
@@ -2050,7 +1899,7 @@ async def _hierarchy_adapter(
         # one with the same routing; the exact reason stays in the summary.
         raw = raw | {"error": raw.get("reason") or raw.get("error") or outcome}
         outcome = aliases[outcome]
-    if outcome not in outcomes | {"unauthorized", "runtime_error"}:
+    if outcome not in outcomes | failure_outcomes:
         return CommandResult(
             outcome="contract_violation",
             value=value_model(),

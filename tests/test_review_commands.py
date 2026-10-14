@@ -95,13 +95,30 @@ async def _scoped(
     )
     if scope_error:
         return {"success": False, "error": scope_error}
-    return await handler.execute(
+    result = await handler.execute(
         command,
         {
             **scoped_args,
             "_scope": scope_data,
         },
     )
+
+    if command == "review_decide" and result.get("error_code") == "ask.preview_required":
+        result = await handler.execute(command, {
+            **scoped_args, "_scope": scope_data,
+            "preview_id": result["preview"]["id"], "expected": result["expected"],
+        })
+    return result
+
+
+async def decide(handler, args):
+    """Exercise the compatibility preview, then explicitly accept its packet."""
+    result = await handler.execute("review_decide", args)
+    if result.get("error_code") == "ask.preview_required":
+        result = await handler.execute("review_decide", {
+            **args, "preview_id": result["preview"]["id"], "expected": result["expected"],
+        })
+    return result
 
 
 @pytest.fixture
@@ -140,6 +157,7 @@ async def env(command_handler_factory, tmp_path):
             aq_commands=[
                 "review_submit", "review_show", "review_list", "review_withdraw", "review_reopen", "review_decide",
                 "review_comment", "review_delegate", "review_import_edits", "edit_project",
+                "ask_prepare_decision", "ask_decide",
             ],
             harness_tools=[],
             plugin_tools=[],
@@ -259,7 +277,7 @@ async def test_review_images_are_revision_owned_and_survive_source_removal(env):
     assert too_large["error_code"] == "too_large"
     assert len(await db.list_review_attachments(review_id, 1)) == 1
 
-    decided = await handler.execute("review_decide", {
+    decided = await decide(handler, {
         "review_id": review_id, "revision": 1, "decision": "request_changes", "note": "Another view",
     })
     assert decided["success"], decided
@@ -277,7 +295,7 @@ async def test_review_images_are_revision_owned_and_survive_source_removal(env):
     assert [a["id"] for a in (await handler.execute("review_show", {
         "review_id": review_id, "revision": 2,
     }))["attachments"]] == [r2["attachment"]["id"]]
-    assert (await handler.execute("review_decide", {
+    assert (await decide(handler, {
         "review_id": review_id, "revision": 2, "decision": "approve",
     }))["success"]
 
@@ -757,7 +775,7 @@ async def test_changes_requested_creates_one_revision_task_for_every_author_stat
     })
     for submitted in (archived_review, live_review, supervisor_review):
         review_id = submitted["review_id"]
-        decided = await handler.execute("review_decide", {
+        decided = await decide(handler, {
             "review_id": review_id, "revision": 1, "decision": "request_changes",
             "responder_class": "fast-high", "note": "Expand the reasoning.",
         })
@@ -770,7 +788,7 @@ async def test_changes_requested_creates_one_revision_task_for_every_author_stat
         assert (revisions[0].intelligence_class, revisions[0].class_hint) == (None, "fast-high")
         assert revisions[0].parent_task_id is None
         assert (await db.get_task_meta(revisions[0].id, "review_response"))["profile_source"] == "router"
-        repeated = await handler.execute("review_decide", {
+        repeated = await decide(handler, {
             "review_id": review_id, "revision": 1, "decision": "request_changes",
             "responder_class": "fast-high",
         })
@@ -779,7 +797,7 @@ async def test_changes_requested_creates_one_revision_task_for_every_author_stat
                     if task.title.endswith(f"(review {review_id})")]) == 1
     assert (await db.get_task("author")).status is TaskStatus.IN_PROGRESS
     assert not (await db.list_task_comments("author"))["comments"]
-    assert not await db.get_pending_messages("session", "supervisor-p")
+    assert len(await db.get_pending_messages("session", "supervisor-p")) == 3
 
 
 async def test_response_routing_files_the_decided_class_as_a_hint(env):
@@ -805,7 +823,7 @@ async def test_response_routing_files_the_decided_class_as_a_hint(env):
     handler.orchestrator.intelligence_classes["retired-or-unknown"] = (
         handler.orchestrator.intelligence_classes["standard-high"]
     )
-    invalid = await handler.execute("review_decide", {
+    invalid = await decide(handler, {
         "review_id": chosen["review_id"], "revision": 1, "decision": "request_changes",
         "responder_class": "retired-or-unknown",
     })
@@ -814,7 +832,7 @@ async def test_response_routing_files_the_decided_class_as_a_hint(env):
     assert (await db.get_review(chosen["review_id"]))["state"] == "in_review"
 
     await db.delete_task("author")
-    decided = await handler.execute("review_decide", {
+    decided = await decide(handler, {
         "review_id": chosen["review_id"], "revision": 1, "decision": "request_changes",
         "responder_class": "standard-high", "note": "Use this class.",
     })
@@ -842,7 +860,7 @@ async def test_response_routing_files_the_decided_class_as_a_hint(env):
         "task_id": "peer", "kind": "spec", "title": "Default route", "content": "# Default\n",
     })
     await db.delete_task("peer")
-    decided = await handler.execute("review_decide", {
+    decided = await decide(handler, {
         "review_id": fallback["review_id"], "revision": 1, "decision": "request_changes",
     })
     assert decided["success"], decided
@@ -876,7 +894,7 @@ async def test_review_show_explains_both_decision_routes(env):
     assert "Approve → sent to the supervisor" in shown["response_route"]["summary"]
     assert "class hint standard-high" in shown["response_route"]["class_summaries"]["standard-high"]
 
-    decided = await handler.execute("review_decide", {
+    decided = await decide(handler, {
         "review_id": with_author["review_id"], "revision": 1, "decision": "request_changes",
         "responder_class": "standard-high",
     })
@@ -892,7 +910,7 @@ async def test_response_profile_is_refused(env):
     submitted = await handler.execute("review_submit", {
         "task_id": "author", "kind": "spec", "title": "Explicit route", "content": "# Explicit\n",
     })
-    refused = await handler.execute("review_decide", {
+    refused = await decide(handler, {
         "review_id": submitted["review_id"], "revision": 1, "decision": "request_changes",
         "responder_class": "standard-high", "responder_profile": "worker",
     })
@@ -918,7 +936,7 @@ async def test_revision_task_contains_comments_and_can_resubmit(env):
         "heading_path": ["Appendix"], "body": "Add a source.",
     })
     assert first["success"] and second["success"]
-    assert (await handler.execute("review_decide", {
+    assert (await decide(handler, {
         "review_id": review_id, "revision": 1, "decision": "request_changes",
         "note": "Rework the opening and cite the claim.",
     }))["success"]
@@ -930,9 +948,11 @@ async def test_revision_task_contains_comments_and_can_resubmit(env):
         assert anchor in task.description
     assert "aq review submit --review-id" in task.description
     assert "--resolves" in task.description
-    assert (await db.get_task_meta(task.id, "review_response")) == {
-        "review_id": review_id, "revision": 1, "profile_source": "router",
-    }
+    metadata = await db.get_task_meta(task.id, "review_response")
+    assert metadata["review_id"] == review_id and metadata["revision"] == 1
+    assert metadata["profile_source"] == "router"
+    assert metadata["packet_sha256"] and metadata["decision_id"]
+    assert task.dedup_key == f"review-revision:{metadata['decision_id']}"
     refused = await _scoped(handler, "review_submit", {
         "review_id": review_id, "content": "# Wrong worker\n",
     }, session_id="worker")
@@ -948,14 +968,14 @@ async def test_revision_task_contains_comments_and_can_resubmit(env):
     comments = {comment["id"]: comment for comment in await db.list_review_comments(review_id)}
     assert comments[first["comment_id"]]["resolved_in_revision"] == 2
     assert comments[second["comment_id"]]["resolved_in_revision"] is None
-    assert (await handler.execute("review_decide", {
+    assert (await decide(handler, {
         "review_id": review_id, "revision": 2, "decision": "request_changes",
         "note": "Finish the citation.",
     }))["success"]
-    next_task = next(task for task in await db.list_tasks(project_id="p")
-                     if task.dedup_key == f"review-revision:{review_id}:2")
+    next_task = next(iter([task for task in await db.list_tasks(project_id="p")
+                     if (await db.get_task_meta(task.id, "review_response") or {}).get("revision") == 2]))
     assert second["comment_id"] in next_task.description
-    assert first["comment_id"] not in next_task.description
+    assert first["comment_id"] in next_task.description
 
 
 async def test_revision_task_uses_authors_parent(env):
@@ -969,7 +989,7 @@ async def test_revision_task_uses_authors_parent(env):
     submitted = await handler.execute("review_submit", {
         "task_id": "author", "kind": "plan", "title": "Grouped plan", "content": "# Plan\n",
     })
-    assert (await handler.execute("review_decide", {
+    assert (await decide(handler, {
         "review_id": submitted["review_id"], "revision": 1, "decision": "request_changes",
     }))["success"]
     revision = next(task for task in await db.list_tasks(project_id="p")
@@ -1126,16 +1146,18 @@ async def test_train_mode_revision_task_answers_after_restart_reclaim(env, tmp_p
     review_id = submitted["review_id"]
 
     for revision, reclaimer, explicit in ((1, "reclaimed-1", False), (2, "reclaimed-2", True)):
-        assert (await handler.execute("review_decide", {
+        assert (await decide(handler, {
             "review_id": review_id, "revision": revision, "decision": "request_changes",
         }))["success"]
-        task = next(task for task in await db.list_tasks(project_id="p")
-                    if task.dedup_key == f"review-revision:{review_id}:{revision}")
+        task = next(iter([task for task in await db.list_tasks(project_id="p")
+                    if (await db.get_task_meta(task.id, "review_response") or {}).get("revision") == revision]))
         # Filed as a train root, not through the plain-root path.
         assert task.branch_name.startswith("aq/epic/")
-        assert (await db.get_task_meta(task.id, "review_response")) == {
+        metadata = await db.get_task_meta(task.id, "review_response")
+        assert metadata.items() >= {
             "review_id": review_id, "revision": revision, "profile_source": "router",
-        }
+        }.items()
+        assert metadata["packet_sha256"] and metadata["decision_id"]
         await _reclaim_after_restart(db, tmp_path, reclaimer, task.id)
         args = {"review_id": review_id, "content": f"# Revision {revision + 1}\n"}
         if explicit:
@@ -1188,10 +1210,10 @@ async def test_approval_notifies_only_supervisor_once_for_each_author_state(env)
     for submitted, kind in zip(reviews, ("spec", "plan", "other"), strict=True):
         review_id = submitted["review_id"]
         review = await db.get_review(review_id)
-        assert (await handler.execute("review_decide", {
+        assert (await decide(handler, {
             "review_id": review_id, "revision": 1, "decision": "approve",
         }))["success"]
-        repeated = await handler.execute("review_decide", {
+        repeated = await decide(handler, {
             "review_id": review_id, "revision": 1, "decision": "approve",
         })
         assert not repeated["success"]

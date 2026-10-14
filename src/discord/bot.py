@@ -273,6 +273,10 @@ class AgentQueueBot(commands.Bot):
         data = getattr(interaction, "data", None) or {}
         if getattr(interaction, "type", None) is not discord.InteractionType.component:
             return
+        if str(data.get("custom_id", "")).startswith("aqask:"):
+            from src.discord.ask_buttons import AskButtonPress
+            await AskButtonPress(self.handler).handle(interaction)
+            return
         if parse_custom_id(data.get("custom_id")) is None:
             return
         ready = getattr(self, "_cutover_complete", None)

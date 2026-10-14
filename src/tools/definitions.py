@@ -130,6 +130,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "review_withdraw": "review",
     "review_reopen": "review",
     "review_decide": "review",
+    "ask_prepare_decision": "review",
+    "ask_decide": "review",
+    "ask_retry_operation": "review",
+    "review_feedback_complete": "review",
+
     "approve_pull_request": "review",
     "review_comment": "review",
     "review_dispatch": "review",
@@ -373,6 +378,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "gate_create": "task",
     "gate_list": "task",
     "gate_show": "task",
+    "gate_reopen": "task",
     "gate_resolve": "task",
     # explain + ready frontier — work-graph WG-4.  The frontier is a
     # project-scoped query, so it belongs to the ``project`` group: that is
@@ -432,6 +438,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
 # Commands that are intentionally uncategorized for the LLM (core tools)
 # but should appear in a specific CLI group.
 _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
+    **{name: "ask" for name in (
+        "ask_list", "ask_show", "ask_reply", "ask_prepare_decision", "ask_decide", "ask_history",
+        "ask_apply_input", "ask_discussion_reply", "ask_update_context", "ask_reconcile",
+        "ask_cutover", "ask_retry_operation", "ask_repair_delivery",
+    )},
     "create_task": "task",
     "list_tasks": "task",
     "get_task": "task",
@@ -4188,6 +4199,10 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "expected": {"type": "object"},
+                "preview_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+                "overall_note": {"type": "string"},
                 "run_id": {
                     "type": "string",
                     "description": "The playbook run ID to resume",
@@ -7381,16 +7396,86 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "additionalProperties": False,
             },
         },
+        {"name": "gate_reopen", "description": "Operator reopens a declined approval as a new generation.",
+         "input_schema": {"type": "object", "properties": {
+             "gate_id": {"type": "string"}, "expected": {"type": "object"}},
+             "required": ["gate_id", "expected"], "additionalProperties": False}},
+        {'name': 'ask_prepare_decision',
+         'description': 'Prepare a ten-minute source decision packet preview without applying its decision.',
+         'input_schema': {'type': 'object',
+                          'properties': {'ask_id': {'type': 'string'},
+                                         'expected': {'type': 'object',
+                                                      'properties': {'decision_generation': {'type': 'integer',
+                                                                                             'minimum': 1},
+                                                                     'feedback_version': {'type': 'integer',
+                                                                                          'minimum': 0},
+                                                                     'source_fingerprint': {'type': 'string'}},
+                                                      'required': ['decision_generation',
+                                                                   'feedback_version',
+                                                                   'source_fingerprint'],
+                                                      'additionalProperties': False},
+                                         'option_key': {'type': 'string'},
+                                         'overall_note': {'type': 'string'},
+                                         'dispositions': {'type': 'array', 'items': {'type': 'object'}},
+                                         'responder_class': {'type': 'string'}},
+                          'required': ['ask_id', 'expected', 'option_key'],
+                          'additionalProperties': False}},
+        {'name': 'ask_decide',
+         'description': 'Accept the exact prepared source packet and report durable application state.',
+         'input_schema': {'type': 'object',
+                          'properties': {'ask_id': {'type': 'string'},
+                                         'expected': {'type': 'object',
+                                                      'properties': {'decision_generation': {'type': 'integer',
+                                                                                             'minimum': 1},
+                                                                     'feedback_version': {'type': 'integer',
+                                                                                          'minimum': 0},
+                                                                     'source_fingerprint': {'type': 'string'}},
+                                                      'required': ['decision_generation',
+                                                                   'feedback_version',
+                                                                   'source_fingerprint'],
+                                                      'additionalProperties': False},
+                                         'option_key': {'type': 'string'},
+                                         'overall_note': {'type': 'string'},
+                                         'dispositions': {'type': 'array', 'items': {'type': 'object'}},
+                                         'responder_class': {'type': 'string'},
+                                         'preview_id': {'type': 'string'},
+                                         'idempotency_key': {'type': 'string'}},
+                          'required': ['ask_id',
+                                       'expected',
+                                       'option_key',
+                                       'preview_id',
+                                       'idempotency_key'],
+                          'additionalProperties': False}},
+        {'name': 'ask_retry_operation',
+         'description': 'Operator reconciliation of an already accepted decision; never creates '
+                        'approval.',
+         'input_schema': {'type': 'object',
+                          'properties': {'decision_id': {'type': 'string'}},
+                          'required': ['decision_id'],
+                          'additionalProperties': False}},
+        {'name': 'review_feedback_complete',
+         'description': 'Record per-comment evidence on the held feedback task; does not approve a '
+                        'review.',
+         'input_schema': {'type': 'object',
+                          'properties': {'task_id': {'type': 'string'},
+                                         'obligation_id': {'type': 'string'},
+                                         'evidence': {'type': 'string'}},
+                          'required': ['task_id', 'obligation_id', 'evidence'],
+                          'additionalProperties': False}},
         {
             "name": "review_decide",
-            "description": "Approve, request changes, or reject a current review revision.",
+            "description": "Decide on a current review using its feedback preview. Reject retains legacy reject-and-revise behavior; decline holds work without creating a revision task.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
                     "revision": {"type": "integer", "minimum": 1},
-                    "decision": {"type": "string", "enum": ["approve", "request_changes", "reject"]},
+                    "decision": {"type": "string", "enum": ["approve", "request_changes", "reject", "decline", "fold_in"]},
                     "note": {"type": "string"},
+                    "preview_id": {"type": "string"},
+                    "expected": {"type": "object"},
+                    "idempotency_key": {"type": "string"},
+                    "dispositions": {"type": "array", "items": {"type": "object"}},
                     "responder_class": {"type": "string", "description": "After request_changes or reject: intelligence-class hint for the new revision task, which the project's router routes. A responder profile is not accepted."},
                 },
                 "required": ["review_id", "revision", "decision"],
@@ -7417,6 +7502,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
+                    "source_discussion_id": {"type": "string"},
                     "revision": {"type": "integer", "minimum": 1},
                     "quote": {"type": "string"},
                     "heading_path": {"type": "array", "items": {"type": "string"}},
@@ -7756,6 +7842,10 @@ _ALL_TOOL_DEFINITIONS.extend(
             "input_schema": {
                 "type": "object",
                 "properties": {
+                    "expected": {"type": "object", "additionalProperties": True},
+                    "preview_id": {"type": "string"},
+                    "option_key": {"type": "string"},
+                    "prepare": {"type": "boolean"},
                     "escalation_id": {"type": "string"},
                     "reply_id": {"type": "string"},
                     "expected_revision": {"type": "integer", "minimum": 0},
@@ -8992,3 +9082,41 @@ _ALL_TOOL_DEFINITIONS.extend([
      "description": "Check all planned operator inputs and report every blocker together before mutations.",
      "input_schema": _OperatorPreflightArgs.model_json_schema()},
 ])
+
+
+from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+
+_TOOL_CATEGORIES.update({
+    "ensure_spec_ingest": "task", "approved_spec_packet": "task",
+    "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
+})
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": "ensure_spec_ingest",
+     "description": "Ensure one role task per applied approval decision, including archived receipts.",
+     "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "approved_spec_packet",
+     "description": "Read the immutable document and feedback of the live held ingestion role.",
+     "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "spec_ingest_reconcile",
+     "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "spec_ingest_legacy_inventory",
+     "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
+     "input_schema": {"type": "object", "additionalProperties": False,
+                      "properties": {"project_id": {"type": "string"},
+                                     "after_id": {"type": "string"}},
+                      "required": ["project_id"]}},
+])
+
+
+from src.api.models.ask import ASK_ARGS as _ASK_ARGS  # noqa: E402
+
+for _name, _args in _ASK_ARGS.items():
+    _TOOL_CATEGORIES[_name] = "review"
+    _existing = next((d for d in _ALL_TOOL_DEFINITIONS if d["name"] == _name), None)
+    if _existing is not None:
+        _existing["input_schema"] = _args.model_json_schema()
+    else:
+        _ALL_TOOL_DEFINITIONS.append({"name": _name,
+            "description": "Scoped human request communication and decision evidence.",
+            "input_schema": _args.model_json_schema()})

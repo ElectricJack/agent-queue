@@ -238,31 +238,11 @@ def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
         "spec-ingest-on-approve",
         {"event_type": "spec.approved"},
         "spec_ingest_gate",
-        "ensure_task",
+        "ensure_spec_ingest",
         {
             "project_id": event("project_id"),
-            "dedup_key": template(lit("spec-ingest:"), event("spec_path")),
-            "title": template(lit("Ingest spec "), event("spec_path")),
-            "profile_id": lit("spec-ingest"),
-            "intelligence_class": lit("deep-high"),
-            "description": template(
-                lit("spec_path: "), event("spec_path"),
-                lit(". Read spec_kind and check implementation grounding. Design specs get "
-                    "one deep-high implementation-spec authoring child in an epic, submitted "
-                    "to Jack's review queue. Require authors to follow docs/templates/spec.md "
-                    "and the Spec supersession checklist in docs/guides/reviews.md: identify "
-                    "approved specs replaced or overlapped, cite approved revisions, and list "
-                    "every predecessor goal as kept, changed or dropped with replacement "
-                    "evidence and reasons. Flag every drop in the review; each requires Jack's "
-                    "explicit sign-off for the goal and replacement revision. Check the "
-                    "accounting before deriving implementation work; report missing accounting "
-                    "or unsigned drops to the supervisor and do not commit affected work. "
-                    "Delegated or general approval alone does not authorize dropping a goal. "
-                    "Implementation specs get parallel phase epics "
-                    "and self-contained children. Validate, then task_batch_propose followed "
-                    "directly by task_batch_commit; no human proposal gate. The batch "
-                    "creates work only; updates to existing tasks need an approved change set."),
-            ),
+            "decision_id": event("decision_id"),
+            "packet_sha256": event("packet_sha256"),
         },
         ("created", "reused"),
     )
