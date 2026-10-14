@@ -812,6 +812,8 @@ class ClaimQueryMixin:
         hierarchy_mode: ProjectIntegrationMode | None = None,
         allowed_task_ids: set[str] | None = None,
         excluded_task_ids: set[str] | None = None,
+        reservation_only=False,
+        effective_priority=False,
     ) -> str | None:
         """Select the §10 frontier with FOR UPDATE SKIP LOCKED.
 
@@ -850,7 +852,8 @@ class ClaimQueryMixin:
                     frontier,
                     profile_ok,
                 )
-                .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
+                .order_by((tasks.c.effective_priority if effective_priority else tasks.c.priority).asc(),
+                          tasks.c.created_at.asc())
                 .limit(1)
             )
             if allowed_task_ids is not None:
@@ -868,6 +871,13 @@ class ClaimQueryMixin:
                 stmt = stmt.where(tasks.c.id == task_id)
             return stmt.with_for_update(of=tasks, skip_locked=True)
 
+        if reservation_only:
+            from src.waits.reservations import reserved_statement
+
+            statement = reserved_statement(candidate(pinned=False), project_id, profile_id)
+            row = (await conn.execute(statement)).mappings().first()
+            return dict(row) if row else None
+
         if task_id is None:
             # COALESCE probes repairs then affinity lazily in one round trip.
             row = (await conn.execute(select(func.coalesce(
@@ -878,6 +888,10 @@ class ClaimQueryMixin:
                 return row[0]
         row = (await conn.execute(candidate(pinned=False))).fetchone()
         return row[0] if row else None
+
+    async def select_reserved_for_profile(self, conn, **kwargs):
+        """Oldest compatible reservation, under the ordinary frontier predicates."""
+        return await self.select_ready_for_profile(conn, reservation_only=True, **kwargs)
 
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None:
         """Fence + epoch bump + status write in **one** statement (spec §15).

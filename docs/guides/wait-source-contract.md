@@ -75,8 +75,10 @@ fences and call `registry.verify(conn, Condition.from_record(row['condition']),
 service_scope)` with the actual admission reader. Its snapshot must reobserve owner,
 project, config and predicate freshness, not copy the event payload's claim.
 
-The registry leaf owns the authoritative admission reader/normalizer and generation-0
-adapter snapshot; this branch does not invent its identity fields. The listener leaf
+The admission leaf (`bold-zenith-11.7`) owns the authoritative admission reader/normalizer
+and guarded service integration. The registry leaf supplies the injected generation-0
+adapter seam. This ownership correction is authorized by supervisor message
+`msg-5128861479914dc3b3a1f41fa700d5ad`; approved review bytes remain unchanged. The listener leaf
 must route `resource_invalidation:` rows through this bridge instead of only doing
 exact-key matching, page all candidates, and preserve its normal cursor/lease protocol.
 The dispatcher leaf must perform its guarded owner/source lock, typed reobservation
@@ -113,3 +115,40 @@ effective-priority indexes. This preserves current claim ordering, repair priori
 and all admission predicates without activating priority propagation or reservations.
 The priority/admission owner can retire these compatibility indexes only after its
 runtime adopts and maintains effective priority and verifies the same strict guards.
+
+## Admission service and consumer dispatch
+
+`SchedulerWaitService` installs `scheduler_wait_sync` at the existing wait-reconciler
+cycle site. Both `v2_enabled` and `scheduler_waits_enabled` must be true; defaults
+remain false. Its candidate list carries no trusted verdict: every task and typed
+constraint is read again. `AdmissionReader` is the resource reader supplied to
+`build_registry(resource_reader=...)` for listener and dispatcher verification.
+It binds the actual task/project, repository, route/class/profile, configuration,
+claim epoch and scheduler owner. The identity hashes those bindings; occupancy,
+provider availability, backoff, budget and hold predicates produce opaque observation
+revisions. A stale binding is unavailable, never satisfied. Pending launches and
+reserved continuations occupy capacity; an in-place waiter remains busy and is also
+reported as `evictable`.
+
+The deadline-dispatch owner must call `SchedulerWaitService.deadline` for scheduler
+`reservation` and `escalation` deadlines through the exact `wait_deadline_fire`
+command hook. The temporary default hook refuses other lifecycle owners rather than
+handling their deadlines. The listener owns discovery/leases; it must compose this
+handler with its other deadline handlers before activation. Reconciliation preserves
+the first admission deadline across configuration rebinding. Firing it creates one
+reservation; its persisted second deadline creates one operational escalation.
+Configuration reload and restart never extend either clock. Deadline replay is inert.
+
+Reservations match the current repository, profile, class, route and claim epoch and
+reuse every ordinary frontier/routing/hold/backoff/Git-admission predicate. They order
+by effective priority then FIFO. The ordinary task transition cancels unconsumed
+reservations in the same SQL statement; a successful claim consumes only its selected
+reservation in that transaction. Disabled selection retains base-priority ordering and
+adds no claim round trips. Resume owns the continuation reservation scope (including
+`profile_id`) and `new_session_id`; occupancy counts its reservation before launch,
+then the live new session once, never the stopped origin session.
+
+The service does not discover deadlines, dispatch source outcomes, launch continuations
+or evict sessions. Those listener/dispatcher/resume/eviction integration checks remain
+required in their owning leaves before activation. No installed policy is changed by
+this implementation.

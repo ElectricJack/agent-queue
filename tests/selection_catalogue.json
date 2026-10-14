@@ -40,6 +40,7 @@
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
+        "tests/test_wait_admission.py",
         "tests/test_wait_commands.py",
         "tests/test_wait_dispatch.py",
         "tests/test_wait_graph.py",
@@ -17762,6 +17763,32 @@
         "asyncio"
       ],
       "summary": "Tests for the internal vibecop plugin."
+    },
+    "tests/test_wait_admission.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:87e94a3e714c3e033af9e24cdb94ef2cf2417fdf499d17fa5ee5ac8385f96a6e",
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.config_editor",
+        "src.config_wait_policy",
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.scheduler",
+        "src.waits.admission",
+        "src.waits.conditions",
+        "src.waits.occupancy",
+        "src.waits.registry",
+        "src.waits.reservations",
+        "src.waits.scheduler"
+      ],
+      "markers": [],
+      "summary": "Real PostgreSQL admission bindings, deadlines, claim predicates and restart replay."
     },
     "tests/test_wait_commands.py": {
       "areas": [

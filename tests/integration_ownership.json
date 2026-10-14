@@ -8713,6 +8713,18 @@
     },
     "src/waits/adapters/ci.py::import from src.database.tables import integration_candidate_revisions as revisions": {
       "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::AdmissionReader.observe_task": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::branch_holders": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::import from src.database.tables import integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::reservation_scope": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/reservations.py::reserved_statement": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/scheduler.py::SchedulerWaitService.deadline": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/waits/scheduler.py::import from src.waits.admission import AdmissionReader, branch_holders": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
     }
   },
   "exclusions": {
@@ -8823,7 +8835,20 @@
     "src/database/tables.py::wait_priority_projection": "Generic verified-wait graph, deadlines, escalation linkage, scheduler capacity and priority storage; no Git ref publication or duplicate integration delivery authority.",
     "src/database/queries/wait_queries.py::register_wait": "Generic verified-wait registration and owner fencing; service owner category integration grants no branch mutation or delivery authority.",
     "src/database/queries/wait_queries.py::verify_owner": "Generic verified-wait registration and owner fencing; service owner category integration grants no branch mutation or delivery authority.",
-    "src/waits/explain.py::owner_key": "Pure mapping from a wait owner category to a graph node key; integration is a category label, not delivery state or authority."
+    "src/waits/explain.py::owner_key": "Pure mapping from a wait owner category to a graph node key; integration is a category label, not delivery state or authority.",
+    "src/commands/contracts/wait.py::WaitRegisterArgs.owner_kind": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/commands/contracts/wait_v2.py::register_wait_v2_contracts": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_scope": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/config_wait_policy.py::parse_wait_policy": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/database/queries/claim_queries.py::route_claimable": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/routing/sources.py::claimable_sources": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/occupancy.py::evictable_sessions": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/reservations.py::claim_candidate": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/reservations.py::consume_reservation": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/conditions.py::canonical": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
+    "src/waits/graph.py::lock_graph": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
+    "src/waits/occupancy.py::continuation_occupancy": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -15388,6 +15413,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Generic bulk audit-log writer used for pool.bounds_rescoped fanout; preserves the existing audit rows and has no integration ref replay authority."
+    },
+    "src/waits/scheduler.py::SchedulerWaitService.deadline::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5": {
+      "line": 277,
+      "owner": "SchedulerWaitService.deadline",
+      "call": "log_event",
+      "owner_fingerprint": "f1022096d1e79be84d5287104e90d38b0e5701433470e2d6c8f9e91145746115",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait escalation audit event in the existing event stream; no ref replay or duplicate integration journal."
     }
   },
   "generic_dependencies": {
@@ -16283,7 +16317,20 @@
     "src/waits/adapters/base.py::row": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
     "src/waits/adapters/base.py::unresolved": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
     "src/waits/explain.py::graph_paths": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
-    "src/waits/explain.py::owner_key": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority."
+    "src/waits/explain.py::owner_key": "Generic typed wait validation, database row read or pure graph rendering; shared across source kinds and contains no integration policy or mutation authority.",
+    "src/commands/contracts/wait.py::WaitRegisterArgs.owner_kind": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/commands/contracts/wait_v2.py::register_wait_v2_contracts": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_scope": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/config_wait_policy.py::parse_wait_policy": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/database/queries/claim_queries.py::route_claimable": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/routing/sources.py::claimable_sources": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/occupancy.py::evictable_sessions": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/reservations.py::claim_candidate": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/reservations.py::consume_reservation": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/waits/conditions.py::canonical": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
+    "src/waits/graph.py::lock_graph": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority.",
+    "src/waits/occupancy.py::continuation_occupancy": "Generic wait serialization, graph serialization or session capacity accounting; no integration ref policy or mutation authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

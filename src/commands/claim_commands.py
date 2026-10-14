@@ -778,8 +778,10 @@ class ClaimCommandsMixin:
                     hierarchy_mode = replace(hierarchy_mode, stackable_prerequisite_ids=frozenset(
                         await stack_view.verified_on(conn, proof_ids)
                     ))
-                tid = await self.db.select_ready_for_profile(
-                    conn,
+                from src.waits.reservations import claim_candidate, consume_reservation
+
+                tid, reservation_id = await claim_candidate(
+                    self, conn,
                     project_id=session.project_id,
                     profile_id=session.profile_id,
                     agent_id=row.agent_id,
@@ -819,6 +821,7 @@ class ClaimCommandsMixin:
                         now=now,
                         agent_reserved=True,
                     )
+                    await consume_reservation(conn, reservation_id, session.id, now=now)
                     new_claim = (row, task, slot)
 
         if stale_binding is not None:

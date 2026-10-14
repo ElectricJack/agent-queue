@@ -198,6 +198,9 @@ class AgentWaitReconciler:
     ) -> dict[str, Any]:
         from src.commands.principal import ExecutionPrincipal, principal_context
 
+        from src.waits.scheduler import scheduler_tick
+
+        await scheduler_tick(self.handler)
         with principal_context(ExecutionPrincipal.service("agent-waits")):
             return await self.handler.execute(
                 "reconcile_agent_waits", {"now": now, "wait_id": wait_id}

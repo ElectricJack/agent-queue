@@ -283,6 +283,9 @@ class PoolsMixin:
         task_statuses = await self.db.get_task_statuses([
             s.task_id for s in measurement.pool_sessions if s.task_id
         ])
+        from src.waits.occupancy import continuation_occupancy, evictable_sessions
+        evictable = await evictable_sessions(self.db, self.config)
+        resuming, reserved = await continuation_occupancy(self.db, self.config)
         from src.routing.readiness import orchestrator_ready_projects
 
         ready_projects = await orchestrator_ready_projects(self)
@@ -291,6 +294,7 @@ class PoolsMixin:
             status = task_statuses.get(session.task_id)
             if status == TaskStatus.HIBERNATED.value or (
                 status == TaskStatus.RESUME_PENDING.value and session.state != "starting"
+                and session.id not in resuming
             ):
                 continue  # Continuation ownership carries no live pool seat.
             if session.project_id is not None:
@@ -352,7 +356,7 @@ class PoolsMixin:
                 1
                 for s in sessions
                 if s.state in ("starting", "running") and s.desired_state != "stopped"
-            ) + len(pending)
+            ) + len(pending) + sum(n for (pid, _), n in reserved.items() if pid == project.id)
 
             for profile_id, profile in pool_profiles.items():
                 key = PoolKey(profile_id)
@@ -360,7 +364,7 @@ class PoolsMixin:
                 ready, repair_ready = demand_by_profile.get(profile_id, (0, 0))
                 measurement.demand[key] = measurement.demand.get(key, 0) + ready
 
-                local = PoolProjectSupply()
+                local = PoolProjectSupply(running_busy=reserved.get((project.id, profile_id), 0))
                 local.starting = sum(launch.profile_id == profile_id for launch in pending)
                 rows = sorted(
                     sessions_by_profile.get(profile_id, []),
@@ -375,6 +379,7 @@ class PoolsMixin:
                         local.draining += 1
                     elif s.task_id or s.claim_phase:
                         local.running_busy += 1
+                        local.evictable += s.id in evictable
                     elif idle_pool_claim_loop_stalled(s, now=now, stall_seconds=stall_seconds):
                         # Nothing has claimed from it for two long-poll
                         # windows — a harness parked on a usage-limit or
@@ -390,6 +395,7 @@ class PoolsMixin:
                 sup = measurement.supply.setdefault(key, PoolSupply())
                 sup.running_idle += local.running_idle
                 sup.running_busy += local.running_busy
+                sup.evictable += local.evictable
                 sup.starting += local.starting
                 sup.draining += local.draining
                 sup.unresponsive += local.unresponsive

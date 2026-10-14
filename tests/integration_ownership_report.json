@@ -9784,6 +9784,18 @@
     },
     "src/waits/adapters/ci.py::import from src.database.tables import integration_candidate_revisions as revisions": {
       "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::AdmissionReader.observe_task": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::branch_holders": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::import from src.database.tables import integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::reservation_scope": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/reservations.py::reserved_statement": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/scheduler.py::SchedulerWaitService.deadline": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/waits/scheduler.py::import from src.waits.admission import AdmissionReader, branch_holders": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
     }
   },
   "shared_state": {
