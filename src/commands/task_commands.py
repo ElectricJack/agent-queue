@@ -5465,7 +5465,9 @@ class TaskCommandsMixin:
             if needs_attention == "slot_reset_failed":
                 failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
                 if isinstance(failure, dict):
-                    detail += (f": {failure.get('reason', 'unknown reset error')} "
+                    # A record written before reasons were described can
+                    # hold an empty string; say so rather than print nothing.
+                    detail += (f": {failure.get('reason') or 'no reason recorded'} "
                                f"(attempt {failure.get('attempt')}; "
                                f"{failure.get('retry', 'automatic')} retry). "
                                f"After fixing the cause: aq task resume --task-id {task_id}")
@@ -5476,6 +5478,15 @@ class TaskCommandsMixin:
                                f"{fenced.get('branch')}. The claim retries on its own; "
                                f"aq integration release-owner releases the writer if it "
                                f"is gone")
+            elif needs_attention in {
+                "integration_prepare_failed", "integration_prepare_failed_attached",
+                "repair_target_unpublished",
+            }:
+                prepared = await self.db.get_task_meta(str(task_id), "prepare_failure")
+                if isinstance(prepared, dict) and prepared.get("reason"):
+                    detail += (f": {prepared['reason']} "
+                               f"({prepared.get('disposition', 'unknown')}; "
+                               f"claim epoch {prepared.get('claim_epoch')})")
             reasons.append(Reason(
                 code="needs_attention", detail=detail, ref=str(task_id),
             ))

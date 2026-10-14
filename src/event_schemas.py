@@ -1582,7 +1582,7 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.prepare_failed": {
         "required": ["project_id", "profile_id", "session_id", "task_id", "reason"],
-        "optional": [],
+        "optional": ["error_type", "stage", "defect", "target_ref"],
     },
     "pool.session_drained": {
         "required": ["project_id", "profile_id", "session_id", "name", "reason"],

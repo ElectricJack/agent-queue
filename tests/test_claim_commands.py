@@ -663,6 +663,35 @@ def emitted(handler):
     return [c.args[0] for c in handler.orchestrator.bus.emit.await_args_list]
 
 
+def spy_events(handler, event_type="pool.prepare_failed"):
+    """Record ``event_type`` payloads while the real bus still delivers them."""
+    bus, seen = handler.orchestrator.bus, []
+    real = bus.emit
+
+    async def emit(kind, data=None):
+        if kind == event_type:
+            seen.append(dict(data or {}))
+        return await real(kind, data)
+
+    bus.emit = emit
+    return seen
+
+
+def assert_one_reason(result, session, record, events, *, stage, error_type):
+    """The response, session, task record and event carry one description."""
+    reason = result["reason"]
+    assert reason and reason.strip() == reason
+    assert reason.startswith(f"{stage}: {error_type}")
+    assert session.claim_failure_reason == reason
+    assert (record["reason"], record["stage"], record["error_type"]) == (
+        reason, stage, error_type,
+    )
+    assert [(e["reason"], e["stage"], e["error_type"]) for e in events] == [
+        (reason, stage, error_type),
+    ]
+    return reason
+
+
 class TestClaim:
     async def test_foreign_claim_in_the_session_path_survives_preparation_refusal(
         self, handler, db, tmp_path,
@@ -691,12 +720,65 @@ class TestClaim:
         with patch.object(handler.orchestrator.bus, "emit", wraps=handler.orchestrator.bus.emit) as emit:
             result = await scoped(handler, sid)._cmd_task_claim({"next": True})
         reason = result["reason"]
-        assert type(error).__name__ in reason and "t1" in reason and str(wd) in reason
+        assert type(error).__name__ in reason and "slot_reset" in reason
+        diagnosis = await db.get_task_meta("t1", "prepare_failure")
+        assert diagnosis["task_id"] == "t1"
+        assert diagnosis["workspace_path"] == str(wd)
+        assert diagnosis["workspace_id"] == "ws-agent-1"
+        assert diagnosis["reason"] == reason
+        assert diagnosis["error_type"] == type(error).__name__
+        assert diagnosis["stage"] == "slot_reset"
+        assert await db.get_task_meta("t1", "claim_preparation_failure") is None
         assert (await db.get_task_meta("t1", "slot_reset_failure"))["reason"] == reason
         session = await db.get_session(sid)
         assert session.claim_failure_reason == session.claim_refusal["reason"] == reason
         payloads = [c.args[1] for c in emit.call_args_list if c.args[0] == "pool.prepare_failed"]
         assert payloads[0]["reason"] == reason
+
+    async def test_preparation_logs_do_not_restore_scrubbed_exception_secrets(
+        self, handler, db, tmp_path, caplog,
+    ):
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+        error = RuntimeError("reset refused api_key=fixture-secret-value")
+        error.__cause__ = OSError("Authorization: Bearer fixture-provider-token")
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.side_effect = error
+        events = spy_events(handler)
+
+        with caplog.at_level("WARNING", logger="src.commands.claim_commands"):
+            result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        record = await db.get_task_meta("t1", "prepare_failure")
+        reason = assert_one_reason(
+            result, await db.get_session(sid), record, events,
+            stage="slot_reset", error_type="RuntimeError",
+        )
+        assert reason in caplog.text
+        for secret in ("fixture-secret-value", "fixture-provider-token"):
+            assert secret not in caplog.text
+            assert secret not in str(record)
+        assert all(r.exc_info is None for r in caplog.records
+                   if r.name == "src.commands.claim_commands")
+
+    async def test_checkout_reconciliation_failure_names_its_operation(
+        self, handler, db, tmp_path,
+    ):
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+        await db.update_workspace("ws-agent-1", slot_index=0, base_workspace_id="base")
+        slots = handler.orchestrator._worktree_slots.return_value
+        slots.ensure_slot_checkout = AsyncMock(side_effect=TimeoutError())
+        events = spy_events(handler)
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "prepare_failed"
+        assert_one_reason(
+            result, await db.get_session(sid), await db.get_task_meta("t1", "prepare_failure"),
+            events, stage="ensure_slot_checkout", error_type="TimeoutError",
+        )
+        slots.ensure_slot_checkout.assert_awaited_once()
+        slots.reset_slot_for_task.assert_not_awaited()
 
     @pytest.mark.parametrize("protection", [None, "task", "session", "claim", "other_project"])
     async def test_claim_reconciles_only_idle_misplaced_workspace_locks(
@@ -1152,6 +1234,47 @@ class TestClaim:
         assert owner["fence_token"] == fence.token
         assert owner["session_id"] == sid
         assert reset.await_count == 2
+
+    async def test_retained_attached_prepare_keeps_bindings_and_records_its_reason(
+        self, handler, db, tmp_path
+    ):
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, _wd = await pool_session(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = TimeoutError()
+        release = AsyncMock(return_value=False)
+        handler.orchestrator.arelease_integration_writer_for_retry = release
+        events = spy_events(handler)
+        failed = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert failed["result"] == "prepare_failed"
+        held = await db.get_session(sid)
+        record = await db.get_task_meta("child", "prepare_failure")
+        reason = assert_one_reason(
+            failed, held, record, events, stage="slot_reset", error_type="TimeoutError",
+        )
+        assert " (no message) at src/" in reason
+        assert (record["disposition"], record["claim_epoch"], record["session_id"]) == (
+            "retained", held.last_claim_epoch, sid,
+        )
+        assert record["instance_token"] == "t" and record["workspace_id"] == "ws-agent-1"
+        # Retention is unchanged: the claim, the attachment and the slot stay.
+        release.assert_awaited_once()
+        assert (held.claim_phase, held.task_id, held.claim_failure_count) == (
+            "preparing", "child", 1,
+        )
+        owner = await ownership.get_owner(fence.target)
+        assert (owner["fence_token"], owner["session_id"], owner["handoff_state"]) == (
+            fence.token, sid, "attached",
+        )
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "child"
+        assert await db.get_task_meta("child", "needs_attention") == (
+            "integration_prepare_failed_attached"
+        )
+        assert await db.get_task_meta("child", "slot_reset_failure") is None
+        handler._current_scope = None
+        explained = await handler._cmd_explain_task({"task_id": "child"})
+        detail = next(r["detail"] for r in explained["reasons"] if r["code"] == "needs_attention")
+        assert f"{reason} (retained; claim epoch {held.last_claim_epoch})" in detail
 
     async def test_identical_retained_preparation_refusals_drain_after_restart(
         self, handler, db, tmp_path
@@ -2017,7 +2140,7 @@ class TestClaim:
             assert result["result"] == "prepare_failed"
             failure = await db.get_task_meta("t1", "slot_reset_failure")
             assert failure["attempt"] == attempt
-            assert failure["reason"] == "branch held by stopped slot"
+            assert failure["reason"] == "slot_reset: RuntimeError: branch held by stopped slot"
             assert failure["retry"] == ("manual" if attempt == 3 else "automatic")
             await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
         assert (await db.get_task("t1")).status == TaskStatus.BLOCKED
@@ -2029,6 +2152,71 @@ class TestClaim:
         assert await db.get_task_meta("t1", "slot_reset_failure") is None
         assert await db.get_task_meta("t1", "needs_attention") is None
         assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") is None
+        assert await db.get_task_meta("t1", "prepare_failure") is None
+
+    async def test_textless_reset_failure_is_described_identically_everywhere(
+        self, handler, db, tmp_path, caplog
+    ):
+        """``str(TimeoutError()) == ""`` once left every surface blank."""
+        await mktask(db, "t1", profile_id="worker")
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = TimeoutError()
+        events = spy_events(handler)
+        reasons = set()
+        for attempt in range(1, 4):
+            sid, _wd = await pool_session(db, tmp_path, f"s{attempt}", f"agent-{attempt}")
+            caplog.clear()
+            with caplog.at_level("WARNING", logger="src.commands.claim_commands"):
+                result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+            assert result["result"] == "prepare_failed"
+            ladder = await db.get_task_meta("t1", "slot_reset_failure")
+            record = await db.get_task_meta("t1", "prepare_failure")
+            reason = assert_one_reason(
+                result, await db.get_session(sid), record, events,
+                stage="slot_reset", error_type="TimeoutError",
+            )
+            events.clear()
+            reasons.add(reason)
+            assert " (no message) at src/" in reason
+            assert (ladder["reason"], ladder["stage"], ladder["error_type"]) == (
+                reason, "slot_reset", "TimeoutError",
+            )
+            assert any(reason in r.getMessage() for r in caplog.records)
+            # Budgets are untouched: the same three-step ladder, then BLOCKED.
+            assert ladder["attempt"] == record["attempt"] == attempt
+            assert ladder["retry"] == ("manual" if attempt == 3 else "automatic")
+            assert record["disposition"] == ("blocked" if attempt == 3 else "released")
+            assert (record["session_id"], record["claim_epoch"]) == (sid, attempt)
+            await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
+        assert len(reasons) == 1  # deterministic, so identical refusals still count
+        assert (await db.get_task("t1")).status == TaskStatus.BLOCKED
+        handler._current_scope = None
+        explained = await handler._cmd_explain_task({"task_id": "t1"})
+        detail = next(r["detail"] for r in explained["reasons"] if r["code"] == "needs_attention")
+        assert f": {reasons.pop()} (attempt 3; manual retry)" in detail
+
+    async def test_late_prepare_failure_cannot_rewrite_a_replaced_session(
+        self, handler, db, tmp_path
+    ):
+        """A preparation outlived by a restart keeps its record but not the streak."""
+        await mktask(db, "t1", profile_id="worker")
+        sid, _wd = await pool_session(db, tmp_path)
+
+        async def replaced_then_timeout(*args, **kwargs):
+            await db.update_session(sid, instance_token="replacement")
+            raise TimeoutError()
+
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = replaced_then_timeout
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "prepare_failed"
+        assert result["reason"].startswith("slot_reset: TimeoutError (no message)")
+        session = await db.get_session(sid)
+        assert (session.claim_failure_reason, session.claim_failure_count) == (None, 0)
+        assert session.desired_state == "running"
+        record = await db.get_task_meta("t1", "prepare_failure")
+        # The record names the instance that failed, not the replacement.
+        assert (record["reason"], record["instance_token"]) == (result["reason"], "t")
 
     async def test_claim_file_write_failure_releases_and_reports(
         self, handler, db, tmp_path, monkeypatch

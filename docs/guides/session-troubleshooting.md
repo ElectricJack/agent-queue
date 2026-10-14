@@ -522,6 +522,16 @@ needs_attention: slot_reset_failed: <reset error> (attempt 2; automatic retry).
 After fixing the cause: aq task resume --task-id <task-id>
 ```
 
+The reset error is `<stage>: <Type>: <message>` plus its causes, for example
+`slot_reset: RuntimeError: branch held by stopped slot`. An exception that
+carried no text reads `<stage>: <Type> (no message) at <file:line function>`:
+the type, the preparation stage and the frame are what was observed, and
+nothing more is known. Do not read a missing directory or a lock owner into it
+— check the slot itself. A reset that outlived the 30 s fenced-branch bound
+reads `slot_reset: BranchLockTimeout: branch fence critical section exceeded
+30s on <repo>:<branch>; caused by TimeoutError (no message) …; caused by
+CancelledError (no message) at <the interrupted frame>`.
+
 The attempt counter is the important part. The first two failures release the
 task back to `READY` with an exponential preparation backoff, so AQ retries on
 its own. **On the third**, the task goes to `BLOCKED` and the retry becomes
@@ -546,7 +556,8 @@ attention flag together, so a later unrelated failure starts from zero.
 **The related flag** is `integration_prepare_failed`, which means the branch
 fence — not the filesystem — was the problem. That one intentionally retains
 every binding for recovery rather than unlocking a checkout an integration
-fence still names; see
+fence still names. `explain` prints its recorded `prepare_failure` reason, with
+whether the claim was `released` or `retained`; see
 [development integration](development-integration.md).
 
 ## `stack_prerequisites_conflict`: child preparation needs a merge repair

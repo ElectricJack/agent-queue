@@ -495,6 +495,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Terminal pane registry."),
     ("src/claim_file.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "`.aq/claim.json` read/write helpers."),
+    ("src/preparation_failure.py", "sessions", "docs/guides/session-troubleshooting.md",
+     PRODUCTION, "Bounded, scrubbed preparation failure causes shared across claim surfaces."),
     ("src/handoffs.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "Structured handoff notes and the bounded wake context replacing transcripts."),
     ("src/env_scrub.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,

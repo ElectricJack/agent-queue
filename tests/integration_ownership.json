@@ -12968,7 +12968,7 @@
       "reason": "Ordinary attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: needs_attention; stores repair_target_unpublished without publication intent, authoritative ref OIDs or replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
-      "line": 924,
+      "line": 953,
       "owner": "ClaimCommandsMixin._recover_stale_binding",
       "call": "set_task_meta",
       "owner_fingerprint": "99a5abfe960334f70d651bb2d30fb440da856cb1c7bfc6ab0431150d36bead9d",
@@ -15324,6 +15324,33 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary slot-reset failure reason, attempt count and automatic/manual retry guidance after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: slot_reset_failure; no publication intent, authoritative ref OIDs or replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::a013c7a46d34c2c833b5b1129a77bc31978b9ed19c44d76097646187d4fe028d": {
+      "line": 1545,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "7538eb4115db7ac17fcc674f6041d8e4255f4f56486a529aee9bc55c435b793a",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary slot_reset_failure diagnostic snapshot after non-transient preparation errors: bounded scrubbed reason, error type and stage, observing workspace/session, timestamp, attempt and existing automatic/manual retry disposition. PostgreSQL contention bypasses this write. Re-reviewed after workspace binding, foreign-claim and checkout reconciliation guards changed the owner: the marker does not grant retries, reset budgets, replay refs or duplicate integration lifecycle; guarded release_claim still owns the transition."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::dafd2c39585871bc43eee31fe328d25d78b2fe580fe7377a7af483d0e3dd123a": {
+      "line": 1088,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "call": "set_task_meta",
+      "owner_fingerprint": "f0016aa1c4398254d4b2a25927bbc29e3a4d67dcebba1e5e3362bcf1e765207d",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._record_prepare_failure::9a6c34a59da72b0a5f8d49ff08edadf3828cf7b641054abd4cf2ff7f3a44b73c": {
+      "line": 1139,
+      "owner": "ClaimCommandsMixin._record_prepare_failure",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1dd1e2cdd2ecc4efe42a17188b8f509919a34ca44a557c2d7a50ecdadab0a54f",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary PREPARE_FAILURE diagnostic snapshot: one bounded secret-scrubbed stage/type/cause description plus task, observing session instance, claim epoch, workspace id and safe_text-scrubbed bounded workspace path, timestamp, attempt and the caller's already-selected disposition. Replaces the prior diagnostic call fingerprint after task/path identity was added. Cleared by the next activation; grants no retry, budget reset, ownership change, publication intent or ref replay authority and creates no duplicate integration lifecycle."
     }
   },
   "generic_dependencies": {
@@ -16200,7 +16227,8 @@
     "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently.",
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
-    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority."
+    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
+    "src/preparation_failure.py::describe_preparation_failure": "Generic dependency: pure description of a preparation exception (stage, type, scrubbed bounded message, cause chain); no storage, fence or publication authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

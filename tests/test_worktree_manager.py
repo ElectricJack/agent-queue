@@ -46,6 +46,7 @@ from src.orchestrator.worktree_manager import (
 )
 from src.orchestrator.execution import ExecutionMixin
 from src.orchestrator.workspace_attachments import detach_slot_for_integration_handoff
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 # ───────────────────────────────── fixtures ──────────────────────────────
@@ -75,17 +76,9 @@ def _base_repo_seed(tmp_path_factory) -> Path:
     """A clone of a bare origin, with one commit on ``main``."""
     tmp_path = tmp_path_factory.mktemp("worktree-seed")
     origin = tmp_path / "origin.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(origin)],
-        check=True,
-        capture_output=True,
-    )
-    _disable_auto_maintenance(origin)
+    init_bare_seed(str(origin))
     base = tmp_path / "base"
-    subprocess.run(
-        ["git", "clone", str(origin), str(base)], check=True, capture_output=True
-    )
-    _disable_auto_maintenance(base)
+    clone_seed(str(origin), str(base))
     (base / "README.md").write_text("init\n")
     (base / ".gitignore").write_text("node_modules/\n")
     _git(["add", "-A"], cwd=base)

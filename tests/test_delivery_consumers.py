@@ -30,6 +30,7 @@ from src.integration.development import DevelopmentPrimitives
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from tests.db_fixtures import lease_dsn
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 CHILDREN = ("done", "wrong", "missing", "reopened")
 
@@ -49,16 +50,8 @@ class Origin:
             shutil.copytree(template.clone, self.clone)
             git(self.clone, "remote", "set-url", "origin", self.url)
             return
-        git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
-        # Receive-pack also starts detached auto-maintenance on newer Git.
-        # Configure both repositories before commit/push so a shared template
-        # stays stable while copytree reads it; local transport drops -c flags.
-        settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
-        for key, value in settings:
-            git(self.url, "config", key, value)
-        git(tmp_path, "clone", self.url, str(self.clone))
-        for key, value in settings:
-            git(self.clone, "config", key, value)
+        init_bare_seed(self.url)
+        clone_seed(self.url, self.clone)
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
         (self.clone / "base.txt").write_text("base\n")

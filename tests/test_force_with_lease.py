@@ -24,6 +24,7 @@ import pytest
 
 from src.git.manager import GitError, GitManager
 from src.models import RepoConfig, RepoSourceType, Task
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 # ---------------------------------------------------------------------------
@@ -62,19 +63,9 @@ def _git_repo_seed(tmp_path_factory):
     """Create a bare remote + working clone for testing."""
     tmp_path = tmp_path_factory.mktemp("git-seed")
     remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True,
-        capture_output=True,
-    )
-    _disable_auto_maintenance(str(remote))
+    init_bare_seed(str(remote))
     clone = tmp_path / "clone"
-    subprocess.run(
-        ["git", "clone", str(remote), str(clone)],
-        check=True,
-        capture_output=True,
-    )
-    _disable_auto_maintenance(str(clone))
+    clone_seed(str(remote), str(clone))
     (clone / "README.md").write_text("init")
     subprocess.run(
         ["git", "add", "."],

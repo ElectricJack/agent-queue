@@ -50,6 +50,7 @@ from src.integration.runtime_contracts import (
     WriterStatus,
 )
 from src.models import Project, RepoConfig, RepoSourceType
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 ARTIFACT = "sha256:" + "1" * 64
 NOW = 1700000000.0
@@ -201,17 +202,9 @@ def git_history_template(tmp_path_factory):
     """Seed history once, then copy both repositories before each scenario."""
     tmp_path = tmp_path_factory.mktemp("gitops-history")
     remote = tmp_path / "remote.git"
-    git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
-    # The seed and its copies must stay idle between Git commands: detached
-    # maintenance can remove lock/object files while copytree enumerates them.
-    for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"),
-                       ("receive.autogc", "false")):
-        git(remote, "config", key, value)
+    init_bare_seed(remote)
     store = tmp_path / "retained"
-    git(tmp_path, "clone", str(remote), str(store))
-    for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"),
-                       ("receive.autogc", "false")):
-        git(store, "config", key, value)
+    clone_seed(remote, store)
     git(store, "config", "user.name", "Tester")
     git(store, "config", "user.email", "tester@example.test")
     base = commit(store, {"base.txt": "base\n"})
