@@ -453,7 +453,8 @@ class DevelopmentPrimitives:
             raise ValueError("retained repository URL differs from configured repository")
         await harden_retained_repository(self.git, path)
         if fetch:
-            await fetch_retained_origin(self.git, path, repository_url=repo.url)
+            await fetch_retained_origin(self.git, path, repository_url=repo.url,
+                                        project_id=repo.project_id, repository_id=repo.id)
         return path
 
 

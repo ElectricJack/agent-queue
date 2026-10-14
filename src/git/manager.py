@@ -3561,7 +3561,7 @@ class GitManager:
 
     async def apush_new_refs(
         self, checkout_path: str, tips: Mapping[str, str], *, remote: str = "origin",
-        repository_url: str | None = None, qualified: bool = False,
+        repository_url: str | None = None, qualified: bool = False, lock_held: bool = False,
     ) -> dict[str, RemoteRefResult]:
         """Create absent heads or qualified provenance refs; read each back.
 
@@ -3595,6 +3595,7 @@ class GitManager:
                      *(f"--force-with-lease={refs[branch]}:{old}" for _t, branch, old in updates),
                      *(f"{tip}:{refs[branch]}" for tip, branch, _old in updates)],
                     cwd=checkout_path,
+                    lock_held=lock_held,
                 )
                 if result.returncode != 0:
                     failure = (result.stderr or result.stdout or "git push failed").strip()

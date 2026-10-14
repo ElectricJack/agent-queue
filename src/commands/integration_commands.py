@@ -59,6 +59,12 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def retained_repository_recovery(self, state, *, load=False):
+        """Daemon port for its managed cache, never a caller-supplied repair command."""
+        from src.integration.repository_incidents import record_incident
+
+        return await record_incident(self, state, load=load)
+
     async def _cmd_integration_migrate_provenance_refs(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationMigrateProvenanceRefsArgs
         from src.integration.provenance_migration import ProvenanceMigration
