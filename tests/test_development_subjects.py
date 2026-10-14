@@ -26,7 +26,7 @@ def pinned_policy(mode="focused", **settings):
     settings.setdefault("commands", ["aq test tests/test_development_validation.py"])
     source = render_development_policy("p", DevelopmentPolicy(validation=mode, **settings))
     artifact = load_definition_json(Path(
-        "tests/fixtures/playbooks/v2/root-train/artifact.json"
+        "tests/fixtures/playbooks/historical-v2/root-train/artifact.json"
     ).read_text()).model_copy(update={
         "id": "p-development", "scope": ProjectScope(project_id="p"),
         "source_hash": source_digest(source), "integration_policy": policy_from_markdown(source),

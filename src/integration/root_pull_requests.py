@@ -27,7 +27,7 @@ import re
 import time
 from typing import Any
 
-from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy import and_, exists, func, literal, or_, select, update
 
 from src.database.queries.integration_train_queries import _root_delivery_receipt_conditions
 from src.database.tables import (
@@ -44,6 +44,7 @@ from src.database.tables import (
 from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError
+from src.integration.epics import abandoned_archive_ids
 from src.logging_config import log_handled
 from src.models import TaskStatus
 from src.projects.github import GitHubError
@@ -580,14 +581,16 @@ class EpicPullRequestService:
 
             active_children = (
                 await conn.execute(
-                    select(tasks.c.id, tasks.c.title, tasks.c.status)
+                    select(tasks.c.id, tasks.c.title, tasks.c.status, tasks.c.parent_task_id,
+                           literal(False).label("archived"))
                     .where(tasks.c.parent_task_id == epic_id)
                     .order_by(tasks.c.id)
                 )
             ).mappings().all()
             archived_children = (
                 await conn.execute(
-                    select(archived_tasks.c.id, archived_tasks.c.title, archived_tasks.c.status)
+                    select(archived_tasks.c.id, archived_tasks.c.title, archived_tasks.c.status,
+                           archived_tasks.c.parent_task_id, literal(True).label("archived"))
                     .where(archived_tasks.c.parent_task_id == epic_id)
                     .order_by(archived_tasks.c.id)
                 )
@@ -611,7 +614,9 @@ class EpicPullRequestService:
                 head = checkpoint["checkpoint_sha"]
             else:
                 head = checkpoint["verified_sha"] if checkpoint is not None else None
-            pending = [child["id"] for child in children if child["status"] != "COMPLETED"]
+            abandoned = await abandoned_archive_ids(conn, children, project_id=epic["project_id"])
+            pending = [child["id"] for child in children
+                       if child["id"] not in abandoned and child["status"] != "COMPLETED"]
             if pending:
                 return {"outcome": "children_incomplete", "epic_id": epic_id, "pending": pending}
             if not epic["branch_name"]:

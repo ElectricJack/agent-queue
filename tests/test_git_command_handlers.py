@@ -144,6 +144,193 @@ class TestExactGitProvenance:
         assert "two sources" in str(conflicted[split])
         assert split.ref not in await store.run("ls-remote", "origin")
 
+    @pytest.mark.parametrize("batched", [False, True], ids=["single", "batch"])
+    @pytest.mark.parametrize(
+        "observation", ["absent", "read_error", "mismatch", "correct", "false_success"]
+    )
+    async def test_publication_cause_survives_unverified_final_readback(
+        self, provenance_repo, monkeypatch, batched, observation,
+    ):
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, _path, _remote, base = provenance_repo
+        completed = CompletedSource(CompletionIdentity("p", "r", "task", "close-1"), base)
+        ref = completed.identity.ref
+        reads, publications = [], []
+        real_read = git.als_remote_qualified_refs
+        cause = (
+            "\x1b\r" * 600
+            + "remote hook declined https://alice:secret-password@github.com/acme/repo.git "
+            "GH_TOKEN=ghp_0123456789abcdefghijklmnop\nAuthorization: Bearer private-header\n"
+            "immutable publication rejected"
+        )
+
+        async def publish(checkout, tips, **kwargs):
+            publications.append((checkout, tips, kwargs))
+            return {ref: RemoteRefResult(
+                RemoteRefState.PRESENT if observation == "false_success" else RemoteRefState.ERROR,
+                oid=tips[ref] if observation == "false_success" else None,
+                error=cause,
+            )}
+
+        async def read(checkout, refs, **kwargs):
+            reads.append(list(refs))
+            if len(reads) == 1:
+                return await real_read(checkout, refs, **kwargs)
+            assert len(reads) == 2 and list(refs) == [ref]
+            oid = publications[0][1][ref]
+            result = {
+                "absent": RemoteRefResult(RemoteRefState.ABSENT),
+                "read_error": RemoteRefResult(
+                    RemoteRefState.ERROR,
+                    error="read denied https://reader:read-secret@github.com/acme/repo.git",
+                ),
+                "mismatch": RemoteRefResult(RemoteRefState.PRESENT, oid=base),
+                "correct": RemoteRefResult(RemoteRefState.PRESENT, oid=oid),
+                "false_success": RemoteRefResult(RemoteRefState.ABSENT),
+            }[observation]
+            return {ref: result}
+
+        monkeypatch.setattr(git, "apush_new_refs", publish)
+        monkeypatch.setattr(git, "als_remote_qualified_refs", read)
+        if batched:
+            result = (await store.write_completions([completed], claim_epoch=7))[completed.identity]
+        else:
+            try:
+                result = await store.write_completion(completed, claim_epoch=7)
+            except GitError as exc:
+                result = exc
+        [(_checkout, tips, kwargs)] = publications
+        oid = tips[ref]
+        assert kwargs == {"qualified": True, "repository_url": store.repository_url}
+        assert len(reads) == 2
+        if observation == "correct":
+            assert result == oid
+            record = await store.read_completion(completed.identity)
+            assert record["claim_epoch"] == 7 and record["source_oid"] == base
+            assert record["identity"]["generation"] == "close-1"
+        else:
+            assert isinstance(result, GitError)
+            diagnostic = str(result)
+            assert "complete provenance is not verified" in diagnostic
+            assert "remote hook declined" in diagnostic
+            assert "immutable publication rejected" in diagnostic
+            assert f"ref={ref}" in diagnostic and f"expected_oid={oid}" in diagnostic
+            assert "readback=[" in diagnostic and "publication=[" in diagnostic
+            if observation == "read_error":
+                assert "read denied" in diagnostic
+            if observation == "mismatch":
+                assert f"readback=[present, oid={base}]" in diagnostic
+            for secret in ("secret-password", "ghp_0123456789abcdefghijklmnop", "private-header",
+                           "read-secret", "\x1b", "\r", "\n"):
+                assert secret not in diagnostic
+            assert len(diagnostic) < 2600
+            assert await store.read_completion(completed.identity) is None
+
+    async def test_batch_failure_diagnostics_do_not_borrow_a_peer_publication_error(
+        self, provenance_repo, monkeypatch,
+    ):
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, _path, _remote, base = provenance_repo
+        completions = [CompletedSource(CompletionIdentity("p", "r", task, "g"), base)
+                       for task in ("a", "b")]
+
+        async def publish(_checkout, tips, **_kwargs):
+            return {item.identity.ref: RemoteRefResult(
+                RemoteRefState.ERROR, error=f"{item.identity.task_id} hook declined")
+                for item in completions}
+
+        monkeypatch.setattr(git, "apush_new_refs", publish)
+        results = await store.write_completions(completions)
+        for item, peer in (completions, completions[::-1]):
+            assert isinstance(results[item.identity], GitError)
+            assert f"{item.identity.task_id} hook declined" in str(results[item.identity])
+            assert f"{peer.identity.task_id} hook declined" not in str(results[item.identity])
+
+    @pytest.mark.parametrize("batched", [False, True], ids=["single", "batch"])
+    async def test_manager_transfer_and_read_error_both_survive_final_absent_readback(
+        self, provenance_repo, monkeypatch, batched,
+    ):
+        import subprocess
+
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, _path, _remote, base = provenance_repo
+        item = CompletedSource(CompletionIdentity("p", "r", "task", "g"), base)
+        real_run, real_read = git.arun_git_result, git.als_remote_qualified_refs
+        reads, pushes = [], []
+
+        async def run(args, **kwargs):
+            if args[0] == "push":
+                pushes.append(args)
+                return subprocess.CompletedProcess(args, 1, "", (
+                    "remote hook declined https://alice:password@github.com/o/r\n"
+                    "Authorization: Bearer private-header\ncausal transfer failed"
+                ))
+            return await real_run(args, **kwargs)
+
+        async def read(checkout, refs, **kwargs):
+            reads.append(list(refs))
+            if len(reads) == 2:
+                return {item.identity.ref: RemoteRefResult(
+                    RemoteRefState.ERROR, error="transfer readback unavailable")}
+            return await real_read(checkout, refs, **kwargs)
+
+        monkeypatch.setattr(git, "arun_git_result", run)
+        monkeypatch.setattr(git, "als_remote_qualified_refs", read)
+        if batched:
+            error = (await store.write_completions([item]))[item.identity]
+        else:
+            with pytest.raises(GitError) as caught:
+                await store.write_completion(item)
+            error = caught.value
+        assert isinstance(error, GitError)
+        assert len(reads) == 3 and len(pushes) == 1
+        assert f"--force-with-lease={item.identity.ref}:{'0' * 40}" in pushes[0]
+        diagnostic = str(error)
+        assert "readback=[absent]" in diagnostic
+        assert "transfer readback unavailable" in diagnostic
+        assert "causal transfer failed" in diagnostic and "remote hook declined" in diagnostic
+        assert "password" not in diagnostic and "private-header" not in diagnostic
+        assert await store.read_completion(item.identity) is None
+
+    @pytest.mark.parametrize("batched", [False, True], ids=["single", "batch"])
+    @pytest.mark.parametrize("legacy", [False, True], ids=["current", "legacy"])
+    async def test_repository_read_authority_failure_prevents_publication(
+        self, provenance_repo, monkeypatch, batched, legacy,
+    ):
+        from unittest.mock import AsyncMock
+
+        from src.git.manager import RemoteRefResult, RemoteRefState
+        from src.integration.provenance import CompletedSource, CompletionIdentity
+
+        git, store, _path, _remote, base = provenance_repo
+        item = CompletedSource(CompletionIdentity("p", "r", "task", "g"), base)
+        failed_ref = "refs/heads/" + item.identity.legacy_branch if legacy else item.identity.ref
+
+        async def denied(_checkout, refs, **_kwargs):
+            return {ref: RemoteRefResult(
+                RemoteRefState.ERROR, error="authority denied https://user:secret@github.com/o/r"
+            ) if ref == failed_ref else RemoteRefResult(RemoteRefState.ABSENT) for ref in refs}
+
+        push = AsyncMock()
+        monkeypatch.setattr(git, "als_remote_qualified_refs", denied)
+        monkeypatch.setattr(git, "apush_new_refs", push)
+        if batched:
+            error = (await store.write_completions([item]))[item.identity]
+        else:
+            with pytest.raises(GitError) as caught:
+                await store.write_completion(item)
+            error = caught.value
+        assert isinstance(error, GitError) and "authority denied" in str(error)
+        assert "secret" not in str(error)
+        push.assert_not_awaited()
+        assert await store.read_completion(item.identity) is None
+
     async def test_archive_and_source_branch_deletion_preserve_git_proof(self, provenance_repo, db):
         from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
         from src.models import Task, TaskCompletion

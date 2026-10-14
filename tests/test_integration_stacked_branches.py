@@ -21,6 +21,7 @@ from src.database.tables import (
     tasks,
 )
 from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.manager import GitError
 from src.integration.batches import SupersedeMemberUnavailable, ejection_instruction
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.provenance import CompletionIdentity, GitProvenance
@@ -163,6 +164,132 @@ async def test_single_stack_starts_at_completed_source_without_epic_delivery(sta
         )
     assert origin["base_sha"] == stack.first  # filing base remains immutable
     assert origin["stack_snapshot"]["prerequisites"]["first"]["checkpoint_sha"] == stack.first
+
+
+@pytest.mark.parametrize("relation", [
+    "behind", "equal", "ahead", "divergent", "unknown-forward", "unknown-reverse", "fetch-error",
+])
+async def test_prepare_preserves_child_history_against_fresh_publication(
+    stack, tmp_path, monkeypatch, relation,
+):
+    await stack.db.transition_task("child", TaskStatus.READY, force=True)
+    workspace = stack.origin.clone
+    published = stack.child
+    if relation != "equal":
+        # Publish from a separate clone so neither the local child nor its
+        # cached origin ref observes the preserved publication.
+        publisher = tmp_path / "publisher"
+        git(tmp_path, "clone", stack.origin.url, str(publisher))
+        git(publisher, "checkout", "aq/child")
+        (publisher / "published.txt").write_text("preserved publication\n")
+        git(publisher, "add", ".")
+        git(publisher, "commit", "-qm", "preserved published child")
+        published = git(publisher, "rev-parse", "HEAD")
+        git(publisher, "push", "origin", "aq/child")
+    if relation == "ahead":
+        git(workspace, "fetch", "origin")
+        git(workspace, "merge", "--ff-only", published)
+    if relation in {"ahead", "divergent"}:
+        (workspace / "unpublished.txt").write_text("unique local work\n")
+        git(workspace, "add", ".")
+        git(workspace, "commit", "-qm", "unpublished child")
+    local = git(workspace, "rev-parse", "aq/child")
+    cached = git(workspace, "rev-parse", "origin/aq/child")
+    if relation in {"behind", "unknown-forward", "unknown-reverse", "fetch-error"}:
+        assert cached == stack.child and cached != published
+    (workspace / "child.txt").write_text("dirty child edits\n")
+    git(workspace, "add", "child.txt")
+    (workspace / "untracked.txt").write_text("untracked child edits\n")
+    index = git(workspace, "write-tree")
+    status = git(workspace, "status", "--porcelain")
+    origin = await stack.db.get_task_branch_origin_for_promotion("child", "r")
+    manager = stack.service.observer.git
+    ancestor = manager.ais_ancestor
+    if relation.startswith("unknown"):
+        async def unknown_probe(store, first, second, **kwargs):
+            unknown_pair = ((published, local) if relation == "unknown-forward"
+                            else (local, published))
+            if (first, second) == unknown_pair:
+                return None
+            return await ancestor(store, first, second, **kwargs)
+
+        monkeypatch.setattr(manager, "ais_ancestor", unknown_probe)
+    if relation == "fetch-error":
+        run = manager._arun
+
+        async def failed_fetch(args, **kwargs):
+            if args[:3] == ["fetch", "--no-tags", str(workspace)]:
+                raise GitError("local object unavailable")
+            return await run(args, **kwargs)
+
+        monkeypatch.setattr(manager, "_arun", failed_fetch)
+    if relation in {"divergent", "unknown-forward", "unknown-reverse", "fetch-error"}:
+        with pytest.raises(GitError):
+            await stack.service.prepare("child", workspace=str(workspace))
+    else:
+        overlay = await stack.service.prepare("child", workspace=str(workspace))
+        expected = local if relation == "ahead" else published
+        assert overlay["base_sha"] == expected
+        assert git(overlay["stack_store"], "show", f"{expected}:child.txt") == "preserved child"
+        if relation != "equal":
+            assert git(overlay["stack_store"], "show", f"{expected}:published.txt") == (
+                "preserved publication"
+            )
+        if relation == "ahead":
+            assert git(overlay["stack_store"], "show", f"{expected}:unpublished.txt") == (
+                "unique local work"
+            )
+        assert await overlay.view.fresh()
+    assert git(workspace, "rev-parse", "aq/child") == local
+    assert git(workspace, "rev-parse", "origin/aq/child") == cached
+    assert git(workspace, "write-tree") == index
+    assert git(workspace, "status", "--porcelain") == status
+    assert (workspace / "child.txt").read_text() == "dirty child edits\n"
+    assert (workspace / "untracked.txt").read_text() == "untracked child edits\n"
+    assert git(stack.origin.url, "rev-parse", "aq/child") == published
+    assert await stack.db.get_task_branch_origin_for_promotion("child", "r") == origin
+@pytest.mark.parametrize("relationship", ["behind", "equal", "ahead", "diverged"])
+async def test_prepare_local_child_ancestry_at_published_head(stack, tmp_path, relationship):
+    await stack.db.transition_task("child", TaskStatus.IN_PROGRESS, force=True)
+    clone = stack.origin.clone
+    git(clone, "switch", "--detach")
+    if relationship in {"behind", "diverged"}:
+        git(clone, "branch", "-f", "aq/child", stack.first)
+    workspace = tmp_path / "child-slot"
+    git(clone, "worktree", "add", str(workspace), "aq/child")
+    if relationship in {"ahead", "diverged"}:
+        (workspace / "unpublished.txt").write_text("local child work\n")
+        git(workspace, "add", "unpublished.txt")
+        git(workspace, "commit", "-qm", "unpublished child")
+    local_head = git(workspace, "rev-parse", "HEAD")
+    recorded_stack = await stack_record(stack)
+
+    if relationship == "diverged":
+        with pytest.raises(GitError, match="local child does not descend"):
+            await stack.service.prepare("child", workspace=str(workspace))
+        assert git(workspace, "rev-parse", "HEAD") == local_head
+        assert await stack_record(stack) == recorded_stack
+        return
+
+    overlay = await stack.service.prepare("child", workspace=str(workspace))
+    expected = local_head if relationship == "ahead" else stack.child
+    assert overlay["base_sha"] == expected
+    # Observation must leave the branch untouched until the fenced checkout step.
+    assert git(workspace, "rev-parse", "HEAD") == local_head
+    transport = stack.service.observer.git
+    await transport._arun(
+        ["fetch", "--no-tags", str(overlay["stack_store"]), overlay["base_sha"]],
+        cwd=str(workspace),
+    )
+    # Slot reset uses this same preparation step for preserved worker branches.
+    await transport.aprepare_child_branch(str(workspace), "aq/child", overlay["base_sha"])
+    assert git(workspace, "rev-parse", "HEAD") == expected
+    assert git(workspace, "status", "--porcelain") == ""
+    assert git(workspace, "show", "HEAD:child.txt") == "preserved child"
+    if relationship == "ahead":
+        assert (workspace / "unpublished.txt").read_text() == "local child work\n"
+    assert git(stack.origin.url, "rev-parse", "aq/child") == stack.child
+    assert await stack_record(stack) == recorded_stack
 
 
 async def test_multiple_sources_merge_on_epic_and_pin_exact_base(stack):
@@ -772,6 +899,46 @@ async def test_open_batch_refreshes_only_its_targets_candidate_window(stack, mon
     assert refresh.await_count == 1
     assert refresh.call_args.args == ("child", stack.gitops)
     assert refresh.call_args.kwargs == {"snapshot": observed}
+
+
+async def test_stack_refresh_quantum_preserves_guards_and_admits_independent_work(stack, monkeypatch):
+    original = await stack_record(stack)
+    await completed(stack.world, "later-child", parent="epic", needs=("first",),
+                    head=stack.child, source_base=stack.first)
+    git(stack.origin.clone, "push", "origin", f"{stack.child}:refs/heads/aq/later-child")
+    await checkpoint(stack.db, "later-child", stack.child)
+    held = {**original, "hold": "prerequisite_reopened_or_unavailable"}
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "later-child",
+        ).values(stack_snapshot=held))
+    independent = await completed(stack.world, "z-independent", parent="epic")
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    train, _, _ = lane(stack.world, LocalGit(stack.origin.url), target=target)
+    batches, calls, elapsed = train.batches, [], 0.0
+    batches._selection_clock = lambda: elapsed
+    refresh = StackedBranches.refresh
+
+    async def slow_refresh(self, task_id, *args, **kwargs):
+        nonlocal elapsed
+        calls.append(task_id)
+        result = await refresh(self, task_id, *args, **kwargs)
+        elapsed += 61
+        return result
+
+    monkeypatch.setattr(StackedBranches, "refresh", slow_refresh)
+    selected = await batches.open_batch(
+        target, await snapshot(stack.world, target), (await train.lane_for(target)).service,
+    )
+    assert calls == ["child"]
+    assert selected.batch is not None
+    assert {m.task_id for m in selected.members} == {"child", "first", "z-independent"}
+    assert next(m.source_sha for m in selected.members if m.task_id == "z-independent") == independent
+    assert any(b["code"] == "stack_prerequisite_reopened_or_unavailable"
+               and b["task_id"] == "later-child" for b in selected.blockers)
+    assert await stack_record(stack) == original
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == stack.child
+    assert await generation(stack.db, "child") == 0
 
 
 @pytest.mark.parametrize("operation", ["reopen", "abandon", "missing", "rewind"])

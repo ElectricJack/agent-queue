@@ -478,6 +478,34 @@ failure, or if the reconciler finds `claim_phase = 'preparing'` with
 `now − claim_phase_at > swarm.prepare_timeout` (default 120 s, e.g. daemon crash
 mid-reset): `release_claim` (§11.2) runs with context `slot_reset_failed`,
 `task_metadata.needs_attention = slot_reset_failed`, and the response is `prepare_failed`.
+Every permanent preparation failure (slot reset, attached integration writer, unpublished
+repair target, branch fence) is described once by `src/preparation_failure.py` and that one
+description is what every surface carries: the response `reason`, the session's
+`claim_failure_reason` (and therefore the identical-refusal count and drain message), the
+`pool.prepare_failed` event, the `prepare_failure` task-metadata record (plus
+`slot_reset_failure` / `branch_fenced` where those apply) and the daemon log line. Logs use
+the scrubbed causal description, never an additional raw exception traceback that could
+reintroduce credentials. The reason is `<stage>: <ExceptionType>: <message>`, followed by the
+exception's `__cause__`/`__context__` chain (at most three links). `<stage>` names the
+preparation step that was running (`workspace_lookup`, `integration_origin`,
+`repair_start`, `integration_attach`, `stack_fetch`, `slot_reset`, `claim_file`,
+`activate_claim`, `workspace_binding`, `claim_file_check`, `ensure_slot_checkout`, ...).
+Messages are secret-scrubbed (URL user-info, token literals,
+`Authorization` values, private-key blocks), whitespace-collapsed and bounded (500 characters
+each, 2000 in total). An exception with no text is never recorded as an empty reason: it
+reads `<stage>: <Type> (no message)` and names the deepest `src/` frame each link was raised
+at, which is the interrupted operation for a `TimeoutError` raised by `asyncio.timeout`. The
+record includes the task id and bounded, scrubbed workspace path in addition to workspace
+id; context stays structured instead of creating a competing failure formatter/record.
+It says only what was observed; it never infers a missing directory or a lock owner from
+an empty message. The description changes no retry, backoff, attempt, stage, token or project
+budget, and no release/retention decision: an attached writer that cannot be released keeps
+every binding and only gains the record. The record carries the session, its instance token,
+claim epoch, workspace and the disposition that was taken, so a late or stale completion is
+attributable; `record_pool_claim_failure` still ignores a refusal whose claim has moved on.
+The branch-fence critical section (`BranchLock.exclusion`, 30 s) names its own expiry
+(`BranchLockTimeout`, a `TimeoutError`) with the bound and branch, rather than surfacing
+asyncio's empty `TimeoutError`.
 `claims` is untouched, so a capped worker is not exhausted by failures it did not cause;
 Task preparation keeps its existing failure ladder. Independently, each pool session
 persists `claim_refusal` (nullable JSONB: result, reason, count, retry_at) so repeated
@@ -542,7 +570,38 @@ is the contract). When the phase resolves:
   transcript never claimed;
 - session terminated → `out_of_scope`;
 - `wait` elapsed → `claim_in_progress` `{task_id, claim_epoch, claim_phase,
-  claim_phase_at}`; the caller retries. `wait = 0` returns this immediately.
+  claim_phase_at}`; the caller retries. `wait = 0` uses the bounded preparation
+  allowance below.
+
+**Preparation latency and diagnostics (2026-10-13).** Selection commits its
+holder transaction before starting a daemon-owned asynchronous preparation task.
+A warm preparation may finish within a 0.5 second response allowance; otherwise
+`wait=0` returns `claim_in_progress`, and a long poll waits only through its
+remaining deadline. Request cancellation never cancels the owned reset. The
+existing preparation registry remains the liveness fence used by recovery;
+daemon/session teardown can explicitly cancel the registered task. Concurrent
+callers join the same generation and observe its actual failure or success.
+A notification cannot restart a still-live preparation. Deferred responses are
+fenced to their session instance and claim binding, and one failed preparation
+records one refusal even when several callers await its result.
+
+Each attempt logs monotonic phase start/completion and total timing, including
+frontier selection, owner/lease checks, fetch, checkout, reset, setup and shared
+repository lock waits. Command arguments and credentials are omitted. The claim
+response carries `claim_timing`; task explain and its dashboard show live progress
+and the last completed timing saved in task metadata. Nested totals are inclusive,
+not additive. Diagnostics cannot change a claim outcome if their persistence fails.
+The ordinary claim keeps its existing end-to-end statement and checkout budgets:
+the reserved holder's session write feeds its workspace update in one statement,
+and completed timing uses the activation checkout after the activation transaction
+commits. Timing has its own transaction, so a SQL error rolls back only diagnostics.
+The checkout is acquired after the filesystem reset and released after timing is saved.
+A locally available exact origin SHA needs no full origin fetch when resetting
+an exact target to that immutable commit. Child preservation, retry/continuation
+branches, branch-valued origins and missing origins still refresh remote refs. All origin, owner, retained-source,
+checkpoint and activation guards apply. The warm-slot p50 target is under 15s;
+measure requests with already-ready work. Idle long polls are separate samples;
+their request total includes waiting for the frontier.
 
 **Long-poll — subscribe first, then check.** With `wait > 0`, two waits share the budget:
 
@@ -1076,6 +1135,14 @@ Three budgets are kept apart, because they measure different things and cannot a
 | worker-filed root `create_task` | + 2 (gate, task_gates) | 1 | — |
 | `aq prime` per claim | — | — | ≤ 2,000 tokens, logged |
 | push-vs-pull A/B (same 50-task set, `lifecycle: task` vs `pool` cap 5) | — | — | report wall-clock, tokens, cold starts; no threshold — the measurement D4 asks for |
+
+The executable PostgreSQL budgets in `tests/perf/test_claim_statements.py` cap
+the whole claim at 20 statements and the selection/holder portion at 10,
+including persisted claim diagnostics. The current project is joined to the
+preparation fence after admission, so long polls cannot reuse stale integration
+settings. Holder recording chains the session and workspace writes through
+`UPDATE ... RETURNING`; metadata insertion and replacement use a single upsert.
+Diagnostic additions must fit these bounds rather than raise them.
 
 `tests/perf/` seeds this scale (fixture reused by all perf tests), runs on a Postgres
 service in CI, and asserts the table. SQLite runs the same suite with timing relaxed 4×,

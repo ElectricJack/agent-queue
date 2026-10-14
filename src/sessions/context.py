@@ -247,6 +247,65 @@ def store_lower_bound(session) -> float:
     )
 
 
+async def completed_turn_at(session, *, base_dir: Path | None = None) -> float | None:
+    """Positive end-of-turn evidence, never an inactivity heuristic.
+
+    A new user message, tool call or turn invalidates an older completion.
+    Unknown, partial and pre-claim transcripts cannot authorize recovery.
+    The file's mtime also gives newly appended records a full quiet interval.
+    """
+    if session.harness not in MEASURED_HARNESSES or not session.session_key:
+        return None
+    from src.sessions.transcripts import resolve_reader
+
+    def read():
+        reader = resolve_reader(session.harness, base_dir=base_dir)
+        path = reader.resolve_session(session) if reader else None
+        if path is None:
+            return None
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            start = max(0, stream.tell() - CONTEXT_TAIL_BYTES)
+            stream.seek(start)
+            data = stream.read(CONTEXT_TAIL_BYTES)
+        if not data.endswith(b"\n"):
+            return None
+        lines = data.splitlines()
+        if start:
+            lines.pop(0)
+        for line in reversed(lines):
+            raw = json.loads(line)
+            if not isinstance(raw, dict):
+                return None
+            kind = raw.get("type")
+            if session.harness == "claude":
+                if kind not in {"user", "assistant"}:
+                    continue
+                message = raw.get("message") or {}
+                if kind != "assistant" or message.get("stop_reason") != "end_turn":
+                    return None
+            else:
+                payload = raw.get("payload") or {}
+                if kind == "event_msg" and payload.get("type") == "task_complete":
+                    pass
+                elif kind in {"response_item", "turn_context"} or (
+                    kind == "event_msg" and payload.get("type") not in {"token_count"}
+                ):
+                    return None
+                else:
+                    continue
+            at = parse_iso_ts(raw.get("timestamp"))
+            if not at or at < store_lower_bound(session):
+                return None
+            return max(at, path.stat().st_mtime)
+        return None
+
+    try:
+        return await asyncio.to_thread(read)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
 def context_guidance(config, session=None, observation: dict | None = None) -> str:
     settings = getattr(config, "sessions", None)
     checkpoint = getattr(settings, "worker_context_checkpoint_tokens", 120000)

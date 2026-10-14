@@ -3001,6 +3001,7 @@
         "dialog_settle_seconds": 1.5,
         "enabled": true,
         "fake_script_file": "",
+        "idle_claim_timeout_seconds": 900,
         "idle_stop_grace_seconds": 60,
         "lease_ttl_seconds": 480,
         "max_restarts": 3,
@@ -3043,6 +3044,10 @@
         "fake_script_file": {
           "default": "",
           "type": "string"
+        },
+        "idle_claim_timeout_seconds": {
+          "default": 900,
+          "type": "integer"
         },
         "idle_stop_grace_seconds": {
           "default": 60,

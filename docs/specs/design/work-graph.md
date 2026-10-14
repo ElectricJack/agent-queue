@@ -207,6 +207,7 @@ Blockedness is deliberately **not transitive through blockedness**: an open (non
 - `_check_defined_tasks` stops scanning dependency lists: promotion becomes "DEFINED ∧ `is_blocked = 0` → READY" (one indexed query), plus the BLOCKED-recovery rule: a BLOCKED task with at least one blocking edge or gate whose `is_blocked` flips to 0 is promoted to READY; failure-BLOCKED tasks (no graph blockers) stay put, preserving today's behavior.
   - "Has a blocking edge" alone cannot tell a graph-BLOCKED task from a terminal close: every child of a container carries a `parent-child` edge. A transition into BLOCKED with a **terminal context** (`session_close_hard_failure`, `max_retries`, `session_close_pipeline_stop`, `timeout`, `stop_task`) therefore writes a `blocked_terminal = <context>` row in `task_metadata` inside the same transaction, and any transition out of BLOCKED (restart, reopen, supervisor recovery, admin skip) deletes it. The cascade drops marked rows from the BLOCKED candidate set before either decider runs, so a hard failure is terminal for hierarchical tasks too; only an explicit restart/reopen brings one back. `aq task explain` reports the mark as `blocked_terminal`.
 - The scheduler skips `READY ∧ is_blocked = 1` — closing the "edge added after READY" hole.
+- Recovery holds remain separate frontier guards. Accepted restart, reopen and manual or slot-reset resume supersede the prior recovery incident in the status transaction, preserving its decision history and recovery budget and archiving its notice. Refused controls and manual pauses retain the hold. Reconciliation supersedes a hold whose failure metadata, claim generation or stopped attempt no longer matches; an unchanged stopped failure projected to READY retains its hold. Releasing a recovery hold never resolves labels, dependencies, human gates or integration ownership.
 - `aq project ready` = `status = READY ∧ is_blocked = 0`, ordered `(priority, created_at)`, with label filters.
 - `tasks.is_blocked` is the sole readiness authority; the cascade does not retain a legacy dependency scan or rollout toggle.
 
@@ -649,3 +650,38 @@ Refusals: `hierarchy.parent_conflict` (combined with `parent_id`/`root`), `hiera
 ## 14. Out of scope
 
 Formulas/orders (playbook comeback, todo §8), the `messages` table (Workstream B), session/lease mechanics (Workstream A — this spec only reserves the `lease_stalled` explain code), and wave-*driven* scheduling. The `aq` CLI verbs themselves (`aq task explain`, `aq gate resolve`, `aq project ready`) are Workstream C surface over the commands this spec defines.
+
+## 15. Immutable approval ingestion (2026-10-11)
+
+The implementation specification for One Place to Ask Jack, §5.3, supersedes
+path-based spec authority. `spec.approved` carries `decision_id`, `packet_sha256`,
+`review_id`, `revision` and `spec_kind`; `spec_path` is only a mirror link.
+The reviewed default pipeline calls `ensure_spec_ingest`, which validates the
+successful approval application receipt and stamps one role task per decision.
+Its operation remains pending until that task receipt commits. The orchestrator
+replays pending dispatches through CommandHandler; an event acknowledgement is
+not a task receipt. Replays, including archived tasks and graphs, reuse receipts.
+
+A live held ingestion role reads `approved_spec_packet` and proposes with
+`source: spec:decision:<id>`. The server carries every frozen feedback identity,
+acceptance text and existing work link into the proposal and task metadata.
+Accepted external implementation prerequisites block every executable new leaf
+in the same transaction, excluding the prerequisite itself. Narrower leaf/waiter
+coverage must be accepted in the decision preview. Existing review waiters gain
+these edges before their review gate releases. Missing work, cycles, cross-project
+or unrepresentable hierarchy coverage refuse the transaction. Design approvals
+still create only an epic and an implementation-spec authoring child.
+
+Standalone `spec_approve` snapshots body bytes/hash and authenticated provenance,
+then creates its canonical ask/decision in the same transaction. Reviewed paths
+remain review-owned even if someone removes their frontmatter review ID.
+
+Before retiring path-only assignments, an operator inventories each project with
+`aq task spec-ingest-legacy-inventory --project-id <id>` and follows
+`--after-id <next_after_id>` until exhausted (100 rows per page). These assignments
+can replay only their already committed graph receipts. Pending legacy batches
+remain held for explicit source review/snapshot and operator reconciliation;
+there is no automatic replay of historical approvals. New decisions cannot use
+this compatibility branch. Inventory rows are operator evidence, not authority.
+The operator reconciles installed profile grants (`approved_spec_packet`) and
+activates the reviewed pipeline bundle; workers never reseed or activate it.

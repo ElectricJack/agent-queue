@@ -13,9 +13,10 @@ project hierarchy and rechecks the completed task, completion identity,
 repository, branch, PR, source base and project policy generation against the
 observation. A stale observation cannot reopen newer or running work. Normal
 integration mutation guards still refuse a frozen source or a live writer.
-The reopen retains branch, origin, integration mode and routing; it appends
-feedback and clears the assignment and stored PR URL as ordinary reopening
-does. Feedback, recovery accounting and the transition commit together.
+The reopen retains branch, origin, integration mode and explicit routing;
+derived routes are recomputed normally. It appends
+feedback and clears the assignment while retaining the existing PR and retry
+counters. Feedback, recovery accounting and the transition commit together.
 
 Each leaf can reopen automatically once for a given source SHA and up to
 `root.repair.primary_attempts` times (three when absent). Accounting persists
@@ -29,3 +30,9 @@ source-CI repairs keep their delivery path and are not superseded by reopening.
 The corrected completion must pass its own exact PR checks and ordinary
 candidate validation before delivery. Independent healthy roots can continue
 through admission while failed roots recover.
+
+When source-CI recovery is authorized, the one-repair source budget also applies
+to root PR recovery, including under `on_exhausted: continue`. Feedback from the
+source observer and the root admission gate counts across both paths. Historical
+source-CI delegates cannot be reopened by this alternate path. Exhaustion sends
+one notification per task across changed heads and restarts.

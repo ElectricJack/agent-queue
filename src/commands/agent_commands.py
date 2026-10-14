@@ -282,18 +282,30 @@ class AgentCommandsMixin(FlockCommandsMixin):
         return result
 
     async def _cmd_list_workspaces(self, args: dict) -> dict:
-        """List workspaces with lock status.
+        """List workspaces with lock status, owner identity and bounded diagnostics.
 
         Worktree-execution §6.8 annotations: each row carries ``role``
         (``base`` / ``slot`` / ``other``), ``slot_index``, ``mode`` (the
-        kind's git provisioning mode), ``branch`` (current HEAD when
-        readable), and ``dirty`` (True when the tree has uncommitted work).
-        Best-effort — a workspace whose directory is gone reports the
-        annotations as ``None`` rather than failing the whole call.
+        kind's git provisioning mode), ``branch`` and ``dirty``. ``branch`` and
+        ``dirty`` are ``None`` whenever the checkout could not be read --
+        never a guessed "clean". Each row also carries ``owner`` (lock task,
+        claim fence and live session, with a classification), ``presence``,
+        ``git_status`` and ``beyond_cap``; the top-level ``diagnostics`` says
+        whether the readback is complete. The whole call answers within
+        ``deadline_seconds`` (:mod:`src.workspace_listing`) and writes nothing.
         """
+        from src.workspace_listing import diagnose_workspaces, resolve_deadline
+
         project_id = args.get("project_id")
         if not project_id and self._active_project_id:
             project_id = self._active_project_id
+        try:
+            deadline = resolve_deadline(args.get("deadline_seconds"))
+        except (TypeError, ValueError) as exc:
+            return {"error": str(exc) or "deadline_seconds must be a number"}
+        probe_git = args.get("git", True)
+        if not isinstance(probe_git, bool):
+            return {"error": "git must be a boolean"}
         workspaces = await self.db.list_workspaces(project_id=project_id)
 
         # Pre-resolve kinds so annotations don't do N+1 lookups.
@@ -315,28 +327,17 @@ class AgentCommandsMixin(FlockCommandsMixin):
                 kind_cache[key] = kind
             return getattr(kind, "mode", None) if kind is not None else None
 
-        git = getattr(self.orchestrator, "git", None)
+        per_row, diagnostics = await diagnose_workspaces(
+            self.db,
+            getattr(self.orchestrator, "git", None),
+            workspaces,
+            probe_git=probe_git,
+            deadline=deadline,
+        )
         rows: list[dict] = []
         for ws in workspaces:
             role = "slot" if ws.is_slot else ("base" if ws.kind_id else "other")
-            mode = await _resolve_mode(ws)
-            branch: str | None = None
-            dirty: bool | None = None
-            if git is not None:
-                try:
-                    if await git.avalidate_checkout(ws.workspace_path):
-                        try:
-                            branch = await git.aget_current_branch(ws.workspace_path)
-                        except Exception:
-                            branch = None
-                        try:
-                            dirty = await git.ahas_uncommitted_changes(
-                                ws.workspace_path
-                            )
-                        except Exception:
-                            dirty = None
-                except Exception:
-                    pass
+            diag = per_row[ws.id]
             rows.append(
                 {
                     "id": ws.id,
@@ -352,12 +353,18 @@ class AgentCommandsMixin(FlockCommandsMixin):
                     # Worktree-execution §6.8 annotations
                     "role": role,
                     "slot_index": ws.slot_index,
-                    "mode": mode,
-                    "branch": branch,
-                    "dirty": dirty,
+                    "mode": await _resolve_mode(ws),
+                    "branch": diag["branch"],
+                    "dirty": diag["dirty"],
+                    # Bounded diagnostics (src/workspace_listing.py)
+                    "presence": diag["presence"],
+                    "git_status": diag["git_status"],
+                    "git_error": diag["git_error"],
+                    "beyond_cap": diag["beyond_cap"],
+                    "owner": diag["owner"],
                 }
             )
-        return {"workspaces": rows}
+        return {"workspaces": rows, "diagnostics": diagnostics}
 
     async def _cmd_list_workspace_kinds(self, args: dict) -> dict:
         """List workspace kinds visible to a project (system + project overrides).

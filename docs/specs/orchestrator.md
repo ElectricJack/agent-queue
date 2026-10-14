@@ -1062,6 +1062,32 @@ controls above. A recorded `retry` decision permits a new claim even though
 its incident's `retry_allowed` is false: that flag describes whether another
 recovery decision is allowed, not whether an approved attempt can run.
 
+An operator or live named **global** supervisor can explicitly release a held
+incident with `aq task recover --operator-release --decision release
+--task-id TASK --incident-id INCIDENT --expected-hold-at DECIDED_AT --reason WHY`.
+This command records the previous decision and the releasing principal without
+changing task state, routing, counters, resources or integration ownership.
+It also handles a stale hold on a task already resumed to READY. Incident and
+hold timestamp must both still match; active or completed tasks cannot be released.
+An integration delegate must use this release-only form and continue through
+its operation's controls. Project supervisors and workers cannot authorize it.
+
+For an ordinary BLOCKED task, the same flag with `--decision retry` authorizes
+an intentional retry of a reviewed failure even when its attention or session
+exit reason is not automatically retryable. It still requires a current incident,
+a freshly confirmed stopped worker, unchanged routing, remaining recovery and
+worker budgets, an active project, satisfied dependencies/gates, and no held
+resources, manual pauses, questions or integration owner. No counter is reset.
+
+Supervisor-authored holds on active train repair delegates or `slot_reset_failed`
+incidents have a 15-minute deadline. The failure scan reconciles older holds too.
+At expiry it preserves the hold and sends one durable escalation notice to both
+the project and global supervisors, naming the exact incident, hold timestamp,
+owner and available controls. Expiry ends the silent wait, never authorizes
+execution. Repeated scans do not resend the notice. Human/operator holds remain
+explicit and do not expire. A project supervisor must escalate a held train
+repair promptly: it blocks every delivery through that train.
+
 ---
 
 ## 16. Shutdown

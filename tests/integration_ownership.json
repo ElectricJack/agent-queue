@@ -8674,6 +8674,130 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    },
+    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
+      "landing_span": [
+        1036,
+        1106
+      ],
+      "baseline_span": null
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Claim queries import integration ownership, repair and origin tables alongside ordinary workspace/session tables; includes managed job pins used by the retained-binding guard.",
+      "landing_span": [
+        53,
+        71
+      ],
+      "baseline_span": null
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only integration owner and managed job pin probe fences missing-slot recreation. Attached/pending ownership prevents removal of its Git registration; no lifecycle, storage or ref write.",
+      "landing_span": [
+        634,
+        648
+      ],
+      "baseline_span": null
+    },
+    "src/commands/supervisor_authority.py::operator_or_global_supervisor": {
+      "reason": "Authority gate for audited recovery-hold release, including train delegates; checks local operator or live global supervisor identity without granting publication authority."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._recovery_hold_deadline": {
+      "reason": "Identifies active train repair ownership from immutable filing input and durable batch/stage rows to bound silent supervisor holds; deadline escalates without authorizing execution or publication."
+    },
+    "src/database/queries/task_recovery_queries.py::import from src.database.tables import agent_questions, agents, integration_branch_owners, integration_batches, integration_owner_recoveries, integration_repair_operations, integration_repair_stages, messages, projects, project_constraints, sessions, task_branch_origins, task_comments, task_context, task_metadata, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "reason": "Imports integration ownership and repair tables for pool workspace reconciliation or recovery-hold deadline guards; all shared import lines remain charged to integration ownership."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin.recover_orphaned_integration_task": {
+      "reason": "Stopped pool orphan recovery delegates to fenced integration owner recovery only after exact session, epoch, agent, workspace, repository, branch and supervisor guards. Preserves retained bindings on refusal and emits ordinary task evidence after proven release; no new journal or publication path."
+    },
+    "src/commands/task_commands.py::import from src.models import BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, AgentState, DepType, ProjectStatus, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Existing charged task-command model import now includes agent and project state guards for integration orphan recovery; enum vocabulary adds no storage or publication authority."
+    },
+    "src/git/manager.py::safe_git_detail": {
+      "reason": "Bounds and sanitizes immutable provenance publication and exact-readback diagnostics shared with the Git transport."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_reparent_task": {
+      "reason": "Routes ordinary task reparenting through the transactional hierarchy integration guard, preserving branch origins and invalidating both parent checkpoints in hierarchy and train modes."
+    },
+    "src/asks/sources.py::IntegrationAdapter": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        456,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.apply_on": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        517,
+        534
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.read": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        460,
+        485
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.snapshot": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        486,
+        516
+      ]
+    },
+    "src/asks/sources.py::IntegrationAdapter.source_kind": {
+      "reason": "Integration human-decision adapter, subject/gate identity fences and journal-backed domain receipts.",
+      "landing_span": [
+        459,
+        459
+      ]
+    },
+    "src/asks/sources.py::authorize_source": {
+      "reason": "Human source authorization includes exact integration gate/escalation binding and application authority.",
+      "landing_span": [
+        66,
+        151
+      ]
+    },
+    "src/asks/sources.py::import from src.database.tables import gates, integration_subjects, task_gates, task_proposals, tasks": {
+      "reason": "Integration subject table import used by the human-decision adapter.",
+      "landing_span": [
+        26,
+        32
+      ]
+    },
+    "src/asks/sources.py::source_adapters": {
+      "reason": "Static adapter registration includes the integration human-decision adapter.",
+      "landing_span": [
+        877,
+        889
+      ]
+    },
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_transaction": {
+      "reason": "Source decision transaction boundary used by the integration adapter alongside other human sources.",
+      "landing_span": [
+        187,
+        198
+      ]
+    },
+    "src/commands/gate_commands.py::GateCommandsMixin._gate_ask_source": {
+      "reason": "Maps integration subject gates to their exact human source identity.",
+      "landing_span": [
+        19,
+        30
+      ]
+    },
+    "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
+      "reason": "Project ownership resolver table import includes integration targets alongside generic human ask targets. Integration table dependencies remain charged; human identity and decision evidence retain generic storage ownership."
     }
   },
   "exclusions": {
@@ -8771,7 +8895,12 @@
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
-    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
+    "src/commands/ask_communication_commands.py::AskCommunicationCommandsMixin._cmd_ask_show": "Generic audience-scoped human request, review evidence and notification-transport display for all ask sources. delivery_status describes external messages; integration source authorization and adapters remain independently charged.",
+    "src/database/queries/ask_delivery_queries.py::AskDeliveryQueriesMixin.ask_delivery_status": "Notification root and reconciliation-case observations for every ask source; delivery_status is transport receipt state, with no Git, branch, integration gate or publication authority.",
+    "src/commands/ask_commands.py::AskCommandsMixin._ask_service": "Generic registry/service assembly for reviews, specifications and all human sources. Static integration adapter registration and IntegrationAdapter are independently charged; no integration decision or domain write occurs here.",
+    "src/asks/source_operations.py::apply": "Generic human-source operation leasing, pause gating and reconciliation, dispatching through the registered source adapter. No integration branch, subject, gate or policy state is interpreted or written here; IntegrationAdapter and authorize_source retain the charged integration authority and receipts.",
+    "src/asks/source_operations.py::import from src.asks.sources import authorize_source, finish_on": "Generic human-source authorization and completion imports; the integration branch of authorize_source remains independently charged, and finish_on only updates ask operations/projections."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -12693,7 +12822,12 @@
     "9286d2bd1ed4411cd57a776c216ccdab9a808647171f01039fb1e90e87b09cf4",
     "b21c32a8c394481661c22adf29429a69efe6e8843c531d2b8af8fb89418cf26c",
     "e0fc1cf5330bca638663d64d9289f82cf88987cea25879f3fee7aeec1ea328cf",
-    "ea6455ddf2f8a1e47396f7ca3a0ab733b9e6c43f24b60ce8072fbb5bbf37c3ad"
+    "ea6455ddf2f8a1e47396f7ca3a0ab733b9e6c43f24b60ce8072fbb5bbf37c3ad",
+    "d182371d645e692858957e59809f158abd1e533d01ca24f20cfa770be91c6c4f",
+    "e48ca4643e4ce9358e4b30188d9efe95b46df12231507a4bdaa8d8d61a6d6bd6",
+    "506027d4d7d2b4361555e56f5d57fe9f048c086036c3427b72c399b5226103ed",
+    "ac21808518fb762e3d0303005059a004f02ce73ee397f42457addba250bf1423",
+    "727333120b63a0f3a82efbb005d07d5efb43a59d1ea3a440f2e92fa6a4c6de66"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -12925,50 +13059,32 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
-    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
-      "line": 1376,
-      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
-      "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
-    },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1362,
+      "line": 1581,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "24f544aae8f441f3ae26f04e826dc503d25986cb17353430b999adbc1d47c81b",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
+      "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer. Metadata key: needs_attention; stores integration_prepare_failed_attached without publication intent, authoritative ref OIDs or replay authority. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery. Re-reviewed after typed ForeignSlotClaim handling: a foreign slot binding releases the incoming task to READY and quarantines the workspace before the generic failure ladder; these writes remain attention and failure diagnostics, with no publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1315,
+      "line": 1539,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "24f544aae8f441f3ae26f04e826dc503d25986cb17353430b999adbc1d47c81b",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
+      "reason": "Ordinary attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: needs_attention; stores repair_target_unpublished without publication intent, authoritative ref OIDs or replay authority. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery. Re-reviewed after typed ForeignSlotClaim handling: a foreign slot binding releases the incoming task to READY and quarantines the workspace before the generic failure ladder; these writes remain attention and failure diagnostics, with no publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
-      "line": 924,
+      "line": 953,
       "owner": "ClaimCommandsMixin._recover_stale_binding",
       "call": "set_task_meta",
       "owner_fingerprint": "99a5abfe960334f70d651bb2d30fb440da856cb1c7bfc6ab0431150d36bead9d",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
-    },
-    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d": {
-      "line": 1036,
-      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
-      "call": "set_task_meta",
-      "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
-      "integration_signal": true,
-      "disposition": "ordinary",
-      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/dashboard_state_commands.py::DashboardStateCommandsMixin._dashboard_mutate::7082de1161d61e4a5bb9e39c7bafb5ade15fe812419227082e188dc17f7e77ae": {
       "line": 225,
@@ -13094,7 +13210,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_notes' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::56578aa26104563e627d6920b6ab71ed75c43b52451419defe2a62b353044c31": {
       "line": 1465,
@@ -13103,7 +13219,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'close_session_id' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::660e646c2bc73a87acbd9635c6d7c2d7bfb27bc207880247753c79164914ad87": {
       "line": 1849,
@@ -13112,7 +13228,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ae11c6bd4fb43bd6de75c4c48200714e0e53b8fabfe707dbbd4107030938735a": {
       "line": 1453,
@@ -13121,7 +13237,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_outcome' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::be73c4ceb2c880e944a4b02d2f545fec23c5e2b042151119ccb55a6a109bcd41": {
       "line": 1455,
@@ -13130,7 +13246,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::ca3f2cdcd35a7a2089869aaff868b1ed242d5a4dc3a16c2f22bbee657ab3d40f": {
       "line": 1723,
@@ -13139,7 +13255,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'summary' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::da4a85ceaecac9a0a1152f3e0883f7f88015afbe1b94fb6f5e36892a01f386b4": {
       "line": 1449,
@@ -13148,7 +13264,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'outcome' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::dc542d68e996f280c4f1a0ad5174d7f358d5e33051a34bae65de5a76b92faf40": {
       "line": 1463,
@@ -13157,7 +13273,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'verification' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::e6420f7ac1c540cf49ce31f733f1e46efaca47d04099608408916ce1c06433ab": {
       "line": 1521,
@@ -13166,7 +13282,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: PENDING_COMPLETION_KEY Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f27f9aaff90d2f291ca36b29a447e4ecbd3822acfd900bbda99ee4792c8e586f": {
       "line": 1459,
@@ -13175,7 +13291,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_branch' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::f3b4697bfd97ba0305066ae8ff852bfbb7c8f4a9737eb15f0d6b36946b634acd": {
       "line": 1705,
@@ -13184,7 +13300,7 @@
       "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto'"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'work_commit_auto' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
     },
     "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_set::6081f9d27dc57e18ce5f31c465cfb8159e76c4d4c1a37d2b8b8d0c741d9fbeca": {
       "line": 304,
@@ -13295,22 +13411,22 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::0dfb7d71a735cf01bf69eb2924994003433c6ecb4da10f0c4921536d9b0bfd9a": {
-      "line": 3010,
+      "line": 3015,
       "owner": "TaskCommandsMixin._create_task",
       "call": "log_event",
-      "owner_fingerprint": "41dd3d5519e7aa6695c867050a7c6295b010ec51150016ee181b98b9d296e1f7",
+      "owner_fingerprint": "4339f109fa53d3f387e7357db211f228ebf012b83502da833cb5b0922e81abea",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Task label.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle."
+      "reason": "Task label.added audit only; source-owned pre-create locking hooks change the enclosing task creation AST, not this call or payload. No ref replay or duplicate integration lifecycle."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._create_task::410a02b90473dd130b922788f002d371e50f4de6ba4daff1847591088f3deff6": {
-      "line": 3001,
+      "line": 3008,
       "owner": "TaskCommandsMixin._create_task",
       "call": "log_event",
-      "owner_fingerprint": "41dd3d5519e7aa6695c867050a7c6295b010ec51150016ee181b98b9d296e1f7",
+      "owner_fingerprint": "4339f109fa53d3f387e7357db211f228ebf012b83502da833cb5b0922e81abea",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Task dependency.added audit only; routing preference validation changed the enclosing task creation AST, not this call or its payload. No ref replay or duplicate integration lifecycle."
+      "reason": "Task dependency.added audit only; source-owned pre-create locking hooks change the enclosing task creation AST, not this call or payload. No ref replay or duplicate integration lifecycle."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._emit_task_graph_change::49364bafd150cdc68036fcf280efa5d6ef80b0f72ce84d78634c8766f6431278": {
       "line": 1026,
@@ -13505,10 +13621,10 @@
       "line": 1727,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "2558f39e8c2aa7c967b1907695b71b4704c2ced83295af011a6b518a14c3760e",
+      "owner_fingerprint": "b02b9e78aa9497f78674469eea809cf51daf3222b77b60a33b57b0cabfee7b31",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle metadata cleanup, guarded retry routing and accepted-close identity. Explicit restart/reopen supersedes the previous supervisor recovery incident and archives its notification in the READY-write transaction, preserving diagnosis and budget. Ordinary status projection retains holds. Integration status, branch reservations and ref replay authority remain in dedicated records."
+      "reason": "Ordinary task lifecycle metadata cleanup. Accepted explicit restart/reopen/resume supersedes the old recovery hold in the status transaction, including already-READY tasks; same-failure projection retains holds, and repair delegates defer supersession until branch handoff. Diagnosis/budget remain in recovery records; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2165,
@@ -13592,13 +13708,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.decide_task_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 937,
+      "line": 1132,
       "owner": "TaskRecoveryQueryMixin.decide_task_recovery",
       "call": "delete",
-      "owner_fingerprint": "99405443a989482f4c3152912b24d02a92cb71c7e6727046d24e932a8809d9ba",
+      "owner_fingerprint": "b85ba098e1d860d83cf574aeed1fe288355b3bf3fcd9331a3b4e9c16bfe10515",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task recovery cleanup of needs_attention before a guarded retry. Current FAILED incidents may now be held without an attempt; retry guards, storage payloads and transaction boundaries remain intact, with no ref replay authority."
+      "reason": "Clears only needs_attention metadata after a guarded retry transitions the task to READY and consumes recovery budget. Hold release remains fenced by incident, timestamp and principal; no Git ref replay or duplicate delivery lifecycle."
     },
     "src/database/queries/triage_queries.py::_write_seen::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
       "line": 77,
@@ -14042,13 +14158,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/integration/owner_recovery.py::OwnerRecovery._release::67a057ee30845b7389fde9526fa8831803349998640cab32472820f1d00a18a2": {
-      "line": 706,
+      "line": 848,
       "owner": "OwnerRecovery._release",
       "call": "log_event",
-      "owner_fingerprint": "f8d3a2afcc2890f3ae7a838e24659f46131cf5f74a5368d2af4e19aa93c2573a",
+      "owner_fingerprint": "8f2434e5e4384ea06d7f1dca9644e832f81999e2553c746bc8e23454d1fe2ed9",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
+      "reason": "Audits the fenced owner release after claim reconciliation and workspace unlock; the notification records recovery evidence and does not authorize ref replay or duplicate task lifecycle."
     },
     "src/integration/parent_adapters.py::ParentPrimitiveAdapters.clear_reopen_refusal::5ddc9362418a6772f1e8c1d284b9b85cd15f738f3ae3e9837dd8d8fc12d06a9f": {
       "line": 412,
@@ -14324,10 +14440,10 @@
       "line": 1451,
       "owner": "Orchestrator._stop_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "86ab85667e0a3358fe4e2760c7beb3510a31a23d4483b39d936531f4cf35234d",
+      "owner_fingerprint": "85e35be52272325eead4d4c17ac1a4390dd67acb06ef3080d25e249a0c4d269c",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Diagnostic needs_attention=integration_handoff_unproven marker after a refused stop handoff; resources stay bound. Re-reviewed after exact-session stop confirmation was added before assignment/workspace release: this diagnostic write is unchanged. Stores no ref/SHA, replay intent or duplicate lifecycle authority."
+      "reason": "Unchanged ordinary integration_handoff_unproven attention marker on refused stop handoff. Re-reviewed after allowing both train and hierarchy modes: stopped-writer proof still precedes resource release, with no new journal or ref replay authority."
     },
     "src/orchestrator/core.py::Orchestrator._sweep_gates::09a8c81adcd7b86401088dbc04f5d3e98384c7378264232630db2ae930f309f5": {
       "line": 3249,
@@ -14690,13 +14806,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _dismiss_key(q['id'])"
     },
     "src/sessions/questions.py::AgentQuestionService.answer::b9447634eee2e9f8306f54b9e7df0b083226e4ffc77b0675af9cb69cd594f187": {
-      "line": 764,
+      "line": 788,
       "owner": "AgentQuestionService.answer",
       "call": "set_task_meta",
-      "owner_fingerprint": "f593f68a0e88040f681373aefea548d194d310c2096267fd284002be9f213810",
+      "owner_fingerprint": "3f56bf454359e646b53b4caa98f84288c439886814dd49d5f6fbdf29c7e5a8dc",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _answered_key(question_id)"
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: _answered_key(question_id) Owner now also fences accepted ask decisions and domain receipts."
     },
     "src/sessions/reconciler.py::SessionReconciler._apply_pool_verdict::672b462b5108595d73e5b020839bafa231daab0955a6d595626fa61eb403bb47": {
       "line": 1524,
@@ -14753,58 +14869,58 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
     },
     "src/sessions/reconciler.py::SessionReconciler._step_backstop::213c372048797b24b8404f77b4a725611b628d2c507388c007a182869507e1b5": {
-      "line": 3006,
+      "line": 3184,
       "owner": "SessionReconciler._step_backstop",
       "call": "set_task_meta",
-      "owner_fingerprint": "47b2242f30f1851a8999956df7a749d52808bf658097484e5625c314f3bd7244",
+      "owner_fingerprint": "011d1ae5dfe6c721be3a8472f845e090903b296e4ebd63b00259b22abd947429",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
     },
     "src/sessions/reconciler.py::SessionReconciler._step_backstop::520a5d4212b5ec30a7dd206187632959436230a62055bda95fec1b7292be78c7": {
-      "line": 2988,
+      "line": 3166,
       "owner": "SessionReconciler._step_backstop",
       "call": "set_task_meta",
-      "owner_fingerprint": "47b2242f30f1851a8999956df7a749d52808bf658097484e5625c314f3bd7244",
+      "owner_fingerprint": "011d1ae5dfe6c721be3a8472f845e090903b296e4ebd63b00259b22abd947429",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
     },
     "src/sessions/reconciler.py::SessionReconciler._step_orphans::bd56abe22d01405d7daf3f367c989c6039944b48df86b62d01fd17e0697a3b6d": {
-      "line": 2552,
+      "line": 2605,
       "owner": "SessionReconciler._step_orphans",
       "call": "set_task_meta",
-      "owner_fingerprint": "b4f8268b0e205d6092ffc0d2a404691c06c2a33e08a8f3a9cf1d83021eeb0ddb",
+      "owner_fingerprint": "003f8245704ad48ba075e2da5136501b0c3b91ee2d7625811e048df96693c0b7",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary session orphan attention state; missing-session assignments now delegate to the fenced recovery command. Existing attention metadata remains unchanged, with no ref replay authority."
+      "reason": "Unchanged ordinary session_not_live attention marker. Stopped integration writers now delegate to exact-identity fenced recovery before fallback; refusal retains bindings and bypasses this marker. No ref replay or duplicate integration lifecycle storage."
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
-      "line": 2342,
+      "line": 2396,
       "owner": "SessionReconciler._step_stall_ladder",
       "call": "set_task_meta",
-      "owner_fingerprint": "00c67a558666ca127ecb760313afbc8b5fce2628de23fd6744f2f66905723634",
+      "owner_fingerprint": "cb98e6b7b5ecdeaa17a96ad6bf612e407476c4c8dcc8fdbcd8a6875e69ef6f74",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
-      "line": 2306,
+      "line": 2360,
       "owner": "SessionReconciler._step_stall_ladder",
       "call": "set_task_meta",
-      "owner_fingerprint": "00c67a558666ca127ecb760313afbc8b5fce2628de23fd6744f2f66905723634",
+      "owner_fingerprint": "cb98e6b7b5ecdeaa17a96ad6bf612e407476c4c8dcc8fdbcd8a6875e69ef6f74",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::675fd05fe0efd918ede8974d1c8788d12fe7f5b20d28d4ef5e184db913b1f27e": {
-      "line": 2305,
+      "line": 2359,
       "owner": "SessionReconciler._step_stall_ladder",
       "call": "set_task_meta",
-      "owner_fingerprint": "00c67a558666ca127ecb760313afbc8b5fce2628de23fd6744f2f66905723634",
+      "owner_fingerprint": "cb98e6b7b5ecdeaa17a96ad6bf612e407476c4c8dcc8fdbcd8a6875e69ef6f74",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+      "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
     },
     "src/sessions/reconciler.py::SessionReconciler._wait_lease::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
       "line": 1620,
@@ -14942,13 +15058,13 @@
       "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
-      "line": 440,
+      "line": 511,
       "owner": "BatchStore.supersede",
       "call": "log_event",
-      "owner_fingerprint": "06a16c2d7e881ba72610c415b04fc8d005ff1a749971a9b42aa5847cf80e9e87",
+      "owner_fingerprint": "7a501445727e0cab38e76963d5f43819f0d5caa8c541946fd7ec9f94b015eae3",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
+      "reason": "Audit of an obsolete batch superseded after prerequisite refresh or removal of frozen required checks. The batch-owned release instruction authorizes input admission; this event neither replays refs nor asserts delivery. Policy supersession rechecks the project policy, explicit holds and target freshness, queues branch retirement and atomically freezes any special epic replacement; no duplicated delivery lifecycle."
     },
     "src/integration/stacked_branches.py::EpicRefresh.refresh::85c997f17278e49c5a7a51cb1d2aaa7efb3367004ec68ae50f173b3772c77128": {
       "line": 1002,
@@ -14987,13 +15103,13 @@
       "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
-      "line": 1276,
+      "line": 1486,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "24f544aae8f441f3ae26f04e826dc503d25986cb17353430b999adbc1d47c81b",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Records a named preparation hold when a retained attachment cannot be safely released; ordinary claim diagnostic, never Git publication or ref replay authority."
+      "reason": "Ordinary attention marker when a stack preparation conflict cannot safely release its attached writer. Metadata key: needs_attention; stores the exception code, while retained branch evidence stays with the existing guarded ownership mechanism. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery. Re-reviewed after typed ForeignSlotClaim handling: a foreign slot binding releases the incoming task to READY and quarantines the workspace before the generic failure ladder; these writes remain attention and failure diagnostics, with no publication intent or ref replay authority."
     },
     "src/integration/cutover.py::_Activation.write_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "call": "insert",
@@ -15176,22 +15292,22 @@
       "reason": "Ordinary recovery hold supersession only after a guarded repair-delegate branch handoff succeeds; refused reservation restores the worker failure streak and retains the prior incident. Integration reservation guards remain authoritative; no ref replay or duplicate integration lifecycle storage."
     },
     "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::9092769dc16180050c1d7a01c5d46256c2cd0383b351f15fadc91645e2ec169a": {
-      "line": 1644,
+      "line": 1687,
       "owner": "SessionReconciler._recover_guarded_failure",
       "call": "set_task_meta",
-      "owner_fingerprint": "a0cca07f395697be7c0ba862af07f9a3c00fade70e738237d814753d1e4aa23e",
+      "owner_fingerprint": "74932194f5b7721fe57ecc60b553903fe67b1445f67f78bdc1bf4e65721d4046",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure; no integration lifecycle state or replay authority."
+      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure. Observed teardown state only selects the continuation comment and event; it grants no claim admission, hold release, integration lifecycle state or replay authority."
     },
     "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::ac90864190cb937e76dcb9c547f507fd4285011a7f0853249f741e69e6ba8acb": {
-      "line": 1645,
+      "line": 1688,
       "owner": "SessionReconciler._recover_guarded_failure",
       "call": "set_task_meta",
-      "owner_fingerprint": "a0cca07f395697be7c0ba862af07f9a3c00fade70e738237d814753d1e4aa23e",
+      "owner_fingerprint": "74932194f5b7721fe57ecc60b553903fe67b1445f67f78bdc1bf4e65721d4046",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure; no integration lifecycle state or replay authority."
+      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure. Observed teardown state only selects the continuation comment and event; it grants no claim admission, hold release, integration lifecycle state or replay authority."
     },
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_audit::bd2a4a293320cc867e1020b0690f6f6eed30d0527bacc63a71e5489091be21fe": {
       "line": 208,
@@ -15291,6 +15407,105 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Deletes the claimed_by_session record a durably stopped writer left on a task the operator closes (azure-beacon-38); ordinary claim lifecycle, no ref replay or duplicate integration lifecycle storage."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::aa66b0c4bf394b454a55b04b3048c4ae854edc5b7c2e7dcc2bdeb6a61fa2e5b1": {
+      "line": 1094,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "call": "set_task_meta",
+      "owner_fingerprint": "5320f339dd4403a0b643d4cd1d80c453fcd0e62e4f25d3ae07da6ef69c3a5f35",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Branch-fence refusal diagnostics retain a nonblank reason and task/workspace/session identity before ordinary claim release and backoff. Metadata key: branch_fenced_prepare_failed; cleared on successful activation, with no publication intent, authoritative ref OIDs or replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::5f457951c70bf9a85748058a4541961a976c9d242448650882070b61af58ba61": {
+      "line": 1354,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary preparation-failure diagnostics retain the nonblank reason, exception type, workspace path/id, session and claim epoch for supervisor recovery. Metadata key: claim_preparation_failure; diagnostic evidence only, with no integration lifecycle or ref replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::64d9070466d052e67a1a96dd3a40b4a768057d1acb08c0c4e390c117e3eb58e7": {
+      "line": 1473,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary slot-reset failure reason, attempt count and automatic/manual retry guidance after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: slot_reset_failure; no publication intent, authoritative ref OIDs or replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::a013c7a46d34c2c833b5b1129a77bc31978b9ed19c44d76097646187d4fe028d": {
+      "line": 1615,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "24f544aae8f441f3ae26f04e826dc503d25986cb17353430b999adbc1d47c81b",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary slot_reset_failure diagnostic snapshot after non-transient preparation errors: bounded scrubbed reason, error type and stage, observing workspace/session, timestamp, attempt and existing automatic/manual retry disposition. PostgreSQL contention bypasses this write. Re-reviewed after workspace binding, foreign-claim and checkout reconciliation guards changed the owner: the marker does not grant retries, reset budgets, replay refs or duplicate integration lifecycle; guarded release_claim still owns the transition. Re-reviewed after typed ForeignSlotClaim handling: a foreign slot binding releases the incoming task to READY and quarantines the workspace before the generic failure ladder; these writes remain attention and failure diagnostics, with no publication intent or ref replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::dafd2c39585871bc43eee31fe328d25d78b2fe580fe7377a7af483d0e3dd123a": {
+      "line": 1088,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "call": "set_task_meta",
+      "owner_fingerprint": "f0016aa1c4398254d4b2a25927bbc29e3a4d67dcebba1e5e3362bcf1e765207d",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._record_prepare_failure::9a6c34a59da72b0a5f8d49ff08edadf3828cf7b641054abd4cf2ff7f3a44b73c": {
+      "line": 1139,
+      "owner": "ClaimCommandsMixin._record_prepare_failure",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1dd1e2cdd2ecc4efe42a17188b8f509919a34ca44a557c2d7a50ecdadab0a54f",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary PREPARE_FAILURE diagnostic snapshot: one bounded secret-scrubbed stage/type/cause description plus task, observing session instance, claim epoch, workspace id and safe_text-scrubbed bounded workspace path, timestamp, attempt and the caller's already-selected disposition. Replaces the prior diagnostic call fingerprint after task/path identity was added. Cleared by the next activation; grants no retry, budget reset, ownership change, publication intent or ref replay authority and creates no duplicate integration lifecycle."
+    },
+    "src/sessions/worker_recovery.py::prepare_guarded_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 302,
+      "owner": "prepare_guarded_recovery",
+      "call": "delete",
+      "owner_fingerprint": "001b9fe77f07c2555eec510d1804540fbccf64361f136ef7c2ff1b8ea07dc934",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Removes only the failed worker native resume key under exact task epoch/session instance/failure-record guards; ordinary continuation state, no ref replay or integration lifecycle authority."
+    },
+    "src/integration/hierarchy.py::HierarchyIntegration._reacquire_expired_reservation::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 1206,
+      "owner": "HierarchyIntegration._reacquire_expired_reservation",
+      "call": "insert",
+      "owner_fingerprint": "3e2a34e2c8fad01cd9fdb1a3d34779df68adc731b9944d1b9bd8994bd60e1f98",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Audit event for re-leasing a detached task's own expired origin reservation before its drain cut (sound-willow-55); ordinary audit storage, no ref replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::2000800a19f07b12dcfd441b364b958149789c935756a56406678e50d5d7e2c8": {
+      "line": 1319,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "call": "set_task_meta",
+      "owner_fingerprint": "eb5214b9825c8aad11de6ca9ecf9baa56dbaa62ac2d8e7648b147fe054c86164",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'failure_class' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
+    "src/asks/operations.py::ReviewOperations.run_stage::8eb7f5847f71846e2a5b665e5cfb37fd46ad0e184cbe0da1769b716b1506a40a": {
+      "line": 876,
+      "owner": "ReviewOperations.run_stage",
+      "call": "log_event",
+      "owner_fingerprint": "fb6c6eaebbc9494a54cda797ffd3dceb63f4f2cf09f25254f0e704096a4b6226",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Review decision, gate resolution and task blocked/unblocked event audit. The source-owned ask operation stores the event sequence for idempotent emission; it neither replays Git refs nor duplicates integration lifecycle state."
+    },
+    "src/asks/ingestion.py::dispatch::a4bd4fa14cba00a4c04093b1d29646ee56e0b4a57163e7b4979ac91c97e90ab9": {
+      "line": 147,
+      "owner": "dispatch",
+      "call": "log_event",
+      "owner_fingerprint": "0b1686bbf15c56d7d17df49e7f3c3c333bb4dbd0dba0cccf09cefda0c825e027",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Approved-document dispatch audit records the immutable decision identity and event sequence in its source-owned ingestion operation. Retries cannot authorize work without the approved application receipt; no Git ref replay or integration delivery lifecycle state."
     }
   },
   "generic_dependencies": {
@@ -16167,7 +16382,41 @@
     "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently.",
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
-    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority."
+    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
+    "src/preparation_failure.py::describe_preparation_failure": "Generic dependency: pure description of a preparation exception (stage, type, scrubbed bounded message, cause chain); no storage, fence or publication authority.",
+    "src/projects/github.py::scrub_secrets": "Generic credential scrubber shared by GitHub clients, authentication diagnostics and Git transport; contains no integration policy or state.",
+    "src/main.py::_bind_report_outbox": "Generic startup binding of human request, conversation and report notification services to their transport; no integration subject, branch, publication state or ref authority. Integration orchestration in run remains independently charged.",
+    "src/asks/models.py::digest": "Generic canonical JSON hashing for all ask sources; no integration state, policy or ref authority. Integration adapters remain independently charged.",
+    "src/asks/review.py::authenticated_actor": "Generic authenticated principal construction shared by reviews and all ask sources; no integration state or authority decision. Integration authorization remains independently charged.",
+    "src/asks/operations.py::get_operation": "Generic decision-operation lookup in escalation_actions, shared by all ask sources; no integration subject, branch or lifecycle state.",
+    "src/asks/operations.py::succeed": "Generic ask operation completion on the caller connection; source adapters own and independently charge every integration effect and receipt.",
+    "src/asks/sources.py::finish_on": "Generic ask operation/projection completion for every source kind; no integration state or ref authority. IntegrationAdapter remains independently charged.",
+    "src/asks/authority.py::authorize_input_actor": "Generic stored human-input identity, source binding, audience and live supervisor checks shared by every ask source. No integration subject, branch, gate or publication state is interpreted; authorize_source and IntegrationAdapter remain independently charged.",
+    "src/commands/contracts/ask.py::GATEWAY_COMMANDS": "Generic gateway capability names for human request transport; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
+    "src/commands/contracts/ask.py::OPERATOR_COMMANDS": "Generic operator capability names for human request maintenance; no integration lifecycle or publication authority. Integration handlers remain independently charged.",
+    "src/commands/contracts/ask.py::register_ask_contracts": "Generic command registration and result/effect schemas shared by every ask source. Delegates to CommandHandler without interpreting integration state; integration source handlers and the builtin registry remain independently charged.",
+    "src/database/tables.py::human_asks": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/database/tables.py::ask_decision_previews": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/database/tables.py::ask_decisions": "Generic human ask identity and verified decision evidence shared by all source kinds; no integration subject, branch, gate lifecycle or ref authority. IntegrationAdapter and authorize_source remain independently charged.",
+    "src/asks/authority.py::public_allowed": "Generic audience and authenticated-principal predicate shared by every ask source; integration source authorization remains independently charged.",
+    "src/asks/buttons.py::authorize_button_actor": "Generic external button actor evidence and audience checks; no integration subject or publication policy is interpreted.",
+    "src/asks/buttons.py::decide": "Generic opaque-token, root, mode and version fences for external human decisions. Source effects are delegated through the shared decision handler; IntegrationAdapter and authorize_source remain independently charged.",
+    "src/asks/delivery.py::config_fingerprint": "Generic notification-destination configuration hashing; no integration state or ref authority.",
+    "src/asks/delivery.py::destination": "Generic notification channel identity for all human asks; no integration branch or delivery lifecycle.",
+    "src/asks/intake.py::input_values": "Generic human discussion input normalization, reply binding and provenance; integration source effects remain independently charged.",
+    "src/asks/service.py::new_id": "Generic random prefixed identifier generation for human request records; no integration state or authority.",
+    "src/asks/service.py::version_of": "Generic human request decision, feedback, display and source version projection; integration gate/version interpretation remains in the charged source adapter.",
+    "src/cli/formatters.py::format_ask_detail": "Generic human request detail, document, discussion and receipt presentation shared by all ask sources; no integration authority or state transition.",
+    "src/cli/formatters.py::format_ask_list": "Generic human request list and pagination presentation shared by all ask sources; no integration authority or state transition.",
+    "src/cli/formatters.py::format_ask_preview": "Generic prepared human decision packet presentation; integration effects remain in the charged source adapter.",
+    "src/cli/formatters.py::format_ask_receipt": "Generic human request receipt presentation; no integration lifecycle or ref authority.",
+    "src/database/queries/ask_input_queries.py::text_hash": "Generic UTF-8 human input hashing; no integration state or authority.",
+    "src/database/queries/ask_queries.py::ask_audience_predicate": "Generic SQL audience filtering shared by every ask source; integration source authority remains independently charged.",
+    "src/database/tables.py::ask_external_bindings": "Generic external notification root, receipt and generation storage for every ask source; no integration branch, gate lifecycle or ref replay authority.",
+    "src/database/tables.py::ask_reconciliation_cases": "Generic source/transport evidence conflicts and explicit repair receipts for every ask source; no integration subject journal or ref replay authority.",
+    "src/database/tables.py::ask_source_aliases": "Generic human request source identity and alias reconciliation shared by every source kind; integration source interpretation remains independently charged.",
+    "src/database/tables.py::review_feedback_obligations": "Generic accepted review feedback, ownership and completion evidence; no integration branch, publication state or ref replay authority.",
+    "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

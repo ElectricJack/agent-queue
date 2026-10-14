@@ -98,6 +98,10 @@ async def test_accept_writes_conversation_input_and_supervisor_message(db):
         "closed_at": None,
     }
     assert item == {
+        "ask_id": None, "project_id": None, "routing_state": "conversation",
+        "routing_evidence": {}, "receipt": {}, "guild_id": None,
+        "reference_message_id": None, "external_thread_id": None,
+        "source_version": None, "retention_entry_id": None,
         "id": item["id"],
         "conversation_id": conversation["id"],
         "transport": "discord",

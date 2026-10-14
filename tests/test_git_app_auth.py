@@ -6,6 +6,7 @@ import gc
 import logging
 import os
 import signal
+import shutil
 import ssl
 import subprocess
 from pathlib import Path
@@ -992,6 +993,148 @@ async def test_exact_oid_fetch_completes_a_commit_held_without_its_history(
 
     assert len(fetches) == 1
     _git(["fsck", "--connectivity-only", "--no-dangling"], store)
+
+
+@pytest.mark.parametrize("damage", ["empty", "truncated", "missing"])
+@pytest.mark.parametrize("operation", ["origin", "origin-local-only", "exact"])
+async def test_corrupt_lender_is_unavailable_without_losing_local_sources(
+    tmp_path, monkeypatch, damage, operation,
+):
+    work, source, store = _exact_fetch_case(tmp_path)
+    manager = GitManager()
+    tip = _git(["rev-parse", "HEAD"], work)
+    await _exact_fetch(manager, store, source, tip, "refs/aq/exact/source")
+    # Unpublished work is part of the retained source inventory, even when the
+    # remote branch is healthy and the next fetch asks only for origin refs.
+    (work / "unique.txt").write_text("unpublished content\n")
+    _git(["add", "unique.txt"], work)
+    _git(["commit", "-m", "unique local source"], work)
+    unique = _git(["rev-parse", "HEAD"], work)
+    _git(["fetch", str(work), f"{unique}:refs/heads/unique"], store)
+    _git(["remote", "add", "origin", str(source)], store)
+    _git(["update-ref", "refs/remotes/origin/main", tip], store)
+    if operation == "origin-local-only":
+        _git(["update-ref", "-d", "refs/remotes/origin/main"], store)
+        _git(["update-ref", "-d", "refs/aq/exact/source"], store)
+    blob = _git(["rev-parse", f"{unique}:unique.txt"], work)
+    obj = store / "objects" / blob[:2] / blob[2:]
+    obj.chmod(0o600)
+    if damage == "missing":
+        obj.unlink()
+    else:
+        obj.write_bytes(b"" if damage == "empty" else obj.read_bytes()[:3])
+    before = {p.relative_to(store): p.read_bytes() for p in store.rglob("*") if p.is_file()}
+    network = AsyncMock(side_effect=AssertionError("corrupt lender must not negotiate"))
+    monkeypatch.setattr(manager, "_arun_authenticated_git", network)
+
+    with pytest.raises(GitError, match="integrity is unavailable"):
+        if operation == "exact":
+            await _exact_fetch(manager, store, source, tip, "refs/aq/exact/second")
+        else:
+            await manager._afetch_origin_with_auth_to_url(
+                str(store), source_url=source.as_uri(), token="test-token",
+            )
+
+    network.assert_not_awaited()
+    assert {p.relative_to(store): p.read_bytes() for p in store.rglob("*") if p.is_file()} == before
+    assert _git(["rev-parse", "refs/heads/unique"], store) == unique
+    if operation != "origin-local-only":
+        assert _git(["rev-parse", "refs/aq/exact/source"], store) == tip
+    # A different healthy store still progresses through the same manager.
+    monkeypatch.undo()
+    healthy = tmp_path / "healthy.git"
+    _git(["init", "--bare", str(healthy)], tmp_path)
+    assert await _exact_fetch(manager, healthy, source, tip, "refs/aq/exact/healthy") == tip
+
+
+async def test_staged_object_restoration_requires_every_body_and_preserves_original(tmp_path):
+    work, source, store = _exact_fetch_case(tmp_path)
+    manager = GitManager()
+    tip = _git(["rev-parse", "HEAD"], work)
+    await _exact_fetch(manager, store, source, tip, "refs/aq/exact/source")
+    # Force loose objects in this disposable store so the two exact damaged
+    # bodies can be restored independently. No live cache operation is exposed.
+    _git(["fetch", str(work), "HEAD:refs/heads/local-only"], store)
+    blobs = [_git(["rev-parse", f"{tip}:{name}"], work)
+             for name in ("counter.txt", "large.bin")]
+    import zlib
+    import hashlib
+
+    bodies = {}
+    for oid in blobs:
+        body = subprocess.check_output(["git", "cat-file", "blob", oid], cwd=work)
+        raw = f"blob {len(body)}\0".encode() + body
+        assert hashlib.sha1(raw).hexdigest() == oid
+        obj = store / "objects" / oid[:2] / oid[2:]
+        obj.parent.mkdir(exist_ok=True)
+        obj.write_bytes(b"")
+        bodies[obj.relative_to(store)] = zlib.compress(raw)
+    original = {p.relative_to(store): p.read_bytes() for p in store.rglob("*") if p.is_file()}
+    stage = tmp_path / "stage.git"
+    shutil.copytree(store, stage)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    async def verify():
+        await manager._averify_retained_objects(
+            str(stage), home=home, deadline=asyncio.get_running_loop().time() + 30,
+        )
+
+    for relative, compressed in bodies.items():
+        with pytest.raises(GitError, match="integrity is unavailable"):
+            await verify()
+        (stage / relative).write_bytes(compressed)
+    await verify()
+    # Restarting inspection is safe and does not mint refs or a live receipt.
+    await GitManager()._averify_retained_objects(
+        str(stage), home=home, deadline=asyncio.get_running_loop().time() + 30,
+    )
+    assert _git(["for-each-ref", "--format=%(refname) %(objectname)"], stage) == (
+        _git(["for-each-ref", "--format=%(refname) %(objectname)"], store)
+    )
+    assert {p.relative_to(store): p.read_bytes() for p in store.rglob("*") if p.is_file()} == original
+
+
+@pytest.mark.parametrize("damage", [b"", b"truncated"])
+async def test_unreferenced_commit_cannot_hide_corrupt_blob_in_local_shortcut(
+    tmp_path, monkeypatch, damage,
+):
+    work, source, store = _exact_fetch_case(tmp_path)
+    tip = _git(["rev-parse", "HEAD"], work)
+    manager = GitManager()
+    await _exact_fetch(manager, store, source, tip, "refs/aq/exact/source")
+    _git(["update-ref", "-d", "refs/aq/exact/source"], store)
+    blob = _git(["rev-parse", "HEAD:large.bin"], work)
+    obj = store / "objects" / blob[:2] / blob[2:]
+    obj.parent.mkdir(exist_ok=True)
+    obj.write_bytes(damage)
+    no_network = AsyncMock(side_effect=AssertionError("corrupt local shortcut must fail"))
+    monkeypatch.setattr(manager, "_arun_authenticated_git", no_network)
+
+    with pytest.raises(GitError, match="integrity is unavailable"):
+        await _exact_fetch(manager, store, source, tip, "refs/aq/exact/retry")
+
+    no_network.assert_not_awaited()
+    assert not _git(["for-each-ref", "--format=%(refname)"], store)
+    assert obj.read_bytes() == damage
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+async def test_integrity_gate_refuses_zero_exit_with_error_evidence(tmp_path, monkeypatch, stream):
+    manager = GitManager()
+    evidence = b"error: object file contains private-path-and-token-sentinel\n"
+    process = SimpleNamespace(
+        returncode=0, communicate=AsyncMock(return_value=(
+            evidence if stream == "stdout" else b"",
+            evidence if stream == "stderr" else b"",
+        )),
+    )
+    monkeypatch.setattr(manager, "_spawn_isolated_git", AsyncMock(return_value=process))
+    with pytest.raises(GitError, match="integrity is unavailable") as caught:
+        await manager._averify_retained_objects(
+            str(tmp_path), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+        )
+    assert "private-path" not in str(caught.value)
 
 
 @pytest.mark.asyncio
@@ -2130,7 +2273,9 @@ async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
         str(checkout), {"fresh": tip, "taken": tip}, repository_url=str(target)
     )
     assert observed["fresh"] == RemoteRefResult(RemoteRefState.PRESENT, oid=tip)
-    assert observed["taken"] == RemoteRefResult(RemoteRefState.PRESENT, oid=base)
+    assert observed["taken"].state is RemoteRefState.PRESENT
+    assert observed["taken"].oid == base
+    assert "stale info" in observed["taken"].publication_error
     assert await manager.als_remote_refs(
         str(checkout), ["fresh", "missing"], repository_url=str(target)
     ) == {
@@ -2143,7 +2288,55 @@ async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
                      subprocess.CompletedProcess([], 0, "", "")]))
     failed = await manager.apush_new_refs(str(checkout), {"other": tip}, repository_url=str(target))
     # Absent after a failed transfer is that failure, not an observation.
-    assert failed == {"other": RemoteRefResult(RemoteRefState.ERROR, error="remote unreachable")}
+    assert failed == {"other": RemoteRefResult(
+        RemoteRefState.ERROR, error="remote unreachable", publication_error="remote unreachable"
+    )}
+
+
+@pytest.mark.parametrize("readback", ["absent", "error", "mismatch", "correct"])
+async def test_immutable_push_retains_safe_transfer_failure_when_readback_cannot_prove_tip(
+    tmp_path, monkeypatch, readback,
+):
+    from src.git.manager import safe_git_detail
+
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    ref = "refs/aq/provenance/completions/subject/generation"
+    manager = GitManager()
+    secret = "private-installation-token"
+    failure = (
+        "\x1b\n" * 300
+        + f"{secret} https://alice:password@github.com/acme/widgets.git\n"
+        "Authorization: Bearer header-secret\npush rejected"
+    )
+    observed = {
+        "absent": RemoteRefResult(RemoteRefState.ABSENT),
+        "error": RemoteRefResult(RemoteRefState.ERROR, error="remote read denied"),
+        "mismatch": RemoteRefResult(RemoteRefState.PRESENT, oid=base),
+        "correct": RemoteRefResult(RemoteRefState.PRESENT, oid=tip),
+    }[readback]
+    monkeypatch.setattr(manager, "_apush_destination", AsyncMock(
+        return_value=(target.as_uri(), secret)))
+    transfer = AsyncMock(side_effect=GitError(failure))
+    monkeypatch.setattr(manager, "_apush_refs_with_app_auth_to_url", transfer)
+    monkeypatch.setattr(manager, "als_remote_qualified_refs", AsyncMock(return_value={ref: observed}))
+    result = (await manager.apush_new_refs(
+        str(checkout), {ref: tip}, repository_url=str(target), qualified=True,
+    ))[ref]
+    assert transfer.await_args.kwargs["updates"] == [(tip, ref, "0" * 40)]
+    assert transfer.await_args.kwargs["_qualified_refs"] is True
+    if readback == "correct":
+        assert result == observed
+    else:
+        assert "push rejected" in result.publication_error
+        assert len(result.publication_error) <= 512
+        assert safe_git_detail(result.publication_error) == result.publication_error
+        for credential in (secret, "password", "header-secret", "\x1b", "\n"):
+            assert credential not in repr(result)
+        if readback == "absent":
+            assert result.state is RemoteRefState.ERROR and result.error == result.publication_error
+        else:
+            assert (result.state, result.oid, result.error) == (
+                observed.state, observed.oid, observed.error)
 
 
 @pytest.mark.asyncio

@@ -158,6 +158,18 @@ restoration retains the original checkpoint metadata/ref until execution starts;
 pause restoration keeps its existing changed-branch refusal. All handoff proof and owner
 fencing checks still run before this reconciliation.
 
+Stack preparation compares an existing local child tip with the freshly observed
+published child tip in the observation store. Equal tips use the published tip;
+if the published tip is an ancestor of the local tip, preparation retains the
+local commits. If that ancestry is definitively false and the local tip is proved
+an ancestor of the published tip, preparation uses the published descendant.
+Divergent or unknown ancestry still refuses preparation. This comparison only
+selects an overlay input: it does not move the shared local branch or checkout,
+replace the immutable filing origin, or release a hold. Remote and prerequisite
+proofs are rechecked through activation, and checkout changes still require the
+existing task, repository, claim, workspace and branch owner fences. Dirty state
+and unpublished checkpoints retain their existing preservation rules.
+
 Branch naming is fixed at `aq/<task_id>` — no title slug, so the branch is derivable from the task id alone (crash recovery, `aq task branch`, reaper matching by `aq/*` prefix).
 
 ### 3.3 While running

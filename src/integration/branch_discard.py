@@ -30,6 +30,7 @@ import re
 import shutil
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -342,10 +343,11 @@ class BranchDiscardService:
         self,
         row: dict[str, Any],
         *,
-        binding: GitHubRepositoryBinding,
+        binding: GitHubRepositoryBinding | None,
         branch: str,
         head: str,
         main_head: str,
+        fetch_oid: Callable[..., Awaitable[str]] | None = None,
     ) -> Path | None:
         """Bundle a doomed head and record the row *before* the ref is deleted.
 
@@ -354,6 +356,8 @@ class BranchDiscardService:
         ``<data_dir>/backups/branch-deletions/`` and a TSV log line is
         appended.  Any failure raises, which parks the discard as retryable;
         the delete must not run without a restorable copy.
+        Retirement can supply a local exact-object fetch while sharing this
+        same backup and audit sequence.
         """
         repository_id = row["repository_id"]
         now = self.clock()
@@ -362,13 +366,14 @@ class BranchDiscardService:
         # The retained store may not hold the head or the default-branch head
         # yet; both must be local before anything can be proven, bundled or
         # deleted against.
-        await self.git.afetch_repository_oid(
+        fetch_oid = fetch_oid or self.git.afetch_repository_oid
+        await fetch_oid(
             str(store),
             repository=binding,
             oid=head,
             destination_ref=f"refs/aq/discard-backup/heads/{branch}",
         )
-        await self.git.afetch_repository_oid(
+        await fetch_oid(
             str(store),
             repository=binding,
             oid=main_head,

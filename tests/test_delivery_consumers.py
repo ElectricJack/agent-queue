@@ -12,6 +12,7 @@ surface is checked against the same fixture.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ from src.integration.development import DevelopmentPrimitives
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from tests.db_fixtures import lease_dsn
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 CHILDREN = ("done", "wrong", "missing", "reopened")
 
@@ -38,6 +40,17 @@ def git(path, *args) -> str:
     return subprocess.check_output(
         ["git", "-C", str(path), *args], text=True, stderr=subprocess.PIPE
     ).strip()
+
+
+def _disable_auto_maintenance(repo) -> None:
+    # Keep the shared seed immutable during copytree, including receive-pack:
+    # local transport does not propagate command-line -c to the bare origin.
+    for key, value in (
+        ("maintenance.auto", "false"),
+        ("gc.auto", "0"),
+        ("receive.autogc", "false"),
+    ):
+        git(repo, "config", key, value)
 
 
 class Origin:
@@ -49,14 +62,25 @@ class Origin:
             shutil.copytree(template.clone, self.clone)
             git(self.clone, "remote", "set-url", "origin", self.url)
             return
-        git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
-        git(tmp_path, "clone", self.url, str(self.clone))
+        init_bare_seed(self.url)
+        self._disable_auto_maintenance(self.url)
+        clone_seed(self.url, self.clone)
+        self._disable_auto_maintenance(self.clone)
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
         (self.clone / "base.txt").write_text("base\n")
         git(self.clone, "add", ".")
         git(self.clone, "commit", "-q", "-m", "base")
         git(self.clone, "push", "-q", "origin", "main")
+
+    @staticmethod
+    def _disable_auto_maintenance(repo) -> None:
+        # Detached maintenance can remove objects/maintenance.lock while copytree
+        # walks the seed. Local receive-pack needs its own repository config too.
+        for key, value in (
+            ("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"),
+        ):
+            git(repo, "config", "--local", key, value)
 
     def work(self, tid: str, name: str = "work") -> str:
         git(self.clone, "fetch", "-q", "origin")
@@ -74,6 +98,29 @@ class Origin:
         git(self.clone, "checkout", "-q", "-B", "main", "origin/main")
         git(self.clone, "merge", "-q", "--no-ff", "-m", f"deliver {tid}", f"origin/aq/{tid}")
         git(self.clone, "push", "-q", "origin", "main")
+
+
+def test_origin_template_and_copies_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+    trace = tmp_path / "git-trace.json"
+    config = tmp_path / "empty-git-config"
+    config.touch()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    seed = Origin(seed_root)
+    seed_head = git(seed.url, "rev-parse", "main")
+    copied = Origin(tmp_path, template=seed)
+    copied_head = copied.work("private-copy")
+    assert git(seed.url, "rev-parse", "main") == seed_head
+    assert git(seed.url, "for-each-ref", "refs/heads/aq/private-copy") == ""
+    assert git(copied.url, "rev-parse", "aq/private-copy") == copied_head
+    commands = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()]
+    assert not [
+        args for args in commands
+        if "--auto" in args and ("maintenance" in args or "gc" in args)
+    ]
 
 
 async def close(db, tid: str, commits: list[str], *, close_id: str | None = None,
@@ -382,6 +429,29 @@ async def test_explain_and_pool_status_only_read_cached_development_delivery(
     assert next(row for row in status["pools"] if row["profile_id"] == "worker")["ready"] == 0
     for call in forbidden.values():
         call.assert_not_awaited()
+
+
+@pytest.mark.parametrize("warm", [False, True])
+async def test_cached_delivery_read_never_waits_for_an_owned_fetch_lock(world, warm):
+    from src.integration.delivery_observer import DeliveryTarget, _fetch_lock
+
+    _db, origin, observer, _service = world
+    if warm:
+        await observer.observe(["done"])
+    store = await observer._store(DeliveryTarget("p", "r", origin.url, "refs/heads/main"))
+    lock = _fetch_lock(store)
+    async with lock:
+        # This guards a deadlock boundary, not a performance budget. The
+        # held lock must remain owned until the diagnostic returns.
+        view = await asyncio.wait_for(
+            observer.observe(["done"], max_age=observer.READ_MAX_AGE, cached_only=True), 10,
+        )
+        assert lock.locked()
+        if warm:
+            assert view.get("done").satisfied
+        else:
+            assert view.get("done").reason == "snapshot_unavailable"
+            assert not view.get("done").satisfied
 
 
 @pytest.mark.parametrize("failure", ["paused", "train_missing", "stopped", "service_missing"])
@@ -1137,19 +1207,21 @@ async def test_git_first_mutation_rejects_unknown_proof_without_receipts(active_
     assert (await db.get_task("wrong")).status is TaskStatus.COMPLETED
 
 
-async def test_git_first_reparent_guard_uses_git_view_without_receipts(active_git_world, monkeypatch):
-    """Isolate the delivery fence after the independent started/materialized fences."""
+async def test_git_first_reparent_guard_refuses_completed_work_without_receipts(active_git_world):
+    """Completed work fixes the target even before the delivery evidence fence."""
     from src.integration.hierarchy import HierarchyIntegration
 
     db, _origin, observer = active_git_world
     view = await observer.observe(["done"])
     hierarchy = HierarchyIntegration(db)
-    monkeypatch.setattr(hierarchy, "_locked_origin", AsyncMock(return_value={"materialized": False}))
-    monkeypatch.setattr(hierarchy, "_task_row", AsyncMock(return_value={"status": "READY"}))
+    repo = await db.get_repo("r")
+    assert repo is not None
+    assert (await db.get_task("done")).status is TaskStatus.COMPLETED
     async with db.immediate() as conn:
         with pytest.raises(HierarchyError) as refused:
-            await hierarchy._assert_reparentable(conn, "done", "r", delivery=view)
+            await hierarchy._assert_reparentable(conn, "done", repo, delivery=view)
     assert refused.value.code == "delivery_target_fixed"
+    assert refused.value.detail == "task has a holder or completed work"
 
 
 @pytest.mark.parametrize("contained", [True, False])

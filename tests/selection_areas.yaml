@@ -27,6 +27,7 @@ areas:
       - tests/test_stall_watch.py
       - tests/test_lifecycle_cleanup.py
       - tests/test_state_machine.py
+      - tests/test_task_lifecycle_properties.py
       - tests/test_ensure_task.py
       - tests/test_task_context.py
       - tests/test_task_controls.py
@@ -125,6 +126,7 @@ areas:
     match:
       - tests/test_claim_*.py
       - tests/test_cli_claim_restart.py
+      - tests/test_preparation_failure.py
       - tests/perf/test_claim_statements.py
       - tests/test_import_cycles.py
   - id: worker-pools
@@ -522,6 +524,7 @@ areas:
       - tests/test_git_manager_async.py
       - tests/test_git_events.py
       - tests/test_git_mutex.py
+      - tests/test_git_seed_helpers.py
       - tests/test_git_command_handlers.py
       - tests/test_sync_and_merge.py
       - tests/test_force_with_lease.py
@@ -823,6 +826,7 @@ areas:
   - id: document-reviews
     description: "Document reviews: the review service, schema and queries, revision block diffs, vault review files, review gates on downstream tasks, the reopen cascade, dedup keys, the review notifier, commands, doctor checks and spec approval."
     match:
+      - tests/test_ask_*.py
       - tests/test_review_*.py
       - tests/test_spec_approve_command.py
       - tests/test_reviewer_api_scope.py
