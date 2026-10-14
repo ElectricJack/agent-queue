@@ -9784,6 +9784,9 @@
     },
     "src/database/queries/task_recovery_queries.py::import from src.database.tables import agent_questions, agents, integration_branch_owners, integration_batches, integration_owner_recoveries, integration_repair_operations, integration_repair_stages, messages, projects, project_constraints, sessions, task_branch_origins, task_comments, task_context, task_metadata, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
       "reason": "Imports integration ownership and repair tables for pool workspace reconciliation or recovery-hold deadline guards; all shared import lines remain charged to integration ownership."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._cmd_reparent_task": {
+      "reason": "Routes ordinary task reparenting through the transactional hierarchy integration guard, preserving branch origins and invalidating both parent checkpoints in hierarchy and train modes."
     }
   },
   "shared_state": {
