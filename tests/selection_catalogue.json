@@ -11813,7 +11813,7 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:9945c14131dcebf07198e0c6c207c6dc25faee66e96db8a65e3ad50141b120d9",
+      "digest": "sha256:b18507bb8a343d2058c14850e8a6408e76edcabc1f24e035e8ba3b73c6589c5f",
       "imports": [
         "src.api.models.project",
         "src.api.models.system",
@@ -11833,6 +11833,8 @@
         "src.doctor.runner",
         "src.models",
         "src.observations.snapshots",
+        "src.playbooks.expressions",
+        "src.playbooks.invocation",
         "src.playbooks.private_values",
         "src.profiles.capabilities"
       ],
