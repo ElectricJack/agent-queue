@@ -356,6 +356,80 @@ async def test_daily_backstop_sweeps_registered_checkout_with_fresh_holds(guarde
     assert "deleted 1 Git-proven remote refs" in report
 
 
+async def test_daily_backstop_resolves_linked_source_and_shared_origin(
+    guarded_repo, tmp_path, monkeypatch,
+):
+    db, git, checkout, origin = guarded_repo
+    await db.update_repo(
+        "repo", source_type=RepoSourceType.LINK, url="", source_path=str(checkout),
+        checkout_base_path="",
+    )
+    # A second project's registration must not make this project's origin ambiguous.
+    await db.create_project(Project(id="q", name="other project"))
+    await db.create_repo(RepoConfig(
+        id="other-repo", project_id="q", source_type=RepoSourceType.CLONE, url=str(origin),
+    ))
+    clone, slot = tmp_path / "clone", tmp_path / "slot"
+    _git(tmp_path, "clone", str(origin), str(clone))
+    _git(checkout, "worktree", "add", "--detach", str(slot), "main")
+    monkeypatch.setattr(db, "list_workspaces", AsyncMock(side_effect=lambda project_id: [
+        SimpleNamespace(workspace_path=str(path), kind_id=None, is_slot=path == slot)
+        for path in (clone, slot)
+    ] if project_id == "p" else []))
+    await BranchLock(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/candidate"), "live-owner",
+    )
+    _git(checkout, "branch", "aq/missed-landing")
+    _git(checkout, "push", "origin", "aq/missed-landing")
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    body = orchestrator._command_handler.execute.await_args_list[0].args[1]["body"]
+    assert "Checkouts: 2;" in body  # source + clone; linked slot shares the source's refs
+    assert "Failures" not in body
+    assert await git.arev_parse(str(checkout), "aq/missed-landing") is None
+    assert await git.arev_parse(str(origin), "refs/heads/aq/missed-landing") is None
+    assert await git.arev_parse(str(checkout), "aq/candidate")
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+
+
+@pytest.mark.parametrize("binding", ["bound-repo", None, "mismatched-repo"])
+async def test_daily_backstop_uses_project_binding_only_among_origin_matches(
+    guarded_repo, tmp_path, binding,
+):
+    db, git, checkout, origin = guarded_repo
+    for repo_id, url in (("bound-repo", str(origin)),
+                         ("mismatched-repo", str(tmp_path / "different.git"))):
+        await db.create_repo(RepoConfig(
+            id=repo_id, project_id="p", source_type=RepoSourceType.CLONE, url=url,
+            default_branch="aq/candidate" if repo_id == "bound-repo" else "main",
+        ))
+    await db.update_project("p", integration_repository_id=binding)
+    # The bound registration's default stays protected, even though it isn't the first match.
+    _git(checkout, "branch", "aq/missed-landing")
+    _git(checkout, "push", "origin", "aq/missed-landing")
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    if binding == "bound-repo":
+        assert "Checkouts: 1;" in body
+        assert "Failures" not in body
+        assert await git.arev_parse(str(checkout), "aq/missed-landing") is None
+        assert await git.arev_parse(str(origin), "refs/heads/aq/missed-landing") is None
+    else:
+        assert "Checkouts: 0;" in body
+        assert "origin has no unique registered repository" in body
+        assert await git.arev_parse(str(checkout), "aq/missed-landing")
+        assert await git.arev_parse(str(origin), "refs/heads/aq/missed-landing")
+    assert await git.arev_parse(str(checkout), "aq/candidate")
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+
+
 async def test_sweep_rechecks_task_that_resumes_after_git_proof(guarded_repo, tmp_path, monkeypatch):
     from src.integration import branch_sweep
 

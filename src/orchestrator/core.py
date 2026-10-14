@@ -3770,6 +3770,7 @@ class Orchestrator(
         )
         from src.integration.delivery_branches import live_branch_references
         from src.integration.provenance_migration import ProvenanceMigration
+        from src.models import RepoSourceType
 
         try:
             projects = await self.db.list_projects()
@@ -3816,7 +3817,24 @@ class Orchestrator(
                 failures.append(f"{project.name}: workspace list failed ({exc})")
                 repositories, workspaces = [], []
             extra_paths = [getattr(project, "workspace_path", None)]
+            repository_origins = []
             for repository in repositories:
+                origin = repository.url
+                if getattr(repository, "source_type", None) is RepoSourceType.LINK:
+                    extra_paths.append(repository.source_path)
+                    if not origin:
+                        try:
+                            if not repository.source_path or not Path(repository.source_path).is_dir():
+                                raise ValueError("registered source path is unavailable")
+                            origin = await self.git._arun(
+                                ["remote", "get-url", "origin"], cwd=repository.source_path
+                            )
+                        except Exception as exc:
+                            failures.append(
+                                f"{repository.source_path}: linked origin unavailable ({exc})"
+                            )
+                if origin:
+                    repository_origins.append((repository, origin))
                 extra_paths.append(repository.checkout_base_path)
                 if retirement is not None:
                     extra_paths.append(str(retirement.retained_store(repository.id)))
@@ -3859,8 +3877,12 @@ class Orchestrator(
                 except Exception as exc:
                     failures.append(f"{checkout}: origin unavailable ({exc})")
                     continue
-                matches = [repo for repo in repositories
-                           if repository_urls_match(repository_url, repo.url, base=checkout)]
+                matches = [repo for repo, origin in repository_origins
+                           if repository_urls_match(repository_url, origin, base=checkout)]
+                bound = [repo for repo in matches
+                         if repo.id == getattr(project, "integration_repository_id", None)]
+                if bound:
+                    matches = bound
                 if len(matches) != 1:
                     # Ref exclusion needs a repository identity: skip, reported once.
                     unregistered.setdefault(repository_url, []).append(checkout)
