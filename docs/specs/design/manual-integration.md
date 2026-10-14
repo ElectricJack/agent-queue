@@ -1,4 +1,4 @@
-# Manual integration and legacy obligation retirement
+# Guarded manual integration
 
 Authority: approved `rev-fair-lantern`, revision 2, §11.2 (canonical SHA256
 `4518d9296649ddc2f0192ff73dd682864fb938e3d9687069282b4f6b0a86453f`), and the
@@ -16,39 +16,27 @@ subsequent train publication and admission are refused. Ordinary worker source
 publication and task execution remain available. Existing generation-fenced
 project policy configuration owns explicit re-enabling.
 
-`aq integration retire-legacy PROJECT --input FILE` previews a single cutover
-manifest. Input contains `entries`, each naming `task_id`, `completion_id`,
-`source_sha`, and `content_sha` (the default-branch commit carrying equivalent
-content), plus a nonempty `reason`. Apply requires the exact preview digest.
-There is one immutable manifest per project/repository/default-target binding;
-all selected generations are committed together. The identical apply is
-idempotent; another manifest or later generation cannot extend that cutover.
+The qualified helpers are `ManualIntegration(db, clock=...)` and
+`run(IntegrationOffArgs, operator_id=...)`, `enabled_train_write(db, repository_id)`,
+`train_write`, and `fence_disable`, in `src/integration/manual_control.py`.
+The off plan binds the repository URL, default target, policy generation,
+effective/desired modes, draining state and operator reason. Configuration drift
+refuses apply. The generic CommandHandler/execute API and existing integration
+status expose the same persisted disabled representation. This adds no schema.
 
-The project must be disabled, with no unresolved integration publication,
-live integration writer, held selected task, human hold or active/frozen
-integration work. Paused/frozen work is preserved, and its presence blocks retirement
-rather than being silently aborted. Selected tasks must already be completed
-passing generations, scoped to the designated repository. Full source objects
-must be retained by immutable remote completion provenance. The source must
-not be an ancestor of the observed default target. The content commit must be
-an ancestor of that target, and the old evaluator must accept a named
-equivalence proof on that content commit. Unknown Git, missing originals,
-changed task/completion/origin, policy generation, binding or remote head refuse
-apply. Preview writes neither database state nor remote refs.
+The supervisor's scope corrections assign approved revision 2 §11.1/11.2 to
+`stark-willow-95.2`. Its immutable one-time disposition must use existing
+`system_config` storage, preserve original source identity, require a precise
+preview digest and local permission, and never answer contained or manufacture
+PASS. Equivalent-only legacy generations may be lifecycle-retired under the
+approved `delivered_by_other_means` contract; later equivalents remain pending,
+and unknown originals remain blockers. The owner must consolidate consumers,
+audit sinks and acceptance. No second ledger or migration belongs in this leaf.
 
-The manifest records the original source/provenance ref, content commit,
-accepted equivalence reason, observed target, generation, operator and digest.
-Its disposition is `delivered_by_other_means`: lifecycle retirement of a
-delivery obligation, never a passing close or Git containment proof. Delivery
-evidence for that exact default-target generation remains pending/unknown;
-admission and completed-undelivered diagnostics explicitly exclude the retired
-obligation. Other targets and later completion generations do not inherit it.
-Source-retention refs remain protected. Metrics consumers can identify this
-exclusion from the request's disposition without counting it as delivered.
-After that binding's cutover, its default-target requests and frozen-input
-proofs use strict ancestry. Unselected and later equivalent-only generations
-remain pending work; they do not inherit a retirement. Other projects and
-targets retain their current evaluator until their own explicit cutover.
-
-This additive feature does not enable the full fast-flow protocol, weaken CI
-or review gates, migrate live databases or change GitHub rulesets.
+The provisional legacy implementation drafted under the earlier direction is
+preserved in published commit `3c92251c63adc764099b6ac3683c9f84013c851c`.
+Its retirement method, consumer changes, schema/migration and tests are source
+handoff only, superseded on this branch by the qualified off/manual scope.
+They are not approval to apply a live cutover or claims of the owner's acceptance.
+Original Matter legacy records, live equivalence acceptance, policy/ruleset
+changes and train re-enabling remain unfulfilled and outside this leaf's authority.

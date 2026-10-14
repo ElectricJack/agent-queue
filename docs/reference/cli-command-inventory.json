@@ -4938,40 +4938,6 @@
       }
     },
     {
-      "path": "aq integration retire-legacy",
-      "registration": "handwritten",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": null,
-      "callback": "src.cli.integration.integration_retire_legacy",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "registration",
-      "evidence": [
-        "click-registration"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "project_id",
-          "--input"
-        ],
-        "optional": [
-          "--apply",
-          "--expected-plan-digest",
-          "--json",
-          "--brief",
-          "--save-output",
-          "--api-url"
-        ],
-        "structured": [],
-        "nullable": []
-      }
-    },
-    {
       "path": "aq integration retire-origin",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -15561,48 +15527,6 @@
         ],
         "structured": [],
         "nullable": []
-      }
-    },
-    {
-      "path": "aq system integration-retire-legacy",
-      "registration": "generated",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": "integration_retire_legacy",
-      "callback": "src.cli.auto_commands.callback",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "dispatch",
-      "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "--project-id",
-          "--reason",
-          "--entries"
-        ],
-        "optional": [
-          "--dry-run",
-          "--expected-plan-digest",
-          "--json",
-          "--brief",
-          "--save-output",
-          "--api-url"
-        ],
-        "structured": [
-          "--entries"
-        ],
-        "nullable": [
-          "--expected-plan-digest"
-        ]
       }
     },
     {

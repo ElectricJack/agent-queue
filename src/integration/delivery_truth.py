@@ -103,16 +103,6 @@ class AdoptedParentCompletion:
 
 
 @dataclass(frozen=True)
-class LegacyDeliveryDisposition:
-    """An immutable target obligation retirement, never delivery evidence."""
-
-    source_oid: str
-    content_oid: str
-    plan_digest: str
-    kind: str = "delivered_by_other_means"
-
-
-@dataclass(frozen=True)
 class DeliveryRequest:
     """Immutable current task/completion inputs, including archived identities.
 
@@ -148,9 +138,6 @@ class DeliveryRequest:
     settled_target_ref: str | None = None
     settled_completion_id: str | None = None
     settled_reason: str | None = None
-    legacy_disposition: LegacyDeliveryDisposition | None = None
-    #: After this target's one-time legacy cutover, later equivalents still owe ancestry.
-    strict_containment: bool = False
 
     @property
     def settles(self):
@@ -299,8 +286,7 @@ class DeliverySnapshot:
                     # explicit replacement, using the ordinary provenance rules.
                     contained = await provenance.contained(
                         CompletedSource(identity, source), self.target_oid
-                    ) if record is not None and not request.strict_containment else (
-                        await provenance.ancestor(source, self.target_oid))
+                    ) if record is not None else await provenance.ancestor(source, self.target_oid)
                     if contained:
                         return result(DeliveryState.CONTAINED, "verified_parent_completion", source)
                     if request.settles:
@@ -313,19 +299,10 @@ class DeliverySnapshot:
                         source != request.parent_adoption.source_oid or not record["artifact"]
                     ):
                         return result(DeliveryState.UNKNOWN, "parent_adoption_provenance_mismatch")
-                    # Code-free generations retain their ordinary classification
-                    # after cutover; strict ancestry governs recorded artifacts.
-                    if not record["artifact"]:
-                        return result(DeliveryState.NO_ARTIFACT, "git_no_artifact", source)
-                    if request.strict_containment or request.legacy_disposition is not None:
-                        if (request.legacy_disposition is not None
-                            and source != request.legacy_disposition.source_oid):
-                            return result(DeliveryState.UNKNOWN, "retired_source_mismatch", source)
-                        if await provenance.ancestor(source, self.target_oid):
-                            return result(DeliveryState.CONTAINED, "ancestor", source)
-                        return result(DeliveryState.PENDING, "source_not_delivered", source)
                     # The immutable generation, rather than a branch tip or an
                     # arbitrary task trailer, identifies the complete artifact.
+                    if not record["artifact"]:
+                        return result(DeliveryState.NO_ARTIFACT, "git_no_artifact", source)
                     if await provenance.contained(CompletedSource(identity, source), self.target_oid):
                         return result(DeliveryState.CONTAINED, "git_completion", source)
                     if request.settles:
@@ -439,7 +416,6 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 task_metadata.c.task_id, task_metadata.c.value,
             ).where(task_metadata.c.task_id.in_(parent_history),
                     task_metadata.c.key == INTEGRATION_REWORK_AT_KEY))).all()) if parent_history else {}
-        cutover_manifests = await legacy_manifests_on(reader, repository_id, target_ref)
     completion_by_id = {
         row["task_id"]: db._row_to_task_completion(row) for row in completions
     }
@@ -532,39 +508,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 has_recorded_source=(row["id"] in recorded_ids or bool(current_id)),
                 **settlements.get(row["id"], {}),
             )
-    attach_legacy_dispositions(requests, cutover_manifests, repository_id)
     return requests
-
-
-async def legacy_manifests_on(conn, repository_id, target_ref):
-    """Read immutable cutovers still bound to the repository's default target."""
-    from sqlalchemy import select
-
-    from src.database.tables import integration_delivery_cutovers as cutovers, repos
-
-    rows = (await conn.execute(select(cutovers.c.plan_digest, cutovers.c.manifest, repos.c.url)
-        .join(repos, repos.c.id == cutovers.c.repository_id).where(
-            cutovers.c.repository_id == repository_id, cutovers.c.target_ref == target_ref,
-            repos.c.default_branch.in_((target_ref, target_ref.removeprefix("refs/heads/"))),
-        ))).all()
-    return rows
-
-
-def attach_legacy_dispositions(requests, rows, repository_id):
-    """Fence delivery proofs and attach retirement only to exact selected closes."""
-    for plan_digest, manifest, repository_url in rows:
-        if repository_url != manifest["repository_url"]:
-            continue
-        for tid, request in requests.items():
-            if request.project_id == manifest["project_id"] and request.repository_id == repository_id:
-                requests[tid] = replace(request, strict_containment=True)
-        for entry in manifest["entries"]:
-            request = requests.get(entry["task_id"])
-            if (request is not None and request.project_id == manifest["project_id"]
-                and request.repository_id == repository_id and request.task_status == "COMPLETED"
-                and request.completion_id == entry["completion_id"]):
-                requests[request.task_id] = replace(request, legacy_disposition=
-                    LegacyDeliveryDisposition(entry["source_sha"], entry["content_sha"], plan_digest))
 
 
 async def _parent_adoptions_on(conn, task_ids, repository_id):

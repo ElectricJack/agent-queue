@@ -933,20 +933,6 @@ async def completed_branch_dispositions(
     if not owners:
         return entries
     ids = sorted({row["id"] for row, _, _ in owners.values()})
-    dispositions = {}
-    if repository_id is not None:
-        from src.integration.delivery_truth import load_delivery_requests
-        from src.database.queries.result_queries import ResultQueryMixin
-
-        default = await conn.scalar(select(repos.c.default_branch).where(repos.c.id == repository_id))
-        if default:
-            requests = await load_delivery_requests(
-                ResultQueryMixin, ids, repository_id=repository_id,
-                target_ref="refs/heads/" + default.removeprefix("refs/heads/"), conn=conn,
-                reduced=True,
-            )
-            dispositions = {tid: request.legacy_disposition for tid, request in requests.items()
-                            if request.legacy_disposition is not None}
 
     retirements: dict[str, dict] = {}
     for row in (
@@ -1046,11 +1032,6 @@ async def completed_branch_dispositions(
         elif task_id in batches:
             batch_id, lifecycle, target = batches[task_id]
             rule, reason = "carried", f"batch {batch_id} ({lifecycle}) carries it to {target}"
-        elif task_id in dispositions and head == dispositions[task_id].source_oid:
-            rule, reason = "delivered_by_other_means", (
-                "its default-target obligation was retired under plan "
-                + dispositions[task_id].plan_digest
-            )
         elif task_id in proofs:
             proof = proofs[task_id]
             sha = (proof["delivered_sha"] or "")[:12]
@@ -1184,7 +1165,7 @@ async def observe_completed_branches(
 #: Rules under which something on record explains the branch or will move it.
 _ACCOUNTED_RULES = frozenset(
     {"retiring", "carried", "recorded", "delivered", "integrated", "awaiting_delivery",
-     "awaiting_backstop", "delivered_by_other_means"}
+     "awaiting_backstop"}
 )
 
 

@@ -11736,7 +11736,7 @@
     },
     "integration_off": {
       "name": "integration_off",
-      "description": "Local operator applies an exact preview without manufacturing delivery proof.",
+      "description": "Local operator applies an exact preview while preserving sources and frozen work.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -12965,94 +12965,6 @@
           "batch_id"
         ],
         "title": "IntegrationAbortBatchArgs",
-        "type": "object"
-      }
-    },
-    "integration_retire_legacy": {
-      "name": "integration_retire_legacy",
-      "description": "Local operator applies an exact preview without manufacturing delivery proof.",
-      "input_schema": {
-        "$defs": {
-          "LegacyRetirementEntry": {
-            "additionalProperties": false,
-            "properties": {
-              "task_id": {
-                "minLength": 1,
-                "title": "Task Id",
-                "type": "string"
-              },
-              "completion_id": {
-                "minLength": 1,
-                "title": "Completion Id",
-                "type": "string"
-              },
-              "source_sha": {
-                "pattern": "^[0-9a-f]{40}$",
-                "title": "Source Sha",
-                "type": "string"
-              },
-              "content_sha": {
-                "pattern": "^[0-9a-f]{40}$",
-                "title": "Content Sha",
-                "type": "string"
-              }
-            },
-            "required": [
-              "task_id",
-              "completion_id",
-              "source_sha",
-              "content_sha"
-            ],
-            "title": "LegacyRetirementEntry",
-            "type": "object"
-          }
-        },
-        "additionalProperties": false,
-        "properties": {
-          "project_id": {
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "reason": {
-            "minLength": 1,
-            "title": "Reason",
-            "type": "string"
-          },
-          "dry_run": {
-            "default": true,
-            "title": "Dry Run",
-            "type": "boolean"
-          },
-          "expected_plan_digest": {
-            "anyOf": [
-              {
-                "pattern": "^[0-9a-f]{64}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expected Plan Digest"
-          },
-          "entries": {
-            "items": {
-              "$ref": "#/$defs/LegacyRetirementEntry"
-            },
-            "maxItems": 200,
-            "minItems": 1,
-            "title": "Entries",
-            "type": "array"
-          }
-        },
-        "required": [
-          "project_id",
-          "reason",
-          "entries"
-        ],
-        "title": "IntegrationRetireLegacyArgs",
         "type": "object"
       }
     },

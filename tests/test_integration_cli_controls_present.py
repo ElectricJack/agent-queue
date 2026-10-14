@@ -15,7 +15,6 @@ def test_integration_group_exposes_train_controls():
         "refresh-epic",
         "record-root-noop",
         "off",
-        "retire-legacy",
     } <= integration.commands.keys()
 
 
@@ -23,11 +22,3 @@ def test_manual_apply_requires_preview_digest_before_contacting_daemon():
     result = CliRunner().invoke(cli, ["integration", "off", "p", "--reason", "manual", "--apply"])
     assert result.exit_code == 2
     assert "--expected-plan-digest" in result.output
-
-
-def test_legacy_input_rejects_duplicate_fields(tmp_path):
-    source = tmp_path / "retirement.json"
-    source.write_text('{"entries": [], "entries": [], "reason": "manual"}')
-    result = CliRunner().invoke(cli, ["integration", "retire-legacy", "p", "--input", str(source)])
-    assert result.exit_code == 2
-    assert "duplicate" in result.output.lower()

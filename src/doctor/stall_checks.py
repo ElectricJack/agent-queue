@@ -875,8 +875,6 @@ async def _find_unadmitted_parents(ctx: DoctorContext) -> list[dict]:
         for index, record in enumerate(rows):
             row = dict(record)
             proof = verified.get(row["task_id"])
-            if proof is not None and proof.request.legacy_disposition is not None:
-                continue
             if (proof is not None
                     and proof.state in {DeliveryState.CONTAINED, DeliveryState.NO_CHANGE}
                     and (not row["checkpoint_sha"] or row["checkpoint_sha"] == proof.source_oid)):

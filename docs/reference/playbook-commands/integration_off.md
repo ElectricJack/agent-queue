@@ -3,7 +3,7 @@
 
 # `integration_off`
 
-**Disable automatic integration.** Local operator applies an exact preview without manufacturing delivery proof.
+**Disable automatic integration.** Local operator applies an exact preview while preserving sources and frozen work.
 
 | Property | Value |
 |---|---|

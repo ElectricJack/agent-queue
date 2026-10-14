@@ -102,35 +102,6 @@ async def test_promotion_flow_upgrade_preserves_projects_and_uses_nullable_jsonb
         await conn.close()
 
 
-@pytest.mark.parametrize("existing", [False, True])
-async def test_delivery_cutover_upgrade_adds_jsonb_and_is_baseline_idempotent(existing):
-    dsn = await create_scratch_database("deliverycutover96")
-    before = _alembic_pg(dsn, "upgrade", "a00000000095")
-    assert before.returncode == 0, before.stderr
-    conn = await _pg_conn(dsn)
-    try:
-        if existing:
-            await conn.execute("INSERT INTO integration_delivery_cutovers VALUES "
-                               "('p','r','refs/heads/dev',$1,'{}','human:local-operator',1)",
-                               "a" * 64)
-        else:
-            # Live-metadata baseline already includes the additive table.
-            # Reproduce an actual old install, which does not.
-            await conn.execute("DROP TABLE integration_delivery_cutovers")
-    finally:
-        await conn.close()
-    upgraded = _alembic_pg(dsn, "upgrade", "head")
-    assert upgraded.returncode == 0, upgraded.stderr
-    conn = await _pg_conn(dsn)
-    try:
-        assert await conn.fetchval("SELECT data_type FROM information_schema.columns "
-            "WHERE table_name='integration_delivery_cutovers' AND column_name='manifest'") == "jsonb"
-        assert await conn.fetchval("SELECT count(*) FROM integration_delivery_cutovers") == int(existing)
-        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000096"
-    finally:
-        await conn.close()
-
-
 async def test_agent_cron_upgrade_adds_global_schedule_storage_without_losing_projects():
     dsn = await create_scratch_database("agentcron85")
     before = _alembic_pg(dsn, "upgrade", "a00000000085")

@@ -297,8 +297,7 @@ class GitTruthSnapshot:
     def error(self):
         return self.observation.error
 
-    async def contains_source(self, task_id: str, source_oid: str, source_base: str, *,
-                              strict=False) -> bool | None:
+    async def contains_source(self, task_id: str, source_oid: str, source_base: str) -> bool | None:
         """Whole frozen input proof, for batches without a mutable task projection.
 
         The caller separately revalidates ordinary identity and authorization.
@@ -319,8 +318,6 @@ class GitTruthSnapshot:
                 return None
             if facts.ancestor:
                 return True
-            if strict:
-                return False
             identity = f"{task_id}@{source_oid}"
             if identity not in facts.trailers:
                 facts.trailers[identity] = bool(await observed.git.alog_grep_trailer(
@@ -599,9 +596,6 @@ async def is_delivered(
             return answer(DeliveryState.UNKNOWN, MISSING_PROVENANCE)
         step = "source_identity"
         source = record["source_oid"]
-        if (request.legacy_disposition is not None
-            and source != request.legacy_disposition.source_oid):
-            return answer(DeliveryState.UNKNOWN, "retired_source_mismatch")
         step = "target_object"
         await snapshot.truth.exact(observed, observed.target_oid)
         if (request.completion_commits == () and request.completion_outcome == "pass"
@@ -622,8 +616,6 @@ async def is_delivered(
             facts.ancestor = await provenance.ancestor(source, observed.target_oid)
         if facts.ancestor:
             return answer(DeliveryState.CONTAINED, "ancestor")
-        if request.strict_containment or request.legacy_disposition is not None:
-            return answer(DeliveryState.PENDING, "source_not_delivered")
         step = "source_trailer"
         trailer = f"{request.task_id}@{source}"
         if trailer not in facts.trailers:

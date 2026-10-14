@@ -95,7 +95,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_migrate_provenance_refs`](integration_migrate_provenance_refs.md) | Move Git provenance out of branches | Local operator copies and verifies immutable provenance refs before deleting legacy heads. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
-| [`integration_off`](integration_off.md) | Disable automatic integration | Local operator applies an exact preview without manufacturing delivery proof. |
+| [`integration_off`](integration_off.md) | Disable automatic integration | Local operator applies an exact preview while preserving sources and frozen work. |
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_pause_batch`](integration_pause_batch.md) | Integration Pause Batch | Authenticated hierarchical integration operational control. |
 | [`integration_promotion_notes_input`](integration_promotion_notes_input.md) | Integration Promotion Notes Input | Assemble immutable promotion notes from full Git history. |
@@ -122,7 +122,6 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_repair_timeout`](integration_repair_timeout.md) | Integration Repair Timeout | Expire the current repair stage once its absolute deadline has passed. |
 | [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
 | [`integration_resume_batch`](integration_resume_batch.md) | Integration Resume Batch | Authenticated hierarchical integration operational control. |
-| [`integration_retire_legacy`](integration_retire_legacy.md) | Retire legacy delivery obligations | Local operator applies an exact preview without manufacturing delivery proof. |
 | [`integration_retire_legacy_park`](integration_retire_legacy_park.md) | Retire a historical parked operation | Local operator abandons every explicitly selected source under an exact journal fence. |
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |

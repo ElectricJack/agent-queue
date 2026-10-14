@@ -8347,7 +8347,7 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:504462d501d707c0049d553d16c3a4e69848dd95e9fb68b52011871340659418",
+      "digest": "sha256:f7002df4ae4889b67e4ccd00548bf6a0ed165889df2d1b556fd32da07367824a",
       "imports": [
         "src.commands",
         "src.commands.contracts.integration",
@@ -8356,22 +8356,17 @@
         "src.config",
         "src.database",
         "src.database.tables",
-        "src.git.manager",
         "src.integration.batches",
-        "src.integration.delivery_branches",
-        "src.integration.delivery_observer",
-        "src.integration.delivery_truth",
         "src.integration.gitops",
         "src.integration.lock",
         "src.integration.manual_control",
         "src.integration.ownership",
-        "src.integration.provenance",
         "src.integration.train_sources"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Manual mode and one-time legacy retirement over PostgreSQL and real Git."
+      "summary": "Guarded manual integration over PostgreSQL and real Git."
     },
     "tests/test_integration_mode.py": {
       "areas": [

@@ -49,31 +49,6 @@ def integration_off(ctx, project_id, reason, apply, expected_plan_digest):
              "dry_run": not apply, "expected_plan_digest": expected_plan_digest})
 
 
-@integration.command("retire-legacy")
-@click.argument("project_id")
-@click.option("--input", "input_file", required=True, type=click.Path(exists=True, dir_okay=False))
-@click.option("--apply/--dry-run", default=False)
-@click.option("--expected-plan-digest")
-@click.pass_context
-@_handle_errors
-def integration_retire_legacy(ctx, project_id, input_file, apply, expected_plan_digest):
-    """Retire one explicit set of legacy obligations without claiming containment."""
-    import json
-    from pathlib import Path
-
-    if apply and not expected_plan_digest:
-        raise click.UsageError("--apply requires --expected-plan-digest from preview")
-    try:
-        values = json.loads(Path(input_file).read_text(encoding="utf-8"),
-                            object_pairs_hook=_unique_fields)
-        if not isinstance(values, dict) or set(values) != {"entries", "reason"}:
-            raise ValueError("input must contain exactly entries and reason")
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise click.UsageError(f"cannot read legacy retirement input: {exc}") from exc
-    _execute(ctx, "integration_retire_legacy", {**values, "project_id": project_id,
-             "dry_run": not apply, "expected_plan_digest": expected_plan_digest})
-
-
 @integration.command("migrate-provenance-refs")
 @click.argument("project_id")
 @click.option("--apply/--dry-run", default=False, help="Copy verified refs, then delete old heads.")

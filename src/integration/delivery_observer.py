@@ -370,12 +370,9 @@ class PrerequisiteView:
             siblings = await self.siblings.verified_on(conn, self.all_ids)
             default = await self.default.verified_on(conn, self.all_ids)
         default_ids = frozenset(tid for tid, p in default.items() if p.satisfied)
-        retired_ids = frozenset(tid for tid, p in default.items()
-                                if p.request.legacy_disposition is not None)
         return replace(mode,
-            delivered_prerequisite_ids=frozenset(tid for tid, p in siblings.items() if p.satisfied)
-                                       | retired_ids,
-            default_prerequisite_ids=default_ids | retired_ids,
+            delivered_prerequisite_ids=frozenset(tid for tid, p in siblings.items() if p.satisfied),
+            default_prerequisite_ids=default_ids,
             parent_contained_task_ids=frozenset(
                 dependent for dependent, sources in self.parent_containment.items()
                 if sources and all(contained and tid in default_ids

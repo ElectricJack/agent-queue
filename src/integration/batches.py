@@ -189,7 +189,6 @@ class BatchStore:
     async def _freeze_locked(self, conn, batch, members, *, trees, exclusive_target, promotion):
         if self.require_enabled:
             from src.database.tables import projects
-            from src.integration.delivery_truth import load_delivery_requests
 
             await self.db.lock_hierarchy_project(conn, batch.project_id)
             enabled = await conn.scalar(select(projects.c.id).where(
@@ -200,13 +199,6 @@ class BatchStore:
             ).with_for_update())
             if enabled is None:
                 raise ValueError("automatic integration is off")
-            requests = await load_delivery_requests(
-                self.db, [member.task_id for member in members],
-                repository_id=batch.repository_id, target_ref=batch.target_ref, conn=conn,
-                reduced=True,
-            )
-            if any(request.legacy_disposition for request in requests.values()):
-                raise ValueError("legacy delivery obligation was retired")
         await self._target_lock(conn, batch)
         if exclusive_target:
             await self._exclusive_target(conn, batch)
@@ -726,13 +718,6 @@ class BatchService:
         if observed.error or snapshot.target_oid is None:
             return BatchObservation("unknown", detail={"reason": observed.error})
         target = snapshot.target_oid
-        from src.integration.delivery_truth import legacy_manifests_on
-
-        async with self.store.db._engine.connect() as conn:
-            cutovers = await legacy_manifests_on(conn, batch.repository_id, batch.target_ref)
-        strict = any(manifest["project_id"] == batch.project_id
-                     and manifest["repository_url"] == observed.repository_url == repository_url
-                     for _, manifest, repository_url in cutovers)
         ref = candidate_ref(batch.id)
         candidate = observed.source_heads.get("refs/remotes/origin/" + branch(ref))
         try:
@@ -740,7 +725,7 @@ class BatchService:
             # not authorize another write, and stale progress never blocks it.
             # A published repair start can be the target itself or only a
             # partial merge. Candidate inclusion alone cannot settle members.
-            proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha, strict=strict)
+            proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
                       for m in members]
             if members and all(proof is True for proof in proofs) and not (
                 batch.epic_sync or batch.epic_refresh
