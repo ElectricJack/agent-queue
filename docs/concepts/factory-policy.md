@@ -83,6 +83,6 @@ those checks. Full-suite runs belong to CI or suite tasks. Compare against a rec
 never capture one per task. A pre-existing failure neither fails the task nor justifies weakening or
 skipping tests. See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
 
-Shipped profiles and skills are seeded write-if-absent: edit installed profiles in the vault and re-copy
-drifted skills with `aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py`
+Profiles and skills are seeded write-if-absent: edit installed profiles in the vault; re-copy drifted
+skills with `aq doctor --check skills.installed_drift --fix`. `tests/test_factory_policy_instructions.py`
 rejects retired stages, sibling-by-default placement, refusal bypasses and roles that omit this page.

@@ -347,6 +347,10 @@ From the worker's point of view the workflow is short:
    `aq review show --review-id <id> --comments`, then resubmit with
    `aq review submit --review-id <id> --file <draft> --changes "…"
    [--resolves <comment-id> …]`, and close it.
+   The daemon resolves an omitted `--review-id` from the held revision task's
+   assignment, so the ordinary submit command also updates that review.
+   Naming another review is refused with `not_your_task`; a revision worker
+   cannot open a parallel review.
    Revise a local draft; do not edit the vault mirror or its frontmatter
    directly. A passing close is refused with `reviews.revision_unpublished`
    until this task has submitted a newer revision of its assigned review.

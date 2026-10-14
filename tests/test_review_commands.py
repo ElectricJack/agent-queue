@@ -977,6 +977,107 @@ async def test_revision_task_uses_authors_parent(env):
     assert revision.parent_task_id == "container"
 
 
+@pytest.mark.parametrize("surface", ["execute", "typed"])
+@pytest.mark.parametrize("explicit_review", [False, True])
+async def test_pool_revision_submission_keeps_existing_review(
+    env, monkeypatch, surface, explicit_review,
+):
+    """A taskless pool token publishes to its assignment, never a parallel review."""
+    import httpx
+    from fastapi import FastAPI
+
+    from src.api import dependencies as deps
+    from src.api.auth import SessionTokenStore
+    from src.api.codegen import build_category_routers
+    from src.api.execute import router as execute_router
+    from src.api.middleware import TokenAuthMiddleware
+
+    handler, db = env
+    await _enable_train_mode(handler, db)
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Pool draft", "content": "# Draft\n",
+    })
+    review_id = submitted["review_id"]
+    original = await db.get_review(review_id)
+    comment = await handler.execute("review_comment", {
+        "review_id": review_id, "revision": 1, "quote": "Draft", "body": "Expand it.",
+    })
+    assert (await handler.execute("review_decide", {
+        "review_id": review_id, "revision": 1, "decision": "request_changes",
+    }))["success"]
+    task = await db.find_task_by_dedup_key("p", f"review-revision:{review_id}:1")
+    await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
+    await _live_worker(db, "worker", task.id)
+    store = SessionTokenStore(db)
+    token = await store.mint(session_id="worker", task_id=None, project_id="p")
+    monkeypatch.setattr(deps, "_command_handler", handler)
+    monkeypatch.setattr(deps, "_orchestrator", handler.orchestrator)
+    monkeypatch.setattr(deps, "_token_store", store)
+    monkeypatch.setattr(deps, "_require_session_token", True)
+    app = FastAPI()
+    app.include_router(execute_router)
+    for router in build_category_routers():
+        if router.prefix == "/api/review":
+            app.include_router(router)
+    app.add_middleware(TokenAuthMiddleware)
+    args = {
+        "content": "# Expanded draft\n", "changes": "Expanded the draft.",
+        "resolves": [comment["comment_id"]],
+    }
+    if explicit_review:
+        args["review_id"] = review_id
+    else:
+        # The ordinary author command must also publish the assigned revision.
+        args.update(task_id=task.id, kind="spec", title="Parallel draft")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    ) as client:
+        if surface == "execute":
+            response = await client.post("/api/execute", json={"command": "review_submit", "args": args})
+            payload = response.json()
+            assert payload["ok"], payload
+            revised = payload["result"]
+        else:
+            response = await client.post("/api/review/submit", json=args)
+            revised = response.json()
+        assert response.status_code == 200, response.text
+        assert revised["success"], revised
+    assert (revised["review_id"], revised["revision"]) == (review_id, 2)
+    review = await db.get_review(review_id)
+    assert review["state"] == "in_review"
+    for key in ("author_task_id", "vault_path", "gate_id"):
+        assert review[key] == original[key]
+    assert len(await db.list_reviews(project_id="p")) == 1
+    assert (await db.get_review_revision(review_id, 2))["submitted_task_id"] == task.id
+    assert (await db.list_review_comments(review_id))[0]["resolved_in_revision"] == 2
+    assert await db.has_review_response_submission(task.id, review_id, 1)
+
+
+async def test_revision_task_cannot_submit_to_another_review(env):
+    handler, db = env
+    assigned = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Assigned", "content": "# Assigned\n",
+    })
+    other = await handler.execute("review_submit", {
+        "task_id": "peer", "kind": "spec", "title": "Other", "content": "# Other\n",
+    })
+    review_id = assigned["review_id"]
+    assert (await handler.execute("review_decide", {
+        "review_id": review_id, "revision": 1, "decision": "request_changes",
+    }))["success"]
+    task = await db.find_task_by_dedup_key("p", f"review-revision:{review_id}:1")
+    await db.update_session("worker", task_id=task.id)
+    refused = await _scoped(handler, "review_submit", {
+        "review_id": other["review_id"], "content": "# Wrong document\n",
+    }, session_id="worker", task_id=task.id)
+    assert refused["error_code"] == "not_your_task"
+    assert f"aq review submit --review-id {review_id}" in refused["error"]
+    assert (await db.get_review(other["review_id"]))["current_revision"] == 1
+    assert (await db.get_review(review_id))["current_revision"] == 1
+    assert len(await db.list_reviews(project_id="p")) == 2
+
+
 async def _enable_train_mode(handler, db) -> None:
     """Put project ``p`` in train mode, resolving its default branch without git."""
     from src.integration.hierarchy import HierarchyIntegration

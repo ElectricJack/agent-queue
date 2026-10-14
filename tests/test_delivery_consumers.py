@@ -51,13 +51,24 @@ class Origin:
             git(self.clone, "remote", "set-url", "origin", self.url)
             return
         init_bare_seed(self.url)
+        self._disable_auto_maintenance(self.url)
         clone_seed(self.url, self.clone)
+        self._disable_auto_maintenance(self.clone)
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
         (self.clone / "base.txt").write_text("base\n")
         git(self.clone, "add", ".")
         git(self.clone, "commit", "-q", "-m", "base")
         git(self.clone, "push", "-q", "origin", "main")
+
+    @staticmethod
+    def _disable_auto_maintenance(repo) -> None:
+        # Detached maintenance can remove objects/maintenance.lock while copytree
+        # walks the seed. Local receive-pack needs its own repository config too.
+        for key, value in (
+            ("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"),
+        ):
+            git(repo, "config", "--local", key, value)
 
     def work(self, tid: str, name: str = "work") -> str:
         git(self.clone, "fetch", "-q", "origin")

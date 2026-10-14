@@ -122,6 +122,11 @@ else gets `not_your_task`).
 
 4. Close the task with the new revision number and content hash.
 
+The daemon resolves an omitted `--review-id` from your held revision task's
+assignment. It refuses a different review id with `not_your_task`; never
+create a parallel review to work around a resubmission refusal. Report the
+refusal and preserve the assigned review.
+
 A passing close is refused with `reviews.revision_unpublished` until this
 task publishes a newer revision of its assigned review. Edit a local draft,
 not the vault mirror or its frontmatter. An unrelated review or another
