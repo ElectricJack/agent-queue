@@ -101,6 +101,9 @@ class FakeDB:
     async def get_task_meta(self, task_id, key):
         return self.meta.get((task_id, key))
 
+    async def get_task(self, task_id):
+        return FakeTask(id=task_id)
+
     async def set_task_meta(self, task_id, key, value) -> None:
         self.meta[(task_id, key)] = value
 

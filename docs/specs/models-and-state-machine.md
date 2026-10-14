@@ -265,6 +265,43 @@ The central entity of the system. A task represents a unit of work to be execute
 - An ASSIGNED or IN_PROGRESS task must have a non-`None` `assigned_agent_id`.
 - An operator hold must **converge**. `pause_task` writes the snapshot with `cleanup_pending: True` and `_finish_manual_pause` clears it once the claim's session, adapter and workspace are released; `_resume_paused_tasks` retries a still-pending cleanup every cycle. Steps that must not be abandoned while a process may still be running (session stop, adapter stop) retry indefinitely, but the final Git checkpoint of the paused workspace does not: a workspace that is *gone* is accepted immediately, and any other capture failure is retried `PAUSE_CHECKPOINT_MAX_ATTEMPTS` times with backoff, after which the pause finishes anyway — salvaging uncommitted work through the worktree-salvage path and recording a `manual_pause_no_checkpoint` task-context row naming the reason. A task left half-paused forever is worse than a paused task that says what could not be preserved.
 
+Pause cleanup after interrupted preparation must prove quiescence of the exact
+claim preparation as well as its session and adapter before checkpointing. New
+pause snapshots retain task/claim, session instance, workspace and branch-owner
+identities; changed or unproved source identities (including legacy snapshots
+without these fences) fail closed, outside the bounded Git retries. An
+attached integration owner retains its workspace until its existing guarded
+handoff protocol releases it. A checkpoint alone does not prove cleanup complete.
+The recorded task branch is part of the pause fence. When it is present, an
+attached checkout must match it before capture or partial salvage; a mismatch
+retains the source without publishing preservation evidence. A captured session
+must also belong to the claim epoch being stopped, not a previous pool claim.
+An existing workspace claim file must match that task, claim epoch and captured
+session; missing files alone do not prove writer termination.
+
+A legitimate detached HEAD can be checkpointed: record `branch: null`, the exact
+HEAD, index tree and worktree commit under a reachable local ref. Do not infer a
+branch from task metadata. Capture and fallback salvage use an isolated index,
+exclude the lock sentinel, and leave the source HEAD, branch, index and files
+unchanged. Detached snapshots remain inspectable but automatic worker preparation
+refuses them before reset/clean; selecting a branch requires separate ownership
+proof. With source identity fenced, unborn/unreadable repositories receive an
+honest no-checkpoint receipt after bounded retries; missing workspaces receive
+one immediately. Salvage limitations are stated explicitly.
+
+Restoration validates the checkpoint's task and expected execution branch before
+fetch, index/lock cleanup or reset. New checkpoints carry their task identity;
+legacy snapshots require the existing task's branch proof. A supplied restoration
+plan is revalidated before switching or writing trees. The destination may still
+be on a legitimate predecessor's branch: the comparison concerns the saved
+checkpoint and the proved incoming target, not the current destination HEAD.
+
+The supported per-task cleanup command is `aq task pause <id>` again; the cascade
+also retries pending cleanup. It preserves the manual hold, incident/human holds,
+route and budgets and never launches execution. Error guidance must name repeat
+Pause, not Resume. `PAUSED` alone proves neither writer termination nor checkpoint
+success; inspect `manual_pause.cleanup_pending` and checkpoint/no-checkpoint context.
+
 ---
 
 ### Agent

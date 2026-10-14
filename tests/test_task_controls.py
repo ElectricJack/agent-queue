@@ -203,6 +203,9 @@ async def running_session(env, tmp_path, *, lifecycle="pool"):
     import time
     from src.models import AgentState, RepoSourceType, SessionRecord, Workspace
 
+    if (tmp_path / ".git").exists():
+        # Git fixtures model preparation onto main; scenarios can override it.
+        await env.db.update_task("t", branch_name="main")
     await env.db.assign_task_to_agent("t", "agent")
     await env.db.transition_task("t", TaskStatus.IN_PROGRESS)
     await env.db.update_agent("agent", state=AgentState.BUSY)
@@ -561,9 +564,14 @@ async def test_reserved_parent_pause_marker_cannot_be_forged(env):
 async def test_preparing_reused_pool_session_is_stopped_despite_previous_epoch(env, tmp_path):
     provider, task = await running_session(env, tmp_path)
     await env.db.update_session("s", claim_phase="preparing", last_claim_epoch=99)
-    await pause(env)
+    # Stopping the harness does not prove an untracked daemon preparation has
+    # stopped writing. Retain the source while still fencing its activation.
+    result = await command(env, "pause_task")
+    assert "preparation termination is unproved" in result.get("error", ""), result
     assert "task-session" not in provider.running
     assert (await env.db.get_session("s")).state == "stopped"
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
     assert await env.db.activate_claim("s", "t", epoch=task.claim_epoch, now=1) is None
 
 
@@ -892,6 +900,567 @@ async def test_pause_checkpoint_ignores_slot_metadata(env, tmp_path):
     assert ".aq-worktree.json" not in tree
 
 
+@pytest.mark.parametrize("detached", [False, True])
+@pytest.mark.parametrize("ignored_lock", [False, True])
+async def test_pause_preserves_exact_git_layers_with_attached_or_detached_head(
+    env, tmp_path, detached, ignored_lock
+):
+    from src.git.manager import GitError
+    from src.orchestrator.task_checkpoint import prepare_checkpoint
+
+    repo, git = make_git_repo(tmp_path, "layers")
+    if detached:
+        git("switch", "--detach")
+    if ignored_lock:
+        (repo / ".git" / "info" / "exclude").write_text("/.agent-queue-lock\n")
+    (repo / "layers.txt").write_text("staged\n")
+    git("add", "layers.txt")
+    (repo / "layers.txt").write_text("unstaged\n")
+    (repo / "new.bin").write_bytes(b"\x00untracked\xff")
+    (repo / ".agent-queue-lock").write_text("t\nagent\n")
+    index = (repo / ".git" / "index").read_bytes()
+    head = git("rev-parse", "HEAD")
+    await running_session(env, repo)
+    await env.db.set_task_meta("t", "needs_attention", "integration_prepare_failed_attached")
+    await env.db.set_task_meta("t", "supervisor_recovery_incident", {"hold": "human"})
+
+    await pause(env)
+
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert saved["branch"] == (None if detached else "main")
+    assert saved["head"] == git("rev-parse", "HEAD") == head
+    assert (repo / ".git" / "index").read_bytes() == index
+    assert git("show", f"{saved['commit']}^:layers.txt") == "staged"
+    assert git("show", f"{saved['commit']}:layers.txt") == "unstaged"
+    assert "new.bin" in git("ls-tree", "--name-only", saved["commit"])
+    assert ".agent-queue-lock" not in git("ls-tree", "--name-only", saved["commit"])
+    assert git("rev-parse", saved["ref"]) == saved["commit"]
+    assert (repo / "new.bin").read_bytes() == b"\x00untracked\xff"
+    assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
+    assert await env.db.get_task_meta("t", "needs_attention") == "integration_prepare_failed_attached"
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == {"hold": "human"}
+    if detached:
+        assert git("rev-parse", "--symbolic-full-name", "HEAD") == "HEAD"
+        with pytest.raises(GitError, match="detached HEAD.*unchanged"):
+            await prepare_checkpoint(env.db, env.orch.git, "t", str(repo))
+        assert (repo / ".git" / "index").read_bytes() == index
+
+
+async def test_pause_fallback_salvage_keeps_live_index_and_excludes_lock(env, tmp_path, monkeypatch):
+    from src.orchestrator import task_checkpoint
+
+    repo, git = make_git_repo(tmp_path, "partial")
+    (repo / "partial.txt").write_text("staged\n")
+    git("add", "partial.txt")
+    (repo / "partial.txt").write_text("unstaged\n")
+    (repo / "new.bin").write_bytes(b"\x00untracked\xff")
+    (repo / ".agent-queue-lock").write_text("t\nagent\n")
+    index = (repo / ".git" / "index").read_bytes()
+    head = git("rev-parse", "HEAD")
+    await running_session(env, repo)
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("object store unavailable")
+
+    monkeypatch.setattr(task_checkpoint, "capture_checkpoint", unavailable)
+    for _ in range(3):
+        await command(env, "pause_task")
+        assert (repo / ".git" / "index").read_bytes() == index
+        assert git("rev-parse", "HEAD") == head
+    contexts = {row["type"]: row["content"] for row in await env.db.get_task_contexts("t")}
+    assert "Partial salvage recorded: True" in contexts["manual_pause_no_checkpoint"]
+    assert "Partial salvage" in contexts["worktree_salvage"]
+    assert "GIT binary patch" in contexts["worktree_salvage"]
+    assert ".agent-queue-lock" not in contexts["worktree_salvage"]
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is False
+
+
+async def test_pause_salvage_receipt_is_fenced_against_late_reassignment(env, tmp_path, monkeypatch):
+    from src.orchestrator import task_checkpoint
+
+    repo, _ = make_git_repo(tmp_path, "late-salvage")
+    (repo / "dirty.txt").write_text("preserve me\n")
+    await running_session(env, repo)
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("capture unavailable")
+
+    salvage = task_checkpoint.salvage_checkpoint
+
+    async def reassigned(*args, save, **kwargs):
+        async def guarded_save(*save_args, **context):
+            await env.db.update_workspace("workspace", locked_by_task_id="peer")
+            await save(*save_args, **context)
+        return await salvage(*args, save=guarded_save, **kwargs)
+
+    monkeypatch.setattr(task_checkpoint, "capture_checkpoint", unavailable)
+    monkeypatch.setattr(task_checkpoint, "salvage_checkpoint", reassigned)
+    for _ in range(2):
+        await command(env, "pause_task")
+    result = await command(env, "pause_task")
+    assert "changed" in result.get("error", ""), result
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "peer"
+    assert (repo / "dirty.txt").read_text() == "preserve me\n"
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+    assert not {"worktree_salvage", "manual_pause_no_checkpoint"}.intersection(
+        row["type"] for row in await env.db.get_task_contexts("t")
+    )
+
+
+@pytest.mark.parametrize("changed", ["workspace", "session", "owner"])
+async def test_pending_pause_fails_closed_on_changed_resource_identity(env, tmp_path, changed):
+    from sqlalchemy import insert, update
+    from src.database.tables import integration_branch_owners
+
+    repo, _ = make_git_repo(tmp_path, "fenced")
+    provider, _ = await running_session(env, repo)
+    if changed == "owner":
+        async with env.db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="owner", repository_id="repo", ref="aq/t", owner_id="t", owner_role="task",
+                fence_token=1, handoff_state="attached", session_id="s", workspace_id="workspace",
+                created_at=1, updated_at=1,
+            ))
+    await env.db.pause_task("t")
+    if changed == "workspace":
+        await env.db.update_workspace("workspace", locked_by_task_id="peer")
+    elif changed == "session":
+        await env.db.update_session("s", instance_token="replacement")
+    else:
+        async with env.db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == "owner"
+            ).values(fence_token=2))
+    for _ in range(3):
+        result = await command(env, "pause_task")
+        assert "changed" in result.get("error", ""), result
+    assert "task-session" in provider.running
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint_retry") is None
+
+
+async def test_pause_checks_reassignment_before_publishing_checkpoint(env, tmp_path, monkeypatch):
+    repo, _ = make_git_repo(tmp_path, "late-reassignment")
+    await running_session(env, repo)
+    run = env.orch.git._arun
+
+    async def reassign(args, **kwargs):
+        result = await run(args, **kwargs)
+        if "Paused task worktree" in args:
+            await env.db.update_workspace("workspace", locked_by_task_id="peer")
+        return result
+
+    monkeypatch.setattr(env.orch.git, "_arun", reassign)
+    result = await command(env, "pause_task")
+    assert "changed" in result.get("error", ""), result
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "peer"
+
+
+async def test_pause_refuses_attached_foreign_task_branch_without_salvage(env, tmp_path):
+    repo, git = make_git_repo(tmp_path, "foreign-branch")
+    provider, _ = await running_session(env, repo)
+    git("switch", "-c", "aq/peer")
+    (repo / "foreign-branch.txt").write_text("staged\n")
+    git("add", ".")
+    (repo / "foreign-branch.txt").write_text("unstaged\n")
+    (repo / "new.txt").write_text("untracked\n")
+    head, index = git("rev-parse", "HEAD"), (repo / ".git" / "index").read_bytes()
+    for _ in range(3):
+        result = await command(env, "pause_task")
+        assert "branch does not match its task" in result.get("error", ""), result
+    assert "task-session" not in provider.running
+    assert git("symbolic-ref", "--short", "HEAD") == "aq/peer"
+    assert git("rev-parse", "HEAD") == head
+    assert (repo / ".git" / "index").read_bytes() == index
+    assert (repo / "foreign-branch.txt").read_text() == "unstaged\n"
+    assert (repo / "new.txt").read_text() == "untracked\n"
+    assert not git("for-each-ref", "refs/aq/task-pauses/")
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint_retry") is None
+    assert not await env.db.get_task_contexts("t")
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (await env.db.get_session("s")).task_id == "t"
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+
+
+async def test_pause_refuses_previous_claim_session_before_checkpoint(env, tmp_path):
+    repo, git = make_git_repo(tmp_path, "previous-claim")
+    await running_session(env, repo)
+    await env.db.update_session("s", last_claim_epoch=99)
+    result = await command(env, "pause_task")
+    assert "session identity changed" in result.get("error", ""), result
+    assert not git("for-each-ref", "refs/aq/task-pauses/")
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+
+
+@pytest.mark.parametrize("late_change", [False, True])
+async def test_pause_rejects_foreign_workspace_claim_before_publication(
+    env, tmp_path, monkeypatch, late_change
+):
+    from src.claim_file import write_claim_file
+
+    repo, git = make_git_repo(tmp_path, "foreign-claim")
+    await running_session(env, repo)
+    task = await env.db.get_task("t")
+    write_claim_file(str(repo), {
+        "task_id": "t" if late_change else "peer", "session_id": "s",
+        "claim_epoch": task.claim_epoch,
+    })
+    if late_change:
+        run = env.orch.git._arun
+
+        async def reassign(args, **kwargs):
+            result = await run(args, **kwargs)
+            if "Paused task worktree" in args:
+                write_claim_file(str(repo), {
+                    "task_id": "peer", "session_id": "s", "claim_epoch": task.claim_epoch,
+                })
+            return result
+
+        monkeypatch.setattr(env.orch.git, "_arun", reassign)
+    result = await command(env, "pause_task")
+    assert "workspace claim changed" in result.get("error", ""), result
+    assert not git("for-each-ref", "refs/aq/task-pauses/")
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+
+
+async def test_pause_rechecks_slot_sentinel_before_checkpoint_publication(env, tmp_path, monkeypatch):
+    from src.models import WorktreeSentinel
+
+    repo, git = make_git_repo(tmp_path, "changed-sentinel")
+    await running_session(env, repo)
+    run = env.orch.git._arun
+    manager = env.orch._worktree_slots()
+
+    async def reassign(args, **kwargs):
+        result = await run(args, **kwargs)
+        if "Paused task worktree" in args:
+            manager.write_sentinel(repo, WorktreeSentinel(
+                slot="slot-0", slot_index=0, base_workspace_id="", project_id="p",
+                workspace_id="workspace", task_id="peer", branch="aq/peer", created_at=1,
+                daemon_epoch="test", setup_hash="",
+            ))
+        return result
+
+    monkeypatch.setattr(env.orch.git, "_arun", reassign)
+    result = await command(env, "pause_task")
+    assert "workspace sentinel changed" in result.get("error", ""), result
+    assert not git("for-each-ref", "refs/aq/task-pauses/")
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert manager.read_sentinel(repo).task_id == "peer"
+
+
+async def test_pause_rechecks_task_branch_before_checkpoint_publication(env, tmp_path, monkeypatch):
+    repo, _ = make_git_repo(tmp_path, "changed-task-branch")
+    await running_session(env, repo)
+    run = env.orch.git._arun
+
+    async def change_branch(args, **kwargs):
+        result = await run(args, **kwargs)
+        if "Paused task worktree" in args:
+            await env.db.update_task("t", branch_name="aq/peer")
+        return result
+
+    monkeypatch.setattr(env.orch.git, "_arun", change_branch)
+    result = await command(env, "pause_task")
+    assert "Task pause identity changed" in result.get("error", ""), result
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+
+
+async def test_pause_rechecks_foreign_branch_before_partial_salvage_receipt(
+    env, tmp_path, monkeypatch
+):
+    from src.orchestrator import task_checkpoint
+
+    repo, git = make_git_repo(tmp_path, "changed-salvage-branch")
+    await running_session(env, repo)
+    git("branch", "aq/peer")
+    (repo / "new.txt").write_text("untracked\n")
+    index = (repo / ".git" / "index").read_bytes()
+
+    async def unavailable(*args, **kwargs):
+        raise RuntimeError("checkpoint unavailable")
+
+    add = task_checkpoint._add_worktree
+
+    async def change_branch(*args):
+        await add(*args)
+        git("symbolic-ref", "HEAD", "refs/heads/aq/peer")
+
+    monkeypatch.setattr(task_checkpoint, "capture_checkpoint", unavailable)
+    monkeypatch.setattr(task_checkpoint, "_add_worktree", change_branch)
+    for _ in range(3):
+        result = await command(env, "pause_task")
+    assert "branch does not match its task" in result.get("error", ""), result
+    assert (repo / ".git" / "index").read_bytes() == index
+    assert not await env.db.get_task_contexts("t")
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+
+
+async def test_pause_rechecks_stopped_session_before_checkpoint_publication(env, tmp_path, monkeypatch):
+    repo, _ = make_git_repo(tmp_path, "restarted-session")
+    await running_session(env, repo)
+    run = env.orch.git._arun
+
+    async def restart(args, **kwargs):
+        result = await run(args, **kwargs)
+        if "Paused task worktree" in args:
+            await env.db.update_session("s", desired_state="running")
+        return result
+
+    monkeypatch.setattr(env.orch.git, "_arun", restart)
+    result = await command(env, "pause_task")
+    assert "session identity changed" in result.get("error", ""), result
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (await env.db.get_session("s")).task_id == "t"
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+
+
+@pytest.mark.parametrize("retry_capture", [False, True])
+async def test_pause_waits_for_cancelled_claim_preparation_cleanup(
+    env, tmp_path, monkeypatch, retry_capture
+):
+    import asyncio
+    from src.orchestrator import task_checkpoint
+
+    repo, git = make_git_repo(tmp_path, "cancelled")
+    _, task = await running_session(env, repo)
+    await env.db.update_session("s", claim_phase="preparing")
+    started = asyncio.Event()
+
+    async def prepare():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            (repo / "late.txt").write_text("last preparation write\n")
+
+    preparation = asyncio.create_task(prepare())
+    await started.wait()
+    env.orch.claim_preparations[("s", "t", task.claim_epoch)] = preparation
+    if retry_capture:
+        capture = task_checkpoint.capture_checkpoint
+
+        async def unavailable(*args, **kwargs):
+            monkeypatch.setattr(task_checkpoint, "capture_checkpoint", capture)
+            raise RuntimeError("transient object store failure")
+
+        monkeypatch.setattr(task_checkpoint, "capture_checkpoint", unavailable)
+        result = await command(env, "pause_task")
+        assert "Repeat Pause" in result.get("error", ""), result
+        # The request map disappears when the cancelled request unwinds.
+        env.orch.claim_preparations.clear()
+    await pause(env)
+    assert preparation.done()
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert git("show", f"{saved['commit']}:late.txt") == "last preparation write"
+    snapshot = await env.db.get_task_meta("t", "manual_pause")
+    assert snapshot["preparations_stopped"] == [{
+        "session_id": "s", "claim_epoch": task.claim_epoch, "instance_token": "instance",
+    }]
+
+
+async def test_pause_retains_source_until_preparation_cancellation_really_finishes(env, tmp_path):
+    import asyncio
+
+    repo, _ = make_git_repo(tmp_path, "still-writing")
+    _, task = await running_session(env, repo)
+    await env.db.update_session("s", claim_phase="preparing")
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def prepare():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await finish.wait()  # Model a slow, cancellation-resistant cleanup.
+
+    preparation = asyncio.create_task(prepare())
+    await started.wait()
+    env.orch.claim_preparations[("s", "t", task.claim_epoch)] = preparation
+    try:
+        result = await command(env, "pause_task")
+        assert "preparation cleanup is still running" in result.get("error", ""), result
+        assert not preparation.done()
+        assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+        assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+        assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    finally:
+        finish.set()
+        await preparation
+    await pause(env)
+
+
+async def test_pause_retains_attached_owner_and_hold_after_checkpoint(env, tmp_path):
+    from sqlalchemy import insert, select
+    from src.database.tables import integration_branch_owners
+
+    repo, git = make_git_repo(tmp_path, "attached-owner")
+    git("switch", "--detach")
+    provider, _ = await running_session(env, repo)
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="owner", repository_id="repo", ref="aq/t", owner_id="t", owner_role="task",
+            fence_token=1, handoff_state="attached", session_id="s", workspace_id="workspace",
+            created_at=1, updated_at=1,
+        ))
+    result = await command(env, "pause_task")
+    assert "guarded handoff" in result.get("error", ""), result
+    assert "task-session" not in provider.running
+    assert (await env.db.get_session("s")).task_id == "t"
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+    assert (await env.db.get_task_meta("t", "manual_pause_checkpoint"))["branch"] is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    async with env.db.immediate() as conn:
+        owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
+    assert (owner["fence_token"], owner["session_id"], owner["handoff_state"]) == (1, "s", "attached")
+
+
+@pytest.mark.parametrize("failure", ["unborn", "unavailable"])
+async def test_bounded_git_capture_failure_has_honest_receipt_and_keeps_index(
+    env, tmp_path, monkeypatch, failure
+):
+    import subprocess
+
+    if failure == "unborn":
+        repo = tmp_path / "unborn-layers"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+
+        def git(*args):
+            return subprocess.run(
+                ["git", *args], cwd=repo, check=True, capture_output=True, text=True,
+            ).stdout.strip()
+    else:
+        repo, git = make_git_repo(tmp_path, "unavailable")
+
+        async def unavailable(_):
+            return False
+
+        monkeypatch.setattr(env.orch.git, "avalidate_checkout", unavailable)
+    (repo / "progress.txt").write_text("staged\n")
+    git("add", "progress.txt")
+    (repo / "progress.txt").write_text("unstaged\n")
+    index = (repo / ".git" / "index").read_bytes()
+    await running_session(env, repo)
+    for _ in range(3):
+        await command(env, "pause_task")
+        assert (repo / ".git" / "index").read_bytes() == index
+        assert (repo / "progress.txt").read_text() == "unstaged\n"
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is False
+    contexts = {row["type"]: row["content"] for row in await env.db.get_task_contexts("t")}
+    assert "no checkpoint captured:" in contexts["manual_pause_no_checkpoint"]
+    assert "unstaged" in contexts["worktree_salvage"]
+
+
+async def test_pause_rejects_workspace_from_an_unrelated_common_repository(env, tmp_path):
+    from src.models import Workspace, RepoSourceType
+
+    base, _ = make_git_repo(tmp_path, "expected-base")
+    unrelated, _ = make_git_repo(tmp_path, "unrelated-slot")
+    (unrelated / "keep.txt").write_text("unrelated work\n")
+    await running_session(env, unrelated)
+    await env.db.create_workspace(Workspace(
+        id="base", project_id="p", workspace_path=str(base), source_type=RepoSourceType.LINK,
+    ))
+    await env.db.update_workspace("workspace", base_workspace_id="base", slot_index=0)
+    result = await command(env, "pause_task")
+    assert "different repository" in result.get("error", ""), result
+    assert (unrelated / "keep.txt").read_text() == "unrelated work\n"
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+
+
+async def test_legacy_pending_pause_does_not_infer_source_identity(env, tmp_path):
+    repo, _ = make_git_repo(tmp_path, "legacy-pause")
+    provider, _ = await running_session(env, repo)
+    snapshot = await env.db.pause_task("t")
+    snapshot.pop("workspaces")
+    await env.db.set_task_meta("t", "manual_pause", snapshot)
+    result = await command(env, "pause_task")
+    assert "Legacy pause lacks source identity proof" in result.get("error", ""), result
+    assert "task-session" in provider.running
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+
+
+async def test_detached_pause_preserves_shared_repo_with_branch_and_lock_in_sibling(env, tmp_path):
+    from pathlib import Path
+    from src.models import Workspace, RepoSourceType
+
+    base, git = make_git_repo(tmp_path, "shared-base")
+    slot = tmp_path / "detached-slot"
+    git("worktree", "add", "--detach", str(slot), "HEAD")
+    (slot / "staged.txt").write_text("staged\n")
+    git("-C", str(slot), "add", "staged.txt")
+    (slot / "staged.txt").write_text("unstaged\n")
+    (slot / "new.txt").write_text("untracked\n")
+    slot_index = Path(git("-C", str(slot), "rev-parse", "--git-path", "index"))
+    index_bytes = slot_index.read_bytes()
+    base_index = (base / ".git" / "index").read_bytes()
+    sibling_lock = base / ".git" / "index.lock"
+    sibling_lock.write_text("unknown sibling holder\n")
+    await running_session(env, slot)
+    await env.db.create_workspace(Workspace(
+        id="base", project_id="p", workspace_path=str(base), source_type=RepoSourceType.LINK,
+    ))
+    await env.db.update_workspace("workspace", base_workspace_id="base", slot_index=0)
+
+    await pause(env)
+
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert saved["branch"] is None
+    assert git("symbolic-ref", "--short", "HEAD") == "main"
+    assert git("-C", str(slot), "rev-parse", "--symbolic-full-name", "HEAD") == "HEAD"
+    assert git("show", f"{saved['commit']}^:staged.txt") == "staged"
+    assert git("show", f"{saved['commit']}:staged.txt") == "unstaged"
+    assert git("show", f"{saved['commit']}:new.txt") == "untracked"
+    assert slot_index.read_bytes() == index_bytes
+    assert (base / ".git" / "index").read_bytes() == base_index
+    assert sibling_lock.read_text() == "unknown sibling holder\n"
+
+
+async def test_pause_rechecks_real_common_dir_after_late_git_source_change(env, tmp_path, monkeypatch):
+    base, git = make_git_repo(tmp_path, "original-source")
+    slot, unrelated = tmp_path / "slot", tmp_path / "unrelated-source"
+    git("worktree", "add", "--detach", str(slot), "HEAD")
+    git("clone", "--no-hardlinks", str(base), str(unrelated))
+    git("-C", str(unrelated), "switch", "--detach")
+    (slot / "keep.txt").write_text("source must remain\n")
+    unrelated_index = (unrelated / ".git" / "index").read_bytes()
+    await running_session(env, slot)
+    run = env.orch.git._arun
+
+    async def change_source(args, **kwargs):
+        result = await run(args, **kwargs)
+        if "Paused task worktree" in args:
+            # Same HEAD and detached identity, but a different common repository.
+            (slot / ".git").write_text(f"gitdir: {unrelated / '.git'}\n")
+        return result
+
+    monkeypatch.setattr(env.orch.git, "_arun", change_source)
+    result = await command(env, "pause_task")
+    assert "Git identity changed" in result.get("error", ""), result
+    assert (slot / "keep.txt").read_text() == "source must remain\n"
+    assert (unrelated / ".git" / "index").read_bytes() == unrelated_index
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint_retry") is None
+
+
 async def test_checkpoint_ref_survives_original_slot_removal(env, tmp_path):
     from dataclasses import replace
     import subprocess
@@ -901,6 +1470,7 @@ async def test_checkpoint_ref_survives_original_slot_removal(env, tmp_path):
     git("worktree", "add", "-b", "aq/t", str(slot))
     (slot / "new.txt").write_text("dirty progress")
     await running_session(env, slot)
+    await env.db.update_task("t", branch_name="aq/t")
     await pause(env)
     saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
     assert saved["source"] == str(base / ".git")
@@ -944,6 +1514,158 @@ async def test_checkpoint_validation_precedes_destructive_reset(env, tmp_path, c
         await env.orch._worktree_slots().reset_slot_for_task(ws, await env.db.get_task("t"))
     assert (destination / "dirty.txt").read_text() == "must not clean"
     assert await env.db.get_task_meta("t", "manual_pause_checkpoint")
+
+
+@pytest.mark.parametrize("conflict", ["foreign_task", "legacy_foreign_branch", "foreign_project"])
+async def test_checkpoint_task_identity_precedes_all_git_changes(env, tmp_path, monkeypatch, conflict):
+    from src.git.manager import GitError
+    from src.orchestrator.task_checkpoint import restore_checkpoint
+
+    repo, git = make_git_repo(tmp_path, "identity")
+    (repo / "identity.txt").write_text("staged\n")
+    git("add", "identity.txt")
+    (repo / "identity.txt").write_text("unstaged\n")
+    (repo / "untracked.bin").write_bytes(b"\x00keep\xff")
+    await running_session(env, repo)
+    await pause(env)
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert saved["task_id"] == "t"
+    assert saved["pause_project_id"] == "p"
+    assert saved["pause_workspace_id"] == "workspace"
+    if conflict == "foreign_task":
+        saved["task_id"] = "peer"
+    elif conflict == "legacy_foreign_branch":
+        saved.pop("task_id")
+        saved["branch"] = "aq/peer"
+    else:
+        saved["pause_project_id"] = "other"
+    await env.db.set_task_meta("t", "manual_pause_checkpoint", saved)
+    assert "error" not in await command(env, "resume_task")
+    index = (repo / ".git" / "index").read_bytes()
+    head = git("rev-parse", "HEAD")
+    lock = repo / ".git" / "index.lock"
+    lock.write_text("unknown writer: leave alone\n")
+
+    async def unexpected_git(*args, **kwargs):
+        pytest.fail("invalid checkpoint reached Git mutation or lock cleanup")
+
+    monkeypatch.setattr(env.orch.git, "_arun", unexpected_git)
+    monkeypatch.setattr(env.orch.git, "aclear_stale_locks", unexpected_git)
+    ws = await env.db.get_workspace("workspace")
+    with pytest.raises(GitError, match="unchanged"):
+        await env.orch._worktree_slots().reset_slot_for_task(ws, await env.db.get_task("t"))
+    # Supplying a previously prepared plan must not bypass task validation.
+    with pytest.raises(GitError, match="unchanged"):
+        await restore_checkpoint(env.db, env.orch.git, "t", str(repo), saved=saved)
+    assert (repo / ".git" / "index").read_bytes() == index
+    assert git("rev-parse", "HEAD") == head
+    assert lock.read_text() == "unknown writer: leave alone\n"
+    assert (repo / "identity.txt").read_text() == "unstaged\n"
+    assert (repo / "untracked.bin").read_bytes() == b"\x00keep\xff"
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") == saved
+    assert (await env.db.get_task("t")).branch_name == "main"
+
+
+@pytest.mark.parametrize("outcome", ["activate", "pause_before_activation", "foreign_checkpoint"])
+async def test_checkpoint_capture_restore_and_pool_activation_fences(
+    env, tmp_path, monkeypatch, outcome
+):
+    import time
+    from src.claim_file import read_claim_file
+    from src.models import AgentState, SessionRecord, WorktreeSentinel
+
+    repo, git = make_git_repo(tmp_path, "pipeline")
+    (repo / "pipeline.txt").write_text("staged\n")
+    git("add", "pipeline.txt")
+    staged_tree = git("write-tree")
+    (repo / "pipeline.txt").write_text("unstaged\n")
+    (repo / "new.bin").write_bytes(b"\x00untracked\xff")
+    original_head = git("rev-parse", "HEAD")
+    original_index = (repo / ".git" / "index").read_bytes()
+    await running_session(env, repo)
+    await pause(env)
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert (repo / ".git" / "index").read_bytes() == original_index
+    assert "error" not in await command(env, "resume_task")
+
+    # A proven, completed predecessor can use this physical slot between
+    # capture and restoration. Its current branch is not the incoming task.
+    git("reset", "--hard")
+    git("clean", "-fd")
+    git("switch", "-c", "aq/peer")
+    (repo / "peer.txt").write_text("predecessor committed work\n")
+    git("add", "peer.txt")
+    git("commit", "-m", "completed predecessor")
+    peer_head = git("rev-parse", "HEAD")
+    await env.db.transition_task("peer", TaskStatus.COMPLETED, force=True)
+    manager = env.orch._worktree_slots()
+    manager.write_sentinel(repo, WorktreeSentinel(
+        slot="slot-0", slot_index=0, base_workspace_id="", project_id="p",
+        workspace_id="workspace", task_id="peer", branch="aq/peer", created_at=time.time(),
+        daemon_epoch="test", setup_hash="",
+    ))
+    await env.db.assign_task_to_agent("t", "agent")
+    await env.db.transition_task("t", TaskStatus.IN_PROGRESS)
+    await env.db.update_agent("agent", state=AgentState.BUSY)
+    await env.db.update_workspace(
+        "workspace", locked_by_task_id="t", locked_by_agent_id="agent"
+    )
+    task = await env.db.get_task("t")
+    assert task.claim_epoch > saved["pause_claim_epoch"]
+    session = SessionRecord(
+        id="next", task_id="t", agent_id="agent", project_id="p", profile_id="worker",
+        harness="fake", provider="fake", name="next-session", lifecycle="pool",
+        state="running", work_dir=str(repo), epoch="test", instance_token="instance",
+        started_at=time.time(), claim_phase="preparing", last_claim_epoch=task.claim_epoch,
+    )
+    await env.db.create_session(session)
+    if outcome == "foreign_checkpoint":
+        await env.db.set_task_meta("t", "manual_pause_checkpoint", {**saved, "task_id": "peer"})
+    elif outcome == "pause_before_activation":
+        reset = manager.reset_slot_for_task
+
+        async def pause_after_restore(*args, **kwargs):
+            branch = await reset(*args, **kwargs)
+            await env.db.pause_task("t")
+            return branch
+
+        monkeypatch.setattr(manager, "reset_slot_for_task", pause_after_restore)
+        monkeypatch.setattr(env.orch, "_worktree_slots", lambda: manager)
+    result = await env.handler._prepare_and_activate(session, session, task)
+    current = await env.db.get_task("t")
+    current_session = await env.db.get_session("next")
+    assert current.branch_name == "main"
+    assert git("rev-parse", "aq/peer") == peer_head
+    if outcome == "foreign_checkpoint":
+        assert result["result"] == "prepare_failed"
+        assert current_session.claims == 0
+        assert git("branch", "--show-current") == "aq/peer"
+        assert git("rev-parse", "HEAD") == peer_head
+        assert (repo / "peer.txt").read_text() == "predecessor committed work\n"
+        assert await env.db.get_task_meta("t", "manual_pause_checkpoint")
+        assert read_claim_file(str(repo)) is None
+        return
+    assert git("branch", "--show-current") == "main"
+    assert git("rev-parse", "HEAD") == original_head
+    assert git("write-tree") == staged_tree
+    assert (repo / "pipeline.txt").read_text() == "unstaged\n"
+    assert (repo / "new.bin").read_bytes() == b"\x00untracked\xff"
+    if outcome == "activate":
+        assert result["result"] == "claimed"
+        assert current_session.claims == 1
+        assert current_session.claim_phase == "active"
+        assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+        claim = read_claim_file(str(repo))
+        assert (claim["task_id"], claim["claim_epoch"], claim["session_id"]) == (
+            "t", task.claim_epoch, "next"
+        )
+    else:
+        assert result["result"] == "prepare_failed"
+        assert current.status == TaskStatus.PAUSED
+        assert current_session.claims == 0
+        assert await env.db.get_task_meta("t", "manual_pause_checkpoint") == saved
+        assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+        assert read_claim_file(str(repo)) is None
 
 
 async def test_unborn_repository_pause_keeps_work_and_lock_with_useful_error(env, tmp_path):

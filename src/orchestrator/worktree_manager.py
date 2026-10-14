@@ -708,18 +708,23 @@ class WorktreeSlotManager:
         await self.ensure_slot_checkout(
             slot_ws, task, kind=kind, handoff_sha=base_branch if operator_handoff else None,
         )
-        await self.ensure_git_exclude(slot_dir)
-        await self.git.aclear_stale_locks(str(slot_dir))
         if operator_handoff:
             dirty_paths = await self.git.aget_dirty_paths(str(slot_dir))
             if dirty_paths is None or dirty_paths:
                 raise GitError("Operator handoff destination is dirty or unproved; "
                                "workspace was left unchanged")
         from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
+        checkpoint_branch = (
+            target_branch or resume_branch or getattr(task, "branch_name", None)
+            or task_branch_name(task.id)
+        )
         checkpoint = await prepare_checkpoint(
             self.db, self.git, task.id, str(slot_dir),
             handoff_sha=base_branch if operator_handoff else None,
+            expected_branch=checkpoint_branch,
         )
+        await self.ensure_git_exclude(slot_dir)
+        await self.git.aclear_stale_locks(str(slot_dir))
         if checkpoint:
             if target_branch is not None and checkpoint["branch"] != target_branch:
                 raise GitError("saved checkpoint is not on the exact owned branch")
@@ -733,7 +738,10 @@ class WorktreeSlotManager:
             await self.salvage_dirty(slot_ws, prev.task_id if prev else None, incoming_task_id=task.id)
             await self.git._arun(["reset", "--hard"], cwd=str(slot_dir))
             await self.git._arun(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir))
-            branch = await restore_checkpoint(self.db, self.git, task.id, str(slot_dir), saved=checkpoint)
+            branch = await restore_checkpoint(
+                self.db, self.git, task.id, str(slot_dir), saved=checkpoint,
+                expected_branch=checkpoint_branch,
+            )
             if preserve_branch:
                 await self.git.afetch_origin(
                     str(slot_dir), repository_url=await self._repository_url(slot_ws.project_id),
