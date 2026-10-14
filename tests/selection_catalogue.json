@@ -9198,11 +9198,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:ce7d091c5136fa427b6eb020d8e187b1f69929b1f9ff9e8c4744e0aea5a316f1",
+      "digest": "sha256:393afc2d33b673eaaa7f97633bc43963c7ed5d146d2650c21f6f687ecdfe28e1",
       "imports": [
         "src.database.queries.claim_queries",
         "src.database.tables",
         "src.git.github_contracts",
+        "src.git.manager",
         "src.integration.batches",
         "src.integration.branch_materialization",
         "src.integration.gitops",
