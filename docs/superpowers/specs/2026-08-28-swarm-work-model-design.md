@@ -1136,6 +1136,14 @@ Three budgets are kept apart, because they measure different things and cannot a
 | `aq prime` per claim | — | — | ≤ 2,000 tokens, logged |
 | push-vs-pull A/B (same 50-task set, `lifecycle: task` vs `pool` cap 5) | — | — | report wall-clock, tokens, cold starts; no threshold — the measurement D4 asks for |
 
+The executable PostgreSQL budgets in `tests/perf/test_claim_statements.py` cap
+the whole claim at 20 statements and the selection/holder portion at 10,
+including persisted claim diagnostics. The current project is joined to the
+preparation fence after admission, so long polls cannot reuse stale integration
+settings. Holder recording chains the session and workspace writes through
+`UPDATE ... RETURNING`; metadata insertion and replacement use a single upsert.
+Diagnostic additions must fit these bounds rather than raise them.
+
 `tests/perf/` seeds this scale (fixture reused by all perf tests), runs on a Postgres
 service in CI, and asserts the table. SQLite runs the same suite with timing relaxed 4×,
 transaction counts identical, and its own exact logical-statement and worst-case bounds.

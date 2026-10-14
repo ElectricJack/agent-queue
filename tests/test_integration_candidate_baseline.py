@@ -274,6 +274,38 @@ def test_a_mixed_candidate_repairs_only_what_the_target_passes():
 # ------------------------------------------------- the train never files that repair
 
 
+@pytest.mark.parametrize("latest", ["success", "missing", "failure"])
+async def test_cached_red_target_is_refreshed_before_allocating_candidate_repair(db, latest):
+    """A cached red must not mask a candidate regression after a target rerun."""
+    frozen_batch = await frozen(db, "batch-rerun-target")
+    provider = Provider({
+        CANDIDATE: {"unit": "failure", "lint": "success"},
+        TARGET: {"unit": "failure", "lint": "success"},
+    })
+    checks = ExactChecks(db, provider, clock=Clock())
+    cached = await checks.refresh(target_head(frozen_batch, TARGET))
+    assert cached.state is ChecksState.RED
+    provider.verdicts[TARGET]["unit"] = latest
+    repair = Repair()
+    t = train(checks, baseline=CandidateBaselineService(db, clock=Clock()), repair=repair,
+              frozen_batch=frozen_batch)
+
+    visit = await t.visit(ROOT)
+
+    [unit] = [row for row in await rows(db, TARGET) if row["check_name"] == "unit"]
+    assert unit["conclusion"] == latest
+    assert visit.checks == "red"
+    baseline = visit.detail["baseline"]
+    if latest == "failure":
+        assert visit.state == "preexisting" and repair.calls == []
+        assert baseline["pre_existing_checks"] == ["unit"]
+    else:
+        assert visit.state == "repair" and len(repair.calls) == 1
+        assert baseline["repairable_checks"] == ["unit"]
+        assert baseline["pre_existing_checks"] == []
+        assert provider.rerequests == []
+
+
 @pytest.mark.parametrize("candidate_conclusion", ["failure", "missing"])
 @pytest.mark.parametrize("target_verdict", [
     {"unit": "missing", "lint": "missing"},
@@ -317,9 +349,10 @@ async def test_missing_target_checks_leave_candidate_failures_repairable(
             integration_batches.c.id == frozen_batch.id))).scalar_one() == 0
 
 
-@pytest.mark.parametrize("target_conclusion", ["missing", "failure"])
+@pytest.mark.parametrize("stale_red", [False, True])
+@pytest.mark.parametrize("target_conclusion", ["missing", "failure", "success"])
 async def test_hosted_target_baseline_distinguishes_absent_checks_from_real_failure(
-    db, target_conclusion,
+    db, target_conclusion, stale_red,
 ):
     """An unrelated main push run cannot establish a pre-existing required-check failure."""
     from src.integration.status import IntegrationStatusService
@@ -335,7 +368,7 @@ async def test_hosted_target_baseline_distinguishes_absent_checks_from_real_fail
         job["run_id"] = 32
     target_client, _ = github(
         app=False, names=("unit",),
-        conclusion="success" if target_conclusion == "missing" else "failure",
+        conclusion="failure" if target_conclusion == "failure" else "success",
     )
     if target_conclusion == "missing":
         target_client.workflows[0].update(name="Main attestation", workflow_id=302)
@@ -354,6 +387,16 @@ async def test_hosted_target_baseline_distinguishes_absent_checks_from_real_fail
     trust = trust.model_copy(update={"canonical_repository_id": "r"})
     checks = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust)), clock=Clock())
     frozen_batch = await frozen(db, "batch-hand-pushed-target")
+    if stale_red:
+        # Simulate a stored red from an earlier attempt/observer. The live
+        # hosted target now has either green required jobs, only attestation,
+        # or a real failure; classification must use that current evidence.
+        stale = Provider({TARGET: {"unit": "failure"}})
+        stale.required = checks.required
+        cached = await ExactChecks(db, stale, clock=Clock()).refresh(
+            target_head(frozen_batch, TARGET)
+        )
+        assert cached.state is ChecksState.RED
     repair = Repair()
     t = train(checks, baseline=CandidateBaselineService(db, clock=Clock()), repair=repair,
               frozen_batch=frozen_batch)
@@ -365,12 +408,19 @@ async def test_hosted_target_baseline_distinguishes_absent_checks_from_real_fail
     [visit] = status["targets"]
     assert visit["checks"] == "red"
     baseline = visit["detail"]["baseline"]
-    assert baseline["target_sha"] == TARGET and baseline["target_checks"] == "red"
+    assert baseline["target_sha"] == TARGET
+    assert baseline["target_checks"] == ("green" if target_conclusion == "success" else "red")
     if target_conclusion == "missing":
         assert len(repair.calls) == 1 and visit["state"] == "repair"
         assert baseline["state"] == "unavailable"
         assert baseline["reason"] == "target_required_checks_missing"
         assert baseline["missing_target_checks"] == ["unit"]
+        assert baseline["repairable_checks"] == ["unit"]
+        assert baseline["pre_existing_checks"] == []
+        client.rerequest_check_suite.assert_not_awaited()
+    elif target_conclusion == "success":
+        assert len(repair.calls) == 1 and visit["state"] == "repair"
+        assert baseline["state"] == "repairable"
         assert baseline["repairable_checks"] == ["unit"]
         assert baseline["pre_existing_checks"] == []
         client.rerequest_check_suite.assert_not_awaited()

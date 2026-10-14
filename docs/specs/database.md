@@ -2534,6 +2534,10 @@ target may never have run the required workflow, as with a hand-pushed `main`.
 Without a comparable baseline, candidate failures remain repairable. This does
 not satisfy any candidate check or change the trusted evidence needed to publish.
 Train status retains the baseline decision on both repair and re-request visits.
+Before classifying a red candidate, refresh the exact target's checks even when
+the cache has a final verdict. A rerun can supersede that verdict without moving
+the target SHA; a stale red must never suppress repair after the target turns green.
+An undecided target still receives a request before that refresh.
 
 ### Table: `integration_batch_members`
 
