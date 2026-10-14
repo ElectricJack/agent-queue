@@ -9745,6 +9745,15 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Combined claim/integration schema import includes job_workspace_pins for the retained-checkout refusal fence during idle misplaced workspace-lock reconciliation. Counts the complete import alongside the charged owner-checking method."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Idle misplaced workspace-lock reconciliation reads integration owners and job pins as refusal fences alongside foreign claims and live sessions. Updates workspace lock placement only; preserves retained owners and grants no publication or Git ref replay authority."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only attached/handoff-pending integration-owner and job-pin predicate prevents recreation of retained checkouts. Does not release ownership or authorize delivery or ref replay."
     }
   },
   "shared_state": {
@@ -10442,5 +10451,83 @@
     "refreshed_owner_fingerprints": 12,
     "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
     "reason": "The review-revision completion gate reads existing review-response metadata and persisted review revisions before any completion side effect. All 12 task-close write-call AST identities and ordinary-storage dispositions are unchanged from the parent commit; only source lines and the enclosing handler fingerprint changed. No ref-replay journal, duplicate lifecycle storage or new metadata writer was added. Immutable baseline, landing measurements, allowance and caps remain unchanged."
+  },
+  "pool_workspace_preparation_source_ci_repair": {
+    "source_head": "0d1f4d752d77d18fae4104eb48326e5277affd0c",
+    "qualified_donor": "aed09d6ec0c6cc2e8f217cf5d11a755f04a468dc",
+    "failed_jobs": [
+      "https://github.com/ElectricJack/agent-queue/actions/runs/38477650740/job/115572209115",
+      "https://github.com/ElectricJack/agent-queue/actions/runs/38477650740/job/115572209159",
+      "https://github.com/ElectricJack/agent-queue/actions/runs/38477650740/job/115572209198",
+      "https://github.com/ElectricJack/agent-queue/actions/runs/38477650740/job/115572209201"
+    ],
+    "owned_definition_additions": {
+      "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+        "reason": "Combined claim/integration schema import includes job_workspace_pins for the retained-checkout refusal fence during idle misplaced workspace-lock reconciliation. Counts the complete import alongside the charged owner-checking method."
+      },
+      "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+        "reason": "Idle misplaced workspace-lock reconciliation reads integration owners and job pins as refusal fences alongside foreign claims and live sessions. Updates workspace lock placement only; preserves retained owners and grants no publication or Git ref replay authority."
+      },
+      "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+        "reason": "Read-only attached/handoff-pending integration-owner and job-pin predicate prevents recreation of retained checkouts. Does not release ownership or authorize delivery or ref replay."
+      }
+    },
+    "storage_writer_review": {
+      "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::aa66b0c4bf394b454a55b04b3048c4ae854edc5b7c2e7dcc2bdeb6a61fa2e5b1": {
+        "line": 1094,
+        "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+        "call": "set_task_meta",
+        "owner_fingerprint": "5320f339dd4403a0b643d4cd1d80c453fcd0e62e4f25d3ae07da6ef69c3a5f35",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Branch-fence refusal diagnostic stores a bounded reason, branch name, repository/workspace/session identity and timestamp. Ordinary preparation metadata cleared by successful activation; no expected/new OIDs, publication intent, ref replay authority or duplicate integration lifecycle."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::5f457951c70bf9a85748058a4541961a976c9d242448650882070b61af58ba61": {
+        "line": 1354,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary claim_preparation_failure diagnostic stores a bounded reason, exception type, workspace/session/claim identity and timestamp. Supports infrastructure investigation; no publication intent, ref replay payload or duplicate integration lifecycle."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::64d9070466d052e67a1a96dd3a40b4a768057d1acb08c0c4e390c117e3eb58e7": {
+        "line": 1473,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary slot_reset_failure diagnostic stores a bounded reason, attempt/retry policy, workspace/session identity and timestamp. Transient PostgreSQL contention bypasses this write; no OIDs, publication intent, ref replay authority or duplicate integration lifecycle."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
+        "line": 1374,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary needs_attention exception-code marker when prerequisite-conflict or changed-stack preparation cannot safely detach an attached writer. Preserves the preparation hold; no ref update payload, publication authority or duplicate integration lifecycle."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
+        "line": 1412,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary needs_attention code repair_target_unpublished marks an unconfirmed target when the current managed fence cannot be released. Attention code only; no OIDs, publication intent, ref replay authority or duplicate integration lifecycle."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
+        "line": 1459,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary needs_attention code integration_prepare_failed_attached marks a failed preparation that cannot safely detach its writer. Transient PostgreSQL contention bypasses this write; no release authority, ref replay payload or duplicate integration lifecycle."
+      }
+    },
+    "reason": "Reviewed actual merged definitions and six preparation diagnostic writes; targeted definition ASTs match the qualified donor, without merging its unrelated changes. Owns the complete workspace reconciliation and retained-binding surfaces, classifies ordinary preparation metadata, and preserves immutable baseline, landing measurements, phase, allowance and all caps. No production claim behavior change, integration journal, storage exclusion or waiver."
   }
 }
