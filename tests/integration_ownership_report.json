@@ -9748,6 +9748,18 @@
     },
     "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_supersede_completion']": {
       "reason": "Handcrafted CLI registration for the fenced operator/supervisor supersession control; integration owns the surface."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Ordinary pool workspace-lock reconciliation. Reads retained integration owners and job pins solely to refuse takeover; moves only proved idle agent locks and never changes refs, owners or delivery lifecycle."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin._pause_owners": {
+      "reason": "Read-only capture of retained branch-owner identities under row locks for the exact task/workspace manual-pause fence. Grants no release, publication or ref replay authority."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only retained integration-owner and resource-job pin fence for missing-slot recreation. An attached owner or job pin refuses recreation; no ownership or Git ref transition."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Integration table import shared by ordinary claim reconciliation; widened for retained branch-owner and job-pin checks that refuse unsafe workspace-lock reassignment."
     }
   },
   "shared_state": {
