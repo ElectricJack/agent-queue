@@ -2761,27 +2761,16 @@ class ResourceCgroupConfig:
 
 @dataclass
 class ScriptsConfig:
-    """Optional Linux script backend. Operator provisioning never happens here."""
+    """Ordinary script processes, enabled by default; no isolation prerequisites."""
 
-    enabled: bool = False
-    launcher: str = ""
-    bwrap: str = "/usr/bin/bwrap"
+    enabled: bool = True
     runtime_root: str = ""
     runtime_manifest: str = ""
     input_root: str = ""
     state_root: str = ""
-    cgroup_root: str = ""
-    execution_uid: int | None = None
-    execution_gid: int | None = None
     env_allowlist: list[str] = field(default_factory=list)
-    network: str = "none"
     queue_seconds: int = 300
     wall_seconds: int = 60
-    cpu_seconds: int = 30
-    memory_bytes: int = 256 * 1024**2
-    pids: int = 32
-    fds: int = 128
-    scratch_bytes: int = 16 * 1024**2
     stdout_bytes: int = 1024**2
     stderr_bytes: int = 1024**2
     input_bytes: int = 64 * 1024**2
@@ -2799,20 +2788,11 @@ class ScriptsConfig:
 
         if not isinstance(self.enabled, bool):
             error("enabled", "must be a boolean")
-        for name in ("launcher", "bwrap", "runtime_root", "runtime_manifest", "input_root",
-                     "state_root", "cgroup_root"):
+        for name in ("runtime_root", "runtime_manifest", "input_root", "state_root"):
             value = getattr(self, name)
             if (not isinstance(value, str) or "\0" in value
-                    or (value and not value.startswith("/")) or (self.enabled and not value)):
-                error(name, "must be an absolute operator path (required when enabled)")
-        for name in ("execution_uid", "execution_gid"):
-            value = getattr(self, name)
-            if value is None and not self.enabled:
-                continue
-            if type(value) is not int or value <= 0:
-                error(name, "must identify a dedicated non-root identity")
-        if self.network != "none":
-            error("network", "only none is supported")
+                    or (value and not value.startswith("/"))):
+                error(name, "must be an absolute path when supplied")
         if not isinstance(self.env_allowlist, list):
             error("env_allowlist", "must be a list of permitted environment names")
         else:

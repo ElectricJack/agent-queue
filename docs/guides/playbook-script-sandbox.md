@@ -1,199 +1,133 @@
-# Playbook script sandbox foundation
+# Playbook script process foundation
 
-Script execution is disabled by default. This foundation supplies reviewed program
-and input models, a proposal pinning seam, quota reservations, a Linux launcher and
-the read-only `resources.script_sandbox` doctor check. It does **not** register
-`ScriptStep`, advertise `script_v1`, admit jobs or persist output. Those integrations
-belong to E2/E3 of the approved implementation-playbooks plan. Shipping these files
-does not enable scripts or satisfy the separate real Linux acceptance gate.
+Playbook scripts run as ordinary processes. The October 14, 2026 decision
+supersedes the original E1 sandbox design: no cgroups, namespaces, network
+isolation, privileged launcher, prerequisite doctor or separate host acceptance.
+`resources.scripts.enabled` defaults to **true**; setting it false refuses new
+launches. Managed job admission must also be enabled. This foundation does not
+register `ScriptStep` or advertise `script_v1`; E2 owns durable jobs and protected
+output, and E3 owns step dispatch and activation.
 
-## Ownership and trust boundary
+## Programs and pins
 
-An operator installs a fixed launcher, a dedicated non-root UID/GID, an immutable
-runtime, protected storage and a delegated cgroup v2 subtree on an approved host.
-Workers never install prerequisites, change delegation, edit operator policy or
-enable execution. There is no soft-cgroup mode.
+`ScriptProgram` selects exactly one of a source `script` with an explicit
+interpreter, `argv` with a literal executable followed by typed argument values,
+or literal `shell` text with an explicit interpreter. Source paths and executable
+identifiers are literal relative paths. Dynamic arguments are separate argv
+entries; stdin is bounded to 64 KiB and closed after delivery. Shell parameters
+receive data as positional arguments, never through command-text substitution.
 
-`src.jobs.script_launcher` reads only `/etc/agent-queue/script-sandbox.json`. No
-request can select a host executable, launcher, runtime directory, cgroup or storage
-root. Its public invocation accepts no arguments or exactly `--probe`. The
-`aq-script-launcher` console entry point is provided for an operator installation;
-the repository checkout is not a trusted installation.
+The existing proposal pinning remains: `pin_source_scripts` reads the source
+frontmatter `scripts` mapping and returns typed `PinnedScript` values. Repository
+files come from the approved full Git revision; scoped vault reads reject path
+escapes and symlinks. Declared supporting files are copied to content-addressed
+storage. Execution verifies input and declared runtime file digests again. Changed
+or missing bytes refuse admission and require new proposal pins.
 
-The policy, package, Python environment, bubblewrap binary, runtime manifest and
-their ancestors must be root-owned and not group/world writable. Install the Python
-environment and all dependencies outside user-writable paths; use isolated Python
-startup. A root-owned wrapper may perform the UID transition using an operator
-rule restricted to this exact installed command with no arguments or `--probe`.
-Do not grant a shell, arbitrary Python, the private `script_entry.py` shim,
-caller-supplied paths or arbitrary argument forwarding. The resulting identity
-must have only its designated primary group, no capabilities, and differ from the
-daemon UID. The launcher itself refuses root execution.
+A `RuntimeManifest` has `version: 1`, a runtime identifier and declared `files`
+(path, SHA-256, exact byte count, executable flag). `runtime_root` resolves these
+relative paths; `runtime_manifest` locates the manifest. These are server settings,
+not command inputs. There is no runtime image or mount: host libraries, files and
+network are accessible normally. Digest pins detect changes to declared bytes;
+they do not sandbox a program or freeze undeclared host dependencies.
 
-The launcher holds the existing shared `BoxLock` with weight one and normal
-priority (band 2), and a per-run lock. Its pre-exec shim joins an already limited cgroup
-before bubblewrap or user code can fork, sets no-new-privileges and hard descriptor
-and file-size limits, and closes inherited descriptors. Bubblewrap creates user,
-PID, network, IPC, UTS, mount and cgroup namespaces, disables further user
-namespaces and drops capabilities. Runtime and inputs are read-only; `/scratch`
-is a size-limited tmpfs. `/dev` is read-only and `/dev/shm` is covered with an empty
-read-only directory. Host sockets, credentials and the cgroup filesystem are not
-mounted. The environment starts with fixed PATH/locale and HOME=`/scratch`.
+E3 must place pins in B3's trusted execution metadata, compare compiled steps to
+the source program and include the metadata in review identity. Compiler-authored
+digests do not establish trust. Legacy artifact and contract identities remain
+unchanged by this foundation.
 
-The implementation relies on the documented [bubblewrap mount and namespace
-semantics](https://github.com/containers/bubblewrap/blob/main/bwrap.xml) and
-[cgroup v2 controllers and cgroup.kill](https://docs.kernel.org/admin-guide/cgroup-v2.html).
-Those mechanisms must be tested together on the actual designated host. The
-bubblewrap binary must support unprivileged user namespaces without setuid/setgid.
+## Configuration and limits
 
-## Operator policy contract
+`ScriptsConfig` lives under `resources.scripts`. Paths can be unset at startup;
+launch requires absolute `runtime_root`, `runtime_manifest`, `input_root` and
+`state_root`. No separate installation policy or identity is needed. Temporary
+input and scratch directories are created under `state_root` and removed after
+execution. The source chooses `cwd: inputs` or `cwd: scratch` (default).
 
-The fixed policy file is a JSON `LauncherPolicy` with these fields. Paths and
-identities are supplied by the operator; none are inferred from a worker slot.
-
-| Field | Required meaning |
-|---|---|
-| `version` | `1` |
-| `daemon_uid` | The daemon's real, non-root UID; execution must use another UID |
-| `jobs_enabled` | Explicit job admission switch; must be true for execution |
-| `lock_dir`, `capacity` | The **same** box lock directory and capacity as managed jobs |
-| `scripts` | The `ScriptsConfig` object described below |
-
-`scripts.enabled` defaults to false. `launcher` is the absolute fixed wrapper
-path; `bwrap` is the absolute installed binary. `runtime_root`, `runtime_manifest`,
-`input_root`, `state_root`, `cgroup_root`, `execution_uid` and `execution_gid` are
-mandatory when enabled. Only `network: "none"` is supported. `env_allowlist`
-permits explicit values only where the authored allowlist also permits the name;
-credential names, interpreter hooks, PATH/HOME and AQ/DB/provider settings remain
-forbidden even if listed accidentally.
-
-The cgroup root must be beneath `/sys/fs/cgroup`, empty of processes, writable by
-the execution UID, and already have `cpu memory pids` enabled in
-`cgroup.subtree_control`. Child groups require `cpu.max`, aggregate `cpu.stat`,
-`memory.max`, `memory.swap.max`, `memory.oom.group`, memory/pids event counters,
-`pids.max`, `cgroup.events` and `cgroup.kill`. Setup writes and reads back every
-enforced limit before spawning the private shim. Doctor only inspects delegation;
-it never creates or enables the operator's subtree.
-
-The operator provisions access to the shared box lock directory, existing lock
-inodes, its protocol record and waiters directory for both identities. Preserve
-lock inodes; never replace/unlink them to repair permissions. The input store is
-daemon-owned, readable by the launcher, and not writable by sandboxed code. The
-private state root holds per-run locks, launch identities, staging and quota
-metadata. Provision daemon access for E2's recovery/retention owner without making
-it generally readable or writable. Neither storage root is mounted in a sandbox.
-
-| Ceiling | Default |
+| Setting | Default |
 |---|---:|
-| Queue (`queue_seconds`) | 300 seconds |
-| Wall (`wall_seconds`, maximum 900) | 60 seconds |
-| Aggregate CPU (`cpu_seconds`) | 30 seconds |
-| Memory (`memory_bytes`) | 256 MiB |
-| Processes (`pids`) | 32, including namespace helpers |
-| Descriptors (`fds`) | 128 per process |
-| Scratch (`scratch_bytes`) | 16 MiB total tmpfs |
-| Each stream (`stdout_bytes`, `stderr_bytes`) | 1 MiB |
-| Pinned source inputs (`input_bytes`) | 64 MiB |
-| Input/protected-output reservations | 2 GiB each per host |
-| Combined reservations per run (`per_run_storage_bytes`) | 64 MiB |
-| Runtime (`runtime_bytes`) | 1 GiB |
+| `enabled` | true |
+| `queue_seconds` | 300 seconds |
+| `wall_seconds` | 60 seconds (maximum 900) |
+| `stdout_bytes`, `stderr_bytes` | 1 MiB each |
+| `input_bytes` | 64 MiB |
+| `input_storage_bytes`, `output_storage_bytes` | 2 GiB each |
+| `per_run_storage_bytes` | 64 MiB |
+| `runtime_bytes` | 1 GiB |
 
-Requests may narrow ceilings. CPU is charged to the whole owned cgroup, with a
-one-core bandwidth ceiling and a 20 ms accounting interval. File-size and tmpfs
-limits are complementary: many small files cannot evade the total scratch cap.
-Caught kernel errors such as EMFILE/ENOSPC remain observable to the program;
-cgroup events, SIGXFSZ, timeouts and stream overflow are classified by the backend.
+Source requests may narrow wall/output ceilings. There are no CPU, memory, process,
+FD, scratch-space or network controls. Unsupported old isolation fields are not
+part of `ScriptProgram`/`ScriptLimits`.
 
-## Runtime and proposal pins
+Environment construction does not inherit the daemon's environment. It supplies
+fixed PATH/locale and HOME pointing to the temporary scratch directory. Explicit
+values require both the source and configured `env_allowlist`; interpreter hooks
+and credential names remain forbidden. This avoids accidental inheritance and is
+not a secret-access boundary for an ordinary host process.
 
-A `RuntimeManifest` contains `version: 1`, a `runtime` identifier, a `probe` path
-(default `usr/bin/true`) and a `files` array. Each file has canonical relative
-`path`, SHA-256 `sha256`, exact `byte_count` and boolean `executable`. The probe
-must be an immutable declared executable that exits zero without arguments; doctor
-runs only that operator-approved program in disposable namespaces. It never runs
-authored scripts or changes host configuration.
+## E2 execution and settlement contract
 
-Build a flattened root tree: no symlinks, hard links, sockets, devices, setuid
-files, extra undeclared files or writable file modes. Include all interpreter
-libraries, loader paths and dependencies explicitly. Supply empty `proc`, `dev`,
-`inputs` and `scratch` mountpoint directories. The acceptance runtime additionally
-needs `usr/bin/python3`, `usr/bin/sh` and their declared dependencies. Runtime
-verification hashes every file again before execution; operator updates require
-new reviewed pins.
+The existing detached runner calls:
 
-`pin_source_scripts` reads source frontmatter `scripts`, a mapping from step ID to
-`ScriptProgram`. A program selects exactly one of `script`, `argv` or literal
-`shell`, plus a runtime ID and, for script/shell, a literal relative interpreter.
-Supporting files are explicit. Repository sources are read as blobs at an approved
-full Git commit; dirty working-tree bytes are irrelevant. Scoped vault reads walk
-directory descriptors without following symlinks. Content-addressed blobs are
-append-only and are checked again when staged. Execution never reads live source
-paths. Arguments are resolved separately; shell text is never templated.
+```python
+await launch(settings, request, jobs_enabled=jobs_enabled, cancelled=event,
+             lock_dir=job_contract["lock_dir"], capacity=job_contract["capacity"])
+```
 
-E3 must place the returned typed `PinnedScript` values in B3's trusted execution
-metadata, compare each compiled step to its source-authored program, and include
-that metadata in review identity. This seam intentionally leaves old artifacts
-and fingerprints unchanged. It does not trust compiler-authored digests.
+The historical module `src.jobs.script_sandbox` retains `SandboxRequest` and
+`SandboxResult` names. No launcher transport remains. Supply the same box lock
+configuration as managed jobs and call before generic runner admission to avoid
+double-acquiring capacity. The backend uses weight one, normal priority and a
+per-run lock. Queue timeout does not start a process. Cancellation of a queued
+async task also waits for acquisition cleanup before releasing its run lock.
 
-## E2 private transport and settlement
+E2 must first check the original principal, scope, invocation, protected-output
+readiness and durable launch identity. The backend retains an exclusive
+`intent-<execution_id>` file to reject local replay. E2 owns restart recovery,
+ambiguous launches, retention and deletion of those intents. `QuotaLedger`
+reserves input and maximum output bytes before launch and retains reservations
+until E2's durable retirement decision; timeout or failure does not erase them.
 
-After E2 verifies principal/run/invocation identity, protected-output readiness and
-durable launch intent, its existing detached runner calls
-`launch(settings, SandboxRequest, jobs_enabled=..., cancelled=event)` **before**
-the generic runner acquires another box lock. Do not double-acquire capacity.
-Do not route through the generic merged stdout/stderr log path.
+Both streams drain concurrently into separate bounded private buffers. Overflow
+records `output_limit_exceeded` before signaling, and its prefix is incomplete.
+Wall timeout and event cancellation likewise record their cause before cleanup.
+The backend starts a new process group, sends TERM, allows two seconds, then KILLs
+remaining members and reaps its direct child. It also cleans up group members when
+the leader exits. This is ordinary process cleanup: a program can escape with
+`setsid`; no double-fork containment guarantee remains. Pipe/cleanup uncertainty
+returns `runtime_error` with `script_cleanup_uncertain`, not successful settlement.
 
-`SandboxRequest` carries one opaque execution ID, run ID, reviewed pins and bounded
-explicit arguments/environment/base64 stdin. The fixed helper protocol is private
-JSON over pipes. EOF or a control byte requests cancellation. Raw stdout/stderr
-stay in bounded memory and private pipes; never print, log, persist or return this
-wire JSON through a command/API. E2 encrypts them with A3's run-owned private-value
-service before durable storage and implements authorized output retrieval and JSON
-parsing. The dataclass repr omits payloads but `to_wire()` deliberately contains
-them; it is not a public serializer.
+Complete stdout requested as JSON must be exactly one UTF-8 JSON value. Trailing
+data, fences, non-finite numbers and invalid encoding fail parsing. Nonzero exit
+precedes JSON failure; enforced cancellation/timeout/overflow precede both.
+`json_required` converts invalid or oversized JSON to `invalid_json`. Optional
+JSON reports `invalid`/`too_large` without changing a successful process outcome.
 
-The backend drains both streams concurrently, counts every observed byte and stops
-the cgroup on overflow. Terminal causes are recorded before signaling. TERM gets
-two seconds; cgroup.kill then removes remaining descendants. Cleanup requires an
-empty cgroup and reaped launcher child before settlement. Failed cleanup or broken
-transport returns incomplete evidence and must enter E2 recovery, never a retry
-that executes the same identity again. An exclusive `intent-<execution_id>` file
-prevents local replay; E2 still owns durable job identity and recovery.
+`SandboxResult` contains raw private stdout/stderr, parsed JSON, byte counts,
+capture/cleanup status, timestamps and quota key. `binding_value()` returns a
+private dictionary capped at 262,144 bytes. It includes full streams only when the
+whole value fits; otherwise both strings are null and `inline_omitted` is true.
+Raw buffers remain available for encrypted storage. Parsed values reserve 4 KiB
+for settlement metadata and protected references. Incomplete capture never binds
+a stream prefix as a complete value. Public reprs omit payloads.
 
-`QuotaLedger` reserves pinned/dynamic input and both maximum stream sizes before
-launch under a cross-process lock. Its `quota_key` remains reserved until E2
-durably retires the protected artifacts. There is no expiry-based release;
-crashes consume quota conservatively. E2 must retain intent/quota identities until
-its recovery and retention decisions make removal safe. It must not release a
-reservation merely because submission or transport failed.
+E2 must encrypt streams and bindings with A3, attach run-authorized output
+references, enforce the final binding ceiling after metadata, and keep raw values
+out of logs, receipts and public API responses. A binding dictionary is not a
+public projection. E3 binds it only inside the authorized run.
 
-## Acceptance runbook
+## Acceptance
 
-The operator first designates the host, owner, identities, immutable installation
-and isolated test policy. Keep production script admission disabled. In that
-environment, run the installed fixed wrapper with `--probe` and retain the JSON
-readiness result, installed source SHA, runtime manifest digest and kernel/bwrap
-versions. The daemon's `aq doctor --check resources.script_sandbox` uses the same
-probe when script admission is configured; disabled reports are not readiness.
-Workers have no authority to widen doctor scope or repair prerequisites.
-
-Set `AQ_SCRIPT_ACCEPTANCE_CONFIG` to the operator-supplied policy copy matching the
-fixed launcher's installed policy, and set `POSTGRES_TEST_DSN` to the documented
-**disposable** test PostgreSQL service. Never use the operator database. Leave at
-least one admitted slot available for the nested launcher; do not raise worker
-counts or replace the shared lock directory to make a run pass.
+All process tests run locally with temporary storage and ordinary host Python and
+shell executables. They cover proposal pinning/tampering, data-only arguments,
+stdin closure, environment/descriptor inheritance, both enable switches, shared
+admission, queue cancellation, timeout, child cleanup, stream overflow, strict JSON
+and bounded bindings. No host config, namespace probe or skipped isolation arm is
+needed. The obsolete isolation tests were replaced under the explicit scope decision;
+their historical failures are not claimed as passes.
 
 ```bash
 aq test tests/test_playbook_script_sandbox.py
 aq test --aq-all-markers tests/test_playbook_script_sandbox.py
 aq test tests/test_playbook_private_values.py tests/test_doctor.py tests/test_jobs_runner.py
 ```
-
-The default arm verifies literal policy, byte-exact Git/vault pins, malicious
-paths, quotas, environment rules and real missing-prerequisite refusal. The Linux
-arm requires the dedicated identity, host/loopback/pathname/abstract socket denial,
-shell-data separation, simultaneous floods, CPU/memory/pids/FD/file-size/tmpfs
-limits, cancellation, wall timeout and double-fork cleanup. Missing host config is
-an explicit failure, never a skip. A default-only pass, mocks or a same-UID
-namespace probe cannot satisfy this gate. Preserve all unmet arms in the task's
-evidence and do not pass-close or enable script support until the real arm passes.

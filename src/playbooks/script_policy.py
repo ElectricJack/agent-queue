@@ -2,7 +2,7 @@
 
 E3 embeds ``ScriptProgram`` in its ScriptStep. Keeping this foundation independent
 of definition.py lets old artifacts remain byte-identical and unsupported scripts
-remain unactivatable until the executor and real-host acceptance ship.
+remain unactivatable until the executor ships.
 """
 
 from __future__ import annotations
@@ -73,11 +73,6 @@ def environment_name(value: str) -> str:
 
 class ScriptLimits(FrozenModel):
     wall_seconds: StrictInt = Field(default=60, ge=1, le=900)
-    cpu_seconds: StrictInt = Field(default=30, ge=1, le=900)
-    memory_bytes: StrictInt = Field(default=256 * MIB, ge=MIB)
-    pids: StrictInt = Field(default=32, ge=4)
-    fds: StrictInt = Field(default=128, ge=16)
-    scratch_bytes: StrictInt = Field(default=16 * MIB, ge=4096)
     stdout_bytes: StrictInt = Field(default=MIB, ge=1, le=MIB)
     stderr_bytes: StrictInt = Field(default=MIB, ge=1, le=MIB)
 
@@ -107,7 +102,6 @@ class ScriptProgram(FrozenModel):
     stdin: Value | None = None
     env_allowlist: tuple[str, ...] = ()
     limits: ScriptLimits = Field(default_factory=ScriptLimits)
-    network: Literal["none"] = "none"
     output: Literal["text", "json"] = "text"
     json_required: bool = False
 
@@ -163,15 +157,16 @@ class ScriptProgram(FrozenModel):
 
 
 def script_environment(
-    authored: tuple[str, ...], allowed: tuple[str, ...], supplied: dict[str, str]
+    authored: tuple[str, ...], allowed: tuple[str, ...], supplied: dict[str, str],
+    *, home: str,
 ) -> dict[str, str]:
-    """Never read os.environ; even PATH/HOME/locale have fixed sandbox values."""
+    """Never read os.environ; HOME points at the execution scratch directory."""
     permitted = set(authored) & set(allowed)
     if any(not isinstance(k, str) or not isinstance(v, str) for k, v in supplied.items()):
         raise ScriptError("script_environment_denied")
     if len(supplied) > 64 or sum(len(k.encode()) + len(v.encode()) for k, v in supplied.items()) > 32768:
         raise ScriptError("script_environment_too_large")
-    result = {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C", "HOME": "/scratch"}
+    result = {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C", "HOME": home}
     for name, value in supplied.items():
         try:
             environment_name(name)

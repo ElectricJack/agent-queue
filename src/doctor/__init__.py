@@ -38,7 +38,6 @@ from src.doctor.resource_checks import resource_checks
 from src.doctor.review_checks import review_checks
 from src.doctor.routing_checks import routing_checks
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
-from src.doctor.script_checks import script_checks
 from src.doctor.service_checks import service_checks
 from src.doctor.session_checks import session_checks
 from src.doctor.skill_checks import skill_checks
@@ -75,7 +74,6 @@ __all__ = [
     "resource_checks",
     "routing_checks",
     "run_doctor",
-    "script_checks",
     "service_checks",
     "session_checks",
     "skill_checks",
@@ -101,8 +99,6 @@ def default_registry() -> DoctorRegistry:
     for check in intelligence_class_checks():
         registry.register(check)
     for check in resource_checks():
-        registry.register(check)
-    for check in script_checks():
         registry.register(check)
     for check in perf_checks():
         registry.register(check)

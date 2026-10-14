@@ -84,22 +84,13 @@ class RuntimeFile(InputPin):
 class RuntimeManifest(FrozenModel):
     version: Literal[1] = 1
     runtime: Identifier
-    # This fixed, reviewed executable must terminate successfully with no args.
-    # Doctor runs it in disposable namespaces, never runs a source program.
-    probe: str = "usr/bin/true"
     files: tuple[RuntimeFile, ...] = Field(min_length=1, max_length=16384)
 
     @model_validator(mode="after")
     def _unique(self):
-        relative_path(self.probe)
         names = [file.path for file in self.files]
         if len(set(names)) != len(names):
             raise ValueError("duplicate runtime path")
-        # Runtime roots must be flattened by the operator: no symlinks, device
-        # files, sockets or setuid programs are accepted in a manifest/tree.
-        if any(name.split("/")[0] in {"proc", "dev", "sys", "scratch", "inputs", "home"}
-               for name in names):
-            raise ValueError("runtime file shadows a sandbox mount")
         return self
 
     @property
@@ -134,7 +125,7 @@ class PinnedScript(FrozenModel):
 class InputStore:
     """Append-only content-addressed blobs; overwrite/tamper is never repaired.
 
-    Directories belong to the daemon, not the execution identity. File modes
+    The daemon manages these directories. File modes
     protect against accidental edits; cryptographic verification is mandatory.
     """
 

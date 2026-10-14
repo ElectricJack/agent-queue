@@ -5755,7 +5755,7 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:298b3ba06d0629c16cc1fada915c76ecf806a88961ff6af9f8cff046a52031cd",
+      "digest": "sha256:ce913c8090191060a4d5dad1ef6f40ffc80e456ae29f6b044fbed781b123e0b3",
       "imports": [
         "src.cli.app",
         "src.commands.ops_commands",
@@ -5786,7 +5786,6 @@
         "src.doctor.review_checks",
         "src.doctor.routing_checks",
         "src.doctor.runner",
-        "src.doctor.script_checks",
         "src.doctor.service_checks",
         "src.doctor.session_checks",
         "src.doctor.skill_checks",
@@ -12463,23 +12462,22 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:257503b6e39ae7132e174fe3ea63cc04784851d4a3b032d6cdc41a33519f2c9f",
+      "digest": "sha256:dfed70bd24fe445c6846a2d5f0c47550d64006a1a0a304db786743767142b5b7",
       "imports": [
         "src.config",
         "src.doctor",
-        "src.doctor.models",
-        "src.doctor.script_checks",
         "src.git.manager",
+        "src.jobs",
         "src.jobs.script_sandbox",
         "src.playbooks.proposal",
         "src.playbooks.script_inputs",
-        "src.playbooks.script_policy"
+        "src.playbooks.script_policy",
+        "src.resources.box_lock"
       ],
       "markers": [
-        "integration",
         "parametrize"
       ],
-      "summary": "Script policy tests and a mandatory (never skipped) real Linux acceptance arm."
+      "summary": "Pinned inputs and ordinary-process acceptance, with no host provisioning."
     },
     "tests/test_playbook_services.py": {
       "areas": [
