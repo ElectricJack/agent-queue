@@ -9745,6 +9745,15 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Pool workspace-lock repair checks retained integration branch owners and job pins before moving an idle agent lock; the full definition is charged as an ownership guard."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Shared claim-query table import includes integration ownership, repair and delivery evidence used to guard claim preparation and workspace recovery."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Missing-slot recovery checks attached/pending integration owners and job workspace pins before recreating a checkout; the full retention guard is integration-owned."
     }
   },
   "shared_state": {
