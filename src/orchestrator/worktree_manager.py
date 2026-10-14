@@ -57,7 +57,13 @@ from dataclasses import dataclass, field
 
 from src.config import WorktreesConfig
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, RemoteRefState, _validate_ref, is_valid_git_oid
+from src.git.manager import (
+    ForeignSlotClaim,
+    GitError,
+    RemoteRefState,
+    _validate_ref,
+    is_valid_git_oid,
+)
 from src.models import (
     RepoSourceType,
     WORKTREE_SENTINEL_NAME,
@@ -593,16 +599,23 @@ class WorktreeSlotManager:
         """
         from src.claim_file import read_claim_file
 
-        if slot_ws.locked_by_task_id not in (None, task.id):
-            raise GitError(f"slot {slot_ws.id} is locked by task {slot_ws.locked_by_task_id}")
         slot_dir = Path(slot_ws.workspace_path)
+        if slot_ws.locked_by_task_id not in (None, task.id):
+            raise ForeignSlotClaim(
+                f"slot {slot_ws.id} is locked by task {slot_ws.locked_by_task_id}",
+                workspace_id=slot_ws.id, path=str(slot_dir),
+                holder_task_id=slot_ws.locked_by_task_id,
+            )
         claim = read_claim_file(slot_dir)
         if claim is not None and (
             claim.get("task_id") != task.id
             or ("claim_epoch" in claim
                 and claim["claim_epoch"] != getattr(task, "claim_epoch", None))
         ):
-            raise GitError(f"slot {slot_ws.id} at {slot_dir} retains a foreign claim")
+            raise ForeignSlotClaim(
+                f"slot {slot_ws.id} at {slot_dir} retains a foreign claim",
+                workspace_id=slot_ws.id, path=str(slot_dir), holder_task_id=claim.get("task_id"),
+            )
         if slot_dir.exists() and any(slot_dir.iterdir()):
             sentinel = self.read_sentinel(slot_dir)
             if sentinel is not None and (
@@ -664,7 +677,10 @@ class WorktreeSlotManager:
             incoming is None or claim.get("task_id") != incoming
             or claim.get("claim_epoch") != getattr(task, "claim_epoch", None)
         ):
-            raise GitError(f"merge in slot {slot_ws.id} retains a foreign claim")
+            raise ForeignSlotClaim(
+                f"merge in slot {slot_ws.id} retains a foreign claim",
+                workspace_id=slot_ws.id, path=str(checkout), holder_task_id=claim.get("task_id"),
+            )
         preparing_holder = False
         for session in await self.db.list_sessions(live_only=True):
             if not session.work_dir or _norm_path(session.work_dir) != _norm_path(checkout):

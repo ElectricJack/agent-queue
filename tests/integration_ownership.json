@@ -12982,22 +12982,22 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1516,
+      "line": 1581,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "7538eb4115db7ac17fcc674f6041d8e4255f4f56486a529aee9bc55c435b793a",
+      "owner_fingerprint": "24f544aae8f441f3ae26f04e826dc503d25986cb17353430b999adbc1d47c81b",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer. Metadata key: needs_attention; stores integration_prepare_failed_attached without publication intent, authoritative ref OIDs or replay authority. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery."
+      "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer. Metadata key: needs_attention; stores integration_prepare_failed_attached without publication intent, authoritative ref OIDs or replay authority. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery. Re-reviewed after typed ForeignSlotClaim handling: a foreign slot binding releases the incoming task to READY and quarantines the workspace before the generic failure ladder; these writes remain attention and failure diagnostics, with no publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1474,
+      "line": 1539,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "7538eb4115db7ac17fcc674f6041d8e4255f4f56486a529aee9bc55c435b793a",
+      "owner_fingerprint": "24f544aae8f441f3ae26f04e826dc503d25986cb17353430b999adbc1d47c81b",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: needs_attention; stores repair_target_unpublished without publication intent, authoritative ref OIDs or replay authority. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery."
+      "reason": "Ordinary attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: needs_attention; stores repair_target_unpublished without publication intent, authoritative ref OIDs or replay authority. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery. Re-reviewed after typed ForeignSlotClaim handling: a foreign slot binding releases the incoming task to READY and quarantines the workspace before the generic failure ladder; these writes remain attention and failure diagnostics, with no publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
       "line": 953,
@@ -15025,13 +15025,13 @@
       "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
-      "line": 1421,
+      "line": 1486,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "7538eb4115db7ac17fcc674f6041d8e4255f4f56486a529aee9bc55c435b793a",
+      "owner_fingerprint": "24f544aae8f441f3ae26f04e826dc503d25986cb17353430b999adbc1d47c81b",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary attention marker when a stack preparation conflict cannot safely release its attached writer. Metadata key: needs_attention; stores the exception code, while retained branch evidence stays with the existing guarded ownership mechanism. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery."
+      "reason": "Ordinary attention marker when a stack preparation conflict cannot safely release its attached writer. Metadata key: needs_attention; stores the exception code, while retained branch evidence stays with the existing guarded ownership mechanism. Combined batch adds staged preparation diagnostics and redacted failure evidence around the same attention write; retained ownership still controls recovery. Re-reviewed after typed ForeignSlotClaim handling: a foreign slot binding releases the incoming task to READY and quarantines the workspace before the generic failure ladder; these writes remain attention and failure diagnostics, with no publication intent or ref replay authority."
     },
     "src/integration/cutover.py::_Activation.write_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "call": "insert",
@@ -15358,13 +15358,13 @@
       "reason": "Ordinary slot-reset failure reason, attempt count and automatic/manual retry guidance after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: slot_reset_failure; no publication intent, authoritative ref OIDs or replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::a013c7a46d34c2c833b5b1129a77bc31978b9ed19c44d76097646187d4fe028d": {
-      "line": 1545,
+      "line": 1615,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "7538eb4115db7ac17fcc674f6041d8e4255f4f56486a529aee9bc55c435b793a",
+      "owner_fingerprint": "24f544aae8f441f3ae26f04e826dc503d25986cb17353430b999adbc1d47c81b",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary slot_reset_failure diagnostic snapshot after non-transient preparation errors: bounded scrubbed reason, error type and stage, observing workspace/session, timestamp, attempt and existing automatic/manual retry disposition. PostgreSQL contention bypasses this write. Re-reviewed after workspace binding, foreign-claim and checkout reconciliation guards changed the owner: the marker does not grant retries, reset budgets, replay refs or duplicate integration lifecycle; guarded release_claim still owns the transition."
+      "reason": "Ordinary slot_reset_failure diagnostic snapshot after non-transient preparation errors: bounded scrubbed reason, error type and stage, observing workspace/session, timestamp, attempt and existing automatic/manual retry disposition. PostgreSQL contention bypasses this write. Re-reviewed after workspace binding, foreign-claim and checkout reconciliation guards changed the owner: the marker does not grant retries, reset budgets, replay refs or duplicate integration lifecycle; guarded release_claim still owns the transition. Re-reviewed after typed ForeignSlotClaim handling: a foreign slot binding releases the incoming task to READY and quarantines the workspace before the generic failure ladder; these writes remain attention and failure diagnostics, with no publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::dafd2c39585871bc43eee31fe328d25d78b2fe580fe7377a7af483d0e3dd123a": {
       "line": 1088,
