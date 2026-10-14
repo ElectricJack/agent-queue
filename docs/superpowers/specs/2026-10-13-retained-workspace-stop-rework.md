@@ -140,6 +140,11 @@ release. A completed stop is idempotent only for the same task identity. A chang
 identity must use the existing recovery owner; deleting the stop receipt, pause
 metadata, claims or locks is not a supported repair.
 
+Successful activation of a newer claim retires a completed old stop receipt
+through the claim transaction, keeping its durable checkpoint context. Pending
+cleanup receipts remain intact. A late cleanup using the old snapshot fails its
+metadata/epoch fence; a new explicit stop can snapshot the new active claim.
+
 ## Initial candidate verification receipts
 
 Initial candidate: `fbea160ac4699286014dc6dbe72e59613e3f49a0`, preserving the

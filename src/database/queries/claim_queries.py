@@ -1223,6 +1223,18 @@ class ClaimQueryMixin:
             # when the caller asks -- the preparation ladder that became
             # stale at the same boundary, in the same statement.
             stale_keys = ["needs_attention"]
+            raw_stop = await c.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == "retained_workspace_stop",
+            ))
+            stop = json.loads(raw_stop) if raw_stop is not None else {}
+            stopped_epoch = stop.get("identity", {}).get("task", {}).get("claim_epoch")
+            if (stop.get("cleanup_pending") is False and isinstance(stopped_epoch, int)
+                    and stopped_epoch < epoch):
+                # Successful activation owns the new epoch. Retire the old
+                # completed control receipt; its checkpoint context remains.
+                # Pending cleanup never loses its identity at this boundary.
+                stale_keys.append("retained_workspace_stop")
             if clear_preparation_metadata:
                 stale_keys.extend(CLAIM_PREPARATION_METADATA_KEYS)
             await c.execute(

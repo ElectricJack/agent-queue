@@ -887,6 +887,68 @@ async def test_claim_retirement_crash_keeps_reservation_until_fenced_retry(
         assert claim_file.read_claim_file(str(repo))["session_id"] == "successor"
 
 
+@pytest.mark.parametrize("pending", [False, True])
+async def test_new_claim_retires_only_completed_stop_and_can_stop_again(env, tmp_path, pending):
+    import time
+    from src.database.queries import retained_workspace_queries as queries
+    from src.models import AgentState, SessionRecord
+
+    repo, git, _, prior = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("staged\n")
+    git("add", "work.txt")
+    index = git("write-tree")
+    (repo / "work.txt").write_text("unstaged\n")
+    await command(env, "set_task_status", status="BLOCKED")
+    assert "error" not in await command(env, "stop_task")
+    old_stop = await env.db.get_task_meta("t", queries.STOP_META)
+    assert old_stop["cleanup_pending"] is False
+    if pending:
+        old_stop = old_stop | {"cleanup_pending": True}
+        await env.db.set_task_meta("t", queries.STOP_META, old_stop)
+    await env.db.transition_task("t", TaskStatus.READY, force=True)
+    await env.db.assign_task_to_agent("t", "agent")
+    await env.db.transition_task("t", TaskStatus.IN_PROGRESS)
+    await env.db.bump_claim_epoch("t")
+    await env.db.update_agent("agent", state=AgentState.BUSY)
+    await env.db.update_workspace("workspace", locked_by_task_id="t", locked_by_agent_id="agent",
+                                  generation=8)
+    task = await env.db.get_task("t")
+    assert task.claim_epoch > prior.claim_epoch
+    session = SessionRecord(
+        id="next", task_id="t", agent_id="agent", project_id="p", profile_id="worker",
+        harness="fake", provider="fake", name="next-session", lifecycle="pool",
+        state="running", work_dir=str(repo), epoch="test", instance_token="instance",
+        started_at=time.time(), claim_phase="preparing", last_claim_epoch=task.claim_epoch,
+    )
+    await env.db.create_session(session)
+    await env.db.set_task_meta("t", "claim_workspace", {
+        "workspace_id": "workspace", "generation": 8, "session_id": "next",
+        "instance_token": "instance", "claim_epoch": task.claim_epoch,
+    })
+    result = await env.handler._prepare_and_activate(session, session, task)
+    assert result["result"] == "claimed", result
+    assert await env.db.get_task_meta("t", queries.STOP_META) == (old_stop if pending else None)
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert git("write-tree") == index
+    assert (repo / "work.txt").read_text() == "unstaged\n"
+    await command(env, "set_task_status", status="BLOCKED")
+    async with env.db.immediate() as conn:
+        with pytest.raises(queries.RetainedWorkspaceError):
+            await queries.finish(env.db, conn, "t", old_stop)
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    if pending:
+        assert "error" in await command(env, "stop_task")
+        assert await env.db.get_task_meta("t", queries.STOP_META) == old_stop
+        assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 0
+        return
+    assert "error" not in await command(env, "stop_task")
+    current = await env.db.get_task_meta("t", queries.STOP_META)
+    assert current["identity"]["session"]["id"] == "next"
+    assert current["identity"]["workspace"]["generation"] == 8
+    assert current["cleanup_pending"] is False
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 1
+
+
 @pytest.mark.parametrize("control", ["pause_task", "stop_task"])
 @pytest.mark.parametrize("stage", ["checkpoint", "provider", "adapter", "execution"])
 async def test_cleanup_uncertainty_survives_control_retry_and_reload(
