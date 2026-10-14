@@ -14420,9 +14420,11 @@
         "playbook-authoring"
       ],
       "default_arm": true,
-      "digest": "sha256:3b64657c0be344b2de7d57570651657daa14ed1732b3a8956b6f148070cea505",
+      "digest": "sha256:59dbe212acee6a0e89be88f22d68a09b4ca2ff81df7997390e769833407be01a",
       "imports": [
+        "src.api.models.playbook_v2",
         "src.commands.playbook_v2_commands",
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.database.tables",
@@ -14438,6 +14440,7 @@
         "src.playbooks.required",
         "src.playbooks.runtime",
         "src.playbooks.validation",
+        "src.profiles.capabilities",
         "src.timer_service",
         "src.vault"
       ],

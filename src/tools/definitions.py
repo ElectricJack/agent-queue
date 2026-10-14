@@ -236,6 +236,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "playbook_graph_layout_save": "playbook",
     "playbook_activation_health": "playbook",
     "playbook_activate": "playbook",
+    "playbook_source_resync": "playbook",
     "playbook_artifacts": "playbook",
     "playbook_artifact_diff": "playbook",
     "playbook_pending_events": "playbook",
@@ -4657,6 +4658,23 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["playbook_id"],
+        },
+    },
+    {
+        "name": "playbook_source_resync",
+        "description": (
+            "Supervisor control: restore system Markdown from the digest-verified source "
+            "retained with its active reviewed artifact, preserving the old bytes in a backup. "
+            "Requires the active artifact hash and current source hash; never compiles or activates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "playbook_id": {"type": "string"},
+                "artifact_sha256": {"type": "string"},
+                "expected_source_hash": {"type": "string"},
+            },
+            "required": ["playbook_id", "artifact_sha256", "expected_source_hash"],
         },
     },
     {
