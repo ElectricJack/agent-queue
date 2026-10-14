@@ -385,6 +385,7 @@
         "tests/test_epic_pr.py",
         "tests/test_epic_pr_review_evidence.py",
         "tests/test_epic_rebase_and_escalation.py",
+        "tests/test_epic_train_end_to_end.py",
         "tests/test_hierarchical_delivery_playbook.py"
       ]
     },
@@ -623,6 +624,7 @@
         "tests/perf/test_train_selection.py",
         "tests/test_attestation_check_run_id.py",
         "tests/test_branch_sweep.py",
+        "tests/test_epic_train_end_to_end.py",
         "tests/test_hosted_attestation.py",
         "tests/test_integration_attestation.py",
         "tests/test_integration_batches.py",
@@ -638,6 +640,7 @@
         "tests/test_integration_containment_cutover.py",
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
+        "tests/test_integration_dispatch_waits.py",
         "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
@@ -6692,6 +6695,20 @@
       "markers": [],
       "summary": "Rebase warnings and durable stuck-batch notices for the integration train."
     },
+    "tests/test_epic_train_end_to_end.py": {
+      "areas": [
+        "epic-trains",
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:3d66ea288debd95d26d563061d7981b289588af5058ed9cc7196d6c37657c9bb",
+      "imports": [
+        "src.database.tables",
+        "src.integration.batches"
+      ],
+      "markers": [],
+      "summary": "Idle/busy dispatch against real PostgreSQL and a real Git remote."
+    },
     "tests/test_escalation_commands.py": {
       "areas": [
         "escalations"
@@ -8827,6 +8844,28 @@
         "parametrize"
       ],
       "summary": "Real Git recovery for parents whose children reached main by other routes."
+    },
+    "tests/test_integration_dispatch_waits.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:1ab7afc678b776d5c748b7f537f93451273ca2d8b8920ade3be475a0bbf8e79f",
+      "imports": [
+        "src.commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.checks",
+        "src.integration.dispatch_waits",
+        "src.integration.outbox",
+        "src.integration.runtime_contracts",
+        "src.integration.train",
+        "src.wait_runtime.service"
+      ],
+      "markers": [],
+      "summary": "The train's shared waits use verified sources and survive policy replacement."
     },
     "tests/test_integration_eject.py": {
       "areas": [

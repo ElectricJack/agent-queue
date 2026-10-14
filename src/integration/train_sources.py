@@ -14,7 +14,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import math
 import re
 import time
 from collections.abc import Awaitable, Callable, Iterable
@@ -66,7 +65,6 @@ from src.integration.ci import (
 )
 from src.integration.delivery_observer import DeliveryTarget, delivery_targets
 from src.integration.delivery_truth import (
-    DeliveryRequest,
     DeliveryState,
     load_delivery_requests,
     superseded_source_repairs_on,
@@ -78,7 +76,7 @@ from src.integration.gitops import GitOperations, RetainedRepository, SubjectGit
 from src.integration.lock import BranchLock
 from src.integration.manual_control import train_write
 from src.integration.models import (
-    BranchKey, IntegrationTrainPolicy, RepairPolicy, integration_ci_policy,
+    BranchKey, RepairPolicy, integration_ci_policy,
 )
 from src.integration.promotion_steps import flow_status, flow_targets
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -794,6 +792,23 @@ class DatabaseBatches:
                 self._conflict_refreshes[task_id] = (pair, refresh)
             blockers[index] = _conflict_action(blocker, snapshot, epic=True, refresh=refresh)
 
+    async def queued_members(self, target, snapshot, members):
+        """Reconstruct the next queue from durable completions, never frozen writes.
+
+        Include the in-flight sources while checking closure: their dependents
+        can queue now but cannot freeze until those sources settle on the tip.
+        Every departure revalidates the complete frontier on its new Git view.
+        """
+        if target.kind != "root":
+            return ()
+        frozen_ids = {member.task_id for member in members}
+        pending = await self.pending(
+            target, snapshot, include_ids=frozen_ids,
+            selection_deadline=self._selection_clock() + SELECTION_WORK_SECONDS,
+        )
+        return (tuple(member for member in pending[0] if member.task_id not in frozen_ids)
+                if pending else ())
+
     async def open_batch(
         self, target: TrainTarget, snapshot: GitTruthSnapshot, service: BatchService, *,
         seal_now: bool = False,
@@ -889,13 +904,14 @@ class DatabaseBatches:
         pending = None
         evaluated_ids: set[str] = set()
         if not snapshot.error and snapshot.target_oid:
-            pending = await self.pending(target, snapshot, blockers=blockers,
-                                         gate_pr=current is None,
-                                         include_ids={member.task_id for member in frozen_members},
-                                         candidate_ids=candidates, delivered_ids=delivered_ids,
-                                         evaluated_ids=evaluated_ids,
-                                         selection_deadline=(self._selection_clock() + SELECTION_WORK_SECONDS
-                                                             if current is None else None))
+            if candidates:
+                pending = await self.pending(target, snapshot, blockers=blockers,
+                                             gate_pr=current is None,
+                                             include_ids={member.task_id for member in frozen_members},
+                                             candidate_ids=candidates, delivered_ids=delivered_ids,
+                                             evaluated_ids=evaluated_ids,
+                                             selection_deadline=(self._selection_clock() + SELECTION_WORK_SECONDS
+                                                                 if current is None else None))
             await _finish_on_cancel(self._refresh_conflicting_epics(target, snapshot, blockers))
             if current is None:
                 self._frontier_observations[target.key] = tuple({
@@ -968,20 +984,9 @@ class DatabaseBatches:
             return BatchSelection(blockers=tuple(blockers))
         members, requests, dependencies = pending
         now = self.clock()
-        if target.kind == "root":
-            policy = await self._train_policy(target)
-            admissions = await self._admission_times(target, members, requests, now,
-                                                    evaluated_ids=evaluated_ids)
-            first, latest = min(admissions), max(admissions)
-            seal_at = min(latest + policy.cadence_seconds, first + policy.settling_cap_seconds)
-            if not seal_now and now < seal_at:
-                return BatchSelection(blockers=tuple(blockers), detail={
-                    "reason": "settling", "first_admission_at": first,
-                    "latest_admission_at": latest, "seal_at": seal_at,
-                    "cadence_seconds": policy.cadence_seconds,
-                    "settling_cap_seconds": policy.settling_cap_seconds,
-                    "task_ids": [member.task_id for member in members],
-                })
+        # A live batch above owns the lane until settlement. With no live batch,
+        # freeze the ready frontier immediately. Old timing hints and policy
+        # snapshots are parseable but never defer current dispatch.
         async with self.db._engine.connect() as conn:
             carried = await released_repair_attempts_on(conn, target, members)
         batch = Batch(id=await self.next_batch_id(target, members), project_id=target.project_id,
@@ -1299,52 +1304,6 @@ class DatabaseBatches:
     def _admission_key(target: TrainTarget) -> str:
         return "integration_train_admission:" + hashlib.sha256(repr(target.key).encode()).hexdigest()
 
-    async def _admission_times(
-        self, target: TrainTarget, members: tuple[BatchMember, ...],
-        requests: dict[str, DeliveryRequest], now: float,
-        *, evaluated_ids: set[str] | None = None,
-    ) -> tuple[float, ...]:
-        """Durable timing hints for currently PR-admitted exact completions.
-
-        These hints never authorize membership or prove delivery. Every visit
-        derives eligibility again before consulting them, so a restart keeps
-        the timing bound without introducing another code-state authority.
-        """
-        key = self._admission_key(target)
-        times = []
-        async with self.db.immediate() as conn:
-            removal = delete(task_metadata).where(
-                task_metadata.c.key == key,
-                task_metadata.c.task_id.not_in([member.task_id for member in members]),
-            )
-            if evaluated_ids is not None:
-                removal = removal.where(task_metadata.c.task_id.in_(evaluated_ids))
-            await conn.execute(removal)
-            for member in members:
-                request = requests[member.task_id]
-                identity = [request.completion_id or request.legacy_generation,
-                            member.source_sha, member.source_base_sha]
-                value = json.dumps({"identity": identity, "admitted_at": now})
-                await conn.execute(insert(task_metadata).values(
-                    task_id=member.task_id, key=key, value=value,
-                ).on_conflict_do_nothing(index_elements=["task_id", "key"]))
-                previous = await conn.scalar(select(task_metadata.c.value).where(
-                    task_metadata.c.task_id == member.task_id, task_metadata.c.key == key,
-                ).with_for_update())
-                try:
-                    recorded = json.loads(previous)
-                    admitted = float(recorded["admitted_at"])
-                    if (recorded["identity"] != identity or not math.isfinite(admitted)
-                            or admitted > now):
-                        raise ValueError("admission identity or clock changed")
-                except (TypeError, ValueError, KeyError):
-                    admitted = now
-                    await conn.execute(update(task_metadata).where(
-                        task_metadata.c.task_id == member.task_id, task_metadata.c.key == key,
-                    ).values(value=value))
-                times.append(admitted)
-        return tuple(times)
-
     async def _clear_admissions(self, target: TrainTarget, *, evaluated_ids=None) -> None:
         async with self.db.immediate() as conn:
             removal = delete(task_metadata).where(
@@ -1353,14 +1312,6 @@ class DatabaseBatches:
             if evaluated_ids is not None:
                 removal = removal.where(task_metadata.c.task_id.in_(evaluated_ids))
             await conn.execute(removal)
-
-    async def _train_policy(self, target: TrainTarget) -> IntegrationTrainPolicy:
-        async with self.db._engine.connect() as conn:
-            policy = await conn.scalar(select(projects.c.hierarchical_integration_policy).where(
-                projects.c.id == target.project_id,
-            ))
-        raw = (policy or {}).get("train")
-        return IntegrationTrainPolicy.model_validate({} if raw is None else raw)
 
     async def _candidate_ids(self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
                              include_ids: set[str] | None = None, blockers=None,
@@ -1400,6 +1351,15 @@ class DatabaseBatches:
         if delivered_ids is not None:
             delivered_ids.update(delivered_to_project)
         ids = [task_id for task_id in ids if task_id not in delivered_to_project]
+        if target.kind == "root":
+            # The root queue has no member window. Closure must see every ready
+            # prerequisite, including sources beyond the old selection cap.
+            # Keep work-quantum rotation: unknown/slow facts cannot strand an
+            # already eligible prefix. This is no batching delay or size cap.
+            if continuation:
+                after = self._selection_after.get(target.key, "")
+                ids = [tid for tid in ids if tid > after] + [tid for tid in ids if tid <= after]
+            return list(dict.fromkeys([*ids, *sorted(include_ids or ())]))
         if continuation:
             # Rotate the full owed frontier before the member cap; otherwise
             # older work outside the newest window could never be attempted.
@@ -2088,6 +2048,16 @@ class DatabaseBatches:
             return False
         return True
 
+    async def record_candidate(self, batch: Batch, observation: BatchObservation) -> None:
+        """Bind exact-head wait authorization before requesting/observing CI."""
+        async with self.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == batch.id,
+                integration_batches.c.intent == "open",
+                integration_batches.c.lifecycle != "promoted",
+                integration_batches.c.repair_attempt_count == batch.repair_attempt_count,
+            ).values(tested_candidate_sha=observation.candidate_sha))
+
     async def settle(self, batch: Batch, observation: BatchObservation) -> None:
         async with self.db.immediate() as conn:
             await self.settle_on(conn, batch, observation)
@@ -2101,7 +2071,7 @@ class DatabaseBatches:
             from src.integration.promotion_steps import settle_promotion
 
             await settle_promotion(self.db, batch, observation, clock=self.clock, conn=conn)
-        await execute_batch_mutation(conn,
+        settled = await execute_batch_mutation(conn,
             update(integration_batches)
             .where(integration_batches.c.id == batch.id,
                    integration_batches.c.target_ref.is_not(None),
@@ -2110,6 +2080,19 @@ class DatabaseBatches:
                     tested_candidate_sha=observation.candidate_sha,
                     updated_at=self.clock())
         )
+        if settled.rowcount and trigger != "promotion":
+            from src.integration.outbox import enqueue_integration_event
+
+            identity = "train-published:" + batch.id
+            await enqueue_integration_event(
+                conn, event_id=identity, dedup_key=identity, project_id=batch.project_id,
+                event_type="integration.publication_verified", available_at=self.clock(),
+                payload={"batch_id": batch.id, "revision": batch.repair_attempt_count,
+                         "head_sha": observation.target_sha,
+                         "repository_id": batch.repository_id, "target_ref": batch.target_ref,
+                         "candidate_sha": observation.candidate_sha,
+                         "publication_verified": True},
+            )
         from src.integration.promotion_steps import promotion_policy_event
 
         flow = await conn.scalar(select(projects.c.promotion_flow).where(
@@ -3260,18 +3243,22 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
     if getattr(config, "git_first", "shadow") != "active":
         return None
     from src.integration.repair import OrdinaryRepairService
+    from src.integration.dispatch_waits import DispatchWaits
 
     batches = DatabaseBatches(orchestrator.db, clock=clock,
                              cleanup=getattr(orchestrator, "integration_cleanup_service", None))
+    lanes = DaemonLanes(orchestrator, batches=batches, clock=clock)
+    waits = DispatchWaits(orchestrator, lanes=lanes, clock=clock)
     return IntegrationTrain(
         targets=DatabaseTargets(
             orchestrator.db,
             flow_problems=lambda: getattr(orchestrator, "promotion_flow_problems", None),
         ),
         batches=batches,
-        lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock),
+        lane_for=lanes,
         repair=OrdinaryRepairService(orchestrator.db, clock=clock),
         baseline=CandidateBaselineService(orchestrator.db, clock=clock),
         event_driven=True,
+        waits=waits,
         clock=clock,
     )

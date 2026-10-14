@@ -287,7 +287,7 @@ class IntegrationCleanupPolicy(BaseModel):
 
 
 class IntegrationTrainPolicy(BaseModel):
-    """Root admission timing; epic collection does not wait for this window."""
+    """Legacy timing fields remain readable; dispatch follows lane occupancy."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

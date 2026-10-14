@@ -312,6 +312,11 @@ class WaitV2CommandsMixin:
         return {"success": True, "waits": rows, "count": len(rows)}
 
     async def _wait_v2_cancel(self, args):
+        if current_principal().kind == PrincipalKind.SERVICE:
+            scope = await self._wait_v2_scope(args, mutation=True)
+            return await self._wait_v2_invoke("wait_cancel", args, scope=scope)
+        if args.get("owner_kind") or args.get("owner_id"):
+            raise WaitError("wait.out_of_scope", "owner scope is server-derived")
         filters = await self._wait_v2_read_filter(args)
         scope = await self._wait_v2_authorize_target(
             args,
