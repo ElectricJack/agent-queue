@@ -369,9 +369,11 @@ class Orchestrator(
         # ``(session_id, claim_epoch)``; resolved by
         # ``ClaimCommandsMixin._resolve_claim_waiters``.
         self.claim_waiters: dict[tuple[str, int | None], asyncio.Future] = {}
-        # Actual request tasks, distinct from notification futures: a live
+        # Daemon-owned preparation tasks, distinct from notification futures: a live
         # workspace reset must finish or be cancelled before reclaiming it.
         self.claim_preparations: dict[tuple[str, str, int | None], asyncio.Task] = {}
+        self.claim_preparation_results: dict[str, tuple[int, str, str, dict]] = {}
+        self.claim_timings: dict = {}
         # Worker-pool sizing state (swarm-work-model §11), owned by
         # ``PoolsMixin``.  ``_pool_surplus_since`` tracks how long each
         # ``(project_id, profile_id)`` key has been in continuous surplus,
@@ -2945,6 +2947,16 @@ class Orchestrator(
         else:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def cancel_claim_preparations(self) -> None:
+        """Stop owned resets and await Git/transaction cleanup before closing the DB."""
+        preparations = tuple(self.claim_preparations.values())
+        for preparation in preparations:
+            if not preparation.done():
+                preparation.cancel()
+        if preparations:
+            await asyncio.gather(*preparations, return_exceptions=True)
+        self.claim_preparation_results.clear()
+
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems in dependency order.
 
@@ -2962,6 +2974,7 @@ class Orchestrator(
         if self._tracked_deploy_check is not None and not self._tracked_deploy_check.done():
             self._tracked_deploy_check.cancel()
             await asyncio.gather(self._tracked_deploy_check, return_exceptions=True)
+        await self.cancel_claim_preparations()
         await stop_ready_owner_recovery(self)
         await self.message_delivery_service.stop()
         await self.provider_availability.close()

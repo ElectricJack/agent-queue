@@ -1851,3 +1851,45 @@ class TestGitExcludeConcurrency:
 
         assert exclude.read_bytes() == original
         assert not list(exclude.parent.glob("exclude.*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_exact_available_origin_avoids_fetch(mgr, base_repo):
+    sha = _git(["rev-parse", "HEAD"], base_repo)
+    fetch = AsyncMock(side_effect=AssertionError("exact available commit needs no fetch"))
+    mgr.git.afetch_origin = fetch
+    assert await mgr._fetch_and_resolve_start_ref(
+        str(base_repo), sha, required=True,
+    ) == sha
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_exact_origin_still_fetches(mgr, base_repo):
+    fetch = AsyncMock()
+    mgr.git.afetch_origin = fetch
+    with pytest.raises(GitError, match="cannot resolve"):
+        await mgr._fetch_and_resolve_start_ref(str(base_repo), "a" * 40, required=True)
+    fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unheld_branch_skips_peer_liveness_reads(mgr, base_ws, monkeypatch):
+    monkeypatch.setattr(mgr, "_base_of_slot_dir", AsyncMock(return_value=base_ws))
+    monkeypatch.setattr(mgr.git, "aworktree_list", AsyncMock(return_value=[{
+        "path": base_ws.workspace_path, "branch": "main",
+    }]))
+    monkeypatch.setattr(mgr.db, "list_sessions", AsyncMock(side_effect=AssertionError("no peer")))
+    monkeypatch.setattr(mgr.db, "list_workspaces", AsyncMock(side_effect=AssertionError("no peer")))
+    await mgr._detach_stale_branch_holders(Path(base_ws.workspace_path) / "slot", "aq/new")
+
+
+@pytest.mark.asyncio
+async def test_available_exact_origin_still_refreshes_mutable_child_refs(mgr, base_repo):
+    sha = _git(["rev-parse", "HEAD"], base_repo)
+    fetch = AsyncMock()
+    mgr.git.afetch_origin = fetch
+    assert await mgr._fetch_and_resolve_start_ref(
+        str(base_repo), sha, required=True, refresh_refs=True,
+    ) == sha
+    fetch.assert_awaited_once()

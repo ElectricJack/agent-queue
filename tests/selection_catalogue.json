@@ -3287,9 +3287,10 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:c8dbb1fda38bcad9cda7b2855be87b32f81c9b059bd24b0a1adcbb36ca105587",
+      "digest": "sha256:490307d33ac6b4e31c7880da610878527ab749115f35e16e9e2cbcd3bd28dc78",
       "imports": [
         "src.claim_file",
+        "src.claim_timing",
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
@@ -6465,8 +6466,9 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:0c1909c63cd647f308272189b414549c110e34d79706053041ec4740c00f7b76",
+      "digest": "sha256:dc8aa327405f0d853ad8d7ae74c32a2bd16ed8005047a99a147df95bdf0029bd",
       "imports": [
+        "src.claim_timing",
         "src.commands.handler",
         "src.config",
         "src.database.tables",
@@ -18170,7 +18172,7 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:87f43fbc69ea4e0fd074b21dae6465c52bff02718048ea954573df6171c583aa",
+      "digest": "sha256:bd2a8c918d2aa38a9b0a2dc5a72dc9e8e193f84a548f62007726440a1b2e7825",
       "imports": [
         "src.config",
         "src.event_schemas",
@@ -18182,6 +18184,7 @@
         "src.orchestrator.worktree_manager"
       ],
       "markers": [
+        "asyncio",
         "parametrize"
       ],
       "summary": "WorktreeSlotManager against real temp repos."

@@ -5767,6 +5767,10 @@ class TaskCommandsMixin:
                     ref=repair["id"],
                 ))
 
+        live_timing = getattr(self.orchestrator, "claim_timings", {}).get(str(task_id))
+        claim_timing = (live_timing.snapshot() if live_timing is not None else
+                        await self.db.get_task_meta(str(task_id), "claim_timing"))
+
         return {
             "success": True,
             "reasons": reasons,
@@ -5775,6 +5779,7 @@ class TaskCommandsMixin:
             "assignment_route": assignment_route,
             "provider_hold": provider_hold,
             "phase_hold": phase_hold,
+            "claim_timing": claim_timing,
         }
 
     async def _assignment_route_state(self, task):

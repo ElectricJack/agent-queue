@@ -880,6 +880,15 @@ class AssignmentRouteDetail(BaseModel):
     override: dict[str, Any] | None = None
 
 
+class ClaimTimingDetail(BaseModel):
+    session_id: str
+    claim_epoch: int | None = None
+    total_seconds: float
+    phases: dict[str, float] = {}
+    current_phase: str | None = None
+    result: str | None = None
+
+
 class ExplainTaskResponse(BaseModel):
     success: bool = True
     reasons: list[ExplainReason] = []
@@ -887,6 +896,7 @@ class ExplainTaskResponse(BaseModel):
     assignment_route: AssignmentRouteDetail | None = None
     provider_hold: ProviderHoldDetail | None = None
     phase_hold: PhaseHoldDetail | None = None
+    claim_timing: ClaimTimingDetail | None = None
 
 
 class ReadyTask(BaseModel):
@@ -1037,6 +1047,10 @@ class TaskClaimResponse(BaseModel):
     task: dict[str, Any] | None = None
     claim_epoch: int | None = None
     session: ClaimSessionSummary = ClaimSessionSummary()
+    task_id: str | None = None
+    claim_phase: str | None = None
+    claim_phase_at: float | None = None
+    claim_timing: ClaimTimingDetail | None = None
     reason: str | None = None
     error: str | None = None
     retry_after: int | None = None

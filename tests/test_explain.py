@@ -969,3 +969,20 @@ async def test_explain_includes_shared_operator_decision(handler, db):
     assert result["success"], result
     assert "operator_decision_hold" in result["reason_codes"]
     assert result["operator_decisions"][0]["id"] == row["id"]
+
+
+async def test_explain_returns_persisted_and_live_claim_timing(handler, db):
+    from src.claim_timing import ClaimTiming
+
+    await mktask(db, "timed", status=TaskStatus.IN_PROGRESS)
+    persisted = ClaimTiming("session", task_id="timed", claim_epoch=1)
+    persisted.finish("claimed")
+    await db.set_task_meta("timed", "claim_timing", persisted.snapshot())
+    result = await handler._cmd_explain_task({"task_id": "timed"})
+    assert result["claim_timing"] == persisted.snapshot()
+    live = ClaimTiming("new-session", task_id="timed", claim_epoch=2)
+    live.running.append(("fetch", time.monotonic()))
+    handler.orchestrator.claim_timings["timed"] = live
+    result = await handler._cmd_explain_task({"task_id": "timed"})
+    assert result["claim_timing"]["current_phase"] == "fetch"
+    assert result["claim_timing"]["claim_epoch"] == 2

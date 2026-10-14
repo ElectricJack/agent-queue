@@ -574,8 +574,8 @@ class Worker:
     def aq(self, *args: str, check_ok: bool = True) -> dict:
         return aq(*args, token=self.token, session_id=self.session_id, check_ok=check_ok)
 
-    def claim_next(self, *, check_ok: bool = True) -> dict:
-        out = self.aq("task", "claim", "--next", check_ok=check_ok)
+    def claim_next(self, *, check_ok: bool = True, wait: int = 0) -> dict:
+        out = self.aq("task", "claim", "--next", "--wait", str(wait), check_ok=check_ok)
         if isinstance(out, dict) and out.get("result") == "claimed":
             self.task_id = out["task"]["id"]
             self.claim_epoch = out["claim_epoch"]
@@ -623,7 +623,9 @@ def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> di
 
     def claim():
         nonlocal last_claim
-        last_claim = worker.claim_next()
+        # Fixture assertions need the final ownership result. Let the daemon
+        # await its preparation job within this existing convergence budget.
+        last_claim = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
         # READY and routed does not imply available to this single attempt:
         # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
         # Releasing that lock emits no task.ready event, so retry explicitly.

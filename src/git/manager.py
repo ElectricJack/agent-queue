@@ -63,6 +63,8 @@ See specs/git/git.md for the full behavioral specification.
 
 from __future__ import annotations
 
+from src.claim_timing import timed_claim_git
+
 import asyncio
 import contextvars
 import logging
@@ -712,6 +714,7 @@ class GitManager:
                 return await self._arun_unlocked(args, cwd, timeout)
         return await self._arun_unlocked(args, cwd, timeout)
 
+    @timed_claim_git
     async def _arun_unlocked(
         self, args: list[str], cwd: str | None = None, timeout: int | None = None
     ) -> str:
