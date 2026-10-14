@@ -1210,6 +1210,8 @@ class TestReconcilePools:
                 )
             )
 
+        # Teardown must observe the active claim, not the pre-claim launch row.
+        session = await db.get_session(session.id)
         if refusal_drain:
             await db.update_session(
                 session.id, claim_phase="preparing", last_claim_epoch=0,
@@ -1432,6 +1434,23 @@ async def test_concurrent_pool_teardown_stops_and_releases_only_once(orch, db, m
     )
     assert stop.await_count == 1
     assert (await db.get_agent(row.agent_id)).state == AgentState.IDLE
+
+
+@pytest.mark.parametrize("changed", ["instance", "claim"])
+async def test_late_pool_teardown_preserves_current_instance_and_claim(orch, db, changed):
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    old = (await db.list_sessions(lifecycle="pool"))[0]
+    if changed == "instance":
+        await db.update_session(old.id, instance_token="replacement")
+    else:
+        await db.update_session(old.id, task_id="pooled", last_claim_epoch=1, claim_phase="active")
+    before = await db.get_session(old.id)
+    agent_before = await db.get_agent(old.agent_id)
+    await orch._terminate_pool_session(old, reason="context_thrash")
+    assert await db.get_session(old.id) == before
+    assert await db.get_agent(old.agent_id) == agent_before
 
 
 # ---------------------------------------------------------------------------

@@ -15377,6 +15377,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary PREPARE_FAILURE diagnostic snapshot: one bounded secret-scrubbed stage/type/cause description plus task, observing session instance, claim epoch, workspace id and safe_text-scrubbed bounded workspace path, timestamp, attempt and the caller's already-selected disposition. Replaces the prior diagnostic call fingerprint after task/path identity was added. Cleared by the next activation; grants no retry, budget reset, ownership change, publication intent or ref replay authority and creates no duplicate integration lifecycle."
+    },
+    "src/sessions/worker_recovery.py::prepare_guarded_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 302,
+      "owner": "prepare_guarded_recovery",
+      "call": "delete",
+      "owner_fingerprint": "001b9fe77f07c2555eec510d1804540fbccf64361f136ef7c2ff1b8ea07dc934",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Removes only the failed worker native resume key under exact task epoch/session instance/failure-record guards; ordinary continuation state, no ref replay or integration lifecycle authority."
     }
   },
   "generic_dependencies": {

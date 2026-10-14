@@ -10633,5 +10633,22 @@
       "src/sessions/reconciler.py::SessionReconciler._step_orphans::bd56abe22d01405d7daf3f367c989c6039944b48df86b62d01fd17e0697a3b6d": "Unchanged ordinary session_not_live attention marker. Stopped integration writers now delegate to exact-identity fenced recovery before fallback; refusal retains bindings and bypasses this marker. No ref replay or duplicate integration lifecycle storage."
     },
     "reason": "Explicitly reviewed five shared integration surfaces and eight preparation/stop/orphan diagnostic writer identities. Existing baseline, landing, caps and storage dispositions remain fixed; no exclusion or test threshold was relaxed. The factory policy was shortened while preserving recovery and delivery requirements."
+  },
+  "deferred_worker_recovery_review": {
+    "task": "stark-quest-41",
+    "storage_sinks": {
+      "src/sessions/worker_recovery.py::prepare_guarded_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+        "line": 302,
+        "owner": "prepare_guarded_recovery",
+        "call": "delete",
+        "owner_fingerprint": "001b9fe77f07c2555eec510d1804540fbccf64361f136ef7c2ff1b8ea07dc934",
+        "integration_signal": false,
+        "disposition": "ordinary",
+        "reason": "Removes only the failed worker native resume key under exact task epoch/session instance/failure-record guards; ordinary continuation state, no ref replay or integration lifecycle authority."
+      }
+    },
+    "ordinary_state": "worker_recovery_disposition observes the failed claim and teardown outcome; branch/work_dir are historical pointers. Existing owner and source authority records remain canonical. The same transaction blocks a confirmed retained writer with its original failure cause; no owner, hold, budget or source proof is rewritten. prepare_guarded_recovery resets ordinary stall metadata only while the exact failed attempt still owns the task.",
+    "lock_order": "Project hierarchy lock precedes session/task rows in failure/disposition transactions, matching owner-recovery release order.",
+    "baseline": "Pinned baseline, landing and allowance unchanged."
   }
 }
