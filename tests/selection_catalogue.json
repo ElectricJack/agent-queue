@@ -642,6 +642,8 @@
         "tests/test_integration_cutover.py",
         "tests/test_integration_delivery_watchdog.py",
         "tests/test_integration_dispatch_waits.py",
+        "tests/test_integration_failure_groups.py",
+        "tests/test_integration_fixers.py",
         "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
@@ -667,7 +669,8 @@
         "tests/test_integration_superseded_completion.py",
         "tests/test_integration_train.py",
         "tests/test_integration_train_sources.py",
-        "tests/test_integration_truth_reconciler.py"
+        "tests/test_integration_truth_reconciler.py",
+        "tests/test_integration_workspaces.py"
       ]
     },
     "intelligence-classes": {
@@ -1500,6 +1503,7 @@
         "tests/test_resolve_repo_path.py",
         "tests/test_smart_workspace_assignment.py",
         "tests/test_task_requirements_queries.py",
+        "tests/test_workspace.py",
         "tests/test_workspace_acquisition_read_only.py",
         "tests/test_workspace_attachments.py",
         "tests/test_workspace_branch_wait.py",
@@ -8926,6 +8930,21 @@
       ],
       "summary": "Reduced parent readiness over real Git and ordinary PostgreSQL task inputs."
     },
+    "tests/test_integration_failure_groups.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b31f435b155b73778f7257ce477e23e02648efdce2f0f62f934f82abd6aa8508",
+      "imports": [
+        "src.integration.failure_groups",
+        "src.integration.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Recorded red-run normalization, build precedence and frozen-diff attribution."
+    },
     "tests/test_integration_finished_owners.py": {
       "areas": [
         "integration-ownership"
@@ -8945,6 +8964,40 @@
         "parametrize"
       ],
       "summary": "``integration.finished_branch_owners`` — owner rows a finished task never let go."
+    },
+    "tests/test_integration_fixers.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:60f6e679d87933dcb7d4825f3d2da09961ae16a996612b918d87a487e0ab9707",
+      "imports": [
+        "src.api.auth",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.fixer_batches",
+        "src.integration.fixer_runtime",
+        "src.integration.fixers",
+        "src.integration.gitops",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.train",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Task-free in-place repair survives replay, budget exhaustion and green."
     },
     "tests/test_integration_git_truth.py": {
       "areas": [
@@ -9694,13 +9747,11 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7621dca9251d58b0557d597a4d39e251073e6e38dfaed75c52ccfcdca549b450",
+      "digest": "sha256:bb68dbf8253cd0f4fd59552d7451938e503b9623feb04e1d6eff8cfd5f602469",
       "imports": [
         "src.database.tables",
-        "src.git.manager",
         "src.integration.migration_heads",
         "src.integration.models",
-        "src.integration.source_ci",
         "src.models"
       ],
       "markers": [
@@ -10158,6 +10209,28 @@
         "parametrize"
       ],
       "summary": "Server-side stop and checkout-detachment proofs for owner handoff."
+    },
+    "tests/test_integration_workspaces.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:88a66ee70ff8c4a199a6c3bd082883c88812ec88a4a1a3b6227178bcf1e41fa2",
+      "imports": [
+        "src.build_cache",
+        "src.config",
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.train",
+        "src.jobs.artifacts",
+        "src.jobs.workspace",
+        "src.models",
+        "src.waits.measurements"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Warm candidates and fixers keep durable ownership and job measurement fences."
     },
     "tests/test_integration_writers.py": {
       "areas": [
@@ -19843,6 +19916,23 @@
       ],
       "markers": [],
       "summary": "Tests for the workflow pipeline view module."
+    },
+    "tests/test_workspace.py": {
+      "areas": [
+        "workspaces"
+      ],
+      "default_arm": true,
+      "digest": "sha256:80d89db36f9da94b736eacc84c2647b148c49b6b56e3992db17f92363f7435f0",
+      "imports": [
+        "src.build_cache",
+        "src.config",
+        "src.git.manager",
+        "src.warm_workspaces"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real linked-checkout reuse preserves warm output and uncertain owners."
     },
     "tests/test_workspace_acquisition_read_only.py": {
       "areas": [

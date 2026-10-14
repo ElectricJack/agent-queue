@@ -88,7 +88,7 @@ class JobCommandsMixin:
         import hashlib
         import json
         from src.database.tables import jobs
-        from src.git.manager import GitManager
+        from src.git.manager import GitError
 
         try:
             service = self._jobs()
@@ -121,52 +121,20 @@ class JobCommandsMixin:
                 ).limit(1))
                 if blocked:
                     raise JobError("jobs.cleanup_blocked")
-                # All checks in one validation attempt share a detached clone.
-                # An install preset must leave its ignored dependencies for the
-                # following test/build preset, while each attempt remains isolated.
-                group = args.get("snapshot_group")
-                snapshot_digest = (
-                    hashlib.sha256(json.dumps({
-                        "project_id": args["project_id"],
-                        "operation_id": args["operation_id"],
-                        "input_ref": args["input_ref"],
-                        "snapshot_group": group,
-                    }, sort_keys=True).encode()).hexdigest()
-                    if group else digest
-                )
-                snapshot_id = "job-snapshot-" + snapshot_digest
-                snapshot = Path(self.config.data_dir) / "job-snapshots" / snapshot_digest
-                if group:
-                    await conn.execute(select(func.pg_advisory_xact_lock(
-                        109797, func.hashtext(snapshot_id)
-                    )))
-                git = GitManager()
-                if not snapshot.exists():
-                    await asyncio.to_thread(snapshot.parent.mkdir, parents=True, exist_ok=True)
-                    await git._arun([
-                        "clone", "--shared", "--dissociate", "--no-checkout", args["store"], str(snapshot)
-                    ])
-                    await git._arun(["checkout", "--detach", args["input_ref"]], cwd=str(snapshot))
-                from sqlalchemy.dialects.postgresql import insert as pg_insert
-                from src.models import RepoSourceType
-                import time
+                from src.jobs.workspace import candidate_workspace
 
-                await conn.execute(pg_insert(workspaces).values(
-                    id=snapshot_id, project_id=args["project_id"], workspace_path=str(snapshot),
-                    source_type=RepoSourceType.LINK.value, kind_id="job-snapshot",
-                    enabled=False, created_at=time.time(),
-                ).on_conflict_do_nothing(index_elements=[workspaces.c.id]))
-            job = await service.submit(
-                project_id=args["project_id"], task_id=None, session_id=None,
-                claim_epoch=None, workspace_id=snapshot_id, generation=0,
-                owner_kind="integration", owner_id=args["operation_id"],
-                input_mode="snapshot", input_ref=args["input_ref"], trusted_band=0,
-                preset=args["preset"], args=args["argv"], idempotency_key=key,
-                queue_seconds=args["queue_seconds"], run_seconds=args["run_seconds"],
-                adapter_request_hash=digest,
-            )
-            return {"success": True, "job": job}
-        except (JobError, ValueError, OSError) as exc:
+                async with candidate_workspace(self.db, self.config, args, digest) as snapshot_id:
+                    job = await service.submit(
+                        project_id=args["project_id"], task_id=None, session_id=None,
+                        claim_epoch=None, workspace_id=snapshot_id, generation=0,
+                        owner_kind="integration", owner_id=args["operation_id"],
+                        input_mode="snapshot", input_ref=args["input_ref"], trusted_band=0,
+                        preset=args["preset"], args=args["argv"], idempotency_key=key,
+                        queue_seconds=args["queue_seconds"], run_seconds=args["run_seconds"],
+                        adapter_request_hash=digest,
+                    )
+                return {"success": True, "job": job}
+        except (JobError, GitError, ValueError, OSError) as exc:
             return {"success": False, "error_code": str(exc), "error": str(exc)}
 
     async def _job_for_scope(self, job_id):

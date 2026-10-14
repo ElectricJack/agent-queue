@@ -57,6 +57,7 @@ class JobAdapter(Adapter):
                     "state": job["state"],
                     "exit_code": job["exit_code"],
                     "reason": job["infra_reason"],
+                    "build_measurements": (job.get("result") or {}).get("build_measurements"),
                 },
             ),
             f"job:{job['preset']}",

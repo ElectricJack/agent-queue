@@ -3902,6 +3902,56 @@
       "type": "string",
       "x-reload": "restart"
     },
+    "workspaces": {
+      "additionalProperties": false,
+      "default": {
+        "build_cache": null,
+        "projects": {}
+      },
+      "properties": {
+        "build_cache": {
+          "additionalProperties": false,
+          "default": null,
+          "properties": {
+            "dir": {
+              "default": "",
+              "type": "string"
+            },
+            "kind": {
+              "default": "ccache",
+              "type": "string"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "projects": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "dir": {
+                "default": "",
+                "type": "string"
+              },
+              "kind": {
+                "default": "ccache",
+                "type": "string"
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "worktrees": {
       "additionalProperties": false,
       "default": {
@@ -4000,7 +4050,8 @@
       "swarm",
       "test_selection",
       "wait_policy",
-      "work_graph"
+      "work_graph",
+      "workspaces"
     ],
     "other": [],
     "restart_required": [
