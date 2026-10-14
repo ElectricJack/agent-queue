@@ -59,6 +59,31 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def _cmd_integration_supersede_completion(self, args: dict) -> dict:
+        """Preview/apply one human-directed supersession, without the close pipeline."""
+        from src.commands.contracts.integration import IntegrationSupersedeCompletionArgs
+        from src.integration.finished_owners import stop_confirmer_for
+        from src.integration.superseded_completion import SupersededCompletion
+        from src.sessions.obsolete import (
+            ObsoleteClose, ObsoleteCloseRefused, obsolete_owner_release_for,
+        )
+
+        request = IntegrationSupersedeCompletionArgs.model_validate(args)
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("refused", refusal)
+        closer = ObsoleteClose(
+            self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
+            git_manager=self.orchestrator.git,
+        )
+        try:
+            result = await SupersededCompletion(
+                self.db, closer=closer, confirm_stopped=stop_confirmer_for(self.orchestrator),
+            ).run(request, principal=principal)
+        except (ValueError, GitError, HierarchyError, ObsoleteCloseRefused) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_migrate_provenance_refs(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationMigrateProvenanceRefsArgs
         from src.integration.provenance_migration import ProvenanceMigration
