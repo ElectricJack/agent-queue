@@ -1369,6 +1369,7 @@ class TaskCommandsMixin:
                     "code": "hierarchy.reparent_out_of_scope",
                     "error": _REPARENT_SCOPE_ERROR,
                 }
+        delivery = await self.db.observe_removal_delivery([task_id], for_mutation=True)
         try:
             async with self.db.immediate() as conn:
                 provenance: str | None = None
@@ -1378,10 +1379,26 @@ class TaskCommandsMixin:
                     )
                     if refusal is not None:
                         return refusal
-                result = await self.db.set_parent(
-                    task_id, new_parent, conn=conn,
-                    reject_live_parent=new_parent != held_id,
-                )
+                from sqlalchemy import select
+                from src.database.tables import projects, tasks
+
+                await self.db.lock_hierarchy_project(conn, task.project_id)
+                mode = await conn.scalar(select(projects.c.hierarchical_integration_mode).where(
+                    projects.c.id == task.project_id,
+                ))
+                old_parent = await conn.scalar(select(tasks.c.parent_task_id).where(
+                    tasks.c.id == task_id,
+                ))
+                if mode in {"hierarchy", "train"} and old_parent != new_parent:
+                    _, result = await self._hierarchy_integration_service().reparent_on(
+                        conn, task_id, new_parent, delivery=delivery,
+                        reject_live_parent=new_parent != held_id,
+                    )
+                else:
+                    result = await self.db.set_parent(
+                        task_id, new_parent, conn=conn,
+                        reject_live_parent=new_parent != held_id,
+                    )
                 if provenance is not None and provenance != new_parent:
                     # The filing's only provenance was the parent-child edge
                     # it just lost (a filing under the held task writes no

@@ -347,6 +347,20 @@ aq integration close-delivered-pr PROJECT_ID PR_NUMBER
 
 ## Repair and collection recovery
 
+`aq task reparent --task-id CHILD_ID --root` can move an unheld no-commit leaf
+out of an epic. An unused reservation is replaced from the default branch.
+A materialized branch must still equal its recorded base; its branch and base
+remain unchanged while delivery now targets the default branch. Moving to
+another parent requires that parent's checkpoint to match the materialized
+base. The transaction advances affected parent generations and invalidates
+their verification. Live writers, workspace locks, attached branch owners,
+delivery receipts, completed work and sealed ancestors refuse the move.
+
+Branch ownership cannot attach to the shared repository base checkout. Recovery
+ignores a stale base-workspace attachment when the task branch is elsewhere,
+without snapshotting, detaching, unlocking or disabling the operator checkout.
+A task branch actually checked out in the base still requires operator attention.
+
 The train owns current integration work. Inspect `aq integration status PROJECT_ID`
 and the blocker returned by its batch or repair operation. A stopped attachment uses
 `release-owner --task-id TASK_ID --dry-run`; apply only the exact recovery that the

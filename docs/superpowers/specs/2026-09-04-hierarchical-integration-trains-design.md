@@ -376,9 +376,15 @@ per affected parent and invalidates its aggregate verification and review eligib
 invalidates both old and new parents. Changes below a completed ancestor require explicitly
 reopening the affected ancestor chain first; completed ancestors cannot silently remain eligible.
 
-Reparenting is allowed only before the child has acquired a workspace, created a branch, or
-received a delivery receipt. It replaces the unused branch reservation with a checkpoint from the
-new parent. Once code work starts, keep its delivery target fixed; transfer later work through a
+The ordinary reparent command uses this integration transaction, including moves to root.
+An unheld leaf with no delivery receipt may move while its reservation is unused, or while
+fresh Git evidence proves its published branch is still exactly its recorded base (no commits).
+Live claims, locked workspaces, attached owners, completed work, descendants and sealed
+ancestors refuse the move. Both affected parents invalidate verification. An unused reservation
+is replaced from the new parent checkpoint or the default branch for root. A materialized
+no-commit branch keeps its exact base and ref; another parent must have that same checkpoint,
+and root delivery targets the default branch. The retired origin remains audit history.
+Once code work starts, keep its delivery target fixed; transfer later work through a
 new task instead. A delivered task cannot be reopened for additional code: create a follow-up task
 from its current parent's checkpoint. A root already sealed into a batch, and its descendants,
 cannot be reopened, reparented, or have delivery dispositions changed until the batch is terminal;
