@@ -77,6 +77,29 @@ class Origin:
         git(self.clone, "push", "-q", "origin", "main")
 
 
+def test_origin_template_and_copies_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+    trace = tmp_path / "git-trace.json"
+    config = tmp_path / "empty-git-config"
+    config.touch()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    seed = Origin(seed_root)
+    seed_head = git(seed.url, "rev-parse", "main")
+    copied = Origin(tmp_path, template=seed)
+    copied_head = copied.work("private-copy")
+    assert git(seed.url, "rev-parse", "main") == seed_head
+    assert git(seed.url, "for-each-ref", "refs/heads/aq/private-copy") == ""
+    assert git(copied.url, "rev-parse", "aq/private-copy") == copied_head
+    commands = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()]
+    assert not [
+        args for args in commands
+        if "--auto" in args and ("maintenance" in args or "gc" in args)
+    ]
+
+
 async def close(db, tid: str, commits: list[str], *, close_id: str | None = None,
                 origin: Origin | None = None) -> None:
     """Close *tid*; with *origin*, retain the final source in git as a worker close does."""
