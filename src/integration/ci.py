@@ -17,6 +17,7 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import insert, select, update
 
+from src.waits.sources import execute_batch_mutation
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     integration_batches,
@@ -774,7 +775,7 @@ class CIService:
             )
             .values(state="green", ci_evidence_id=aggregate_id, updated_at=self.clock())
         )
-        batch_changed = await conn.execute(
+        batch_changed = await execute_batch_mutation(conn,
             update(integration_batches)
             .where(
                 integration_batches.c.id == subject.batch_id,

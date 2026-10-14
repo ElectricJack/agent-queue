@@ -353,6 +353,22 @@ tasks = Table(
         "created_at",
         postgresql_where=text("affinity_agent_id IS NOT NULL"),
     ),
+    # The wait schema installs effective-priority indexes before the wait
+    # runtime is active. Keep the current base-priority claim path ordered
+    # until its owning leaf adopts and maintains the priority projection.
+    Index(
+        "idx_tasks_base_claim_frontier",
+        "project_id", "status", "is_blocked", "priority", "created_at",
+    ),
+    Index(
+        "idx_tasks_base_claim_frontier_by_profile",
+        "project_id", "profile_id", "status", "is_blocked", "priority", "created_at",
+    ),
+    Index(
+        "idx_tasks_base_claim_frontier_by_affinity",
+        "affinity_agent_id", "project_id", "status", "is_blocked", "priority", "created_at",
+        postgresql_where=text("affinity_agent_id IS NOT NULL"),
+    ),
     # Group progress and tree queries walk parent_task_id.
     Index("idx_tasks_parent", "parent_task_id"),
     # Status-only lists (``list_tasks(status=...)`` in the monitoring cycle,

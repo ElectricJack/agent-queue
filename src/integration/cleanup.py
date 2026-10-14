@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import execute_batch_mutation
 from src.integration.engine import root_engine_guard
 
 from src.database.tables import (
@@ -743,7 +744,7 @@ class IntegrationCleanupService:
                         integration_branch_owners.c.workspace_id.is_(None),
                     ).values(handoff_state="released", updated_at=now)
                 )
-        await conn.execute(
+        await execute_batch_mutation(conn,
             update(integration_batches)
             .where(
                 integration_batches.c.id == batch_id,
@@ -899,7 +900,7 @@ class IntegrationCleanupService:
             if any(
                 row["source_ref"] is None or row["source_ref_retention"] is None for row in members
             ):
-                await conn.execute(
+                await execute_batch_mutation(conn,
                     update(integration_batches)
                     .where(
                         integration_batches.c.id == batch_id,
@@ -1432,7 +1433,7 @@ class IntegrationCleanupService:
                 next_attempt_at=now, created_at=now, updated_at=now,
             ).on_conflict_do_nothing(index_elements=["batch_id", "kind", "identity"]))
         if not seen and batch["target_ref"] is None:
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch["id"],
                 integration_batches.c.lifecycle == "aborted",
                 integration_batches.c.cleanup_state == "pending",
@@ -1464,7 +1465,7 @@ class IntegrationCleanupService:
                 await self.advance(batch_id, now=now)
                 if batch["target_ref"] is not None and not result.item_count:
                     async with self.db.immediate() as conn:
-                        await conn.execute(update(integration_batches).where(
+                        await execute_batch_mutation(conn, update(integration_batches).where(
                             integration_batches.c.id == batch_id,
                             integration_batches.c.lifecycle == "aborted",
                             integration_batches.c.cleanup_state == "pending",

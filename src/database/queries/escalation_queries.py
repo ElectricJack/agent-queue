@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.dashboard_paths import escalation_path
 from src.database.tables import (
     digest_windows,
@@ -239,7 +240,7 @@ class EscalationQueriesMixin:
             if inserted is not None:
                 await self._enqueue_initial_escalation_on(conn, inserted, now=now)
                 if supervisor_delivery_body_kind is not None:
-                    await conn.execute(
+                    await insert_message_with_source_event(conn,
                         pg_insert(messages)
                         .values(
                             id="msg-" + inserted["id"],
@@ -604,7 +605,7 @@ class EscalationQueriesMixin:
             recipient = supervisor_recipient or incident["supervisor_owner"]
             if not terminal:
                 _require_nonempty({"supervisor_recipient": recipient}, ("supervisor_recipient",))
-                await conn.execute(
+                await insert_message_with_source_event(conn,
                     pg_insert(messages).values(
                         id=supervisor_message_id,
                         project_id=incident["project_id"],
@@ -747,7 +748,7 @@ class EscalationQueriesMixin:
             )
             if last_notice is not None and now - last_notice < interval_seconds:
                 return False
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 pg_insert(messages).values(
                     id=f"msg-escalation-owner-reminder-{uuid.uuid4()}",
                     project_id=incident["project_id"],

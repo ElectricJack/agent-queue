@@ -8682,13 +8682,13 @@
       "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
-      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
+      "reason": "Claim and integration schema imports; job_workspace_pins joins retained branch ownership as a refusal fence for repairing an idle misplaced workspace lock."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
-      "reason": "Claim workspace repair checks retained integration ownership before moving an agent lock; the entire shared guard remains charged."
+      "reason": "Repairs only an idle misplaced agent workspace lock after checking foreign claims, live sessions, retained integration ownership and job pins. Reads integration owners as a refusal fence; changes workspace locks only, never branch ownership, publication or ref replay state."
     },
     "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
-      "reason": "Workspace recovery checks retained integration branch ownership before reprovisioning; shared integration guard remains charged."
+      "reason": "Read-only attached/handoff-pending integration-owner and job-pin fence. Prevents slot recreation or abandoned-merge recovery from changing retained checkouts; grants no release, delivery or ref replay authority."
     }
   },
   "exclusions": {
@@ -8788,7 +8788,10 @@
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
     "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
     "src/database/tables.py::wait_records": "Verified-wait condition and outcome storage owned by session waits; integration_outcome is a source kind, not an integration delivery journal.",
-    "src/database/tables.py::continuations": "Verified-wait resume checkpoint and admission storage owned by sessions; no Git ref mutation or delivery replay state."
+    "src/database/tables.py::continuations": "Verified-wait resume checkpoint and admission storage owned by sessions; no Git ref mutation or delivery replay state.",
+    "src/database/tables.py::wait_source_events": "Generic wait outbox for all source kinds. Payloads are evidence hints; consumers re-observe authoritative state, never replay integration refs or lifecycle from this table.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source evidence bridge for batch transitions. It writes only the universal wait outbox; integration policy and authoritative batch state remain in src/integration.",
+    "src/waits/sources.py::execute_batch_mutation": "Transaction-preserving bridge from existing batch writes to the generic wait source outbox; contains no integration policy, ref replay or duplicate authority."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -12958,7 +12961,7 @@
       "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
+      "reason": "Ordinary needs_attention marker for integration_prepare_failed_attached when a failed preparation cannot safely detach its writer. PostgreSQL contention bypasses it; the marker grants no release, publication or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
       "line": 1418,
@@ -12967,10 +12970,10 @@
       "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
+      "reason": "Ordinary needs_attention marker for repair_target_unpublished when the managed fence cannot be released. Stores an attention code only; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
-      "line": 924,
+      "line": 962,
       "owner": "ClaimCommandsMixin._recover_stale_binding",
       "call": "set_task_meta",
       "owner_fingerprint": "99a5abfe960334f70d651bb2d30fb440da856cb1c7bfc6ab0431150d36bead9d",
@@ -13051,10 +13054,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/integration_commands.py::IntegrationCommandsMixin._repair_integration_source_ancestry::9eab08d21f786b378f964334010c8a4823b27a4418b6da4ed8f1f302331de9ea": {
-      "line": 906,
+      "line": 851,
       "owner": "IntegrationCommandsMixin._repair_integration_source_ancestry",
       "call": "log_event",
-      "owner_fingerprint": "091ec47c285f9c9d0eb6956078f56d581a0c6309cb0604104db8f335681d8a37",
+      "owner_fingerprint": "f4c9187dca25662dc9b113cb61730807ca67f8f3f9d236a6f90865a817c4c322",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -13369,7 +13372,7 @@
       "line": 308,
       "owner": "AgentQueryMixin._assign_task_to_agent",
       "call": "insert",
-      "owner_fingerprint": "bcb2fe585538f3ba5f66ad45081c0730a91e5de130533c6e0907ee98898a5325",
+      "owner_fingerprint": "0e90b5c5bad294004fa51803bca1d9d30da5bdf30c6670128d49736f269c61c7",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -13465,10 +13468,10 @@
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
     },
     "src/database/queries/lifecycle_queries.py::LifecycleQueryMixin.flag_stale_open::e8a2b4864b5a13dbdbed6cc88cc2620503b9e9e167c4c21405eb953fbd12e150": {
-      "line": 167,
+      "line": 168,
       "owner": "LifecycleQueryMixin.flag_stale_open",
       "call": "log_event",
-      "owner_fingerprint": "4dc6402750e5adf9b2c4022a3ed495b66b0746b3edfaf351493b1b66e42ca15a",
+      "owner_fingerprint": "7d988f7d42574bb39578dd3d99f3f334364ec20e7422df05de314651e7140760",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary stale-open advisory, deduplicated supervisor notice and audit event; READY episode identity is rechecked before notification. No ref replay or delivery authority."
@@ -13519,16 +13522,16 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1749,
+      "line": 1770,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "992d5cb6025f443a582ef1c49b81ea920d86cae3ac1822cddafc6c1c0c0c0461",
+      "owner_fingerprint": "1b43f3d0fb4428e60451d4830cc623b623edbee04df850ca3cb3d9cc3e9f6a76",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle metadata cleanup, guarded retry routing and accepted-close identity. Explicit restart/reopen supersedes the previous supervisor recovery incident and archives its notification in the READY-write transaction, preserving diagnosis and budget. Ordinary status projection retains holds. Integration status, branch reservations and ref replay authority remain in dedicated records."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 2165,
+      "line": 2245,
       "owner": "TaskQueryMixin._delete_one",
       "call": "delete",
       "owner_fingerprint": "d4319c8a462675b9056cfd21b165edd019baf125b78c43d5c0d8a8df4b9f081c",
@@ -13537,7 +13540,7 @@
       "reason": "Ordinary task metadata cleanup after audited operator deletion; completion records, comments, subtask evidence and integration audit identities remain intact. No ref replay or duplicate integration lifecycle storage."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._note_frontier_entry::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 1087,
+      "line": 1278,
       "owner": "TaskQueryMixin._note_frontier_entry",
       "call": "insert",
       "owner_fingerprint": "f53ae8c311e93e2900d2a38f239125cf79e4fca824c6d272984df177c716bab2",
@@ -13546,7 +13549,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._note_frontier_entry::b912d90937a9a84a4c4302c8aecd1c0de09370de865efb9a1636e8468e1b5d92": {
-      "line": 1102,
+      "line": 1293,
       "owner": "TaskQueryMixin._note_frontier_entry",
       "call": "log_event",
       "owner_fingerprint": "f53ae8c311e93e2900d2a38f239125cf79e4fca824c6d272984df177c716bab2",
@@ -13555,7 +13558,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._release_stopped_slot_reset_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 973,
+      "line": 1033,
       "owner": "TaskQueryMixin._release_stopped_slot_reset_claim",
       "call": "delete",
       "owner_fingerprint": "2390e3c6e9f20e2c63615dd8429e6148c0451a6e2f06388d9fabc263b91a524c",
@@ -13564,7 +13567,7 @@
       "reason": "Ordinary claim-ownership marker cleanup for a claim whose every holder session is proved stopped with matching claim epoch, instance token and desired state, and whose workspace and branch ownership are already released. Metadata key: 'claimed_by_session'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._resume_locked::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1224,
+      "line": 1227,
       "owner": "TaskQueryMixin._resume_locked",
       "call": "delete",
       "owner_fingerprint": "67dcc78e9bee192651795dab8200b2dd1437c7f6e46454521fe07cdcc4d54406",
@@ -13573,7 +13576,7 @@
       "reason": "Removes ordinary manual-pause and attention metadata on resume; proposal transactions may defer graph projection, while managed integration episodes remain paused without verifier wake authority. No ref replay state."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.delete_task_meta::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 2208,
+      "line": 2497,
       "owner": "TaskQueryMixin.delete_task_meta",
       "call": "delete",
       "owner_fingerprint": "0c91483eb816281600c7cc15700a2aa743aedb2050f033387dcc1c7b07e1fc02",
@@ -13582,7 +13585,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.resume_task::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 991,
+      "line": 1051,
       "owner": "TaskQueryMixin.resume_task",
       "call": "delete",
       "owner_fingerprint": "5c38788248a432e1f59e1cac3b2f4611f202c9dce5c9cda3fe7627dc9595aad9",
@@ -13591,7 +13594,7 @@
       "reason": "Ordinary preparation-backoff and attention cleanup when a slot-reset claim is retried; the shared stopped-writer fence is taken first and the status change goes through the ordinary transition. Metadata keys: 'claim_prepare_backoff_until', 'claim_prepare_backoff_attempts', 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.set_task_meta::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 2177,
+      "line": 2466,
       "owner": "TaskQueryMixin.set_task_meta",
       "call": "insert",
       "owner_fingerprint": "50b95f01505f19f5f02c1b293716208aa13426928b4582eac2aba9fb42417dc3",
@@ -13600,7 +13603,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin.set_task_meta::51be9b5b9698cee60f963e966b52a7527686e8e5a5f266c953c9f4919f14106d": {
-      "line": 2166,
+      "line": 2455,
       "owner": "TaskQueryMixin.set_task_meta",
       "call": "update",
       "owner_fingerprint": "50b95f01505f19f5f02c1b293716208aa13426928b4582eac2aba9fb42417dc3",
@@ -14851,10 +14854,10 @@
       "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
     },
     "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
-      "line": 490,
+      "line": 491,
       "owner": "BatchStore.set_intent",
       "call": "log_event",
-      "owner_fingerprint": "c28cfb2c4d6b9602d5625d34c43b813cc458291b509d2eae4e299a0420ddba30",
+      "owner_fingerprint": "fe442b147c2c1c47d3cb73fa8ec908047163c4128f91de9f45fba45b54c12e26",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
@@ -14950,19 +14953,19 @@
       "reason": "Associates an isolated conflict repair with its preserved dependent for adoption. Claim-time diagnostic metadata mirrors the origin preparation hold and names exact inputs and paths; it cannot authorize publication or replay refs. Git ancestry, completion identity and current branch fences remain authoritative. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority."
     },
     "src/integration/batches.py::BatchStore.eject::02dbb6e454b19e80a1f07be2b10de35299d826ab592437d231735f74ef0f522a": {
-      "line": 388,
+      "line": 389,
       "owner": "BatchStore.eject",
       "call": "log_event",
-      "owner_fingerprint": "3fdef6e7c66ba1aacf96188533b0735d913985a5423fd152762ab544270da006",
+      "owner_fingerprint": "82d2471ea5cb12b7874011a25f73751fb38169f4d0220aef68eef863c0e43022",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
-      "line": 440,
+      "line": 441,
       "owner": "BatchStore.supersede",
       "call": "log_event",
-      "owner_fingerprint": "06a16c2d7e881ba72610c415b04fc8d005ff1a749971a9b42aa5847cf80e9e87",
+      "owner_fingerprint": "600ea1102b39843c3053a16e935ac4059b539c2c79170169f0d70fb9ee47bff0",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
@@ -14977,10 +14980,10 @@
       "reason": "Audit of a requested epic refresh with principal and observed train state. Frozen batch inputs and exact Git/check proofs remain authoritative; this event cannot replay refs or authorize delivery."
     },
     "src/integration/promotion_steps.py::settle_promotion::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 1754,
+      "line": 1769,
       "owner": "settle_promotion",
       "call": "insert",
-      "owner_fingerprint": "9c8c038d66d648442433b02dc9d36dd0a5efdcf2911deec07ae0b0780a96f1bd",
+      "owner_fingerprint": "85a65400a4a684c7f6fae5adb44701518265a6ab38f66e2df6d5631427645db2",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Write-once result of a promotion task (source SHA, tag OID and batch id), separate from the immutable request intent. Git ancestry and annotated-tag read-back are always reobserved; this result never authorizes ref replay or substitutes for delivery truth."
@@ -15010,7 +15013,7 @@
       "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Records a named preparation hold when a retained attachment cannot be safely released; ordinary claim diagnostic, never Git publication or ref replay authority."
+      "reason": "Ordinary needs_attention marker when a prerequisite-conflict or changed-stack attachment cannot safely be released. The exception code records a preparation hold; grants no Git publication or ref replay authority."
     },
     "src/integration/cutover.py::_Activation.write_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "call": "insert",
@@ -15112,10 +15115,10 @@
       "reason": "Explicit legacy recovery appends the existing subject action journal while closing an unfrozen idle reconciler subject. This duplicate legacy lifecycle writer remains subject to retirement; it is not used by active Git-first train or promotion execution and must disappear with the legacy subject journal."
     },
     "src/integration/train_sources.py::BackmergeAdmission.author::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 532,
+      "line": 552,
       "owner": "BackmergeAdmission.author",
       "call": "insert",
-      "owner_fingerprint": "ec1cde13c4fd4b4f526e4b34eb7db6c8be282c505e0502763c641f59df56ec6e",
+      "owner_fingerprint": "3c8e1d53a3ce0c19e26f22fab650384d9408088815a1ab0fea84b99ea61633ab",
       "integration_signal": true,
       "disposition": "intent",
       "reason": "Pins an owed backmerge source/base/origin/target and its ordinary source task/completion identity; disabled authorship records only debt and older unfrozen inputs may be superseded. These declarative inputs do not assert remote publication or delivery: authorship, source admission and settlement independently reobserve exact Git refs, ancestry, frozen membership and PR evidence. Private-head creation uses the full forty-zero absent-ref lease; this transport correction adds no metadata or ref replay authority."
@@ -15148,10 +15151,10 @@
       "reason": "Explicit LOCAL abandonment appends a cancelled revision to the existing legacy development.operation lifecycle journal after exact event/hash/full-manifest and inactive-authority checks. It preserves prior revisions and makes no delivery claim. This compatibility writer retires with the legacy journal and receives no final-phase allowance."
     },
     "src/integration/root_pr_recovery.py::recover_root_pr_checks::9838abf578dc8c2a386d1d4a9012e2aabe1e175732dd1d51dbe41a2ef7cfc4e9": {
-      "line": 162,
+      "line": 163,
       "owner": "recover_root_pr_checks",
       "call": "log_event",
-      "owner_fingerprint": "4e4f44de3b9395140b13705c7056ce991551ab7c550940c6c4fb84b599584310",
+      "owner_fingerprint": "b55d6bcc3ed49833528a5217803f9b270a623146f71e60f2e29a83478799bc0f",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Transactional audit of a completed root reopened after authenticated exact-head required-check failure and locked completion, origin and policy revalidation. Records the failed source SHA, completion identity and reopen attempt alongside ordinary feedback and bounded recovery accounting; no ref replay instructions, publication authority or duplicate delivery lifecycle. Fresh PR and candidate checks remain required. Current Git delivery evidence is observed outside the transaction and revalidated by the guarded lifecycle writer; the storage disposition remains ordinary."
@@ -15238,7 +15241,7 @@
       "reason": "Clears stale claimed_by_session task metadata during a fenced orphan release; exhausted worker retries set ordinary needs_attention=session_missing state. No Git ref replay authority or duplicate integration lifecycle."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._record_recovery_failure_generation_on::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1284,
+      "line": 1307,
       "owner": "TaskQueryMixin._record_recovery_failure_generation_on",
       "call": "delete",
       "owner_fingerprint": "7c009da3d22cb253b9be89eeec22bd5233b72e55e03488dccb95a5fddbf1d635",
@@ -15316,7 +15319,7 @@
       "owner_fingerprint": "5320f339dd4403a0b643d4cd1d80c453fcd0e62e4f25d3ae07da6ef69c3a5f35",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary retained-writer preparation failure diagnostic names the failed task branch, workspace, session and reason. Contains no OIDs, ref publication or replay plan."
+      "reason": "Branch-fence refusal diagnostics: bounded reason, branch name, repository/workspace/session identity and timestamp. Ordinary preparation state cleared by successful activation; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::5f457951c70bf9a85748058a4541961a976c9d242448650882070b61af58ba61": {
       "line": 1360,
@@ -15325,7 +15328,7 @@
       "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary claim_preparation_failure diagnostic records the exception, reason, workspace, session and claim epoch. No ref replay or publication authority."
+      "reason": "Ordinary claim_preparation_failure diagnostic: bounded reason, exception type, workspace/session/claim identity and timestamp. Records infrastructure failure for investigation; never publication intent, a Git ref update or replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::64d9070466d052e67a1a96dd3a40b4a768057d1acb08c0c4e390c117e3eb58e7": {
       "line": 1479,
@@ -15334,7 +15337,7 @@
       "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary slot_reset_failure/backoff diagnostic records failure reason, attempt, workspace, session and retry policy. No ref replay authority."
+      "reason": "Ordinary slot_reset_failure diagnostic: bounded reason, attempt/retry policy, workspace/session identity and timestamp. PostgreSQL contention bypasses this write; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/task_commands.py::TaskCommandsMixin._emit_task_graph_change::40f1ded3b71fdf05bc239a91f7ea3ab1bd5a43a5dea463aa278b1b31a633b1a5": {
       "line": 1031,
@@ -15344,6 +15347,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary dashboard graph audit event carries committed task status for reconnect replay; no branch/ref identity or delivery authority."
+    },
+    "src/database/queries/event_queries.py::EventQueryMixin.log_events::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 50,
+      "owner": "EventQueryMixin.log_events",
+      "call": "insert",
+      "owner_fingerprint": "7aa14b4c07e9e2c8f22c2d9b1bd3940ac686a60d93e475cadf01cfc7496d9ba6",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Generic bulk audit-log writer used for pool.bounds_rescoped fanout; preserves the existing audit rows and has no integration ref replay authority."
     }
   },
   "generic_dependencies": {
@@ -16221,7 +16233,17 @@
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
     "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
-    "src/models.py::SUSPENDED_TASK_STATUSES": "Generic task lifecycle vocabulary shared with verified waits; contains no delivery state or ref mutation."
+    "src/models.py::SUSPENDED_TASK_STATUSES": "Generic task lifecycle vocabulary shared with verified waits; contains no delivery state or ref mutation.",
+    "src/waits/sources.py::execute_batch_mutation": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::insert_message_with_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_task_transition": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
+    "src/waits/sources.py::record_dependency_change": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
+    "src/waits/sources.py::record_dependency_source_change": "Generic dependency observation fanout on upstream evidence changes; integration callers remain charged independently.",
+    "src/waits/sources.py::execute_task_status_mutation": "Generic task status outbox bridge for guarded bulk/legacy writes; integration-specific callers retain their ownership.",
+    "src/waits/source_sql.py::task_transition_statement": "Generic guarded task/dependency source outbox CTE, used by all task status writers; writes only ordinary task state and universal wait evidence, with no integration policy or ref replay authority. Integration-specific callers remain charged.",
+    "src/waits/sources.py::payload_hash": "Generic canonical JSON SHA-256 for universal wait evidence, including resource invalidation authentication; no integration lifecycle, ref identity or replay authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

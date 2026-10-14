@@ -14,6 +14,8 @@ from pathlib import Path
 
 from sqlalchemy import func, insert, select, update
 
+from src.waits.sources import execute_task_status_mutation
+from src.waits.sources import execute_batch_mutation
 from src.task_templates import render_task_template
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.commands.supervisor_authority import integration_operator
@@ -920,7 +922,7 @@ class PromoteCommandsMixin:
                 await promotion_policy_event(conn, project_id=project.id, step_id=step["id"],
                     kind="intent_due", identity=batch.id, now=now, batch_id=batch.id, source_sha=source)
 
-                await conn.execute(
+                await execute_batch_mutation(conn,
                     update(integration_batches)
                     .where(
                         integration_batches.c.id == batch.id,
@@ -1142,13 +1144,12 @@ class PromoteCommandsMixin:
                 await client.close_pull_request(number=meta["pr_number"])
                 members = await lane.service.store.members(row["id"])
                 now = time.time()
-                await conn.execute(update(integration_batches).where(
+                await execute_batch_mutation(conn, update(integration_batches).where(
                     integration_batches.c.id == row["id"]).values(
                     intent="aborted", lifecycle="aborted", cleanup_state="pending",
                     human_abort_reason=f"Cancelled by {_requester_identity(principal)}",
                     updated_at=now))
-                failed = await conn.execute(
-                    update(tasks)
+                failed = await execute_task_status_mutation(conn, update(tasks)
                     .where(tasks.c.id == members[0].task_id, tasks.c.status == "IN_PROGRESS")
                     .values(status="FAILED", updated_at=now)
                 )
@@ -1197,7 +1198,7 @@ class PromoteCommandsMixin:
                     backup.parent.mkdir(parents=True, exist_ok=True)
                     backup.write_text(json.dumps(dict(task), default=str, indent=2, sort_keys=True))
                 await asyncio.to_thread(write_backup)
-                await conn.execute(update(tasks).where(tasks.c.id == task["id"]).values(
+                await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id == task["id"]).values(
                     status="IN_PROGRESS", profile_id=None, route_source=UNROUTED, route=None,
                     updated_at=time.time()))
                 if task["status"] == "FAILED":
