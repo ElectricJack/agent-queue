@@ -482,7 +482,7 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
     from alembic.script import ScriptDirectory
     from sqlalchemy import Column, MetaData, Table, Text
 
-    from migrations.versions.a00000000091_human_ask_decisions import ADDITIONS
+    from migrations.versions.a00000000096_human_ask_decisions import ADDITIONS
     from src.database.engine import _ALEMBIC_INI
     from src.database.tables import metadata
 

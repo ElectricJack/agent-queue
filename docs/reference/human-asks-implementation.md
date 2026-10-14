@@ -33,8 +33,8 @@ area commands after this table; a node reference alone is not a passing receipt.
 
 ## Schema and retained history
 
-The actual sequential revisions are `a00000000091_human_ask_decisions.py`,
-`a00000000092_ask_source_fences.py`, and `a00000000093_human_ask_transport.py`.
+The actual sequential revisions are `a00000000096_human_ask_decisions.py`,
+`a00000000097_ask_source_fences.py`, and `a00000000098_human_ask_transport.py`.
 The source-fence migration consumed the provisional transport ID 92. Cleanup must
 allocate a later free ID and must never rewrite these deployed revisions.
 

@@ -126,7 +126,7 @@ def _legacy_source_metadata():
     """Copy the importable schema without the human ask revisions' additions."""
     from sqlalchemy import MetaData
 
-    from migrations.versions.a00000000091_human_ask_decisions import ADDITIONS
+    from migrations.versions.a00000000096_human_ask_decisions import ADDITIONS
 
     source_metadata = MetaData()
     for table in _ORDERED_TABLES:

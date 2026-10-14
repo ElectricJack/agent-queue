@@ -253,6 +253,7 @@
       "description": "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, the invalid-request rate guard and the simplified lifecycle.",
       "modules": [
         "tests/test_discord_adapter.py",
+        "tests/test_discord_ask_buttons.py",
         "tests/test_discord_bot_routing.py",
         "tests/test_discord_cutover.py",
         "tests/test_discord_docs.py",
@@ -312,10 +313,20 @@
     "document-reviews": {
       "description": "Document reviews: the review service, schema and queries, revision block diffs, vault review files, review gates on downstream tasks, the reopen cascade, dedup keys, the review notifier, commands, doctor checks and spec approval.",
       "modules": [
+        "tests/test_ask_api.py",
+        "tests/test_ask_commands.py",
+        "tests/test_ask_decisions.py",
+        "tests/test_ask_delivery.py",
+        "tests/test_ask_discussion.py",
+        "tests/test_ask_intake.py",
+        "tests/test_ask_migration.py",
+        "tests/test_ask_operations.py",
+        "tests/test_ask_sources.py",
         "tests/test_proposal_api.py",
         "tests/test_review_commands.py",
         "tests/test_review_diff.py",
         "tests/test_review_doctor.py",
+        "tests/test_review_feedback.py",
         "tests/test_review_gating.py",
         "tests/test_review_keys.py",
         "tests/test_review_notifier.py",
@@ -817,6 +828,7 @@
         "tests/test_migration_guard.py",
         "tests/test_migration_guard_restoration.py",
         "tests/test_migration_handoff.py",
+        "tests/test_migration_human_asks.py",
         "tests/test_migration_integration_cleanup.py",
         "tests/test_migration_integration_cleanup_hardening.py",
         "tests/test_migration_integration_controls.py",
@@ -2159,12 +2171,14 @@
         "agent-questions"
       ],
       "default_arm": true,
-      "digest": "sha256:686962e753824ea8ca4e7c256fd79e8a08ecf9a88d8c338548efc2fa0044b02e",
+      "digest": "sha256:3ea9b0337b1af7c0a6431377297d1f9c37f5922a2b2ba87167e0806a033e764a",
       "imports": [
         "src.api.auth",
         "src.api.dependencies",
         "src.api.execute",
+        "src.asks.models",
         "src.commands.handler",
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.event_bus",
@@ -2239,9 +2253,10 @@
         "agent-questions"
       ],
       "default_arm": true,
-      "digest": "sha256:f3768e392a30ed8cab38e2eda42c93e65199bafe73353c05c98756d2da13ce1b",
+      "digest": "sha256:1b6a445ba3511e51afb1ea96788bae0ea2de4c6569e89feaf59215bf3b72e270",
       "imports": [
         "src.api.models.agent",
+        "src.asks.models",
         "src.commands.handler",
         "src.config",
         "src.database",
@@ -2260,7 +2275,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Question routing against isolated SQLite; only the terminal provider is fake."
+      "summary": "Question routing against disposable PostgreSQL; only the terminal provider is fake."
     },
     "tests/test_agent_queue_train_policy.py": {
       "areas": [
@@ -2860,6 +2875,175 @@
       ],
       "summary": "Tests for the task archiving feature."
     },
+    "tests/test_ask_api.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:4d1e9756224c3f9652bdd90a3a71ceb86b3f1c2bdbd144fca45aec0a350db65f",
+      "imports": [
+        "src.api",
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.execute",
+        "src.api.middleware",
+        "src.api.models.ask",
+        "src.api.scope",
+        "src.api.websocket",
+        "src.commands.contracts",
+        "src.commands.contracts.ask",
+        "src.mcp_registration",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Human ask schemas and every public gateway exclusion boundary agree."
+    },
+    "tests/test_ask_commands.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2fd256ce663a26db7c7bcd3977babc51e5d0377ac9e175bc97115ee8a35c464a",
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Public ask reads preserve project/audience and human decision boundaries."
+    },
+    "tests/test_ask_decisions.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:29e5bbde5a974874bdc6f8a9c95f2e47849fad6d472ea5f7b9d602ffb933e6c3",
+      "imports": [
+        "src.asks.models",
+        "src.asks.service",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Foundational packet/idempotency, durable audit and operation lease invariants."
+    },
+    "tests/test_ask_delivery.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:cc8d836a9ae91e7ebe596411c1910040d20f7463a14f75cb89b32b21d1dc2b62",
+      "imports": [
+        "src.asks.delivery",
+        "src.asks.intake",
+        "src.asks.models",
+        "src.asks.render",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.delivery.dispatch",
+        "src.delivery.scheduler",
+        "src.digest.dispatch",
+        "src.escalations.transport",
+        "src.remote_links"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Canonical root writes survive late HTTP completion, restart, pause and repair."
+    },
+    "tests/test_ask_discussion.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:8c92ff20f5d32913310d678dcb23c281acf1797d556a4035cb20d638f0ceb883",
+      "imports": [
+        "src.api.models.ask",
+        "src.asks.discussion",
+        "src.database.tables",
+        "src.sessions.spec"
+      ],
+      "markers": [],
+      "summary": "Discussion persists before acknowledgement and never exercises decision authority."
+    },
+    "tests/test_ask_intake.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:a3bdbe8ed42ceb97577327282772031dcd74fd4da7ca3dca0742365ad32b5115",
+      "imports": [
+        "src.asks",
+        "src.asks.delivery",
+        "src.asks.intake",
+        "src.commands.principal",
+        "src.conversations.delivery",
+        "src.database.tables",
+        "src.escalations.transport"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "One verified input across gateway, backfill and legacy thread replay."
+    },
+    "tests/test_ask_migration.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:4029fa57ea846dcd8b0945bfdb5b163ae903a9ecb98977e732b6cf50251f31d0",
+      "imports": [
+        "src.asks.delivery",
+        "src.asks.models",
+        "src.asks.reconcile",
+        "src.database.tables",
+        "src.doctor.ask_checks",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "A02: canonical identity/aliases and replayable quarantine without title merging."
+    },
+    "tests/test_ask_operations.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:a1f57067bd626e419ced8eb175d3bb4006911bce6aedb27fc20b33d1b0e8f665",
+      "imports": [
+        "src.api.models",
+        "src.asks.operations",
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Application crash recovery: verify source receipts before releasing review gates."
+    },
+    "tests/test_ask_sources.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:517248d1179abe8b8f162746f9a0bd034c3d31b392de65651e8b317be8ccda0c",
+      "imports": [
+        "src.asks.adapters",
+        "src.asks.models",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A01: bounded complete context, safe legacy projection and static source contracts."
+    },
     "tests/test_assignment_routing.py": {
       "areas": [
         "task-routing"
@@ -3292,9 +3476,10 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:7717ac81c07fb3795312511cb8c5ec3436fe765e5a47861de26abbe1d6fbf9bd",
+      "digest": "sha256:a350b28d386918e8b47f7840036db1553d42a4b44b013b9d669af3a454c24797",
       "imports": [
         "src.claim_file",
+        "src.claim_timing",
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
@@ -5038,13 +5223,14 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:70fce6adbaeb40ca5dbac8c0a010dba8defba254173d9c592ed8b3678c2c57e7",
+      "digest": "sha256:c97e5e91254b89ee344a42af98c2cbdb2ddfda33f209f1743b4a32f09cd595ee",
       "imports": [
         "src.cli.app",
         "src.cli.db",
         "src.database.backup",
         "src.database.engine",
         "src.database.schema_key",
+        "src.database.tables",
         "src.install.update"
       ],
       "markers": [
@@ -5129,12 +5315,14 @@
         "shipped-playbooks"
       ],
       "default_arm": true,
-      "digest": "sha256:fa456e37e074865fdbc6223af619e859b712e2c438bb43671397b6a51f9b7e25",
+      "digest": "sha256:21203ec6d0e8937d284eae76d5bfe5d5b523a4e2392fa392fa2e510c49da08f7",
       "imports": [
+        "src.asks.operations",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database.queries.proposal_queries",
+        "src.database.tables",
         "src.models",
         "src.playbooks.definition",
         "src.playbooks.engine",
@@ -5486,6 +5674,22 @@
       ],
       "summary": "Tests for the DiscordMessagingAdapter and messaging adapter integration."
     },
+    "tests/test_discord_ask_buttons.py": {
+      "areas": [
+        "discord"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2dc6e4ada3be607a022ba0dfc1dd9d342194ab750b60ede676c0c8b4500b3372",
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.discord.ask_buttons"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Opaque gateway controls carry authenticated, generation-bound human evidence."
+    },
     "tests/test_discord_bot_routing.py": {
       "areas": [
         "discord"
@@ -5717,13 +5921,14 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:ce913c8090191060a4d5dad1ef6f40ffc80e456ae29f6b044fbed781b123e0b3",
+      "digest": "sha256:13bf369a07bb271d211c19c3b3d510fd15abd17aa3f1ad6b71bb969774ff33e1",
       "imports": [
         "src.cli.app",
         "src.commands.ops_commands",
         "src.config",
         "src.database",
         "src.doctor",
+        "src.doctor.ask_checks",
         "src.doctor.builtin",
         "src.doctor.capability_checks",
         "src.doctor.dashboard_server_checks",
@@ -6474,8 +6679,9 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:0c1909c63cd647f308272189b414549c110e34d79706053041ec4740c00f7b76",
+      "digest": "sha256:dc8aa327405f0d853ad8d7ae74c32a2bd16ed8005047a99a147df95bdf0029bd",
       "imports": [
+        "src.claim_timing",
         "src.commands.handler",
         "src.config",
         "src.database.tables",
@@ -8707,8 +8913,11 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:831b628c3bca611b189d05921fec07f2dbc3b8039c86d15df63191df1c7222f7",
+      "digest": "sha256:a931772376879798d5afce2113f20588f7663aba3c56fe2d59822bfb524eaa0f",
       "imports": [
+        "src.asks.models",
+        "src.commands.handler",
+        "src.config",
         "src.database.tables",
         "src.integration.gates",
         "src.integration.records",
@@ -11062,6 +11271,21 @@
         "migration"
       ],
       "summary": "Upgrade legacy handoffs in a disposable database, not the operator database."
+    },
+    "tests/test_migration_human_asks.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "digest": "sha256:bb296a517fb3e29efcb1ba1a25e68e1f700def2e8c6e6d6882629aeb7d3f9d91",
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Human ask migrations on fresh and historical shapes, disposable PostgreSQL only."
     },
     "tests/test_migration_integration_cleanup.py": {
       "areas": [
@@ -14679,6 +14903,23 @@
       "markers": [],
       "summary": "Tests for the reviews.consistency doctor check (Task 9)."
     },
+    "tests/test_review_feedback.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "digest": "sha256:0b1dc1e0a7330f3154a5cf94806542886a6e7432d4bc768b96e2a5cce672c2fa",
+      "imports": [
+        "src.asks.models",
+        "src.asks.review",
+        "src.database.tables",
+        "src.reviews.service"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Frozen review packets and the common PostgreSQL mutation boundary."
+    },
     "tests/test_review_gating.py": {
       "areas": [
         "document-reviews"
@@ -14802,8 +15043,9 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:447515fc0f74ddeb5b7572a5cf2f0900b9cbe3aacca4ee3659d3be25006b6c4e",
+      "digest": "sha256:84db6d20204ee582103714b0309ed8d359367ea2c62b04be17d4653849e06def",
       "imports": [
+        "src.asks.operations",
         "src.models",
         "src.reviews.diff",
         "src.reviews.service",
@@ -15827,8 +16069,10 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:20e40921e26f72dd6045cc9a63e134af7558b5f795a67c8b1c536434ead7fee3",
-      "imports": [],
+      "digest": "sha256:81e115e082cf60fd0198f5e337d621cccbb5d2d0da5f30bcb7922b5ad14fff47",
+      "imports": [
+        "src.database.tables"
+      ],
       "markers": [],
       "summary": "spec_approve — frontmatter flip + spec.approved event (Phase 6 Task 5)."
     },
@@ -16115,9 +16359,10 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:b83969eb8600d65233c95cfd0a1760c87ad6643fe6bd08bed5fbd60e02475c84",
+      "digest": "sha256:e88d920187d3b1265d3740cc6434ea8f1e44679e4d9877fb66c84b86fdcfca1e",
       "imports": [
         "src.api.auth",
+        "src.asks.models",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
@@ -18262,7 +18507,7 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:a6195d1233a04b517b72db08619cc0d8f34ad222ff4f75b5bce9ff6a0def2ddd",
+      "digest": "sha256:29c81d95d63d412872297f9cf0d5fa706070d682bb6ede5ea2375156c0aa7eb6",
       "imports": [
         "src.claim_file",
         "src.config",
@@ -18275,6 +18520,7 @@
         "src.orchestrator.worktree_manager"
       ],
       "markers": [
+        "asyncio",
         "parametrize"
       ],
       "summary": "WorktreeSlotManager against real temp repos."

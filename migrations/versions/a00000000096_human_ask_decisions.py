@@ -23,8 +23,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "a00000000091"
-down_revision = "a00000000090"
+revision = "a00000000096"
+down_revision = "a00000000095"
 branch_labels = None
 depends_on = None
 

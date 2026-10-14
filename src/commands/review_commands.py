@@ -1438,8 +1438,14 @@ class ReviewCommandsMixin:
             lines.append(render_task_template("review-revision", review_id=review["id"]))
         # Keep the historical reject-and-revise issue behavior explicit.
         if domain["effective_option"] == "reject":
-            lines.append(f"Close an associated issue only on an explicit human instruction; "
-                         f"use aq github-issue close-rejected --review-id {review['id']}.")
+            from src.commands.github_issue_commands import INVESTIGATION_KEY
+
+            author_key = author.dedup_key if author else archived.get("dedup_key") if archived else ""
+            if (author_key or "").startswith(INVESTIGATION_KEY):
+                lines.append(render_task_template("review-rejected-issue", review_id=review["id"]))
+            else:
+                lines.append(f"Close an associated issue only on an explicit human instruction; "
+                             f"use aq github-issue close-rejected --review-id {review['id']}.")
         created = await self._cmd_create_task({
             "project_id": review["project_id"],
             "title": f"{'Revise' if revision else 'Follow up on'} {review['title']} (review {review['id']})",

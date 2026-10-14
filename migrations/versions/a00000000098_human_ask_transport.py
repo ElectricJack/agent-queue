@@ -8,8 +8,8 @@ bounded CommandHandler operation; this migration performs no external I/O.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000093"
-down_revision = "a00000000092"
+revision = "a00000000098"
+down_revision = "a00000000097"
 branch_labels = None
 depends_on = None
 
