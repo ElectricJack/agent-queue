@@ -243,3 +243,28 @@ def test_only_admitted_resource_blockers_form_canonical_keys():
     for category in ("pool", "config"):
         with pytest.raises(ValueError):
             resource_source_key(category, "worker")
+
+
+async def test_batched_pool_bounds_audit_preserves_every_profile_and_announces_once(db):
+    emitted = []
+
+    async def emit(kind, payload):
+        emitted.append((kind, payload))
+
+    profiles = {PoolKey(profile_id=f"worker-{n}"): SimpleNamespace(max_active=n + 1, min_active=n)
+                for n in range(3)}
+    measurement = SimpleNamespace(profiles=profiles, candidates={key: ["p", "q"] for key in profiles})
+    orch = SimpleNamespace(db=db, bus=SimpleNamespace(emit=emit))
+    await Orchestrator._announce_bounds_rescoped(orch, measurement)
+    await Orchestrator._announce_bounds_rescoped(orch, measurement)
+    rows = await db.get_recent_events(event_type="pool.bounds_rescoped")
+    assert len(rows) == len(emitted) == 3
+    import json
+
+    payloads = {json.loads(row["payload"])["profile_id"]: json.loads(row["payload"]) for row in rows}
+    assert set(payloads) == {key.profile_id for key in profiles}
+    for key, profile in profiles.items():
+        assert payloads[key.profile_id]["effective_max_active"] == profile.max_active
+        assert payloads[key.profile_id]["previous_effective_max_active"] == profile.max_active * 2
+        assert payloads[key.profile_id]["previous_effective_min_active"] == profile.min_active * 2
+    assert {payload["profile_id"] for _, payload in emitted} == set(payloads)
