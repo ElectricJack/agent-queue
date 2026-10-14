@@ -25,6 +25,7 @@ from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.run_state import RunLifecycle
 from src.reviews.service import ReviewHooks, ReviewService
+from tests._private_values_helper import private_value_service
 from tests.test_review_feedback import accept, prepared
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
@@ -56,6 +57,9 @@ def pipeline(handler):
             artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
             handler=handler,
             db=handler._db,
+            # The daemon wires protected result storage; ``release-on-receipt``
+            # saves its result to route on the refusal's ``error_code``.
+            private_values=private_value_service(handler.db),
         ),
         runs=runs,
         waits=runs,
@@ -381,3 +385,141 @@ async def test_dispatch_retries_failed_run_until_transactional_task_receipt(hand
     async with handler.db._engine.connect() as conn:
         receipt = await get_operation(conn, approved["decision_id"], "ingestion")
         assert receipt["status"] == "succeeded" and receipt["receipt"]["task_id"] == results[0]["task_id"]
+
+
+# Spec-ingestion held batches, L5.2: the pipeline assigns the one fidelity
+# reviewer and releases on a passing receipt. Batch events are dispatched as
+# the integration outbox delivers them (``src/playbooks/runtime.py``).
+OUTBOX = ExecutionPrincipal.service("integration-outbox")
+
+
+async def _outbox_events(handler, event_type: str) -> list[dict]:
+    from sqlalchemy import select
+
+    from src.database.tables import integration_outbox
+
+    async with handler.db.immediate() as conn:
+        rows = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == event_type,
+        ))).mappings().all()
+    return [{"event_type": event_type, "event_id": row["id"], **dict(row["payload"])}
+            for row in rows]
+
+
+def _receipt_event(batch: dict, event_id: str) -> dict:
+    return {"event_type": "batch.receipt_recorded", "event_id": event_id, "project_id": PROJECT,
+            "batch_id": batch["batch_id"], "structure_revision": batch["structure_revision"],
+            "structure_digest": batch["structure_digest"], "reviewer_task_id": None}
+
+
+async def test_held_batch_gets_exactly_one_fidelity_reviewer(handler, pipeline):
+    from tests.test_fidelity_review import _batch_row, _held_batch, _holds
+
+    engine, runs, _ = pipeline
+    batch, _ = await _held_batch(handler)
+    [held] = await _outbox_events(handler, "batch.held")
+    assert held["batch_id"] == batch["batch_id"]
+
+    first = await engine.dispatch_event(held, OUTBOX)
+    assert first.rules_selected == ("fidelity-review-on-held",)
+    assert _lifecycles(runs, first) == [RunLifecycle.COMPLETED]
+    reviewer_id = (await _batch_row(handler, batch["batch_id"]))["reviewer_task_id"]
+    reviewer = await handler.db.get_task(reviewer_id)
+    assert reviewer.profile_id == "fidelity-reviewer"
+
+    replay = await engine.dispatch_event({**held, "event_id": "held-replay"}, OUTBOX)
+    assert _lifecycles(runs, replay) == [RunLifecycle.COMPLETED]
+    assert (await _batch_row(handler, batch["batch_id"]))["reviewer_task_id"] == reviewer_id
+    assert [t.id for t in await handler.db.list_tasks(project_id=PROJECT)
+            if t.profile_id == "fidelity-reviewer"] == [reviewer_id]
+    # A reviewer never releases anything.
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
+
+
+async def test_passing_receipt_releases_the_held_batch_once(handler, pipeline):
+    from tests.test_task_batch_commands import _live_batch, _release_ready
+
+    engine, runs, _ = pipeline
+    batch, _, _ = await _release_ready(handler)
+    [recorded] = await _outbox_events(handler, "batch.receipt_recorded")
+
+    first = await engine.dispatch_event(recorded, OUTBOX)
+    assert first.rules_selected == ("release-on-receipt",)
+    assert _lifecycles(runs, first) == [RunLifecycle.COMPLETED]
+    row = await _live_batch(handler, batch)
+    assert row["state"] == "released" and row["release_receipt"]
+    assert not await handler.db.ingest_held_task_ids(set(batch["task_ids"]))
+
+    replay = await engine.dispatch_event({**recorded, "event_id": "receipt-replay"}, OUTBOX)
+    assert _lifecycles(runs, replay) == [RunLifecycle.COMPLETED]
+    assert (await _live_batch(handler, batch))["release_receipt"] == row["release_receipt"]
+
+
+async def test_a_stale_receipt_fails_the_release_run_and_keeps_the_hold(handler, pipeline):
+    from tests.test_task_batch_commands import _release_ready
+
+    engine, runs, _ = pipeline
+    batch, _, _ = await _release_ready(handler)
+    result = await engine.dispatch_event(
+        {**_receipt_event(batch, "stale-receipt"), "structure_digest": "stale"}, OUTBOX,
+    )
+    assert _lifecycles(runs, result) == [RunLifecycle.FAILED]
+    assert await handler.db.ingest_held_task_ids(set(batch["task_ids"])) == set(batch["task_ids"])
+
+
+async def test_needs_scope_does_not_release(handler, pipeline):
+    """Scenario 5: a scope question holds the tree on its one ask; never a release."""
+    from sqlalchemy import update
+
+    from src.database.tables import ingest_batch_receipts
+    from tests.test_fidelity_review import _batch_row, _holds, _record, _review_request
+
+    engine, runs, _ = pipeline
+    batch, scope, args = await _review_request(handler)
+    args["walkthrough_verdict"] = "scope_question"
+    args["structural_findings"] = [{"question": "Keep the source constraint?", "section": "core"}]
+    recorded = await _record(handler, scope, args)
+    assert recorded["success"] and recorded["state"] == "needs_scope", recorded
+    assert await _outbox_events(handler, "batch.receipt_recorded") == []
+    [needs_scope] = await _outbox_events(handler, "batch.needs_scope")
+
+    # The scope notification dispatches no rule at all.
+    result = await engine.dispatch_event(needs_scope, OUTBOX)
+    assert result.rules_selected == ()
+
+    # A receipt wakeup racing the open question (a replay, or a receipt the
+    # question did not replace) reaches release, which refuses `needs_scope`:
+    # the run ends completed and the batch stays held on its ask.
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(ingest_batch_receipts).values(
+            passing=True, walkthrough_verdict="faithful",
+        ))
+    wakeup = await engine.dispatch_event(_receipt_event(batch, "receipt-during-scope"), OUTBOX)
+    assert wakeup.rules_selected == ("release-on-receipt",)
+    assert _lifecycles(runs, wakeup) == [RunLifecycle.COMPLETED]
+    row = await _batch_row(handler, batch["batch_id"])
+    assert row["state"] == "needs_scope" and row["release_receipt"] is None
+    assert await _holds(handler, batch["task_ids"]) == {batch["batch_id"]}
+
+
+async def test_design_approval_no_reviewer(handler, pipeline):
+    """Scenario 10: a design batch is released with the authoring leaf and no reviewer."""
+    from tests.test_fidelity_review import _batch_row
+    from tests.test_task_batch_commands import _ingest_assignment, _ingest_propose
+
+    engine, _runs, _ = pipeline
+    path, scope, decision = await _ingest_assignment(handler, "design")
+    result = await _ingest_propose(handler, path, scope, decision)
+    assert result["status"] == "released"
+    assert result["release_receipt"] == {"kind": "design_authoring_shape"}
+    assert (await _batch_row(handler, result["batch_id"]))["reviewer_task_id"] is None
+    for event_type in ("batch.held", "batch.receipt_recorded", "batch.needs_scope"):
+        assert await _outbox_events(handler, event_type) == []
+    # Whatever batch notification the design batch did enqueue selects no rule.
+    for event_type in ("batch.released", "task.change_set_committed"):
+        for event in await _outbox_events(handler, event_type):
+            assert (await engine.dispatch_event(event, OUTBOX)).rules_selected == ()
+    tasks = await handler.db.list_tasks(project_id=PROJECT)
+    assert len(tasks) == 3  # the ingest task, the epic and its one authoring child
+    assert not [t for t in tasks if t.profile_id == "fidelity-reviewer"]
+    assert not await handler.db.ingest_held_task_ids({t.id for t in tasks})

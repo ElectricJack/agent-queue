@@ -94,6 +94,8 @@ PIPELINE_RULE_IDS = frozenset(
         "spec-ingest-on-approve",
         "proposal-ready-gate",
         "commit-on-gate-resolve",
+        "fidelity-review-on-held",
+        "release-on-receipt",
     }
 )
 
@@ -176,7 +178,8 @@ def _inputs(step: Any) -> dict[str, Any]:
 
 def _referenced_profile_ids(definition: PlaybookDefinition) -> set[str]:
     """Profile ids the artifact names — as an `llm` step's profile or as a literal
-    `profile_id` argument to a command step, or its server-owned ingestion role.
+    `profile_id` argument to a command step, or a server-owned role task
+    (spec ingestion, fidelity review).
 
     Re-derived from the JSON dump rather than from
     :func:`referenced_profile_ids`, so the production helper the compiler and
@@ -187,6 +190,8 @@ def _referenced_profile_ids(definition: PlaybookDefinition) -> set[str]:
     for step in definition.steps.values():
         if getattr(step, "command", None) == "ensure_spec_ingest":
             found.add("spec-ingest")
+        if getattr(step, "command", None) == "ensure_fidelity_review":
+            found.add("fidelity-reviewer")
         profile_id = getattr(step, "profile_id", None)
         if isinstance(profile_id, str):
             found.add(profile_id)
@@ -347,8 +352,9 @@ def test_compiled_against_fingerprints_every_referenced_profile(playbook_id: str
 def test_the_pipeline_depends_on_its_profile_only_by_delegation() -> None:
     """The shape that made the empty map easy to miss, pinned.
 
-    `default-pipeline` has no `llm` or `agent_task` step at all: its one
-    profile dependency is the `ensure_spec_ingest` role. A future refactor that
+    `default-pipeline` has no `llm` or `agent_task` step at all: its profile
+    dependencies are the `ensure_spec_ingest` and `ensure_fidelity_review`
+    roles. A future refactor that
     dropped the delegated half of the snapshot would pass every other
     assertion in this file, so name the shape here.
     """
@@ -359,7 +365,7 @@ def test_the_pipeline_depends_on_its_profile_only_by_delegation() -> None:
         if getattr(step, "profile_id", None)
     }
     assert own == set(), "default-pipeline gained an AI step; re-review this fixture"
-    assert set(definition.compiled_against.profiles) == {"spec-ingest"}
+    assert set(definition.compiled_against.profiles) == {"spec-ingest", "fidelity-reviewer"}
 
 
 def test_shipped_profile_fingerprints_covers_the_shipped_tree() -> None:
@@ -369,8 +375,10 @@ def test_shipped_profile_fingerprints_covers_the_shipped_tree() -> None:
     assert all(value.startswith("sha256:") for value in fingerprints.values())
 
 
-def test_pipeline_references_only_the_spec_ingest_profile() -> None:
-    assert _referenced_profile_ids(_artifact("default-pipeline")) == {"spec-ingest"}
+def test_pipeline_references_only_its_role_profiles() -> None:
+    assert _referenced_profile_ids(_artifact("default-pipeline")) == {
+        "spec-ingest", "fidelity-reviewer",
+    }
 
 
 def test_pipeline_rule_set_unchanged() -> None:
@@ -405,18 +413,39 @@ def test_pipeline_commit_rule_dispatches_only_for_an_approved_human_gate() -> No
 
 
 def test_pipeline_refusals_never_reach_a_completed_terminal() -> None:
-    """Audit F1: `rejected`/`runtime_error` used to share the success terminal."""
-    from src.playbooks.definition import CommandStep, TerminalStep
+    """Audit F1: `rejected`/`runtime_error` used to share the success terminal.
+
+    `task_batch_release` reports every refusal as `error`; its decision step
+    completes only a `needs_scope` refusal (the batch waits on its scope ask)
+    and fails every other one (nimble-lantern-37.2).
+    """
+    from src.playbooks.definition import CommandStep, DecisionStep, TerminalStep
 
     definition = _artifact("default-pipeline")
     successes = {
         "ensure_spec_ingest": {"created", "reused"},
         "gate_create": {"created", "reused", "skipped"},
         "task_batch_commit": {"committed", "already_committed"},
+        "ensure_fidelity_review": {"created", "reused"},
+        "task_batch_release": {"released", "already_released"},
     }
     commands = [s for s in definition.steps.values() if isinstance(s, CommandStep)]
     assert {s.command for s in commands} == set(successes)
+    release = next(s for s in commands if s.command == "task_batch_release")
+    refused = definition.steps[release.transitions["error"]]
+    assert isinstance(refused, DecisionStep)
+    assert definition.steps[refused.default].outcome == "failed"
+    [needs_scope] = refused.cases
+    assert needs_scope.when.model_dump(mode="json") == {
+        "type": "comparison", "op": "eq",
+        "left": {"type": "binding_ref", "binding": "release", "path": "error_code"},
+        "right": {"type": "literal", "value": "needs_scope"},
+    }
+    assert definition.steps[needs_scope.goto].outcome == "completed"
+    assert set(release.transitions) == {"released", "already_released", "error", "runtime_error"}
     for step in commands:
+        if step is release:
+            continue
         for outcome, target in step.transitions.items():
             terminal = definition.steps[target]
             assert isinstance(terminal, TerminalStep), (step.command, outcome)
