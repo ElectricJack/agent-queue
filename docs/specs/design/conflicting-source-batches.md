@@ -51,6 +51,22 @@ expected-old publication. Green source checks, a passing worker close, or checks
 on a partial candidate cannot advance the target. Historical delivery proofs
 remain readable and do not authorize a new publication.
 
+A passing ordinary repair close reseals its still-open batch and wakes the
+batch's delivery target, using the immutable repair input and current allocation
+number. It does not replace frozen members, spend another attempt, release a
+pause or abort, or declare the candidate green. The next target visit repeats
+this idempotent handoff if close was interrupted after task completion; archived
+completed repairs remain recoverable. Fresh Git and exact checks still decide
+whether the repaired candidate can publish.
+
+Doctor and the stall sweep flag an open sealed batch that has made no progress
+past its train settling cap (30 minutes by default). The deadline starts at the
+latest batch change, completed repair, or observed candidate/target/check-state
+change. Live bounded visits and announced retry deadlines receive their bounded
+grace; unfinished repair tasks retain their existing capacity diagnostics.
+Paused, aborted and terminal batches are excluded. Observations never advance
+delivery or authorize an automatic abort.
+
 Acceptance uses real Git and disposable PostgreSQL: multiple sources conflicting
 with main and one another; generated-only overlaps rebuilt once from the full
 union; suppressed PR CI; genuine source red and unavailable CI; explicit review

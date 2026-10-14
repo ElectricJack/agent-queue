@@ -2300,6 +2300,12 @@ class ExecutionMixin:
             # expire/release without a legacy delegate-close or stop proof.
             if ordinary_fence is not None:
                 await BranchLock(self.db).release(ordinary_fence)
+            if completed_ok and new_status == TaskStatus.COMPLETED:
+                resumed = await OrdinaryRepairService(self.db).resume_completed(task.id)
+                train = getattr(self, "integration_train", None)
+                if resumed is not None and train is not None:
+                    train.wake(resumed["project_id"], resumed["repository_id"],
+                               resumed["target_ref"])
             release_needed = False
         handoff_unproven = False
         if release_needed:

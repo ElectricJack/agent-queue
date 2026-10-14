@@ -5838,7 +5838,7 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:728fda8c522848c371549732c588e6c15138a403b881a2c1d07acb637c5810e0",
+      "digest": "sha256:4447771d5216ae942fd9b68ba0d20b5d43d17366422239e07059fe928882b1d5",
       "imports": [
         "src.commands.project_commands",
         "src.config",
@@ -5846,8 +5846,10 @@
         "src.doctor",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.integration.batches",
         "src.integration.delivery_engine",
         "src.integration.records",
+        "src.integration.repair",
         "src.integration.service",
         "src.models"
       ],
@@ -8699,7 +8701,7 @@
         "integration-promotion"
       ],
       "default_arm": true,
-      "digest": "sha256:f98b2e4d93dbe6177f9ed65de600e2a08eb6478ad8cccba17c4b6d50fea4bb40",
+      "digest": "sha256:129b8dd04dedf7cf9ac3b9052c70d35ca5385e4ca46a081ae53e0790fd901487",
       "imports": [
         "src.claim_file",
         "src.commands.claim_commands",
@@ -8723,6 +8725,8 @@
         "src.integration.owner_recovery",
         "src.integration.ownership",
         "src.integration.repair",
+        "src.integration.train",
+        "src.integration.train_sources",
         "src.intelligence_classes",
         "src.jobs.workspace",
         "src.models",

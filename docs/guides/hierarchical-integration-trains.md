@@ -18,6 +18,7 @@ aq integration status PROJECT_ID
 aq task show TASK_ID
 aq doctor --check integration.subjects_overdue
 aq doctor --check integration.subjects_held
+aq doctor --check integration.train_batches_stalled
 ```
 
 Status projects each live subject's phase, last journal record, policy pin and
@@ -70,6 +71,14 @@ admission plus cadence. The status state is `settling`, with the admission
 times and `seal_at` in `detail`. Admission timing survives daemon restarts
 but never substitutes for the current PR gate or Git delivery proof.
 Epic collection and local development targets freeze immediately.
+
+Passing ordinary repair close reseals its current open batch and wakes the
+delivery target. A later visit recovers a missed close handoff, including after
+repair archival. Neither action changes frozen sources or bypasses candidate
+checks. `integration.train_batches_stalled` and `stall.sweep` flag sealed batches
+with no progress past the settling cap, allowing bounded visits and announced
+retry deadlines. Paused batches and unfinished repairs retain their own
+diagnostics. Inspect the named lane and checks before changing batch intent.
 
 The `IntegrationTrain.visit(target, seal_now=True)` and
 `DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing

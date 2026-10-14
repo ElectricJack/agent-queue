@@ -1037,6 +1037,20 @@ async def test_one_target_failure_is_recorded_and_others_continue():
     assert status["q"]["state"] == "delivered"
 
 
+async def test_train_progress_deadline_changes_only_when_observed_work_changes():
+    service = Service("held", "held", "held", "delivered")
+    t = train(Targets(ROOT), Batches({ROOT.key: (batch(), MEMBERS)}),
+              {ROOT.key: lane(service)})
+    now = [100.0]
+    t.clock = lambda: now[0]
+    # A restart's first observation cannot erase an old durable batch deadline.
+    for timestamp, expected in ((100, 0), (200, 0), (300, 0), (400, 400)):
+        now[0] = timestamp
+        await t.tick()
+        await t.drain()
+        assert t.status()[0].get("progress_at", 0) == expected
+
+
 def _rate_limited(retry_at=None):
     """A visit failure as the daemon sees it: GitError over the classified cause."""
     cause = GitHubAccessError(

@@ -744,6 +744,12 @@ class DatabaseBatches:
             return BatchSelection(blockers=tuple(blockers))
         blockers.extend(admission_blockers)
         current = await self.current(target)
+        if current is not None and current.repair_attempt_count:
+            from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
+
+            await OrdinaryRepairService(self.db).resume_completed(
+                ordinary_repair_id(current.id, current.repair_attempt_count),
+                batch_id=current.id, attempt=current.repair_attempt_count)
         frozen_members = await service.store.members(current.id) if current is not None else ()
         pending = None
         if not snapshot.error and snapshot.target_oid:

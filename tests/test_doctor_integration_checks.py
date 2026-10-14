@@ -407,3 +407,105 @@ async def test_promotion_stranded_names_the_repair_for_a_refused_task(promotion)
         "promotion task promotion-task is routed to profile 'worker'")
     await promotion.store.set_intent(promotion.batch.id, "aborted")
     assert (await check.run(ctx)).severity == Severity.OK
+
+
+@pytest.fixture
+async def sealed_train_batch(promotion):
+    from sqlalchemy import update
+
+    from src.database.tables import integration_batches, projects
+    from src.integration.batches import Batch, BatchMember
+
+    env = promotion
+    await env.store.set_intent(env.batch.id, "paused")
+    env.stalled_batch = await env.store.freeze(
+        Batch("train-stuck", "p", "r", "refs/heads/dev"),
+        (BatchMember("source", env.source, env.base),), trees={"source": env.source})
+    async with env.db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="development", status="ACTIVE"))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "train-stuck").values(updated_at=1_800_000_000 - 411 * 60))
+    return env
+
+
+@pytest.mark.parametrize("case,stalled", [
+    ("completed", True), ("archived", True), ("no_repair", True),
+    ("paused", False), ("aborted", False), ("promoted", False),
+    ("active_repair", False), ("recent_completion", False),
+    ("recent_progress", False), ("retry_pending", False), ("visit_running", False),
+    ("visit_overdue", True), ("wrong_batch_progress", True),
+])
+async def test_stalled_sealed_train_batches_use_progress_and_bounded_deadlines(
+    sealed_train_batch, case, stalled,
+):
+    from sqlalchemy import update
+
+    from src.database.tables import integration_batches, tasks
+    from src.doctor.integration_checks import stalled_train_batches
+    from src.integration.repair import ordinary_repair_id
+    from src.models import Task, TaskStatus
+
+    env, now = sealed_train_batch, 1_800_000_000
+    task_id = ordinary_repair_id("train-stuck", 1)
+    if case != "no_repair":
+        await env.db.create_task(Task(id=task_id, project_id="p", repo_id="r", title="Repair", description="",
+                                      status=TaskStatus.COMPLETED))
+        async with env.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                status="READY" if case == "active_repair" else "COMPLETED",
+                updated_at=now - (10 if case == "recent_completion" else 411 * 60)))
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == "train-stuck").values(repair_attempt_count=1))
+        if case == "archived":
+            await env.db.archive_task(task_id)
+    if case in {"paused", "aborted"}:
+        await env.store.set_intent("train-stuck", case)
+    elif case == "promoted":
+        async with env.db.immediate() as conn:
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == "train-stuck").values(lifecycle="promoted"))
+    observation = {"project_id": "p", "repository_id": "r", "target_ref": "refs/heads/dev",
+                   "batch_id": "train-stuck", "state": "testing"}
+    if case in {"recent_progress", "wrong_batch_progress"}:
+        observation["progress_at"] = now - 10
+        if case == "wrong_batch_progress":
+            observation["batch_id"] = "another-batch"
+    elif case == "retry_pending":
+        observation["deferred_until"] = now + 300
+    elif case in {"visit_running", "visit_overdue"}:
+        observation.update(running=True, visit_started_at=now - (
+            1000 if case == "visit_overdue" else 10))
+    train = SimpleNamespace(status=lambda: [observation], visit_timeout_seconds=900)
+    ctx = DoctorContext(db=env.db, config=SimpleNamespace(),
+                        handler=SimpleNamespace(orchestrator=SimpleNamespace(integration_train=train)))
+    findings = await stalled_train_batches(ctx, now=now, project_ids={"p"})
+    assert bool(findings) is stalled
+    if stalled:
+        [finding] = findings
+        assert finding["batch_id"] == "train-stuck"
+        assert finding["due_at"] < now
+        assert "411m" in finding["detail"]
+        assert finding["repair_task_id"] == (None if case == "no_repair" else task_id)
+    assert await stalled_train_batches(ctx, now=now, project_ids={"another-project"}) == []
+
+
+async def test_stalled_train_batch_check_is_registered_and_read_only(sealed_train_batch, monkeypatch):
+    from importlib import import_module
+
+    from sqlalchemy import select
+
+    from src.database.tables import integration_batches
+    from src.doctor.integration_checks import _BY_ID
+
+    check = _BY_ID["integration.train_batches_stalled"]
+    assert check.id in {c.id for c in default_registry().checks()}
+    assert (await check.run(DoctorContext(config=SimpleNamespace()))).severity == Severity.INFO
+    monkeypatch.setattr(import_module("src.doctor.integration_checks"), "time",
+                        SimpleNamespace(time=lambda: 1_800_000_000))
+    db = sealed_train_batch.db
+    result = await check.run(DoctorContext(db=db, config=SimpleNamespace()))
+    assert result.severity == Severity.WARN and result.fixable is False
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.updated_at).where(
+            integration_batches.c.id == "train-stuck")) == 1_800_000_000 - 411 * 60
