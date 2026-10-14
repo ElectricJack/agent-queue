@@ -21,7 +21,7 @@ class EditTaskRequest:
         description (None | str | Unset): New description (optional)
         priority (int | None | Unset): New priority (optional)
         task_type (None | str | Unset): New task type (optional, set to null to clear)
-        status (None | str | Unset): New status — admin override, bypasses state machine (optional)
+        status (None | str | Unset): New lifecycle status (optional); suspended states require wait controls
         max_retries (int | None | Unset): Max retry attempts (optional)
         verification_type (None | str | Unset): How to verify task output (optional)
         intelligence_class (None | str | Unset): Intelligence-class hint for the router; change only while unassigned.
