@@ -28,6 +28,8 @@ from src.database.tables import (
 from src.jobs.result import build_result
 from src.models import AgentProfile, Workspace, RepoSourceType
 from tests.test_agent_wait_queries import NOW, env as _wait_env, result_count
+from tests.test_integration_checks import REQUIRED, row
+from tests.test_integration_ci_producers import HEAD, OTHER
 from tests.test_jobs_queries import values
 
 env = _wait_env
@@ -831,3 +833,195 @@ async def test_terminal_job_source_event_matches_result_and_stale_cas_is_silent(
     assert rows[0]["source_generation"] == 1
     assert rows[0]["source_revision"] == str(terminal["state_version"])
     assert rows[0]["occurred_at"] == terminal["ended_at"]
+
+
+# Verified ci_check / ci_run waits observed through the composed CheckWatcher.
+
+
+def check_scope():
+    from src.waits.conditions import Scope
+
+    return Scope("p", "task", "owner", "s", "token", 1)
+
+
+@pytest.fixture
+async def watched(setup):
+    from src.commands.wait_v2_commands import service_source_commit
+    from src.database.tables import repos, tasks
+    from src.integration.checks import ExactChecks
+    from src.waits.watchers.ci import CheckWatcher, wait_source_handlers
+
+    async with setup.db._engine.begin() as conn:
+        await conn.execute(repos.insert().values(
+            id="repo", project_id="p", url="https://example/repo",
+            checkout_base_path="/tmp/repo",
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(repo_id="repo"))
+    provider = SimpleNamespace(required=REQUIRED, observe=AsyncMock(return_value=[]))
+    git = SimpleNamespace(acommit_head_sha=AsyncMock(side_effect=lambda name, sha, **_: sha))
+    config = AppConfig()
+    config.wait_policy = SimpleNamespace(v2_enabled=True, v1_bodies="translate")
+    orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()),
+                           plugin_registry=None, wait_v2_handlers=wait_source_handlers())
+    handler = CommandHandler(orch, config)
+    clock = SimpleNamespace(now=NOW)
+    exact = ExactChecks(setup.db, provider, clock=lambda: clock.now)
+    watcher = CheckWatcher(
+        setup.db, service_source_commit(handler, "wait-check-watcher"), git, checks=AsyncMock(return_value=exact),
+        repository=AsyncMock(return_value=SimpleNamespace(full_name="o/r")),
+        clock=lambda: clock.now,
+    )
+    return SimpleNamespace(db=setup.db, env=setup, provider=provider, git=git, config=config,
+                           handler=handler, watcher=watcher, clock=clock)
+
+
+def check_condition(kind="ci_check", sha=HEAD, **identity):
+    identity = identity or ({"check_name": "unit"} if kind == "ci_check" else {"run_id": "77"})
+    return {"kind": kind, "repository_id": "repo", "head_sha": sha, **identity}
+
+
+async def register_check(w, condition, key="check"):
+    from src.database.queries.wait_queries import register_wait
+    from src.waits.registry import build_registry
+    from tests.test_wait_queries import Policy, decide
+
+    async with w.db._engine.begin() as conn:
+        return await register_wait(
+            conn, scope=check_scope(), condition=condition, idempotency_key=key,
+            registry=build_registry(clock=lambda: w.clock.now, **w.watcher.registry_readers()),
+            policy=Policy(), decide_sleep=decide, now=w.clock.now, source_watermark=0,
+        )
+
+
+async def source_events(db, key):
+    async with db._engine.connect() as conn:
+        return (await conn.execute(select(wait_source_events).where(
+            wait_source_events.c.source_key == key,
+        ).order_by(wait_source_events.c.seq))).mappings().all()
+
+
+async def fresh_read(w, condition):
+    from src.waits.conditions import Condition
+
+    async with w.db._engine.connect() as conn:
+        return await w.watcher.read(conn, Condition(
+            condition["kind"], {k: v for k, v in condition.items() if k != "kind"}, None,
+            {"project_id": "p"},
+        ))
+
+
+async def test_check_wait_refuses_a_head_no_job_or_stage_knows(watched):
+    from src.waits.conditions import WaitError as SourceWaitError
+
+    with pytest.raises(SourceWaitError) as error:
+        await register_check(watched, check_condition())
+    assert error.value.code == "wait.source_unresolved"
+    assert "not known to a job or integration stage" in str(error.value)
+    watched.git.acommit_head_sha.assert_not_awaited()
+    watched.provider.observe.assert_not_awaited()
+    # A job on the owner's repository that names this exact SHA makes it known.
+    await submit(watched.env, input_ref=HEAD)
+    watched.provider.observe.return_value = [row("unit", "pending")]
+    assert (await register_check(watched, check_condition()))["success"]
+
+
+@pytest.mark.parametrize("run_url", ["https://ci/runs/1", None])
+async def test_check_result_before_registration_is_already_satisfied_with_pointer(
+    watched, run_url
+):
+    from src.waits.conditions import WaitError as SourceWaitError
+
+    await submit(watched.env, input_ref=HEAD)
+    watched.provider.observe.return_value = [row("unit", "failure", run_id="9", run_url=run_url)]
+    with pytest.raises(SourceWaitError) as error:
+        await register_check(watched, check_condition())
+    assert error.value.code == "wait.already_satisfied"
+    assert error.value.details["result_ref"] == (run_url or f"check:repo:{HEAD}:unit")
+    async with watched.db._engine.connect() as conn:
+        from src.database.tables import wait_records
+
+        assert not (await conn.execute(select(wait_records))).all()
+    # Registration reads fresh and never writes the check cache or the outbox.
+    assert not await source_events(watched.db, f"ci_check:repo:{HEAD}:unit")
+
+
+async def test_check_wait_is_satisfied_only_by_its_exact_sha(watched):
+    await submit(watched.env, input_ref=HEAD)
+    cond = check_condition()
+    watched.provider.observe.return_value = [row("unit", "pending")]
+    assert (await register_check(watched, cond))["success"]
+    # Another commit's success is recorded under that commit, never this one.
+    watched.provider.observe.return_value = [
+        row("unit", "pending"), row("unit", "success", sha=OTHER, run_url="https://ci/other"),
+    ]
+    watched.clock.now += 60
+    assert await watched.watcher.tick() == 0
+    assert [e["payload"]["conclusion"] for e in await source_events(
+        watched.db, f"ci_check:repo:{OTHER}:unit")] == ["success"]
+    assert [e["payload"]["conclusion"] for e in await source_events(
+        watched.db, f"ci_check:repo:{HEAD}:unit")] == ["pending"]
+    assert (await fresh_read(watched, cond)).observation.state == "unsatisfied"
+    # This exact SHA's result is recorded once, by the refresh, not re-published.
+    watched.provider.observe.return_value = [
+        row("unit", "success", run_id="5", run_url="https://ci/head", observed_at=20),
+    ]
+    watched.clock.now += 60
+    assert await watched.watcher.tick() == 0
+    head_events = await source_events(watched.db, f"ci_check:repo:{HEAD}:unit")
+    assert [e["payload"]["conclusion"] for e in head_events] == ["pending", "success"]
+    assert head_events[-1]["outcome_ref"] == "https://ci/head"
+    snapshot = await fresh_read(watched, cond)
+    assert snapshot.observation.state == "satisfied"
+    assert snapshot.observation.result_ref == "https://ci/head"
+
+
+async def test_check_named_but_unreported_is_not_a_verified_pending_check(watched):
+    from src.waits.conditions import WaitError as SourceWaitError
+
+    await submit(watched.env, input_ref=HEAD)
+    watched.provider.observe.return_value = [row("lint", "pending")]
+    with pytest.raises(SourceWaitError) as error:
+        await register_check(watched, check_condition())
+    assert error.value.code == "wait.source_unresolved"
+
+
+async def test_run_outcome_commits_through_service_command_and_refusal_stays_due(watched):
+    await submit(watched.env, input_ref=HEAD)
+    cond = check_condition("ci_run")
+    watched.provider.observe.return_value = [row("unit", "pending", run_id="77")]
+    assert (await register_check(watched, cond))["success"]
+    watched.provider.observe.return_value = [
+        row("unit", "success", run_id="77", run_url="https://ci/runs/77", observed_at=20),
+    ]
+    key = f"ci_run:repo:{HEAD}:77"
+    # v2 off: the service commit is refused, nothing is written, the head stays due.
+    watched.config.wait_policy.v2_enabled = False
+    assert await watched.watcher.tick() == 0
+    assert not await source_events(watched.db, key)
+    assert not watched.watcher._due
+    watched.config.wait_policy.v2_enabled = True
+    assert await watched.watcher.tick() == 1
+    rows = await source_events(watched.db, key)
+    assert len(rows) == 1 and rows[0]["outcome_ref"] == "https://ci/runs/77"
+    assert rows[0]["payload"]["state"] == "satisfied"
+    assert rows[0]["payload"]["head_sha"] == HEAD
+    # Until due again, the next tick neither observes nor publishes.
+    observed = watched.provider.observe.await_count
+    assert await watched.watcher.tick() == 0
+    assert watched.provider.observe.await_count == observed
+
+
+async def test_source_commit_callback_requires_a_service_principal(watched):
+    from src.commands.principal import ExecutionPrincipal
+    from src.waits.watchers.ci import commit_source_event
+
+    event = {"source_key": f"ci_run:repo:{HEAD}:77", "generation": 0, "revision": "r",
+             "outcome_ref": "x", "payload": {}}
+    for principal in (None, SimpleNamespace(kind="session")):
+        result = await commit_source_event(event, principal=principal, scope=None,
+                                           handler=watched.handler)
+        assert result["error_code"] == "wait.out_of_scope"
+    result = await commit_source_event(event, principal=ExecutionPrincipal.service("t"),
+                                       scope=None, handler=watched.handler)
+    assert result["success"] and not result["replayed"]
+    assert len(await source_events(watched.db, event["source_key"])) == 1

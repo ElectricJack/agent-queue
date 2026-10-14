@@ -15,7 +15,6 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from src.agent_waits import WaitError as LegacyWaitError
-
 from src.commands.contracts.wait_v2 import (
     SERVICE_WAIT_COMMANDS,
     SUPERVISOR_WAIT_COMMANDS,
@@ -23,13 +22,28 @@ from src.commands.contracts.wait_v2 import (
     caller_allowed,
     operator_wait_grant,
 )
-from src.commands.principal import PrincipalKind, current_principal
+from src.commands.principal import (
+    ExecutionPrincipal,
+    PrincipalKind,
+    current_principal,
+    principal_context,
+)
 from src.database.tables import wait_records
 from src.waits.conditions import Scope, WaitError
 
 
 def refusal(code, message, **details):
     return {"success": False, "error_code": code, "error": str(message), **details}
+
+
+def service_source_commit(handler, service):
+    """A source watcher's ``commit(event)``: ``wait_source_commit`` as a named service."""
+
+    async def commit(event):
+        with principal_context(ExecutionPrincipal.service(service)):
+            return await handler.execute("wait_source_commit", event)
+
+    return commit
 
 
 class WaitV2CommandsMixin:

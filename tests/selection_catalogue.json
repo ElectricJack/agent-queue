@@ -9577,7 +9577,7 @@
         "managed-jobs"
       ],
       "default_arm": true,
-      "digest": "sha256:fd4043500239844e062d45cd80b89de9ea9a0995e5a3c28dc973b6d3b724e12d",
+      "digest": "sha256:da5efd3ecfcf6fdb119cdff62377c8afd0cd4ec43b7a18b612dce14d64549984",
       "imports": [
         "src.agent_waits",
         "src.api.codegen",
@@ -9593,10 +9593,14 @@
         "src.commands",
         "src.commands.contracts",
         "src.commands.contracts.job",
+        "src.commands.principal",
+        "src.commands.wait_v2_commands",
         "src.config",
+        "src.database.queries.wait_queries",
         "src.database.tables",
         "src.event_bus",
         "src.handoffs",
+        "src.integration.checks",
         "src.jobs.result",
         "src.jobs.service",
         "src.mcp_registration",
@@ -9604,7 +9608,10 @@
         "src.models",
         "src.prime.sections",
         "src.profiles.parser",
-        "src.sessions.context"
+        "src.sessions.context",
+        "src.waits.conditions",
+        "src.waits.registry",
+        "src.waits.watchers.ci"
       ],
       "markers": [
         "parametrize"
