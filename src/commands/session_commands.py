@@ -1921,6 +1921,10 @@ class SessionCommandsMixin:
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
         if session is not None:
+            from src.waits.holding import active_wait_for
+
+            if await active_wait_for(self.db, session) is not None:
+                return {"success": True, "ignored": "wait_active"}
             await self.db.touch_session_activity(session.id, now)
         if task.assigned_agent_id:
             try:

@@ -429,11 +429,17 @@ async def renew_session_leases_on_liveness(
         .mappings()
         .one_or_none()
     )
+    from src.waits.holding import execution_waits
+
+    execution_wait = await conn.scalar(execution_waits().where(
+        sessions.c.id == session_id,
+    ).limit(1))
     if (
         task is None
         or task["assigned_agent_id"] != session["agent_id"]
         or (session["lifecycle"] == "pool" and session["last_claim_epoch"] != task["claim_epoch"])
-        or task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
+        or (task["status"] not in {"ASSIGNED", "IN_PROGRESS"}
+            and not (task["status"] == "WAITING" and execution_wait is not None))
     ):
         return
     rungs = await conn.scalar(
@@ -441,7 +447,7 @@ async def renew_session_leases_on_liveness(
             task_metadata.c.task_id == task["id"], task_metadata.c.key == "stall_nudges"
         )
     )
-    if int(json.loads(rungs) if rungs is not None else 0) > 1:
+    if execution_wait is None and int(json.loads(rungs) if rungs is not None else 0) > 1:
         return
     for row in candidates:
         if row["holder"] != task["id"]:

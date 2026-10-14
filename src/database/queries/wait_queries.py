@@ -17,6 +17,7 @@ from sqlalchemy import func, insert, select, update
 
 from src.database.tables import (
     agents,
+    messages,
     projects,
     sessions,
     tasks,
@@ -224,7 +225,7 @@ async def register_wait(
             .where(
                 wait_records.c.owner_kind == scope.owner_kind,
                 wait_records.c.owner_id == scope.owner_id,
-                wait_records.c.outcome == "pending",
+                wait_records.c.cleared_at.is_(None),
                 wait_records.c.origin != "scheduler",
             )
             .limit(1)
@@ -275,6 +276,10 @@ async def register_wait(
         else None
     )
     wait_id = str(uuid.uuid4())
+    delivery = {
+        "instance_token": scope.instance_token,
+        "held_cursor_seq": int(await conn.scalar(select(func.max(messages.c.created_seq))) or 0),
+    }
     receipt = {
         "success": True,
         "wait_id": wait_id,
@@ -317,7 +322,8 @@ async def register_wait(
             ceiling_anchor_at=now if ceiling_at is not None else None,
             sleep_decision=decision.mode,
             decision_reason=decision.reason,
-            decision_inputs={**decision.inputs, "registration_receipt": receipt},
+            decision_inputs={**decision.inputs, "delivery": delivery,
+                             "registration_receipt": receipt},
             idempotency_key=idempotency_key,
             request_hash=request_hash,
             claimed=claimed,
@@ -380,7 +386,8 @@ async def register_wait(
                 cleared_at=now,
                 version=2,
                 verification_state="unavailable" if outcome == "source_unavailable" else "verified",
-                decision_inputs={**decision.inputs, "registration_receipt": receipt},
+                decision_inputs={**decision.inputs, "delivery": delivery,
+                                 "registration_receipt": receipt},
             )
         )
         await conn.execute(

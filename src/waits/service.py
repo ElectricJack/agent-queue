@@ -7,6 +7,8 @@ import time
 from src.waits.listener import WaitSourceListener
 from src.waits.registry import build_registry
 from src.waits.timers import WaitTimerDriver
+from src.waits.dispatcher import WakeDispatcher
+from src.waits.source_locking import lock_database_source
 
 
 class WaitService:
@@ -17,6 +19,12 @@ class WaitService:
         )
         self.listener = WaitSourceListener(self, clock=clock, owner=owner, connect=connect)
         self.timers = WaitTimerDriver(self, clock=clock)
+        self._dispatcher = WakeDispatcher(
+            self.registry, clock=clock,
+            recompute_priority=getattr(orch, "wait_recompute_priority", None),
+            resolve_escalation=getattr(orch, "wait_resolve_escalation", None),
+            lock_source=getattr(orch, "wait_lock_source", lock_database_source),
+        )
         handlers = getattr(orch, "wait_v2_handlers", None)
         if handlers is None:
             handlers = orch.wait_v2_handlers = {}
@@ -32,7 +40,7 @@ class WaitService:
 
     @property
     def dispatcher(self):
-        return getattr(self.orch, "wait_dispatcher", None)
+        return getattr(self.orch, "wait_dispatcher", self._dispatcher)
 
     async def command(self, name, args):
         return await self.orch._command_handler.wait_service_command(name, args)

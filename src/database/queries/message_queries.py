@@ -26,7 +26,10 @@ from sqlalchemy import and_, case, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.waits.sources import insert_message_with_source_event
-from src.database.tables import messages, projects, sessions, tasks
+from src.waits.holding import (
+    message_is_held, reply_window_start, stale_wait_wake, wake_already_delivered,
+)
+from src.database.tables import messages, projects, sessions, tasks, wait_records
 from src.models import Message
 
 
@@ -123,7 +126,7 @@ def _reply_covering(msg: Message):
     ).where(or_(reply.c.reply_to_id == msg.id, covered)).limit(1)
 
 
-def _competing_delivery(msg: Message, window: float):
+def _competing_delivery(msg: Message, window: float, *, window_start=None):
     """Select a row from another conversation delivered to *msg*'s recipient
     within *window* seconds either side of *msg*'s delivery.
 
@@ -134,8 +137,8 @@ def _competing_delivery(msg: Message, window: float):
         messages.c.to_kind == msg.to_kind,
         messages.c.to_id == msg.to_id,
         messages.c.id != msg.id,
-        messages.c.delivered_at > msg.delivered_at - window,
-        messages.c.delivered_at < msg.delivered_at + window,
+        reply_window_start() > (window_start or msg.delivered_at) - window,
+        reply_window_start() < (window_start or msg.delivered_at) + window,
         or_(
             messages.c.project_id.is_distinct_from(msg.project_id),
             messages.c.thread_id.is_distinct_from(msg.thread_id),
@@ -321,6 +324,7 @@ class MessageQueriesMixin:
                     messages.c.to_id == to_id,
                     messages.c.delivered_at.is_(None),
                     messages.c.archived_at.is_(None),
+                    ~message_is_held(),
                 )
             )
             .order_by(
@@ -331,6 +335,7 @@ class MessageQueriesMixin:
             .limit(limit)
         )
         if notification_at is not None and notification_delays:
+            stmt = stmt.where(~wake_already_delivered(), ~stale_wait_wake())
             delay = case(
                 *((messages.c.notification_attempts <= index + 1, value)
                   for index, value in enumerate(notification_delays[:-1])),
@@ -477,6 +482,7 @@ class MessageQueriesMixin:
                         messages.c.id == message_id,
                         messages.c.delivered_at.is_(None),
                         messages.c.archived_at.is_(None),
+                        ~message_is_held(),
                     )
                 )
                 .values(delivered_at=time.time(), via=via)
@@ -492,6 +498,7 @@ class MessageQueriesMixin:
                     and_(
                         messages.c.id == message_id,
                         messages.c.read_at.is_(None),
+                        ~message_is_held(),
                     )
                 )
                 .values(
@@ -511,6 +518,9 @@ class MessageQueriesMixin:
                 messages.c.delivered_at.is_(None),
                 messages.c.read_at.is_(None),
                 messages.c.archived_at.is_(None),
+                ~message_is_held(),
+                ~wake_already_delivered(),
+                ~stale_wait_wake(),
                 or_(messages.c.last_notified_at.is_(None),
                     messages.c.last_notified_at <= now - retry_delay),
             ).values(
@@ -519,6 +529,26 @@ class MessageQueriesMixin:
                 via="nudge",
             ))
             return result.rowcount > 0
+
+    async def message_held_by_wait(self, message_id: str) -> bool:
+        async with self._engine.connect() as conn:
+            return bool(await conn.scalar(select(message_is_held()).where(
+                messages.c.id == message_id,
+            )))
+
+    async def message_reply_window_start(self, message_id: str) -> float | None:
+        async with self._engine.connect() as conn:
+            return await conn.scalar(select(reply_window_start()).where(
+                messages.c.id == message_id, messages.c.delivered_at.is_not(None),
+            ))
+
+    async def mark_wait_wake_delivered(self, message_id: str, *, now: float) -> None:
+        async with self._engine.begin() as conn:
+            await conn.execute(update(wait_records).where(
+                "wait:" + wait_records.c.id + ":outcome" == message_id,
+                wait_records.c.outcome != "pending",
+                wait_records.c.wake_delivered_at.is_(None),
+            ).values(wake_delivered_at=now))
 
     async def escalate_unread_message(self, message_id: str) -> Message | None:
         """Copy an unanswered notification to supervision or the user exactly once.
@@ -612,7 +642,7 @@ class MessageQueriesMixin:
             return (await conn.execute(_reply_covering(msg))).first() is not None
 
     async def create_transcript_tail_reply(
-        self, request: Message, *, body: str, attribution_window: float,
+        self, request: Message, *, body: str, attribution_window: float, window_start=None,
     ) -> Message | None:
         """Insert *request*'s transcript-tail reply, or ``None`` if none is owed.
 
@@ -643,15 +673,21 @@ class MessageQueriesMixin:
         async with self._engine.begin() as conn:
             locked = (await conn.execute(
                 select(messages.c.delivered_at)
-                .where(messages.c.id == request.id, messages.c.archived_at.is_(None))
+                .where(messages.c.id == request.id, messages.c.archived_at.is_(None),
+                       ~message_is_held())
                 .with_for_update()
             )).first()
             if locked is None or locked.delivered_at != request.delivered_at:
                 return None
+            current_start = await conn.scalar(select(reply_window_start()).where(
+                messages.c.id == request.id,
+            ))
+            if current_start != (window_start or request.delivered_at):
+                return None
             if (await conn.execute(_reply_covering(request))).first() is not None:
                 return None
             if (await conn.execute(
-                _competing_delivery(request, attribution_window)
+                _competing_delivery(request, attribution_window, window_start=window_start)
             )).first() is not None:
                 return None
             result = await insert_message_with_source_event(conn,

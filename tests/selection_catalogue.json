@@ -42,7 +42,9 @@
         "tests/test_agent_waits.py",
         "tests/test_wait_commands.py",
         "tests/test_wait_dispatch.py",
+        "tests/test_wait_holding.py",
         "tests/test_wait_migration.py",
+        "tests/test_wait_outcomes.py",
         "tests/test_wait_queries.py",
         "tests/test_wait_resource_sources.py",
         "tests/test_waits.py"
@@ -15552,13 +15554,14 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:e64c32a3dccd1091457f3c16d3866219907b2a1b75ba66dfd90f6a96438fb725",
+      "digest": "sha256:755af03346f2ff745a7a909c2f579d5ef1502875cf0bb80437a0e466b2408c00",
       "imports": [
         "src.agent_waits",
         "src.commands",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.config",
+        "src.database.queries.wait_queries",
         "src.database.tables",
         "src.integration.lock",
         "src.integration.models",
@@ -15582,7 +15585,10 @@
         "src.sessions.transcripts",
         "src.sessions.transcripts.claude",
         "src.sessions.transcripts.codex",
-        "src.sessions.worker_recovery"
+        "src.sessions.worker_recovery",
+        "src.waits.conditions",
+        "src.waits.mail",
+        "src.waits.registry"
       ],
       "markers": [
         "parametrize",
@@ -17827,6 +17833,24 @@
       ],
       "summary": "Authoritative source transitions write unconditional, transactional wait events."
     },
+    "tests/test_wait_holding.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:aa50fa50d4d4cc288591fc963924fb3ca9556b435f2c575acc07fc1bb384e70f",
+      "imports": [
+        "src.config",
+        "src.database.tables",
+        "src.messages.delivery",
+        "src.waits.conditions",
+        "src.waits.holding"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified waits suppress routine delivery until the holder acknowledges."
+    },
     "tests/test_wait_migration.py": {
       "areas": [
         "agent-waits"
@@ -17842,6 +17866,29 @@
         "parametrize"
       ],
       "summary": "Verified-wait DDL on fresh and pre-v2 disposable PostgreSQL schemas."
+    },
+    "tests/test_wait_outcomes.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:296933e1638642fec4ed065ca2269f6690a69e76ef64ab6a7a9fcf8ffbb20e19",
+      "imports": [
+        "src.config",
+        "src.database.tables",
+        "src.messages.delivery",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.dispatcher",
+        "src.waits.holding",
+        "src.waits.listener",
+        "src.waits.mail",
+        "src.waits.source_locking"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real transactional dispatch and mail acknowledgement; lifecycle hooks are explicit."
     },
     "tests/test_wait_queries.py": {
       "areas": [

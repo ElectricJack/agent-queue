@@ -4445,6 +4445,113 @@ async def test_long_wait_preserves_claim_workspace_and_silent_activity(
     assert rec.test_orch.terminations == []
 
 
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_verified_wait_keeps_lease_without_activity_until_ack(
+    db, provider, pool_reconciler, config, tmp_path, lifecycle, monkeypatch,
+):
+    from sqlalchemy import update
+
+    from src.database.queries.wait_queries import register_wait
+    from src.database.tables import wait_records
+    from src.waits.conditions import Scope, SleepDecision
+    from src.waits.mail import acknowledge_in_place
+    from src.waits.registry import build_registry
+
+    config.agents_config.stuck_timeout_seconds = 60
+    rec = pool_reconciler
+    await _task(db)
+    await _busy_agent_and_workspace(db, tmp_path)
+    task = await db.get_task("t1")
+    row = await _session(
+        db, provider, agent_id="a1", lifecycle=lifecycle,
+        claim_phase="active" if lifecycle == "pool" else None,
+        last_claim_epoch=task.claim_epoch if lifecycle == "pool" else None,
+        started_at=NOW - 10000, last_activity=NOW - 10000,
+    )
+    provider.sessions[row.name].activity = NOW - 10000
+    await db.create_task(Task(id="producer", project_id="p1", title="Producer", description=""))
+    scope = Scope("p1", "task", "t1", row.id, row.instance_token, task.claim_epoch)
+    async with db._engine.begin() as conn:
+        receipt = await register_wait(
+            conn, scope=scope, condition={"kind": "task", "task_id": "producer"},
+            idempotency_key="canonical", registry=build_registry(clock=lambda: NOW),
+            policy=SimpleNamespace(in_place_ceiling_seconds=1800,
+                                   escalation_seconds=lambda _: 7200),
+            decide_sleep=lambda *_: SleepDecision("in_place", "test"),
+            now=NOW, source_watermark=0,
+        )
+    await db.transition_task("t1", TaskStatus.WAITING)
+    clock = SimpleNamespace(now=NOW)
+    lock = BranchLock(db, clock=lambda: clock.now)
+    monkeypatch.setattr("src.integration.lock.BranchLock", lambda db, **kw: lock)
+    target = BranchKey(repository_id="repo", branch="aq/test")
+    fence = await lock.acquire(target, "t1")
+    await BranchOwnership(db, clock=lambda: clock.now).attach(fence, row.id, "ws1")
+    await db.set_task_meta("t1", META_STALL_NUDGES, "3")
+    monkeypatch.setattr("src.sessions.reconciler.time.time", lambda: clock.now)
+    for tick in (NOW, NOW + 1800, NOW + 7200, NOW + 10000):
+        clock.now = tick
+        await rec.tick(now=tick)
+        current = await db.get_session(row.id)
+        assert current.state == "running"
+        assert current.task_id == "t1" and current.last_activity == NOW - 10000
+        assert (await db.get_task("t1")).status == TaskStatus.WAITING
+        assert (await db.get_agent("a1")).state == AgentState.BUSY
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        lease = await lock.get(target)
+        assert lease.holder == "t1" and lease.fence == fence.token
+        assert lease.expires_at > tick
+    async with db._engine.begin() as conn:
+        await conn.execute(update(wait_records).where(
+            wait_records.c.id == receipt["wait_id"],
+        ).values(outcome="satisfied", resolved_at=NOW + 10000, blocking=False))
+    clock.now = NOW + 11000
+    await rec.tick(now=clock.now)
+    assert (await db.get_session(row.id)).last_activity == NOW - 10000
+    assert provider.sent_nudges == [] and rec.test_orch.terminations == []
+    async with db._engine.begin() as conn:
+        await acknowledge_in_place(conn, wait_id=receipt["wait_id"], scope=scope, now=NOW + 11001)
+    clock.now = NOW + 11002
+    await rec.tick(now=clock.now)
+    assert (await db.get_session(row.id)).state == "running"
+    assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+    assert provider.sent_nudges == []
+
+
+async def test_verified_named_wait_skips_idle_stop_and_pending_resubmit(
+    db, provider, reconciler, monkeypatch,
+):
+    from src.database.queries.wait_queries import register_wait
+    from src.waits.conditions import Scope, SleepDecision
+    from src.waits.registry import build_registry
+
+    await db.update_project("p1", supervisor_enabled=True)
+    row = await _session(
+        db, provider, task_id=None, lifecycle="named", profile_id="supervisor",
+        name="n-supervisor--p1", started_at=NOW - 10000, last_activity=NOW - 10000,
+    )
+    await db.create_task(Task(id="producer", project_id="p1", title="Producer", description=""))
+    scope = Scope("p1", "session", row.id, row.id, row.instance_token, 0, elevated=True)
+    async with db._engine.begin() as conn:
+        await register_wait(
+            conn, scope=scope, condition={"kind": "task", "task_id": "producer"},
+            idempotency_key="canonical", registry=build_registry(clock=lambda: NOW),
+            policy=SimpleNamespace(in_place_ceiling_seconds=1800,
+                                   escalation_seconds=lambda _: 7200),
+            decide_sleep=lambda *_: SleepDecision("in_place", "test"),
+            now=NOW, source_watermark=0,
+        )
+    resubmit = AsyncMock(return_value=False)
+    monkeypatch.setattr(provider, "resubmit_pending", resubmit)
+    monkeypatch.setattr(reconciler, "_profile_for", AsyncMock(
+        return_value=SimpleNamespace(idle_timeout=1),
+    ))
+    await reconciler._step_named([row], NOW + 10000)
+    assert (await db.get_session(row.id)).state == "running"
+    resubmit.assert_not_awaited()
+    assert provider.sent_nudges == []
+
+
 @pytest.mark.parametrize("resolution", ["completed", "expired", "missing", "cancelled"])
 @pytest.mark.parametrize("lifecycle", ["task", "pool"])
 async def test_wait_wake_gets_fresh_lease_and_resets_stall_ladder(

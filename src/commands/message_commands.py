@@ -794,6 +794,10 @@ class MessageCommandsMixin:
             return {"error": f"Message '{message_id}' not found"}
         # Reading a pointer as its actual recipient consumes the durable body.
         # Operator diagnostics and another supervisor's inspection stay read-only.
+        if (await self._is_message_recipient(message)
+                and await self.db.message_held_by_wait(message.id) is True):
+            return {"success": False, "error_code": "wait.held_message",
+                    "error": "Message is held until wait acknowledgement"}
         await self._acknowledge_message_read(message)
         message = await self.db.get_message(message.id)
         state = "acknowledged" if message.read_at is not None else (
