@@ -3600,7 +3600,9 @@ async def development_admission(handler, db, tmp_path):
     )
 
 
-@pytest.mark.parametrize("child_work", ["none", "local", "remote"])
+@pytest.mark.parametrize("child_work", [
+    "none", "local", "remote", "equal", "behind", "behind-owner", "behind-origin",
+])
 @pytest.mark.parametrize("preparation", ["pool", "clone"])
 @pytest.mark.parametrize("prerequisite_policy", ["wait-for-parent", "stacked"])
 async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_child(
@@ -3621,7 +3623,7 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
     git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/epic",
         f"{env.base}:refs/heads/aq/dependent")
     child_sha = env.base
-    if child_work == "remote":
+    if child_work in {"remote", "equal"}:
         git(env.source, "checkout", "-b", "aq/dependent", env.base)
         (env.source / "child-work").write_text("already published")
         git(env.source, "add", ".")
@@ -3630,6 +3632,18 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
         git(env.source, "push", "origin", "aq/dependent")
     sid, work_dir = await pool_session(db, tmp_path)
     git(tmp_path, "clone", str(env.remote), str(work_dir))
+    if child_work.startswith("behind"):
+        git(work_dir, "checkout", "-b", "aq/dependent", env.base)
+        git(env.source, "checkout", "-b", "aq/dependent", env.base)
+        (env.source / "child-work").write_text("preserved published descendant")
+        git(env.source, "add", ".")
+        git(env.source, "commit", "-m", "preserved child publication")
+        child_sha = git(env.source, "rev-parse", "HEAD")
+        git(env.source, "push", "origin", "aq/dependent")
+        assert git(work_dir, "rev-parse", "origin/aq/dependent") == env.base
+        assert git(work_dir, "rev-parse", "aq/dependent") == env.base
+    elif child_work == "equal":
+        git(work_dir, "checkout", "-b", "aq/dependent", child_sha)
     if child_work == "local":
         git(work_dir, "checkout", "-b", "aq/dependent", env.base)
         git(work_dir, "config", "user.name", "Test")
@@ -3643,7 +3657,7 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
             id="origin-dependent", task_id="dependent", repository_id="repo",
             branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="repo",
             parent_ref="aq/epic", base_sha=env.base, creation_generation=1,
-            reserved=True, materialized=True, created_at=time.time(),
+            reserved=True, materialized=child_work != "behind-origin", created_at=time.time(),
         ))
         await conn.execute(task_integration_checkpoints.insert().values(
             task_id="dependent", repository_id="repo", branch="aq/dependent",
@@ -3659,7 +3673,7 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
                             })
     ownership = BranchOwnership(db)
     target = BranchKey(repository_id="repo", branch="aq/dependent")
-    await ownership.acquire(target, "dependent", "worker")
+    fence = await ownership.acquire(target, "dependent", "worker")
     transport = handler.orchestrator.git
     db.set_prerequisite_observer(DeliveryObserver(
         db, git=transport, truth=GitTruth(transport), data_dir=tmp_path / "prerequisites",
@@ -3684,6 +3698,23 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
     git(env.source, "commit", "-m", "main only")
     git(env.source, "push", "origin", "main")
 
+    if child_work in {"behind-owner", "behind-origin"}:
+        if child_work == "behind-owner":
+            await ownership.transfer(fence, "collector", "collector")
+        if preparation == "pool":
+            result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+            assert result["result"] in {"no_ready_work", "prepare_failed"}, result
+        else:
+            with pytest.raises((ValueError, RuntimeError)):
+                await handler.orchestrator._hierarchy_origin_and_fence(
+                    await db.get_task("dependent"), await db.get_project(PROJECT_ID),
+                )
+        assert git(work_dir, "rev-parse", "aq/dependent") == env.base
+        assert git(env.remote, "rev-parse", "aq/dependent") == child_sha
+        assert not (work_dir / ".aq/claim.json").exists()
+        assert (await db.get_task("dependent")).status is TaskStatus.READY
+        return
+
     if preparation == "pool":
         result = await scoped(handler, sid)._cmd_task_claim({"next": True})
         assert result["result"] == "claimed", result
@@ -3707,6 +3738,9 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
     assert not (work_dir / "main-only").exists()
     if child_work != "none":
         assert (work_dir / "child-work").exists()
+    if child_work == "behind":
+        assert (work_dir / "child-work").read_text() == "preserved published descendant"
+        assert git(env.remote, "rev-parse", "aq/dependent") == child_sha
     origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
     assert origin["base_sha"] == env.base
     if prerequisite_policy == "stacked":
@@ -4097,7 +4131,7 @@ async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
 @pytest.mark.parametrize("preparation", ["pool", "clone"])
 @pytest.mark.parametrize("kind", [
     "source", "local", "generated", "generated-local", "clean", "proof-moved", "parent",
-    "repair-reopened",
+    "repair-reopened", "behind-proof-moved",
 ])
 async def test_existing_child_parent_conflict_recovers_exact_inputs(
     handler, db, tmp_path, development_admission, monkeypatch, preparation, kind,
@@ -4125,7 +4159,9 @@ async def test_existing_child_parent_conflict_recovers_exact_inputs(
         ))
     else:
         git(env.source, "checkout", "-b", "aq/dependent", env.base)
-        (env.source / ("child-work" if kind in {"clean", "proof-moved"} else "work")).write_text(
+        (env.source / ("child-work" if kind in {
+            "clean", "proof-moved", "behind-proof-moved",
+        } else "work")).write_text(
             "existing child review feedback",
         )
         git(env.source, "add", ".")
@@ -4162,6 +4198,8 @@ async def test_existing_child_parent_conflict_recovers_exact_inputs(
     if kind in {"local", "generated-local"}:
         git(work_dir, "fetch", str(env.source), child)
         git(work_dir, "checkout", "-b", "aq/dependent", child)
+    elif kind == "behind-proof-moved":
+        git(work_dir, "checkout", "-b", "aq/dependent", env.base)
     ownership = BranchOwnership(db)
     target = BranchKey(repository_id="repo", branch="aq/dependent")
     await ownership.acquire(target, "dependent", "worker")
@@ -4174,17 +4212,19 @@ async def test_existing_child_parent_conflict_recovers_exact_inputs(
         git_mutex=handler.orchestrator._git_mutex,
     )
     handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
-    if kind == "proof-moved":
+    if kind in {"proof-moved", "behind-proof-moved"}:
         reset = (manager.reset_slot_for_task if preparation == "pool"
                  else transport.aprepare_child_branch)
 
         async def move_after_reset(*args, **kwargs):
             branch = await reset(*args, **kwargs)
-            git(env.source, "checkout", "-b", "parent-moved", env.head)
+            git(env.source, "checkout", "-b", "parent-moved",
+                child if kind == "behind-proof-moved" else env.head)
             (env.source / "parent-moved").write_text("changed after observation")
             git(env.source, "add", ".")
             git(env.source, "commit", "-m", "move proven parent")
-            git(env.source, "push", "origin", "HEAD:refs/heads/aq/epic")
+            git(env.source, "push", "origin", "HEAD:refs/heads/aq/dependent"
+                if kind == "behind-proof-moved" else "HEAD:refs/heads/aq/epic")
             return branch
 
         monkeypatch.setattr(manager if preparation == "pool" else transport,
@@ -4205,7 +4245,7 @@ async def test_existing_child_parent_conflict_recovers_exact_inputs(
         return {"result": "claimed"}
 
     if preparation == "clone" and not (kind.startswith("generated") or kind == "clean"):
-        with pytest.raises(StackPreparationChanged if kind == "proof-moved"
+        with pytest.raises(StackPreparationChanged if kind in {"proof-moved", "behind-proof-moved"}
                            else StackPrerequisitesConflict):
             await prepare()
         result = {"result": "no_ready_work"}
@@ -4227,7 +4267,7 @@ async def test_existing_child_parent_conflict_recovers_exact_inputs(
     assert result["result"] == "no_ready_work", result
     assert not (work_dir / ".aq/claim.json").exists()
     assert await db.get_task_meta("dependent", "slot_reset_failure") is None
-    if kind == "proof-moved":
+    if kind in {"proof-moved", "behind-proof-moved"}:
         assert await db.get_task_meta("dependent", "stack_prerequisites_conflict") is None
         return
     detail = await db.get_task_meta("dependent", "stack_prerequisites_conflict")
