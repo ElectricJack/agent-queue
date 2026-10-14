@@ -77,7 +77,7 @@ ownership:                      # path globs -> areas whose modules join M
   # Match the core now and the sibling command/CLI files as they land.
   - { paths: ["src/**/collaboration*.py", "src/commands/*wait_commands.py", "src/cli/*wait*.py"], areas: ["collaboration"] }
   - { paths: ["src/agent_waits.py", "src/database/queries/agent_wait_queries.py", "src/commands/wait_commands.py", "src/commands/contracts/wait.py", "src/cli/waits.py"], areas: ["agent-waits"] }
-  - { paths: ["src/waits/**", "src/database/queries/wait_queries.py", "src/commands/wait_v2_commands.py", "src/commands/contracts/wait_v2.py"], areas: ["agent-waits"] }
+  - { paths: ["src/waits/**", "src/database/queries/wait_queries.py", "src/database/queries/continuation_queries.py", "src/commands/wait_v2_commands.py", "src/commands/contracts/wait_v2.py"], areas: ["agent-waits"] }
   # The remaining v2 ownership paths land with the leaves that create them.
   - { paths: ["src/waits/**", "src/database/queries/wait_source_queries.py"], areas: ["agent-waits"] }
   - { paths: ["migrations/versions/a00000000096_workspace_kind_limits.py", "migrations/versions/a00000000097_wait_records.py"], areas: ["agent-waits"] }
