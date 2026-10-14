@@ -36,10 +36,12 @@ repair whose purpose is gone cannot be admitted into, or keep, a batch.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
+from uuid import uuid4
 
 from src.git.manager import GitError, GitManager, RemoteRefState, is_valid_git_oid
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
@@ -56,14 +58,54 @@ PARENT_ADOPTION_EVENT = "integration.parent_adopted"
 #: when it is filed, is settled that way.
 SETTLEMENT_KEY = "development_delivery_settlement"
 
+# Separate from legacy equivalence proofs and settlements throughout shadow rollout.
+CONTAINMENT_CONTRACT_VERSION = "strict-ancestry-v1"
+DELIVERY_DISPOSITION_KEY = "integration_delivery_disposition"
+DELIVERED_BY_OTHER_MEANS = "delivered_by_other_means"
+
 
 class DeliveryState(StrEnum):
     CONTAINED = "contained"
+    NOT_APPLICABLE = "not_applicable"
     NO_CHANGE = "no_change"
     NO_ARTIFACT = "no_artifact"
     PENDING = "pending"
     SETTLED = "settled"
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class DeliveryDisposition:
+    """Operator cutover retirement; never a Git containment proof.
+
+    The cutover command owns authorization and persistence. This value merely
+    retains its exact generation/target fence for lifecycle consumers.
+    """
+
+    project_id: str
+    repository_id: str
+    task_id: str
+    completion_id: str
+    target_ref: str
+    source_oid: str
+    carrying_oid: str
+    equivalence_proof: str
+    plan_digest: str
+    kind: str = DELIVERED_BY_OTHER_MEANS
+
+    def matches(self, request: DeliveryRequest) -> bool:
+        return (
+            self.kind == DELIVERED_BY_OTHER_MEANS
+            and (self.project_id, self.repository_id, self.task_id,
+                 self.completion_id, self.target_ref) == (
+                     request.project_id, request.repository_id, request.task_id,
+                     request.completion_id, request.target_ref,
+                 )
+            and is_valid_git_oid(self.source_oid) and is_valid_git_oid(self.carrying_oid)
+            and bool(self.equivalence_proof.strip())
+            and len(self.plan_digest) == 64
+            and all(c in "0123456789abcdef" for c in self.plan_digest)
+        )
 
 
 @dataclass(frozen=True)
@@ -138,6 +180,11 @@ class DeliveryRequest:
     settled_target_ref: str | None = None
     settled_completion_id: str | None = None
     settled_reason: str | None = None
+    #: Explicit organizational/non-Git proof supplied by the completion owner.
+    code_free_proven: bool = False
+    #: Optional source fence; never substitutes for retained completion provenance.
+    retained_source_oid: str | None = None
+    disposition: DeliveryDisposition | None = None
 
     @property
     def settles(self):
@@ -178,7 +225,56 @@ class DeliveryEvidence:
         return self.state in {
             DeliveryState.CONTAINED, DeliveryState.NO_CHANGE,
             DeliveryState.NO_ARTIFACT, DeliveryState.SETTLED,
+            DeliveryState.NOT_APPLICABLE,
         }
+
+
+@dataclass(frozen=True)
+class DeliveryAnswer:
+    """Strict observation result, independent of authorization/lifecycle policy."""
+
+    request: DeliveryRequest
+    state: DeliveryState
+    source_oid: str | None
+    target_ref: str
+    target_oid: str | None
+    observed_at: float | None
+    observation_token: str | None
+    reason: str
+    diagnostic: str | None = None
+    contract_version: str = CONTAINMENT_CONTRACT_VERSION
+
+    @property
+    def generation(self) -> CompletionIdentity | None:
+        if not self.request.completion_id:
+            return None
+        return CompletionIdentity(self.request.project_id, self.request.repository_id,
+                                  self.request.task_id, self.request.completion_id)
+
+    @property
+    def disposition(self) -> DeliveryDisposition | None:
+        value = self.request.disposition
+        return value if value is not None and value.matches(self.request) and (
+            self.source_oid == value.source_oid
+        ) else None
+
+
+async def delivered(task: DeliveryRequest, target_ref: str, *, observation=None) -> DeliveryAnswer:
+    """Answer exact containment for one accepted immutable completion generation.
+
+    Supply a batched DeliverySnapshot or GitTruthSnapshot gathered outside SQL
+    locks. Absence is explicitly unknown: this reader never guesses transport
+    or repository authority from a task ID. Mutations must reload the request
+    and recheck observation freshness before acting on this pinned answer.
+    """
+    from src.integration.git_truth import GitTruth, GitTruthSnapshot, strict_delivery
+
+    if observation is None:
+        return DeliveryAnswer(task, DeliveryState.UNKNOWN, None, target_ref, None,
+                              None, None, "observation_unavailable")
+    if isinstance(observation, DeliverySnapshot):
+        observation = GitTruthSnapshot(GitTruth(observation.git), observation)
+    return await strict_delivery(observation, task, target_ref)
 
 
 @dataclass(frozen=True)
@@ -205,6 +301,13 @@ class DeliverySnapshot:
     # Shared only by copies of the same fetched observation. Diagnostics must
     # respect a freshness failure already seen by a background consumer.
     _freshness: dict[str, bool] = field(default_factory=dict, repr=False, compare=False)
+    observed_at: float = field(default_factory=time.time)
+    observation_token: str = field(default_factory=lambda: uuid4().hex)
+    contract_version: str = "legacy-equivalence-v1"
+
+    async def delivered(self, request, target_ref=None):
+        """Additive strict delegate; legacy evaluate remains rollout authority."""
+        return await delivered(request, target_ref or self.target_ref, observation=self)
 
     def for_request(self):
         """The same fetched observation without another request's cached answers."""
@@ -246,6 +349,13 @@ class DeliverySnapshot:
         return {request.task_id: await self.evaluate(request) for request in requests}
 
     async def evaluate(self, request):
+        if self.contract_version == CONTAINMENT_CONTRACT_VERSION:
+            answer = await self.delivered(request)
+            evidence = DeliveryEvidence(request, answer.state, answer.target_oid,
+                                        answer.source_oid, answer.reason)
+            self._identities[request.task_id] = request
+            self._cache[request] = evidence
+            return evidence
         if self._identities.get(request.task_id, request) != request:
             self._cache.clear()
         self._identities[request.task_id] = request
@@ -392,6 +502,12 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
         recorded_ids |= set((await reader.execute(
             select(tasks.c.id).where(tasks.c.id.in_(task_ids), legacy_artifact(tasks))
         )).scalars())
+        dispositions = dict((await reader.execute(
+            select(task_metadata.c.task_id, task_metadata.c.value).where(
+                task_metadata.c.task_id.in_(task_ids),
+                task_metadata.c.key == DELIVERY_DISPOSITION_KEY,
+            )
+        )).all())
         settlements, parent_ids, abandoned = {}, set(), set()
         parent_completions, adopted_parents, parent_adoptions, rework = {}, {}, {}, {}
         if not reduced:
@@ -426,6 +542,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 {**row, "archived": is_archived}, completion_by_id.get(row["id"]),
                 repository_id=repository_id, target_ref=target_ref,
             )
+            request = replace(request, disposition=delivery_disposition(dispositions.get(row["id"])))
             current_id = json.loads(row["current_generation"]) if not is_archived and row[
                 "current_generation"
             ] is not None else None
@@ -715,6 +832,17 @@ def settlement_fields(value):
         "settled_completion_id": completion,
         "settled_reason": record["reason"],
     }
+
+
+def delivery_disposition(value) -> DeliveryDisposition | None:
+    """Read an explicit cutover disposition without widening a damaged fence."""
+    try:
+        record = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(record, dict) or not all(isinstance(v, str) for v in record.values()):
+            return None
+        return DeliveryDisposition(**record)
+    except (ValueError, TypeError):
+        return None
 
 
 #: Task metadata recording that a source-CI delegate was revoked because its
