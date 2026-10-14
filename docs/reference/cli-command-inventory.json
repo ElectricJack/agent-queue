@@ -5002,6 +5002,47 @@
       }
     },
     {
+      "path": "aq integration supersede-completion",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_supersede_completion",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "task_id",
+          "--project",
+          "--subject",
+          "--expected-version",
+          "--expected-claim-epoch",
+          "--completion",
+          "--head",
+          "--human-reply",
+          "--reason"
+        ],
+        "optional": [
+          "--proof",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration trust-manifest",
       "registration": "handwritten",
       "owner_kind": "core",

@@ -13086,6 +13086,91 @@
         "type": "object"
       }
     },
+    "integration_supersede_completion": {
+      "name": "integration_supersede_completion",
+      "description": "Operator or owning supervisor retires an exact stopped Subject with original verified human evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "subject_id": {
+            "minLength": 1,
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "expected_version": {
+            "minimum": 0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "expected_claim_epoch": {
+            "minimum": 0,
+            "title": "Expected Claim Epoch",
+            "type": "integer"
+          },
+          "completion_id": {
+            "minLength": 1,
+            "title": "Completion Id",
+            "type": "string"
+          },
+          "expected_head_sha": {
+            "pattern": "^[a-f0-9]{40}$",
+            "title": "Expected Head Sha",
+            "type": "string"
+          },
+          "human_reply_id": {
+            "minLength": 1,
+            "title": "Human Reply Id",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "expected_proof_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Proof Sha256"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "project_id",
+          "task_id",
+          "subject_id",
+          "expected_version",
+          "expected_claim_epoch",
+          "completion_id",
+          "expected_head_sha",
+          "human_reply_id",
+          "reason"
+        ],
+        "title": "IntegrationSupersedeCompletionArgs",
+        "type": "object"
+      }
+    },
     "integration_train_tick": {
       "name": "integration_train_tick",
       "description": "Start one level-triggered visit per idle target (git_first: active).",

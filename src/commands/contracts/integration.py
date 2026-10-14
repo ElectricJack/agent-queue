@@ -38,6 +38,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_record_root_noop",
         "integration_record_delivered",
         "integration_quiesce",
+        "integration_supersede_completion",
         "integration_retire_legacy_park",
         "integration_migrate_provenance_refs",
         "integration_reconcile_expired_mutation",
@@ -837,6 +838,38 @@ class IntegrationRetireLegacyParkValue(CommandValue):
     task_ids: list[str] = Field(default_factory=list)
     event_id: int | None = None
     sha256: str | None = None
+    dry_run: bool = True
+
+
+class IntegrationSupersedeCompletionArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    subject_id: str = Field(min_length=1)
+    expected_version: StrictInt = Field(ge=0)
+    expected_claim_epoch: StrictInt = Field(ge=0)
+    completion_id: str = Field(min_length=1)
+    expected_head_sha: str = Field(pattern=r"^[a-f0-9]{40}$")
+    human_reply_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    expected_proof_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def exact_supersession(self):
+        if not self.reason.strip():
+            raise ValueError("reason must be nonblank")
+        if not self.dry_run and self.expected_proof_sha256 is None:
+            raise ValueError("apply requires the previewed proof SHA256")
+        return self
+
+
+class IntegrationSupersedeCompletionValue(CommandValue):
+    task_id: str | None = None
+    subject_id: str | None = None
+    proof_sha256: str | None = None
+    proof: dict[str, Any] | None = None
+    journal_seq: int | None = None
+    cleanup: dict[str, Any] | None = None
     dry_run: bool = True
 
 
@@ -2401,6 +2434,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         ("integration_retire_legacy_park", IntegrationRetireLegacyParkArgs, "retired",
          IntegrationRetireLegacyParkValue),
         ("integration_quiesce", IntegrationQuiesceArgs, "quiesced", IntegrationQuiesceValue),
+        ("integration_supersede_completion", IntegrationSupersedeCompletionArgs, "superseded",
+         IntegrationSupersedeCompletionValue),
         ("integration_record_delivered", IntegrationRecordDeliveredArgs, "recorded",
          IntegrationRecordDeliveredValue),
         ("integration_record_root_noop", IntegrationRecordRootNoopArgs, "recorded",
@@ -2416,6 +2451,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             continue
         outcomes = ("preview", applied, "refused")
         successes = {"preview", applied}
+        if name == "integration_supersede_completion":
+            outcomes += ("already_superseded",)
+            successes.add("already_superseded")
         if name == "integration_migrate_provenance_refs":
             outcomes += ("blocked",)
         if name == "integration_seal_now":
@@ -2469,6 +2507,23 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                 ),
             })
 
+        if name == "integration_supersede_completion":
+            applying = ClausePredicate(arg_equals=("dry_run", False))
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
+                    ReadClause(subject=EffectSubject.ESCALATION_REPLY),
+                    ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),
+                    UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION, when=applying),
+                    UpdateClause(subject=EffectSubject.TASK, when=applying),
+                    UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP, when=applying),
+                    UpdateClause(subject=EffectSubject.DOWNSTREAM_TASKS, when=applying),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Supersede one retained completion",
+                    summary="Operator or owning supervisor retires an exact stopped Subject with original verified human evidence.",
+                ),
+            })
         if name == "integration_quiesce":
             applying = ClausePredicate(arg_equals=("dry_run", False))
             contract = contract.model_copy(update={
