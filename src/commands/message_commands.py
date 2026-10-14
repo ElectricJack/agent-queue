@@ -155,6 +155,36 @@ class MessageCommandsMixin:
             return session.project_id if session else None
         return None
 
+    async def _project_inbox_mailbox_scope_error(self, to_kind: str, to_id: str) -> dict | None:
+        """Project elevation does not own other projects' delivery queues."""
+        scope = self._current_scope
+        if (
+            not scope or scope.get("kind") != "session" or not scope.get("elevated")
+            or scope.get("project_id") is None
+        ):
+            return None
+        project_id = scope["project_id"]
+        # Profiles are shared addresses; their rows are project-filtered below.
+        if to_kind == "profile":
+            return None
+        if to_kind == "session":
+            if to_id in (_GLOBAL_SUPERVISOR_ADDRESS, "n-supervisor--global"):
+                return self._system_message_scope_error()
+            if project_id != "global" and to_id in (
+                f"supervisor-{project_id}", f"n-supervisor--{project_id}",
+            ):
+                return None
+            session = await self.db.get_session(to_id)
+            if session is not None:
+                if session.project_id == project_id:
+                    return None
+                if session.project_id is None:
+                    return self._system_message_scope_error()
+        elif to_kind == "task":
+            if await self._recipient_project_id(to_kind, to_id) == project_id:
+                return None
+        return {"error": "out of scope: inbox mailbox does not belong to this project"}
+
     async def _message_in_project(self, message: Message, project_id: str) -> bool:
         """Whether *message* is in *project_id*'s view.
 
@@ -608,6 +638,10 @@ class MessageCommandsMixin:
         if mailbox_error:
             return mailbox_error
 
+        project_mailbox_error = await self._project_inbox_mailbox_scope_error(to_kind, to_id)
+        if project_mailbox_error:
+            return project_mailbox_error
+
         supervisor_mailbox = (to_kind == "profile" and to_id == "supervisor") or (
             to_kind == "session" and to_id.startswith(("supervisor-", "n-supervisor--"))
         )
@@ -622,6 +656,12 @@ class MessageCommandsMixin:
 
         recipients = [to_id]
         scope = self._current_scope
+        profile_filter = {}
+        if (
+            to_kind == "profile" and scope and scope.get("kind") == "session"
+            and scope.get("elevated") and scope.get("project_id") is not None
+        ):
+            profile_filter["project_id"] = scope["project_id"]
         if to_kind == "session" and (
             not scope or scope.get("kind") == "local" or scope.get("elevated")
         ):
@@ -640,7 +680,9 @@ class MessageCommandsMixin:
             await self.db.redirect_disabled_supervisor_messages()
         pending = []
         for recipient in recipients:
-            pending.extend(await self.db.get_pending_messages(to_kind, recipient, limit=limit))
+            pending.extend(await self.db.get_pending_messages(
+                to_kind, recipient, limit=limit, **profile_filter,
+            ))
         pending.sort(key=lambda message: (message.priority, message.created_at, message.id))
         pending = pending[:limit]
         if any(message.project_id is None for message in pending):
@@ -657,7 +699,7 @@ class MessageCommandsMixin:
             claimed_ids = {m.id for m in pending}
             for recipient in recipients:
                 for msg in await self.db.get_consumed_messages(
-                    to_kind, recipient, limit=limit
+                    to_kind, recipient, limit=limit, **profile_filter,
                 ):
                     if msg.id not in claimed_ids:
                         consumed.append(msg)

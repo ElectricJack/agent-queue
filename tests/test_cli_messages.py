@@ -231,6 +231,33 @@ class TestInboxAndList:
         assert args["to_kind"] == "session"
         assert args["to_id"] == "session-current"
 
+    def test_project_supervisor_default_inject_keeps_immutable_session_identity(
+        self, runner, monkeypatch
+    ):
+        monkeypatch.setenv("AQ_SESSION_ID", "project-supervisor-uuid")
+        monkeypatch.setenv("AQ_PROJECT_ID", "p1")
+        monkeypatch.setenv("AQ_PROFILE", "supervisor")
+        client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
+        result = _invoke(runner, ["--json", "message", "inbox", "--inject"], client)
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert (args["to_kind"], args["to_id"], args["inject"]) == (
+            "session", "project-supervisor-uuid", True,
+        )
+
+    def test_explicit_own_uuid_overrides_stale_global_default(self, runner, monkeypatch):
+        monkeypatch.setenv("AQ_SESSION_ID", "global-supervisor-uuid")
+        monkeypatch.setenv("AQ_PROJECT_ID", "p1")
+        client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
+        result = _invoke(runner, [
+            "--json", "message", "inbox", "--to", "session:project-supervisor-uuid",
+            "--inject",
+        ], client)
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert (args["to_kind"], args["to_id"]) == ("session", "project-supervisor-uuid")
+        assert args["inject"] is True
+
     def test_inject_flag_is_forwarded(self, runner):
         client = _mock_client({"message_inbox": {"count": 0, "messages": []}})
         _invoke(

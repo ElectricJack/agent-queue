@@ -299,6 +299,7 @@ class MessageQueriesMixin:
         to_id: str,
         *,
         limit: int = 50,
+        project_id: str | None = None,
         notification_at: float | None = None,
         notification_delays: tuple[float, ...] = (),
         newest_first: bool = False,
@@ -311,6 +312,8 @@ class MessageQueriesMixin:
 
         The notification caller supplies its retry delays. Apply eligibility
         before the limit so unread mail in backoff cannot starve newer mail.
+        A project filter partitions shared profile mailboxes for scoped readers;
+        session/task recipient queues remain unfiltered for cross-project reports.
         """
         stmt = (
             select(messages)
@@ -329,6 +332,8 @@ class MessageQueriesMixin:
             )
             .limit(limit)
         )
+        if project_id is not None:
+            stmt = stmt.where(messages.c.project_id == project_id)
         if notification_at is not None and notification_delays:
             delay = case(
                 *((messages.c.notification_attempts <= index + 1, value)
@@ -400,6 +405,7 @@ class MessageQueriesMixin:
         to_id: str,
         *,
         limit: int = 50,
+        project_id: str | None = None,
     ) -> list[Message]:
         """Rows this recipient already consumed — the re-read path.
 
@@ -432,6 +438,8 @@ class MessageQueriesMixin:
             .order_by(messages.c.priority.asc(), messages.c.created_at.asc())
             .limit(limit)
         )
+        if project_id is not None:
+            stmt = stmt.where(messages.c.project_id == project_id)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
             return [_row_to_message(r) for r in result.mappings().fetchall()]
