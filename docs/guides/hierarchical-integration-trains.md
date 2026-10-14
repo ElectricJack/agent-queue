@@ -18,6 +18,7 @@ aq integration status PROJECT_ID
 aq task show TASK_ID
 aq doctor --check integration.subjects_overdue
 aq doctor --check integration.subjects_held
+aq doctor --check integration.train_batches_stalled
 ```
 
 Status projects each live subject's phase, last journal record, policy pin and
@@ -70,6 +71,14 @@ admission plus cadence. The status state is `settling`, with the admission
 times and `seal_at` in `detail`. Admission timing survives daemon restarts
 but never substitutes for the current PR gate or Git delivery proof.
 Epic collection and local development targets freeze immediately.
+
+Passing ordinary repair close reseals its current open batch and wakes the
+delivery target. A later visit recovers a missed close handoff, including after
+repair archival. Neither action changes frozen sources or bypasses candidate
+checks. `integration.train_batches_stalled` and `stall.sweep` flag sealed batches
+with no progress past the settling cap, allowing bounded visits and announced
+retry deadlines. Paused batches and unfinished repairs retain their own
+diagnostics. Inspect the named lane and checks before changing batch intent.
 
 The `IntegrationTrain.visit(target, seal_now=True)` and
 `DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing
@@ -502,7 +511,15 @@ An unchanged failing head, exhausted recovery or a container root instead
 notifies the supervisor with a named blocker. Existing source-CI repairs keep
 their paired admission path. See [root PR check recovery](../specs/design/root-pr-check-recovery.md).
 
-Source CI observation of a train root's exact PR head files a repair only when
+New source-CI recovery retains the original branch and PR and reopens a leaf task
+once. The budget persists across repaired heads and checkpoint generations.
+A further genuine failure, including failure on a historical repair delegate,
+notifies the supervisor once; it never creates another task, repair PR or chain.
+Existing historical delegates retain their ownership and delivery protections.
+Containers notify the supervisor to coordinate repair on the original branch.
+After the original source lands, the supervisor closes its obsolete repair PRs.
+
+Source CI observation of a train root's exact PR head reopens the original task only when
 at least one required check genuinely failed (`failure`, `timed_out`,
 `action_required`). A run whose non-success required checks are *all* cancelled
 is infrastructure — typically a GitHub Actions outage, annotated "The job was

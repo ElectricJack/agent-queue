@@ -8036,6 +8036,77 @@ async def test_ordinary_repair_allocates_once_across_concurrent_visits_and_resta
     assert (await env.store.get("ordinary")).repair_attempt_count == 1
 
 
+@pytest.mark.parametrize("archived", [False, True])
+async def test_completed_ordinary_repair_reseals_once_and_recovers_on_visit(ordinary_env, archived):
+    from src.integration.train import TrainTarget
+    from src.integration.train_sources import DatabaseBatches
+
+    env = ordinary_env
+    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       authorize=AsyncMock(return_value=True))
+    task_id = result["task_id"]
+    await env.db.update_task(task_id, status=TaskStatus.COMPLETED)
+    async with env.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(updated_at=2000))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(lifecycle="repairing", updated_at=1000))
+    if archived:
+        await env.db.archive_task(task_id)
+    resumed = await asyncio.gather(*(env.service.resume_completed(
+        task_id, batch_id="ordinary", attempt=1) for _ in range(4)))
+    assert [row for row in resumed if row is not None] == [{
+        "batch_id": "ordinary", "project_id": "p", "repository_id": "repo",
+        "target_ref": "refs/heads/aq/epic"}]
+    original_members = await env.store.members("ordinary")
+    async with env.db._engine.connect() as conn:
+        row = (await conn.execute(select(integration_batches).where(
+            integration_batches.c.id == "ordinary"))).mappings().one()
+    assert (row["lifecycle"], row["updated_at"], row["repair_attempt_count"]) == ("sealed", 2000, 1)
+    # Simulate a close crash before the handoff and recover solely through selection.
+    async with env.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(lifecycle="repairing", updated_at=1000))
+    target = TrainTarget("p", "repo", "refs/heads/aq/epic", kind="development")
+    batches = DatabaseBatches(env.db)
+    assert (await batches.current(target)).id == "ordinary"
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.updated_at).where(
+            integration_batches.c.id == "ordinary")) == 1000  # Read/preview stays read-only.
+    selection = await batches.open_batch(
+        target, SimpleNamespace(error="fetch unavailable", target_oid=None),
+        SimpleNamespace(store=env.store))
+    assert selection.batch.id == "ordinary"
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.updated_at).where(
+            integration_batches.c.id == "ordinary")) == 2000
+    assert await env.service.resume_completed(task_id) is None
+    assert await env.store.members("ordinary") == original_members
+
+
+@pytest.mark.parametrize("blocker", ["paused", "aborted", "promoted", "later_attempt", "READY", "FAILED"])
+async def test_completed_repair_handoff_preserves_intent_and_current_allocation(ordinary_env, blocker):
+    env = ordinary_env
+    result = await env.service.allocate("ordinary", target_ref=env.ref, head_sha=STARTING_SHA,
+                                       authorize=AsyncMock(return_value=True))
+    task_id = result["task_id"]
+    async with env.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+            status=blocker if blocker in {"READY", "FAILED"} else "COMPLETED", updated_at=2000))
+        changes = {"updated_at": 1000}
+        if blocker in {"paused", "aborted"}:
+            changes["intent"] = blocker
+        elif blocker == "promoted":
+            changes["lifecycle"] = blocker
+        elif blocker == "later_attempt":
+            changes["repair_attempt_count"] = 2
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "ordinary").values(**changes))
+    assert await env.service.resume_completed(task_id) is None
+    async with env.db._engine.connect() as conn:
+        assert await conn.scalar(select(integration_batches.c.updated_at).where(
+            integration_batches.c.id == "ordinary")) == 1000
+
+
 async def test_ordinary_repair_is_filed_ahead_of_ordinary_work(ordinary_env):
     """A train repair holds the sealed batch, so it outranks the default priority.
 
@@ -8470,6 +8541,7 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
         agent_id="ordinary-agent", claim_phase="active", last_claim_epoch=1,
         work_dir=str(checkout), epoch="epoch", instance_token="token", started_at=1))
     handler.orchestrator.git = GitManager()
+    handler.orchestrator.integration_train = SimpleNamespace(wake=MagicMock())
     handler.orchestrator._run_completion_pipeline = AsyncMock(
         side_effect=AssertionError("ordinary repair entered legacy completion pipeline"))
     handler.orchestrator.arelease_integration_writer_for_retry = AsyncMock(
@@ -8541,7 +8613,13 @@ async def test_ordinary_repair_close_uses_normal_published_completion(
     completion = await handler.db.get_task_completion(task_id)
     assert completion.outcome == "pass"
     assert head in completion.commits
+    handler.orchestrator.integration_train.wake.assert_called_once_with(
+        "p", "repo", "refs/heads/main")
     async with handler.db._engine.connect() as conn:
+        batch_row = (await conn.execute(select(integration_batches).where(
+            integration_batches.c.id == "ordinary"))).mappings().one()
+        assert batch_row["lifecycle"] == "sealed"
+        assert batch_row["updated_at"] > batch_row["created_at"]
         assert not (await conn.execute(select(integration_repair_operations))).first()
         assert not (await conn.execute(select(integration_promotion_intents))).first()
     assert (await service.locks.get(BranchKey(repository_id="repo", branch=ref))).holder is None
