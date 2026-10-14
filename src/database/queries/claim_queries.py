@@ -756,22 +756,21 @@ class ClaimQueryMixin:
             return "active", record
         return "not_found", record
 
-    async def claim_preparation_is_current(
+    async def claim_preparation_state(
         self, session_id: str, task_id: str, claim_epoch: int, *, conn=None
-    ) -> bool:
-        """Verify the task and pool-session fences before filesystem work.
+    ):
+        """Return the preparation fence and its current project in one read.
 
         Slot reset and claim-file creation happen outside the claim
         transaction, so this read must prove both rows are still current.
-        Joining their two predicates avoids two independent round trips on
-        every successful pool claim.
-
-        *conn* lets the caller pair this with its ``get_project`` re-read on
-        one checkout — the two run back to back under the task control lock.
+        The project must be fresh after a long poll. Joining it here avoids
+        another projects SELECT without reusing the admission loop's old row.
+        An absent project is distinct from a stale preparation fence.
         """
         stmt = (
-            select(literal(1))
-            .select_from(tasks.join(sessions, sessions.c.task_id == tasks.c.id))
+            select(projects)
+            .select_from(tasks.join(sessions, sessions.c.task_id == tasks.c.id)
+                         .outerjoin(projects, projects.c.id == tasks.c.project_id))
             .where(
                 tasks.c.id == task_id,
                 tasks.c.status == TaskStatus.IN_PROGRESS.value,
@@ -782,9 +781,11 @@ class ClaimQueryMixin:
             )
         )
         if conn is not None:
-            return (await conn.execute(stmt)).scalar_one_or_none() is not None
-        async with self._engine.connect() as owned:
-            return (await owned.execute(stmt)).scalar_one_or_none() is not None
+            row = (await conn.execute(stmt)).mappings().fetchone()
+        else:
+            async with self._engine.connect() as owned:
+                row = (await owned.execute(stmt)).mappings().fetchone()
+        return (row is not None, self._row_to_project(row) if row and row["id"] else None)
 
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(
@@ -980,7 +981,7 @@ class ClaimQueryMixin:
         just stamped, and both metadata keys go out in one multi-row upsert
         (spec §15).
         """
-        await conn.execute(
+        holder = (
             update(sessions)
             .where(sessions.c.id == session_id)
             .values(
@@ -990,6 +991,14 @@ class ClaimQueryMixin:
                 last_claim_epoch=claim_epoch,
             )
         )
+        # On the normal claim path the agent was already reserved by
+        # take_task. Chain session -> workspace through RETURNING so holder
+        # recording pays one round trip while preserving that write order.
+        holder_cte = None
+        if agent_id and agent_reserved:
+            holder_cte = holder.returning(sessions.c.project_id).cte("claim_holder")
+        else:
+            await conn.execute(holder)
         slot = None
         if agent_id:
             if not agent_reserved:
@@ -1004,9 +1013,9 @@ class ClaimQueryMixin:
                 update(workspaces)
                 .where(
                     workspaces.c.project_id
-                    == select(sessions.c.project_id)
-                    .where(sessions.c.id == session_id)
-                    .scalar_subquery(),
+                    == (select(holder_cte.c.project_id).scalar_subquery() if holder_cte is not None
+                        else select(sessions.c.project_id)
+                        .where(sessions.c.id == session_id).scalar_subquery()),
                     workspaces.c.workspace_path == work_dir,
                     workspaces.c.enabled.is_(True),
                     workspaces.c.locked_by_agent_id == agent_id,

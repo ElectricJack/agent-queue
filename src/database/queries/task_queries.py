@@ -2410,23 +2410,16 @@ class TaskQueryMixin:
 
     async def set_task_meta(self, task_id: str, key: str, value) -> None:
         """Upsert a single metadata key for a task. *value* is JSON-serialised."""
-        encoded = json.dumps(value)
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = pg_insert(task_metadata).values(task_id=task_id, key=key, value=json.dumps(value))
         async with self._engine.begin() as conn:
-            # Try update first; if no row matched, insert.
-            result = await conn.execute(
-                update(task_metadata)
-                .where(
-                    and_(
-                        task_metadata.c.task_id == task_id,
-                        task_metadata.c.key == key,
-                    )
+            await conn.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[task_metadata.c.task_id, task_metadata.c.key],
+                    set_={"value": stmt.excluded.value},
                 )
-                .values(value=encoded)
             )
-            if result.rowcount == 0:
-                await conn.execute(
-                    insert(task_metadata).values(task_id=task_id, key=key, value=encoded)
-                )
 
     async def get_task_meta(self, task_id: str, key: str):
         """Return a single metadata value (JSON-decoded), or ``None``."""
