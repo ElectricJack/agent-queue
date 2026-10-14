@@ -9,18 +9,15 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
 
 ## A. Admit authorised, executable work
 
-- Preserve the project, the user's intent, an explicit route (profile, intelligence class, provider)
-  and an explicit placement. An unavailable pinned route waits visibly; it is never silently
-  substituted.
-- Emergent work defaults to a **child of the task that exposed it**. Choosing another authorised
-  parent, or an explicit root for cross-cutting work, is a deliberate and visible choice. An open
-  child blocks its parent's successful close; resolve it rather than moving it aside to close the
-  source.
+- Preserve the project, the user's intent, an explicit route (profile, intelligence class, provider) and
+  an explicit placement. An unavailable pinned route waits visibly; it is never silently substituted.
+- Emergent work defaults to a **child of the task that exposed it**. Choosing another authorised parent,
+  or an explicit root for cross-cutting work, is a deliberate and visible choice. An open child blocks
+  its parent's successful close; resolve it rather than moving it aside to close the source.
 - Provenance (`discovered-from`) records where work came from; it is not a blocking dependency.
 - The supervisor coordinates and is never a queued worker. It does not run a task-scoped `aq prime`,
   which belongs to the worker that holds the task.
-- Ordinary work routes to an eligible worker at `standard-high`; deep classes are a justified
-  exception.
+- Ordinary work routes to an eligible worker at `standard-high`; deep classes are a justified exception.
 - Human approval applies where scope or authority requires it, bound to the exact work it approves.
   Routine in-scope work gets no extra approval gate.
 
@@ -28,10 +25,9 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
 
 - A worker close records a pushed checkpoint and the checks actually run. It is not proof that
   anything reached the default branch.
-- Each repository/default branch has **one configured publisher**: the project's integration mode
-  names it. Workers, reviewers and specialist roles do not merge or push to the default branch
-  unless their task explicitly delegates publication and that configured owner is pull-request
-  based.
+- Each repository/default branch has **one configured publisher**: the project's integration mode names
+  it. Workers, reviewers and specialist roles do not merge or push to the default branch unless their
+  task explicitly delegates publication and that configured owner is pull-request based.
 - Publication validates the exact candidate SHA; a changed candidate invalidates earlier checks. The
   project declares its required checks. A check that could not run is *unavailable*, never a pass.
 - Compatible completed sources for one delivery branch collect into one frozen candidate. A base
@@ -44,9 +40,8 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
 - There is **no automatic** per-task reviewer, final reviewer, merge sweep or review-of-review
   chain, and no mandatory multi-pass gate chain. Review is optional and risk-based; when wanted it
   is one explicit task or gate.
-- A daemon refusal (scope check, CI policy, ownership fence, stale claim) is an answer. Report it;
-  never route around it with another CLI (`gh pr merge`, a direct push), a `force` flag, or edits to
-  state.
+- A daemon refusal (scope check, CI policy, ownership fence, stale claim) is an answer. Report it; never
+  route around it with another CLI (`gh pr merge`, a direct push), a `force` flag, or edits to state.
 - The restored Git-first train uses the exact-head PR gate, root cadence and separate cleanup.
   Controls preserve its checks and publisher ownership; see the [train and promotion policy
   entry](../specs/design/promotion-flow.md).
@@ -55,8 +50,7 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
 
 ## C. Recover or retire without losing evidence
 
-- One incident per failure, one responsible owner, bounded retries with the remaining budget
-  visible.
+- One incident per failure, one responsible owner, bounded retries with the remaining budget visible.
 - No-attempt failures use a durable failure-transition generation. Comments, edits and same-status
   reconciliation preserve it; reopening then failing replaces it. Current `FAILED` incidents,
   including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
@@ -68,17 +62,15 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   and integration ownership remain binding.
 - A known transient failure retries within the existing budget. An unknown cause, an exhausted
   budget or a human-only decision holds with a concrete reason and one durable escalation.
-- Shared preparation faults (`slot_reset_failed`, missing or mismatched worktrees,
-  repeated unproved own-branch handoffs) are infrastructure incidents. Correlate
-  the exact session, claim, workspace path, Git branch and ownership evidence;
-  preserve the daemon's bounded backoff and retained preparations. Escalate one
-  incident with that evidence and the required repair. Do not mass-pause tasks
-  to suppress a system fault or override an explicit human hold during recovery.
-- An explicitly authorized continuous integration policy may replace an exhausted repair session
-  with a fresh bounded stage. It preserves previous attempts, dossiers and stopped-writer/fence
-  proof; it does not reset the old session's budget. Routine CI/conflict repair continues
-  automatically under that policy. Explicit product holds, reviewer rejections and human gates
-  remain binding.
+- Shared preparation faults (`slot_reset_failed`, missing or mismatched worktrees, repeated unproved
+  own-branch handoffs) are infrastructure incidents. Correlate the exact session, claim, workspace path,
+  Git branch and ownership evidence; preserve the daemon's bounded backoff and retained preparations.
+  Escalate one incident with that evidence and the required repair. Do not mass-pause tasks to suppress a
+  system fault or override an explicit human hold during recovery.
+- An explicitly authorized continuous integration policy may replace an exhausted repair session with a
+  fresh bounded stage. It preserves previous attempts, dossiers and stopped-writer/fence proof; it does
+  not reset the old session's budget. Routine CI/conflict repair continues automatically under that
+  policy. Explicit product holds, reviewer rejections and human gates remain binding.
 - Never fabricate a pass, reset a counter, delete a branch or restart a retired operation to make
   state look healthy. Retired work is shown as retired; resource cleanup is tracked separately.
 
