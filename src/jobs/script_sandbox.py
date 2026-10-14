@@ -153,6 +153,28 @@ def _process_argv(settings: ScriptsConfig, request: SandboxRequest, inputs: Path
     return [*argv, *request.arguments]
 
 
+def _process_group_running(pgid: int) -> bool:
+    """Ignore exited zombies when observing an owned process group's cleanup."""
+    proc = Path("/proc")
+    if not proc.is_dir():
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        fields = stat.rsplit(")", 1)[1].split()
+        if int(fields[2]) == pgid and fields[0] not in {"Z", "X"}:
+            return True
+    return False
+
+
 async def _stop_process(process: asyncio.subprocess.Process) -> bool:
     """TERM then KILL the owned process group, including ordinary forked children.
 
@@ -177,6 +199,13 @@ async def _stop_process(process: asyncio.subprocess.Process) -> bool:
         except ProcessLookupError:
             pass
         await asyncio.wait_for(process.wait(), GRACE_SECONDS + 1)
+        # Sending KILL and reaping the leader does not prove that children have
+        # exited. Keep the capacity lease until the whole group has stopped.
+        deadline = time.monotonic() + GRACE_SECONDS
+        while await asyncio.to_thread(_process_group_running, process.pid):
+            if time.monotonic() >= deadline:
+                raise TimeoutError
+            await asyncio.sleep(0.025)
         return True
     except (OSError, TimeoutError):
         # Close pipes if an escaped child retains them; never claim complete

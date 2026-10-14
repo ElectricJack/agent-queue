@@ -455,7 +455,75 @@ async def wait_file(path):
 
 def assert_not_running(pid):
     path = Path(f"/proc/{pid}/stat")
-    assert not path.exists() or path.read_text().split()[2] == "Z"
+    try:
+        stat = path.read_text()
+    except FileNotFoundError:
+        # Reaping can remove /proc entries between any existence check and read.
+        return
+    assert stat.rsplit(")", 1)[1].split()[0] == "Z"
+
+
+def test_child_cleanup_check_accepts_reaping_during_read(monkeypatch):
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+
+    def reaped(self):
+        raise FileNotFoundError(self)
+
+    monkeypatch.setattr(Path, "read_text", reaped)
+    assert_not_running(123)
+
+
+@pytest.mark.parametrize("state", ["R", "S", "Z"])
+def test_child_cleanup_check_rejects_live_processes(monkeypatch, state):
+    monkeypatch.setattr(Path, "read_text", lambda self: f"123 (script child) {state} 1")
+    if state == "Z":
+        assert_not_running(123)
+    else:
+        with pytest.raises(AssertionError):
+            assert_not_running(123)
+
+
+@pytest.mark.parametrize("state", [None, "R", "S", "Z", "X"])
+def test_group_cleanup_observes_only_live_owned_members(tmp_path, monkeypatch, state):
+    from src.jobs import script_sandbox
+
+    unrelated = tmp_path / "234"
+    unrelated.mkdir()
+    (unrelated / "stat").write_text("234 (other process) R 1 234")
+    owned = tmp_path / "123"
+    owned.mkdir()
+    if state is not None:
+        (owned / "stat").write_text(f"123 (script (child)) {state} 1 123")
+    monkeypatch.setattr(script_sandbox, "Path", lambda value: tmp_path)
+    assert script_sandbox._process_group_running(123) is (state in {"R", "S"})
+
+
+@pytest.mark.parametrize("stuck", [False, True])
+async def test_cleanup_observes_child_exit_after_kill(monkeypatch, stuck):
+    from src.jobs import script_sandbox
+
+    signals = []
+    observations = []
+    closed = []
+
+    def running(pgid):
+        assert pgid == 123
+        assert signals[-1] == script_sandbox.signal.SIGKILL
+        observations.append(pgid)
+        return stuck or len(observations) == 1
+
+    monkeypatch.setattr(script_sandbox, "GRACE_SECONDS", 0.025)
+    monkeypatch.setattr(script_sandbox.os, "killpg", lambda pid, sig: signals.append(sig))
+    monkeypatch.setattr(script_sandbox, "_process_group_running", running)
+
+    async def reaped():
+        return 0
+
+    process = SimpleNamespace(pid=123, wait=reaped,
+                              _transport=SimpleNamespace(close=lambda: closed.append(True)))
+    assert await script_sandbox._stop_process(process) is not stuck
+    assert len(observations) >= 2
+    assert bool(closed) is stuck
 
 
 @pytest.mark.parametrize("mode", ["timeout", "event", "task", "leader_exit"])
