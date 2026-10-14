@@ -3588,6 +3588,39 @@ class TestClaim:
         restore.assert_awaited_once_with(slot, task_id="t1")
         assert (await db.get_session(sid)).task_id is None
 
+    async def test_pool_close_releases_the_slot_sentinel_after_the_claim(
+        self, handler, db, tmp_path
+    ):
+        """A completed task's sentinel must not outlive its claim.
+
+        A train repair left ``.aq-worktree.json`` naming its batch branch;
+        once that branch was deleted the next task's checkout refused the
+        slot (amber-bridge-75).
+        """
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await settled_claim(h, {"next": True})
+        slot = MagicMock()
+        handler.orchestrator._slot_workspace_at = AsyncMock(return_value=slot)
+        slots = handler.orchestrator._worktree_slots.return_value
+        slots.restore_slot_after_task = AsyncMock()
+        holder_at_release: list[str | None] = []
+
+        async def release(*_args):
+            holder_at_release.append((await db.get_session(sid)).task_id)
+            return True
+
+        slots.release_task_sentinel = AsyncMock(side_effect=release)
+
+        closed = await h._cmd_task_close(
+            {"outcome": "pass", "summary": "done", "claim_epoch": claimed["claim_epoch"]}
+        )
+
+        assert closed["success"] is True
+        slots.release_task_sentinel.assert_awaited_once_with(slot, "t1")
+        assert holder_at_release == [None]
+
     async def test_pool_close_skips_the_slot_restore_the_release_already_ran(
         self, handler, db, tmp_path
     ):
