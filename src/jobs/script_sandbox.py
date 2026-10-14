@@ -166,7 +166,7 @@ def _process_group_running(pgid: int) -> bool:
         if not entry.name.isdigit():
             continue
         try:
-            stat = (entry / "stat").read_text()
+            stat = (entry / "stat").read_bytes().decode("ascii", errors="replace")
         except (FileNotFoundError, ProcessLookupError):
             continue
         fields = stat.rsplit(")", 1)[1].split()

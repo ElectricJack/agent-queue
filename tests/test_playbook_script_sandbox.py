@@ -489,7 +489,7 @@ def test_group_cleanup_observes_only_live_owned_members(tmp_path, monkeypatch, s
 
     unrelated = tmp_path / "234"
     unrelated.mkdir()
-    (unrelated / "stat").write_text("234 (other process) R 1 234")
+    (unrelated / "stat").write_bytes(b"234 (other \xff process) R 1 234")
     owned = tmp_path / "123"
     owned.mkdir()
     if state is not None:
@@ -505,6 +505,11 @@ async def test_cleanup_observes_child_exit_after_kill(monkeypatch, stuck):
     signals = []
     observations = []
     closed = []
+    now = 0.0
+
+    async def pause(seconds):
+        nonlocal now
+        now += seconds
 
     def running(pgid):
         assert pgid == 123
@@ -513,6 +518,10 @@ async def test_cleanup_observes_child_exit_after_kill(monkeypatch, stuck):
         return stuck or len(observations) == 1
 
     monkeypatch.setattr(script_sandbox, "GRACE_SECONDS", 0.025)
+    monkeypatch.setattr(script_sandbox, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(script_sandbox, "asyncio", SimpleNamespace(
+        to_thread=asyncio.to_thread, wait_for=asyncio.wait_for, sleep=pause,
+    ))
     monkeypatch.setattr(script_sandbox.os, "killpg", lambda pid, sig: signals.append(sig))
     monkeypatch.setattr(script_sandbox, "_process_group_running", running)
 
