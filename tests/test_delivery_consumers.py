@@ -1291,12 +1291,10 @@ async def test_unlabelled_subepic_reopens_preserving_collected_children(active_g
     assert await db.get_task_completion("subepic") is None
 
 
-@pytest.mark.parametrize("obstacle", ["stale", "wrong_repository", "descendant", "receipt"])
+@pytest.mark.parametrize("obstacle", ["stale", "wrong_repository", "descendant"])
 async def test_missing_provenance_recovery_preserves_delivery_fences(
     active_git_world, obstacle,
 ):
-    from src.database.tables import task_delivery_receipts
-
     db, origin, _observer = active_git_world
     origin.work("missing")
     view = await db.observe_removal_delivery(["missing"], for_mutation=True)
@@ -1312,27 +1310,37 @@ async def test_missing_provenance_recovery_preserves_delivery_fences(
         ))
         view = await db.observe_removal_delivery(["missing"], for_mutation=True)
     with pytest.raises(HierarchyError) as refused:
-        if obstacle == "receipt":
-            # Roll back the supplied historical receipt with the refused write:
-            # delivery receipts themselves are intentionally append-only.
-            async with db.immediate() as conn:
-                await conn.execute(insert(task_delivery_receipts).values(
-                    id="external", domain_key="external", source_task_id="missing",
-                    target_task_id="epic", repository_id="r", target_branch="aq/epic",
-                    disposition="code", created_at=1.0,
-                ))
-                await db._apply_transition(
-                    conn, "missing", TaskStatus.READY, context="reopen_with_feedback",
-                    integration_delivery=view, allow_missing_provenance_reopen=True,
-                )
-        else:
-            await db.transition_task(
-                "missing", TaskStatus.READY, context="reopen_with_feedback",
+        await db.transition_task(
+            "missing", TaskStatus.READY, context="reopen_with_feedback",
+            integration_delivery=view, allow_missing_provenance_reopen=True,
+        )
+    assert refused.value.code == "delivery_unknown"
+    assert (await db.get_task("missing")).status is TaskStatus.COMPLETED
+
+
+async def test_historical_receipt_does_not_fix_missing_source_identity(active_git_world):
+    from sqlalchemy import select
+
+    from src.database.tables import task_delivery_receipts
+
+    db, origin, _observer = active_git_world
+    origin.work("missing")
+    view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    # Roll back the audit row after proving it has no eligibility authority.
+    with pytest.raises(RuntimeError, match="rollback audit fixture"):
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="external", domain_key="external", source_task_id="missing",
+                target_task_id="epic", repository_id="r", target_branch="aq/epic",
+                disposition="code", created_at=1.0,
+            ))
+            await db._apply_transition(
+                conn, "missing", TaskStatus.READY, context="reopen_with_feedback",
                 integration_delivery=view, allow_missing_provenance_reopen=True,
             )
-    assert refused.value.code == ("delivery_target_fixed" if obstacle == "receipt"
-                                  else "delivery_unknown")
-    assert (await db.get_task("missing")).status is TaskStatus.COMPLETED
+            assert await conn.scalar(select(tasks.c.status).where(tasks.c.id == "missing")) == "READY"
+            raise RuntimeError("rollback audit fixture")
+
 
 
 async def test_git_first_reparent_guard_refuses_completed_work_without_receipts(active_git_world):
@@ -1463,7 +1471,7 @@ async def test_missing_git_observer_warns_offline_frontier_reader(active_git_wor
     db.set_prerequisite_observer(None)
     await db.claim_frontier_exclusions("done")
     assert "No Git prerequisite observer" in caplog.text
-    assert "invalid when integration.git_first is active" in caplog.text
+    assert "unavailable without receipt fallback" in caplog.text
 
 
 # --- Shared store observations -------------------------------------------------
@@ -1955,3 +1963,71 @@ def test_receipt_consumer_inventory_covers_every_direct_source_reference():
     }
     missing = sorted(path for path in references if f"`{path}`" not in inventory)
     assert not missing, f"Assign receipt reader/writer retirement owners: {missing}"
+
+
+async def test_delivery_edge_uses_immutable_view_and_rechecks_rewind(world, tmp_path):
+    from dataclasses import FrozenInstanceError
+
+    from src.integration.admission import observe_admission
+    from src.integration.git_truth import GitTruth
+
+    db, origin, observer, service = world
+    db.set_prerequisite_observer(DeliveryObserver(
+        db, git=observer.git, data_dir=tmp_path / "strict-admission", truth=GitTruth(observer.git),
+    ))
+    for tid in ("waiting", "independent"):
+        await db.create_task(Task(
+            id=tid, project_id="p", title=tid, description="", status=TaskStatus.READY,
+        ))
+    await db.add_dependency("waiting", "done", "delivery-of")
+    assert not (await db.get_task("waiting")).is_blocked  # Structural projection only.
+    view = await observe_admission(db, ["waiting", "independent"], service)
+    assert view.allowed == {"waiting", "independent"}
+    with pytest.raises(FrozenInstanceError):
+        view.allowed = frozenset()
+    with pytest.raises(TypeError):
+        view.reasons["waiting"] = ()
+    base = git(origin.clone, "rev-list", "--max-parents=0", "origin/main")
+    git(origin.clone, "push", "--force", "origin", f"{base}:main")
+    assert not await view.is_fresh("waiting")
+    current = await observe_admission(db, ["waiting", "independent"], service)
+    assert current.allowed == {"independent"}
+    assert current.reasons["waiting"][0]["ref"] == "done"
+    assert "independent" not in current.reasons
+
+
+async def test_unavailable_delivery_observer_withholds_only_edge_consumers(world):
+    from src.integration.admission import observe_admission
+
+    db, _origin, _observer, service = world
+    db.set_prerequisite_observer(None)
+    for tid in ("waiting", "independent"):
+        await db.create_task(Task(
+            id=tid, project_id="p", title=tid, description="", status=TaskStatus.READY,
+        ))
+    await db.add_dependency("waiting", "done", "delivery-of")
+    view = await observe_admission(db, ["waiting", "independent"], service)
+    assert view.allowed == {"independent"}
+    assert view.reasons["waiting"][0]["code"] == "delivery_evidence_unavailable"
+
+
+async def test_cleanup_guard_rechecks_current_target_without_receipts(world, tmp_path):
+    from src.integration.cleanup import IntegrationCleanupService
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    transport = GitManager()
+    observer = DeliveryObserver(db, git=transport, data_dir=tmp_path / "cleanup-proof",
+                                truth=GitTruth(transport))
+    db.set_prerequisite_observer(observer)
+    completion = await db.get_task_completion("done")
+    source = completion.commits[-1]
+    base = git(origin.clone, "rev-parse", source + "^")
+    service = IntegrationCleanupService(db, data_dir=tmp_path)
+    row = {"target_ref": "refs/heads/aq/done", "expected_sha": source}
+    batch = {"id": "historical-batch", "project_id": "p", "repository_id": "r"}
+    assert await service._delivery_hold(row, batch) is None
+    git(origin.clone, "push", "--force", "origin", base + ":main")
+    assert "unknown or pending" in await service._delivery_hold(row, batch)
+    db.set_prerequisite_observer(None)
+    assert "requires current Git" in await service._delivery_hold(row, batch)

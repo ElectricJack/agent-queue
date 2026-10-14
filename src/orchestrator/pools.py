@@ -220,7 +220,9 @@ class PoolsMixin:
     ) -> set[str]:
         return set(await self._pool_profiles(project_id, system_profiles=system_profiles))
 
-    async def _delivery_admission(self, task_ids, *, cached_only=False):
+    async def _delivery_admission(
+        self, task_ids, *, cached_only=False, hierarchy_modes=None, router_ready_projects=None,
+    ):
         from src.integration.admission import observe_admission
         from src.integration.development import DevelopmentPrimitives
 
@@ -233,6 +235,7 @@ class PoolsMixin:
             service,
             cached_only=cached_only,
             default_mode=self.config.integration.default_mode,
+            hierarchy_modes=hierarchy_modes, router_ready_projects=router_ready_projects,
         )
 
     async def _measure_pools(
@@ -333,21 +336,29 @@ class PoolsMixin:
             from src.integration.admission import structural_candidates
 
             allowed = None
-            if getattr(project, "_source_admission_required", True):
+            batch = None
+            if (getattr(project, "_source_admission_required", True)
+                    or project.hierarchical_integration_mode in {"hierarchy", "train"}):
                 batch = await self._delivery_admission(
                     await structural_candidates(self.db, project.id),
+                    hierarchy_modes=hierarchy_modes, router_ready_projects=ready_projects,
                     **({"cached_only": True} if for_display else {}),
                 )
                 allowed = batch.allowed
             # Demand is claimable work only (mandatory routing §9.1): an
             # unrouted task is demand for no pool, and neither is a legacy
             # one once the project's router is ready.
-            demand_by_profile = await self.db.count_ready_by_profile(
-                project.id,
-                allowed_task_ids=allowed,
+            policy = dict(
                 router_ready=project.id in ready_projects,
-                hierarchy_mode=hierarchy_modes.get(project.id) or ProjectIntegrationMode.of(project),
                 pool_profiles=pool_profiles, include_repair_counts=True, by_workspace_kind=True,
+            )
+            demand_by_profile = (
+                await batch.counts(project.id, **policy) if batch is not None else
+                await self.db.count_ready_by_profile(
+                    project.id, allowed_task_ids=allowed,
+                    hierarchy_mode=hierarchy_modes.get(project.id)
+                    or ProjectIntegrationMode.of(project), **policy,
+                )
             )
             workspaces = [w for w in workspace_snapshot if w.project_id == project.id]
             kinds_by_path = {w.workspace_path: w.kind_id or "project-repo" for w in workspaces}

@@ -16,6 +16,7 @@ from src.database.tables import (
     wait_escalations, wait_records,
 )
 from src.models import Agent, AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.integration.admission import observe_admission
 from src.waits.admission import AdmissionReader
 from src.waits.conditions import Scope, WaitError
 from src.waits.registry import build_registry
@@ -50,6 +51,10 @@ async def env():
     o = SimpleNamespace(db=db, config=config, bus=SimpleNamespace(emit=AsyncMock()),
                         _worktrees_enabled=lambda: False,
                         _pool_quarantine_state=lambda *a: (None, None))
+    async def admission(ids):
+        return await observe_admission(db, ids, None)
+
+    o._delivery_admission = admission
     service = SchedulerWaitService(o, clock=lambda: NOW)
     yield SimpleNamespace(db=db, o=o, service=service)
     await db.close()

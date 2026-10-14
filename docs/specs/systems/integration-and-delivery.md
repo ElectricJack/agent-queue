@@ -410,7 +410,7 @@ The consumers are:
 | **Claims** (`claim_queries.py`, around lines 631–812) | The frontier excludes a task whose prerequisite is not delivered: `frontier_sibling_prerequisite_not_delivered`, `frontier_prerequisite_not_on_default_branch` and `frontier_epic_refresh_pending`. With no snapshot available the reason is `delivery_evidence_unavailable`, and the claim fails closed. |
 | **Readiness** (`src/task_graph/readiness.py`) | Maps those codes to "Waiting on delivery" or "Checking delivery evidence", reading cached snapshots only. |
 | **Archive and delete** (`archive_queries.py`) | Refuse without an observer. |
-| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | **Receipts, not Git** (section 6). |
+| **`delivery-of` edges** (`blocked_state.py:delivery_landed`) | Source completion in SQL plus current default-target Git proof in `AdmissionView`. |
 
 #### 3.3.7 Cleanup, retirement and recovery
 
@@ -462,7 +462,7 @@ reader can find them.
 | Batches and candidates | `integration_batches` (3730), `integration_batch_members` (3811), `integration_check_evidence` (4474), `integration_attestation_publications` (4538), `integration_cleanup_items` (4596), `integration_outbox` (5151) | Yes |
 | Branch authority | `integration_branch_owners` (3386; `UNIQUE(repository_id, ref)`; legacy `owner_id`/`fence_token`/`handoff_state` columns side by side with Git-first `holder`/`fence`/`expires_at`), `task_branch_origins` (3265), `branch_retirements` (3238), `branch_deletion_audit` (3331), `integration_owner_recoveries` (4454) | Yes |
 | Source evidence | `integration_source_ci` (706), `integration_review_evidence` (3419), `integration_root_authorizations` (3465), `task_integration_checkpoints` (3170) | Partly |
-| Receipts | `task_delivery_receipts` (3636; append-only, `UNIQUE domain_key`) | Read by `delivery-of`; not written by the train |
+| Receipts | `task_delivery_receipts` (3636; append-only, `UNIQUE domain_key`) | Historical audit/recovery; no `delivery-of` eligibility authority |
 | Repair and parents (legacy) | `integration_repair_operations` (4245), `integration_repair_stages` (4359), `integration_repair_stage_evidence` (4711), `integration_parent_episodes` (4311), `integration_child_dispositions` (4330), parent verifications (4736–4878) | No (retained) |
 | Legacy reconciler and publisher | `integration_subjects` (5293), `integration_subject_journal` (5477), `integration_candidate_*` (3856–4086), `integration_promotion_intents` (3499; root intents only), `integration_root_intent_members` (4155), `project_integration_schedules` (4909), `project_integration_leases` (4946), `integration_release_results` (4960), `integration_legacy_deliveries` (5203), waiver/rollout/gate-applicability tables (4980–5131) | No (retained; the drop set is empty) |
 | Per project | `projects.hierarchical_integration_mode`, `hierarchical_integration_policy`, `integration_mode`, `integration_repository_id`, `promotion_flow`, `default_branch_cutover` | Yes |
@@ -559,16 +559,11 @@ All of these were verified in the code on 2026-10-20 unless marked otherwise.
 
    The [git-first cutover runbook](../../guides/git-first-cutover-runbook.md) and
    [design/promotion-flow.md](../design/promotion-flow.md) state the true position.
-2. **`delivery-of` edges cannot be satisfied under the train.**
-   - `blocked_state.py:delivery_landed` is satisfied only by a root
-     `task_delivery_receipts` row with disposition `code` or `noop`.
-   - `DeliveryObserver._admit_delivery_dependents` only recomputes, and its docstring
-     says "nothing here unblocks without the receipt".
-   - The train writes no receipts. On the live database the last root receipt was
-     written on 2026-10-05.
-   - No `delivery-of` edges exist there today, so the gap is latent. The first one
-     authored, for example by held ingestion's post-landing tasks, would stay blocked.
-     `stark-willow-95.13` (section 7) retires receipt authority.
+2. **`delivery-of` uses current Git admission.** Source completion releases its
+   structural SQL projection. `AdmissionView` then requires current default-target
+   containment, so the train can satisfy the edge without writing a receipt and a
+   rewind withholds the dependent again. Missing observers report unavailable
+   evidence and do not use historical receipts.
 3. **Two protocols side by side.** About 81k lines in 130 modules, against the Git-first
    spec's target of about 12k engine lines and 10 tables. Among the duplicates:
    - the legacy staged `RepairService` (`repair.py`, lines 602 onward) sits next to

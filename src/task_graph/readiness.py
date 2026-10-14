@@ -62,15 +62,24 @@ async def load_readiness(db, rows: Iterable[dict]) -> dict[str, dict]:
     rows = [row for row in rows if row.get("status") == "READY"]
     if not rows:
         return {}
-    reasons = await db.claim_frontier_exclusions_many(
-        [row["id"] for row in rows],
-        cached_only=True,
-        router_ready_projects=getattr(db, "_ready_router_projects", frozenset()),
-        project_ids={row["project_id"] for row in rows if row.get("project_id")},
-        # A task card must not evaluate every prerequisite in the project.
-        # The frontier already supports this scope for task explain.
-        **({"single_task_id": rows[0]["id"]} if len(rows) == 1 else {}),
-    )
+    reader = getattr(db, "_admission_reader", None)
+    if reader is not None:
+        view = await reader(
+            [row["id"] for row in rows], cached_only=True,
+            router_ready_projects=getattr(db, "_ready_router_projects", frozenset()),
+        )
+        reasons = {row["id"]: [dict(reason) for reason in view.reasons.get(row["id"], ())]
+                   for row in rows}
+    else:
+        reasons = await db.claim_frontier_exclusions_many(
+            [row["id"] for row in rows],
+            cached_only=True,
+            router_ready_projects=getattr(db, "_ready_router_projects", frozenset()),
+            project_ids={row["project_id"] for row in rows if row.get("project_id")},
+            # A task card must not evaluate every prerequisite in the project.
+            # The frontier already supports this scope for task explain.
+            **({"single_task_id": rows[0]["id"]} if len(rows) == 1 else {}),
+        )
     return {tid: {"claim_readiness": readiness_from_reasons(why)} for tid, why in reasons.items()}
 
 
@@ -114,37 +123,13 @@ async def delivery_details(db, rows, modes) -> dict[str, list[dict]]:
     that failure; missing preserved origins name the epic rather than inventing
     an undelivered sibling.
     """
-    from src.database.queries.hierarchy_queries import (
-        integration_rework_cutoff,
-    )
-    from src.database.tables import (
-        task_delivery_receipts,
-        task_integration_checkpoints,
-    )
     from src.integration.delivery_observer import delivery_targets
-    from sqlalchemy import exists, func, literal
 
     if not rows:
         return {}
     ids = [row["id"] for row in rows]
     source = tasks.alias("readiness_source")
     parent = tasks.alias("readiness_parent")
-    checkpoint = task_integration_checkpoints
-    receipt = task_delivery_receipts
-    delivered = exists(
-        select(literal(1))
-        .where(
-            receipt.c.source_task_id == source.c.id,
-            receipt.c.target_task_id == tasks.c.parent_task_id,
-            receipt.c.repository_id == checkpoint.c.repository_id,
-            receipt.c.target_branch == parent.c.branch_name,
-            receipt.c.disposition == "code",
-            receipt.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
-            receipt.c.created_at
-            >= func.coalesce(integration_rework_cutoff(source.c.id), source.c.created_at),
-        )
-        .correlate(tasks, source, parent, checkpoint)
-    )
     async with db._engine.connect() as conn:
         targets = (
             (
@@ -172,13 +157,11 @@ async def delivery_details(db, rows, modes) -> dict[str, list[dict]]:
                         tasks.c.parent_task_id,
                         source.c.id,
                         source.c.parent_task_id.label("source_parent"),
-                        delivered.label("delivered"),
                     )
                     .select_from(
                         tasks.join(task_dependencies, task_dependencies.c.task_id == tasks.c.id)
                         .join(source, source.c.id == task_dependencies.c.depends_on_task_id)
                         .outerjoin(parent, parent.c.id == tasks.c.parent_task_id)
-                        .outerjoin(checkpoint, checkpoint.c.task_id == source.c.id)
                     )
                     .where(
                         tasks.c.id.in_(ids),
@@ -208,11 +191,7 @@ async def delivery_details(db, rows, modes) -> dict[str, list[dict]]:
         mode = modes.get(source["project_id"])
         sibling = source["source_parent"] == source["parent_task_id"] and source["parent_task_id"]
         if sibling:
-            delivered = (
-                source["id"] in mode.delivered_prerequisite_ids
-                if mode and mode.delivered_prerequisite_ids is not None
-                else source["delivered"]
-            )
+            delivered = bool(mode and source["id"] in mode.delivered_prerequisite_ids)
             if mode and mode.stacked and source["id"] in mode.stackable_prerequisite_ids:
                 delivered = True
             if delivered or flags[tid]["sibling_prerequisite_not_delivered"]:

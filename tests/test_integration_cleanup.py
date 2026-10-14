@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -34,6 +36,7 @@ from src.database.tables import (
     repos,
     sessions,
     task_delivery_receipts,
+    task_completion_records,
     tasks,
     workspaces,
 )
@@ -395,6 +398,23 @@ async def release_db(tmp_path, request, reuse_database):
             .where(integration_batches.c.id == "batch")
             .values(lifecycle="promoted", final_main_sha=HEAD, updated_at=20.0)
         )
+    # These protocol tests simulate the external Git observation independently
+    # of forged receipt rows. Real ancestry/rewind coverage lives in
+    # test_delivery_consumers.test_cleanup_guard_rechecks_current_target_without_receipts.
+    async def observe(ids, **_kwargs):
+        async def verified(conn, requested):
+            heads = {}
+            for tid, commits in await conn.execute(select(
+                task_completion_records.c.task_id, task_completion_records.c.commits,
+            ).where(task_completion_records.c.task_id.in_(requested))):
+                if parsed := json.loads(commits):
+                    heads[tid] = parsed[-1]
+            return {tid: SimpleNamespace(satisfied=True, lifecycle_exclusion=False,
+                                         source_oid=heads.get(tid, SOURCE)) for tid in requested}
+
+        return SimpleNamespace(fresh=AsyncMock(return_value=True), verified_on=verified)
+
+    db.set_prerequisite_observer(SimpleNamespace(truth=object(), observe=observe))
     yield db, None
 
 
@@ -593,6 +613,10 @@ async def test_batch_cleanup_waits_for_promotion_and_only_collects_member_descen
             ("root.2", "root", late_head, 21.0),
             ("ejected.1", "ejected", ejected_head, 3.0),
         ):
+            await conn.execute(insert(task_completion_records).values(
+                id=f"completion-{task_id}", task_id=task_id, outcome="pass",
+                commits='["' + head + '"]', completed_at=created_at,
+            ))
             await conn.execute(insert(task_delivery_receipts).values(
                 id=f"receipt-{task_id}",
                 domain_key=f"child:{task_id}",

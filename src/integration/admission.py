@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
+from types import MappingProxyType
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import DBAPIError
@@ -77,11 +78,14 @@ def ordinary_activation_guard(task_id):
     ).cte("ordinary_policy")
     return and_(
         select(policy.c.id).where(
-            policy.c.hierarchical_integration_mode != "development",
+            policy.c.hierarchical_integration_mode.not_in(("development", "hierarchy", "train")),
         ).exists(),
         select(func.count()).select_from(sources).scalar_subquery()
         == select(func.count()).select_from(source_ids.subquery()).scalar_subquery(),
         ~select(sources.c.id).where(source_has_artifact(sources)).exists(),
+        ~select(edge.c.task_id).where(
+            edge.c.task_id == task_id, edge.c.dep_type == "delivery-of",
+        ).exists(),
     )
 
 
@@ -98,7 +102,10 @@ def source_admission_required(task):
     return or_(
         select(projects.c.id).where(
             projects.c.id == task.c.project_id,
-            projects.c.hierarchical_integration_mode == "development",
+            projects.c.hierarchical_integration_mode.in_(("development", "hierarchy", "train")),
+        ).correlate(task).exists(),
+        select(edge.c.task_id).where(
+            edge.c.task_id == task.c.id, edge.c.dep_type == "delivery-of",
         ).correlate(task).exists(),
         select(edge.c.task_id).select_from(edge.join(
             source, source.c.id == edge.c.depends_on_task_id,
@@ -123,8 +130,11 @@ def project_admission_required(project):
         candidate.c.assigned_agent_id.is_(None),
     )
     return or_(
+        select(candidate.c.id).join(edge, edge.c.task_id == candidate.c.id).where(
+            *ready, edge.c.dep_type == "delivery-of",
+        ).exists(),
         and_(
-            project.c.hierarchical_integration_mode == "development",
+            project.c.hierarchical_integration_mode.in_(("development", "hierarchy", "train")),
             select(candidate.c.id).where(*ready).exists(),
         ),
         # Unfinished prerequisites already block the frontier. A branch on
@@ -407,11 +417,28 @@ class AdmissionSnapshot:
     required: dict[str, set[str]] = field(default_factory=dict)
     changed: bool = False
     pr: object = None
+    policy_inputs: tuple = ()
+    hierarchy_modes: dict = field(default_factory=dict)
+    hierarchy_views: dict = field(default_factory=dict)
+    stack_views: dict = field(default_factory=dict)
+    hierarchy_required: dict = field(default_factory=dict)
+    delivery_required: dict = field(default_factory=dict)
+    delivery_view: object = None
 
     async def is_fresh(self, task_id=None):
         required = self.required.get(task_id, set()) if task_id else None
+        if self.delivery_view is not None:
+            await self.delivery_view.fresh()
+            if not await self._delivery_matches(task_id=task_id):
+                return False
         if self.pr is not None and not await self.pr.is_fresh(task_id):
             return False
+        if task_id is None or self.hierarchy_required.get(task_id):
+            fresh = all([await view.fresh() for view in self.hierarchy_views.values()])
+            if not fresh and (task_id is None or not await self.matches(task_id=task_id)):
+                return False
+            if not all([await view.fresh() for view in self.stack_views.values()]):
+                return False
         return all(
             [
                 await snapshot.is_fresh()
@@ -430,7 +457,7 @@ class AdmissionSnapshot:
         """
         if conn is None:
             async with self.db._engine.connect() as owned:
-                return await self.matches(conn=owned)
+                return await self.matches(conn=owned, lock=lock, task_id=task_id)
         if lock and (self.lock_ids or task_id):
             try:
                 async with conn.begin_nested():
@@ -449,7 +476,12 @@ class AdmissionSnapshot:
                     )
                     await conn.execute(
                         select(repos.c.id)
-                        .where(repos.c.id.in_([r[0] for r in self.inputs[6]]))
+                        .where(or_(
+                            repos.c.id.in_([r[0] for r in self.inputs[6]]),
+                            repos.c.id.in_(select(projects.c.integration_repository_id).where(
+                                projects.c.id.in_([p[0] for p in self.inputs[5]]),
+                            )),
+                        ))
                         .order_by(repos.c.id)
                         .with_for_update(read=True, nowait=True)
                     )
@@ -457,7 +489,36 @@ class AdmissionSnapshot:
                 if getattr(exc.orig, "sqlstate", None) == "55P03":
                     return False
                 raise
+        if not await self._delivery_matches(conn=conn, task_id=task_id):
+            return False
         current = await _inputs(self.db, self.candidate_ids, conn)
+        if self.policy_inputs:
+            policy, _ = await _frontier_inputs(conn, self.candidate_ids)
+            if policy != self.policy_inputs:
+                return False
+        for pid, view in self.hierarchy_views.items():
+            mode = self.hierarchy_modes[pid]
+            current_mode = await view.mode(mode, conn=conn)
+            ids = (self.hierarchy_required.get(task_id, set()) if task_id else
+                   set().union(*(self.hierarchy_required.get(tid, set()) for tid in self.allowed)))
+            for name in ("delivered_prerequisite_ids", "default_prerequisite_ids"):
+                before, after = getattr(mode, name), getattr(current_mode, name)
+                if (before & ids if ids is not None else before) != (
+                    after & ids if ids is not None else after
+                ):
+                    return False
+            if task_id and ((task_id in mode.parent_contained_task_ids)
+                            != (task_id in current_mode.parent_contained_task_ids)):
+                return False
+        for pid, view in self.stack_views.items():
+            verified = frozenset(await view.verified_on(conn))
+            before = self.hierarchy_modes[pid].stackable_prerequisite_ids
+            ids = (self.hierarchy_required.get(task_id, set()) if task_id else
+                   set().union(*(self.hierarchy_required.get(tid, set()) for tid in self.allowed)))
+            if (before & ids if ids is not None else before) != (
+                verified & ids if ids is not None else verified
+            ):
+                return False
         return self.inputs == current[-1] and (
             self.pr is None
             or await self.pr.matches(
@@ -468,7 +529,19 @@ class AdmissionSnapshot:
         )
 
 
-async def observe_admission(
+    async def _delivery_matches(self, *, conn=None, task_id=None):
+        if self.delivery_view is None:
+            return True
+        if conn is None:
+            async with self.db._engine.connect() as conn:
+                return await self._delivery_matches(conn=conn, task_id=task_id)
+        dependents = {task_id} if task_id else self.allowed
+        required = set().union(*(self.delivery_required.get(tid, set()) for tid in dependents))
+        verified = await self.delivery_view.verified_on(conn, required)
+        return all(tid in verified and verified[tid].satisfied for tid in required)
+
+
+async def _observe_sources(
     db, candidate_ids, service, *, cached_only=False, default_mode="pull_request"
 ):
     """One batch for readiness, pool demand, explanation and actual claims.
@@ -570,6 +643,170 @@ async def observe_admission(
     for tid, reasons in batch.pr.reasons.items():
         batch.reasons.setdefault(tid, []).extend(reasons)
     return batch
+
+
+async def _frontier_inputs(conn, ids):
+    """Fence routing, hierarchy policy and graph without fencing our own take.
+
+    READY -> IN_PROGRESS and branch preparation are expected mutations. Route,
+    parent, edges, policy and completion generation are not.
+    """
+    rows = (await conn.execute(select(
+        tasks.c.id, tasks.c.project_id, tasks.c.parent_task_id, tasks.c.profile_id,
+        tasks.c.route_source, tasks.c.intelligence_class, tasks.c.route,
+        tasks.c.repo_id, tasks.c.integration_mode,
+    ).where(tasks.c.id.in_(ids)))).all()
+    pids = {r.project_id for r in rows}
+    policies = (await conn.execute(select(
+        projects.c.id, projects.c.hierarchical_integration_mode,
+        projects.c.integration_repository_id, projects.c.hierarchical_integration_generation,
+        projects.c.hierarchical_integration_policy,
+        repos.c.url, repos.c.default_branch,
+    ).select_from(projects.outerjoin(
+        repos, repos.c.id == projects.c.integration_repository_id,
+    )).where(projects.c.id.in_(pids)))).all()
+    edges = (await conn.execute(select(task_dependencies).where(
+        task_dependencies.c.task_id.in_(ids),
+    ))).mappings().all()
+    required = {}
+    for edge in edges:
+        if edge["dep_type"] == "blocks":
+            required.setdefault(edge["task_id"], set()).add(edge["depends_on_task_id"])
+    fingerprint = tuple(tuple(sorted(repr(tuple(row)) for row in group))
+                        for group in (rows, policies, [tuple(e.items()) for e in edges]))
+    return fingerprint, required
+
+
+def _freeze(value):
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+@dataclass(frozen=True)
+class AdmissionView:
+    """One immutable decision with SQL, route policy and current Git evidence.
+
+    Capacity and configured pool floors remain the existing scheduler/waits
+    projections. They never manufacture eligible task IDs. Mutation guards
+    revalidate this view; no delivery decision is persisted in SQL.
+    """
+
+    candidate_ids: frozenset[str]
+    allowed: frozenset[str]
+    reasons: object
+    hierarchy_modes: object
+    changed: bool
+    _snapshot: AdmissionSnapshot = field(repr=False, compare=False)
+
+    @property
+    def pr(self):
+        return self._snapshot.pr
+
+    @property
+    def snapshots(self):
+        return tuple(self._snapshot.snapshots)
+
+    async def is_fresh(self, task_id=None):
+        return await self._snapshot.is_fresh(task_id)
+
+    async def matches(self, *, conn=None, lock=False, task_id=None):
+        return await self._snapshot.matches(conn=conn, lock=lock, task_id=task_id)
+
+    async def counts(self, project_id, **policy):
+        """Project the same eligible IDs into compatible pool demand."""
+        return await self._snapshot.db.count_ready_by_profile(
+            project_id, allowed_task_ids=self.allowed,
+            hierarchy_mode=self.hierarchy_modes.get(project_id), **policy,
+        )
+
+    def hierarchy_evidence(self, project_id):
+        return (self._snapshot.hierarchy_views.get(project_id),
+                self._snapshot.stack_views.get(project_id))
+
+
+async def observe_admission(
+    db, candidate_ids, service, *, cached_only=False, default_mode="pull_request",
+    hierarchy_modes=None, router_ready_projects=None,
+):
+    """Build once, then project IDs, reasons or counts from the same decision."""
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+
+    ids = frozenset(candidate_ids)
+    batch = await _observe_sources(
+        db, ids, service, cached_only=cached_only, default_mode=default_mode,
+    )
+    await _observe_delivery_edges(batch, cached_only=cached_only)
+    async with db._engine.connect() as conn:
+        batch.policy_inputs, batch.hierarchy_required = await _frontier_inputs(conn, ids)
+    pids = {p[0] for p in batch.inputs[5] if p[1] in {"hierarchy", "train"}}
+    unavailable = {}
+    modes = hierarchy_modes if hierarchy_modes is not None else await hierarchy_frontier_modes(
+        db, project_ids=pids, cached_only=cached_only,
+        views=batch.hierarchy_views, stack_views=batch.stack_views,
+        display_unavailable=unavailable,
+        **({"max_age": 0} if not cached_only else {}),
+    ) if pids else {}
+    batch.hierarchy_modes = dict(modes)
+    batch.lock_ids |= set().union(*batch.hierarchy_required.values())
+    exclusions = await db.claim_frontier_exclusions_many(
+        ids, hierarchy_modes=modes, cached_only=cached_only,
+        router_ready_projects=router_ready_projects,
+        display_unavailable=unavailable,
+    )
+    for tid, reasons in exclusions.items():
+        if reasons:
+            batch.allowed.discard(tid)
+            batch.reasons.setdefault(tid, []).extend(reasons)
+    if not await batch.matches():
+        batch.changed = True
+        batch.allowed.clear()
+    return AdmissionView(
+        ids, frozenset(batch.allowed), _freeze(batch.reasons), _freeze(dict(modes)),
+        batch.changed, batch,
+    )
+
+
+async def _observe_delivery_edges(batch, *, cached_only):
+    from src.integration.delivery_observer import delivery_targets, prerequisite_observer
+
+    async with batch.db._engine.connect() as conn:
+        edges = (await conn.execute(select(task_dependencies).where(
+            task_dependencies.c.task_id.in_(batch.candidate_ids),
+            task_dependencies.c.dep_type == "delivery-of",
+        ))).mappings().all()
+    for edge in edges:
+        batch.delivery_required.setdefault(edge["task_id"], set()).add(edge["depends_on_task_id"])
+    if not edges:
+        return
+    source_ids = set().union(*batch.delivery_required.values())
+    batch.lock_ids |= source_ids
+    observer = prerequisite_observer(batch.db)
+    verified = {}
+    if observer is not None:
+        batch.delivery_view = await observer.observe(
+            source_ids, target_loader=delivery_targets, cached_only=cached_only,
+            **({"max_age": observer.READ_MAX_AGE} if cached_only else {}),
+        )
+        if not cached_only:
+            await batch.delivery_view.fresh()
+        async with batch.db._engine.connect() as conn:
+            verified = await batch.delivery_view.verified_on(conn, source_ids)
+    for tid, sources in batch.delivery_required.items():
+        for source in sorted(sources):
+            proof = verified.get(source)
+            if proof is not None and proof.satisfied:
+                continue
+            batch.allowed.discard(tid)
+            batch.reasons.setdefault(tid, []).append({
+                "code": "delivery_evidence_unavailable" if proof is None
+                        or proof.reason == "snapshot_unavailable" else "prerequisite_delivery",
+                "ref": source,
+                "detail": f"Delivery prerequisite {source}: "
+                          + (f"{proof.state} ({proof.reason})" if proof else "Git evidence unavailable"),
+            })
 
 
 async def structural_candidates(db, project_id, *, page_size=128):
