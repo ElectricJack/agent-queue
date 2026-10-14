@@ -1225,9 +1225,23 @@ class Orchestrator(
             )
         ws = owned_workspaces[0] if owned_workspaces else None
         if ws:
-            if not await self._checkpoint_paused_workspace(task_id, ws, deferrable=deferrable):
+            preserved = await self._checkpoint_paused_workspace(task_id, ws, deferrable=deferrable)
+            if not preserved:
                 return  # Backing off between bounded retries; the cascade calls again.
             self._remove_sentinel(ws.workspace_path)
+            if preserved == "captured":
+                # Retire our own marker while the slot is still locked to this
+                # task: unlocking first lets a successor bind it and refuse the
+                # marker as foreign. An unproved marker stays as evidence.
+                from src.orchestrator.workspace_claim_recovery import retire_paused_slot_claim
+
+                if not await retire_paused_slot_claim(
+                    self.db, ws.id, ws.workspace_path, task_id=task_id,
+                    claim_epoch=snapshot.get("claim_epoch"), agent_id=agent_id,
+                    captured=captured,
+                ):
+                    logger.info("Paused task %s keeps its claim file in %s",
+                                task_id, ws.workspace_path)
         await self.db.delete_task_meta(task_id, PAUSE_CHECKPOINT_RETRY_META)
         await self.db.finish_task_pause(task_id, snapshot)
         if adapter is not None and self._adapters.get(agent_id) is adapter:
@@ -1235,11 +1249,14 @@ class Orchestrator(
         self._task_exec_start.pop(task_id, None)
         self._task_pre_exec_sha.pop(task_id, None)
 
-    async def _checkpoint_paused_workspace(self, task_id: str, ws, *, deferrable: bool) -> bool:
+    async def _checkpoint_paused_workspace(
+        self, task_id: str, ws, *, deferrable: bool
+    ) -> str | bool:
         """Preserve a paused slot's work, and converge even when that is impossible.
 
-        Returns True when the pause may finish, False while a bounded retry is
-        still backing off.  Capture failure used to raise unconditionally, and
+        Returns ``"captured"`` when the work is preserved, True when the pause
+        may finish without a checkpoint, False while a bounded retry is still
+        backing off.  Capture failure used to raise unconditionally, and
         the monitoring cascade retries a pending pause every cycle — so a slot
         that had already been reassigned, or a repository that cannot produce a
         commit at all, spun forever on "remains paused; stop cleanup will
@@ -1265,7 +1282,7 @@ class Orchestrator(
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
         else:
-            return True
+            return "captured"
         attempts = int(state.get("attempts", 0)) + 1
         if attempts < PAUSE_CHECKPOINT_MAX_ATTEMPTS and Path(ws.workspace_path).is_dir():
             await self.db.set_task_meta(

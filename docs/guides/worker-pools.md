@@ -780,6 +780,26 @@ free slot. The refused session receives `drain_requested`, and its workspace is
 disabled under `claim_failures` (restored by the slot reconciler after the cooldown).
 The foreign claim file stays on disk as the holder's evidence.
 
+Pause retires its own claim file before it frees the slot, so a paused holder does
+not leave that foreign marker behind. After Pause has stopped the exact captured
+session and captured the workspace checkpoint, and while the slot is still locked to
+the paused task, it removes `.aq/claim.json` only if all of these hold
+(`retire_paused_slot_claim` in `src/orchestrator/workspace_claim_recovery.py`):
+
+- the slot belongs to the task's project, is locked to the task and its pool agent, and
+  no live session uses its path;
+- the marker names the task, the pre-pause claim epoch (the task's epoch has since moved
+  past it) and one of the captured sessions;
+- that session is stopped and desired stopped, with the captured instance token, no task,
+  `manually_paused`, the same epoch and work_dir, and an ended attempt for this task;
+- the file is the same inode and content read before the checks.
+
+Only then does the pause unlock the slot and announce capacity. If any proof fails, or
+the pause converged without a checkpoint, the marker stays and the foreign-claim
+handling above applies. Retirement removes only the marker. Workspace bytes, the pause
+checkpoint, branches and holder fences are untouched, and the successor's ordinary slot
+reset still salvages dirty work before it checks out.
+
 Workers report a repeated blocker once to the project supervisor. Idle workers
 drain-ack and exit; workers with retained preparation end their turn awaiting the
 supervisor's inbox delivery (durable waits require an active claim). Workers with
