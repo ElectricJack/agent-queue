@@ -49,10 +49,10 @@ STORAGE_METHOD = re.compile(
     r"(?:task_meta|metadata|op_event|operation_event|journal)|^log_event$"
 )
 STORAGE_TABLES = {"task_metadata", "op_events", "operation_events", "events",
-                  "integration_subject_journal"}
+                  "integration_subject_journal", "system_config"}
 SQL_STORAGE_WRITE = re.compile(
     r"\b(?:insert\s+into|update|delete\s+from)\s+[\"\w.]*"
-    r"(?:task_metadata|op_events|operation_events|events|integration_subject_journal)\b",
+    r"(?:task_metadata|op_events|operation_events|events|integration_subject_journal|system_config)\b",
     re.IGNORECASE,
 )
 WRITE_CALLS = {"insert", "update", "delete"}

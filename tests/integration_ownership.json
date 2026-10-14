@@ -8771,7 +8771,8 @@
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
-    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
+    "src/install/deploy.py::read_record": "Generic existing read-only validated deployment-record reader; cutover snapshots the operator release/deploy binding without modifying it. No integration policy, publication or receipt authority."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -15291,6 +15292,51 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Deletes the claimed_by_session record a durably stopped writer left on a task the operator closes (azure-beacon-38); ordinary claim lifecycle, no ref replay or duplicate integration lifecycle storage."
+    },
+    "src/database/queries/metrics_queries.py::MetricsQueryMixin.bump_daemon_start_count::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437": {
+      "line": 484,
+      "owner": "MetricsQueryMixin.bump_daemon_start_count",
+      "call": "insert",
+      "owner_fingerprint": "eb8308a7b227640b5578cb2cc5f4241cbfef71afb15a061ec0fa4f266e32e352",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary durable daemon-start counter; insert/update bind only the fixed metrics.daemon_starts key. No integration identities, OIDs, replay authority or lifecycle state."
+    },
+    "src/database/queries/metrics_queries.py::MetricsQueryMixin.bump_daemon_start_count::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b": {
+      "line": 490,
+      "owner": "MetricsQueryMixin.bump_daemon_start_count",
+      "call": "update",
+      "owner_fingerprint": "eb8308a7b227640b5578cb2cc5f4241cbfef71afb15a061ec0fa4f266e32e352",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary durable daemon-start counter; insert/update bind only the fixed metrics.daemon_starts key. No integration identities, OIDs, replay authority or lifecycle state."
+    },
+    "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin.record_probe_health::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437": {
+      "line": 427,
+      "owner": "ProviderUsageQueryMixin.record_probe_health",
+      "call": "insert",
+      "owner_fingerprint": "28672c6e41bd8e0845b813b7ada8a4cebdb8526c0acb2c3677ce07c54b66c8cf",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary newest provider probe status; insert/update bind only providers.<provider>_usage.last_probe, disjoint from the containment audit namespace. No integration publication or replay state."
+    },
+    "src/database/queries/provider_usage_queries.py::ProviderUsageQueryMixin.record_probe_health::551b9ea04b33a934623b7691280a965c834b661f15da627d4d741e1dd08ea30b": {
+      "line": 430,
+      "owner": "ProviderUsageQueryMixin.record_probe_health",
+      "call": "update",
+      "owner_fingerprint": "28672c6e41bd8e0845b813b7ada8a4cebdb8526c0acb2c3677ce07c54b66c8cf",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary newest provider probe status; insert/update bind only providers.<provider>_usage.last_probe, disjoint from the containment audit namespace. No integration publication or replay state."
+    },
+    "src/integration/containment_audit.py::insert_audit::405210247fc3975ac2a63695a080f841d7c3a987a585423a7a608e1810fd4437": {
+      "line": 142,
+      "owner": "insert_audit",
+      "call": "insert",
+      "owner_fingerprint": "c958a34cd8533a43dbdc2e5a7cdca55b7c3afe1c978121366a6744b5870bff07",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Approved one-time operator lifecycle audit in a reserved per-project/repository system_config key; bounded manifest and exact generation/source/equivalence/digest validation, INSERT only behind stopped-writer and configuration fences. Never a receipt, containment proof, publication intent, retry/progress or ref replay journal."
     }
   },
   "generic_dependencies": {

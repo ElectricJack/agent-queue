@@ -11450,6 +11450,64 @@
         "type": "object"
       }
     },
+    "integration_cutover_containment": {
+      "name": "integration_cutover_containment",
+      "description": "Local operator previews and applies exact historical lifecycle exclusions.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "choices": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Choices",
+            "type": "object"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan"
+          },
+          "expected_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Digest"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationContainmentCutoverArgs",
+        "type": "object"
+      }
+    },
     "integration_cutover_plan": {
       "name": "integration_cutover_plan",
       "description": "Authenticated hierarchical integration operational control.",

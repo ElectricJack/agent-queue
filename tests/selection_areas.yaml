@@ -391,6 +391,7 @@ areas:
       - tests/test_integration_stacked_branches.py
       - tests/test_integration_candidate_baseline.py
       - tests/test_integration_cutover.py
+      - tests/test_integration_containment_cutover.py
       - tests/test_integration_settling.py
       - tests/test_integration_sealing.py
       - tests/test_integration_candidates.py

@@ -593,6 +593,7 @@
         "tests/test_integration_cleanup.py",
         "tests/test_integration_cli_controls_present.py",
         "tests/test_integration_completion_recovery.py",
+        "tests/test_integration_containment_cutover.py",
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
         "tests/test_integration_git_truth.py",
@@ -8061,6 +8062,35 @@
         "parametrize"
       ],
       "summary": ""
+    },
+    "tests/test_integration_containment_cutover.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:0d212eb026df2eb7acea7e664a4a4d9670a206401ff7ed8f1e73935f3a36592b",
+      "imports": [
+        "src.cli.app",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.commands.system_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration",
+        "src.integration.containment_audit",
+        "src.integration.containment_cutover",
+        "src.integration.containment_git",
+        "src.integration.delivery_truth",
+        "src.integration.git_truth",
+        "src.integration.provenance",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Guarded preparation uses real Git ancestry and disposable PostgreSQL."
     },
     "tests/test_integration_contracts.py": {
       "areas": [

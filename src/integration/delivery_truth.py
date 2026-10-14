@@ -255,8 +255,13 @@ class DeliveryAnswer:
     def disposition(self) -> DeliveryDisposition | None:
         value = self.request.disposition
         return value if value is not None and value.matches(self.request) and (
-            self.source_oid == value.source_oid
+            self.request.task_status == "COMPLETED" and self.source_oid == value.source_oid
         ) else None
+
+    @property
+    def lifecycle_exclusion(self) -> str | None:
+        """Shared watchdog/admission/metrics exclusion; never a delivery state."""
+        return DELIVERED_BY_OTHER_MEANS if self.disposition is not None else None
 
 
 async def delivered(task: DeliveryRequest, target_ref: str, *, observation=None) -> DeliveryAnswer:
@@ -464,6 +469,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
         DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
     )
     from src.database.tables import archived_tasks, task_completion_records, task_metadata, tasks
+    from src.integration.containment_audit import load_audits
     from src.integration.publishable_artifact import legacy_artifact
 
     task_ids = set(task_ids)
@@ -502,12 +508,20 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
         recorded_ids |= set((await reader.execute(
             select(tasks.c.id).where(tasks.c.id.in_(task_ids), legacy_artifact(tasks))
         )).scalars())
-        dispositions = dict((await reader.execute(
-            select(task_metadata.c.task_id, task_metadata.c.value).where(
-                task_metadata.c.task_id.in_(task_ids),
-                task_metadata.c.key == DELIVERY_DISPOSITION_KEY,
-            )
-        )).all())
+        # Writable task metadata is not operator authorization. Only the guarded
+        # repository cutover audit may supply persisted lifecycle exclusions.
+        dispositions = {}
+        # Canonical cutover audit survives archive's removal of task metadata.
+        # Its exact project/repository/generation/target/source fences are checked
+        # by DeliveryAnswer.disposition; stale entries cannot retire a reclose.
+        cutovers = await load_audits(reader, {
+            (row["project_id"], repository_id) for row in [*live, *archived]
+            if row["repo_id"] in {None, repository_id}
+        })
+        for audit in cutovers:
+            for record in audit["dispositions"]:
+                if isinstance(record, dict) and record.get("task_id") in task_ids:
+                    dispositions[record["task_id"]] = record
         settlements, parent_ids, abandoned = {}, set(), set()
         parent_completions, adopted_parents, parent_adoptions, rework = {}, {}, {}, {}
         if not reduced:

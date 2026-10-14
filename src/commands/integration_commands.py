@@ -123,6 +123,69 @@ class IntegrationCommandsMixin:
     async def _cmd_integration_cutover_plan(self, args: dict) -> dict:
         return await self._integration_cutover(args, read_only=True)
 
+    async def _cmd_integration_cutover_containment(self, args: dict) -> dict:
+        from dataclasses import asdict
+        from pathlib import Path
+
+        from sqlalchemy.exc import DBAPIError
+
+        from src.commands.contracts.integration import IntegrationContainmentCutoverArgs
+        from src.git.github_contracts import GitHubAccessError
+        from src.integration.containment_cutover import ContainmentCutover
+        from src.integration.containment_git import ContainmentGit
+        from src.integration.cutover import CutoverGit
+        from src.integration.protection import LocalRulesetReader
+        from src.install.deploy import DeployRefused, read_record
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "containment cutover requires the local operator")
+        request = IntegrationContainmentCutoverArgs.model_validate(args)
+
+        async def protection(facts):
+            resolver = getattr(self.orchestrator, "github_repository_binding_resolver", None)
+            factory = getattr(self.orchestrator, "github_client_factory", None)
+            if resolver is None or factory is None:
+                return None
+            repository = await self.db.get_repo(facts["repository"]["id"])
+            binding = resolver(repository)
+            if inspect.isawaitable(binding):
+                binding = await binding
+            if binding is None:
+                return None
+            client = factory(binding)
+            if inspect.isawaitable(client):
+                client = await client
+            reader = LocalRulesetReader(self._promotion_user_client(binding))
+            branches = {repository.default_branch.removeprefix("refs/heads/")}
+            branches.update(row["parent_ref"].removeprefix("refs/heads/")
+                            for row in facts["inventory"]["origins"] if row["parent_ref"])
+            return await CutoverGit(self.db, client, ruleset_admin_reader=reader).remote_state(
+                branches,
+            )
+
+        def runtime_bindings():
+            config = self.orchestrator.config
+            fields = ("default_mode", "merge_ci_policy", "merge_required_checks",
+                      "merge_require_up_to_date", "git_first", "reconciler_active",
+                      "reconciler_shadow", "owner_recovery_sweep")
+            return {"integration": {n: getattr(config.integration, n) for n in fields},
+                    "deploy": asdict(config.deploy),
+                    "deployment": read_record(Path(config.data_dir))}
+
+        try:
+            result = await ContainmentCutover(
+                self.db, ContainmentGit(protection=protection), runtime_bindings=runtime_bindings,
+            ).run(request.project_id, choices=request.choices, plan=request.plan,
+                  expected_digest=request.expected_digest, dry_run=request.dry_run,
+                  operator_id="local")
+        except (ValueError, GitError, GitHubAccessError, OSError, DBAPIError,
+                DeployRefused, TimeoutError) as exc:
+            # Database driver text can contain parameters; expose only the fixed refusal.
+            error = str(exc) if isinstance(exc, ValueError) else "cutover_fence_unavailable"
+            return _failure("refused", error)
+        return {"success": result["outcome"] in {"preview", "prepared"}, **result}
+
     async def _cmd_integration_cutover(self, args: dict) -> dict:
         return await self._integration_cutover(args, read_only=False)
 

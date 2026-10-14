@@ -1267,11 +1267,10 @@ async def test_missing_git_observer_warns_offline_frontier_reader(active_git_wor
 
 
 async def test_strict_shared_observation_ignores_disposition_and_receipts(world):
-    from dataclasses import asdict, replace
+    from dataclasses import replace
 
-    from src.database.tables import task_metadata
     from src.integration.delivery_truth import (
-        DELIVERY_DISPOSITION_KEY, DeliveryDisposition, delivered, load_delivery_requests,
+        DeliveryDisposition, delivered, load_delivery_requests,
     )
     from src.integration.git_truth import GitTruth
 
@@ -1281,12 +1280,11 @@ async def test_strict_shared_observation_ignores_disposition_and_receipts(world)
         "p", "r", "reopened", "close-reopened-2", "refs/heads/main", source,
         git(origin.clone, "rev-parse", "origin/main"), "operator historical evidence", "a" * 64,
     )
-    async with db._engine.begin() as conn:
-        await conn.execute(insert(task_metadata).values(
-            task_id="reopened", key=DELIVERY_DISPOSITION_KEY, value=json.dumps(asdict(disposition)),
-        ))
     requests = await load_delivery_requests(db, CHILDREN, repository_id="r",
                                             target_ref="refs/heads/main")
+    # Exercise the evaluator's lifecycle/ancestry separation. Persistence and
+    # operator authorization are covered by test_integration_containment_cutover.
+    requests["reopened"] = replace(requests["reopened"], disposition=disposition)
     observed = await GitTruth(GitManager()).snapshot(
         str(origin.clone), project_id="p", repository_id="r", repository_url=origin.url,
         target_ref="refs/heads/main",

@@ -215,6 +215,10 @@ def test_unknown_owned_definitions_fail_coverage(tmp_path, text):
     "from src.database.tables import task_metadata as hidden\n"
     "def replay(conn):\n    conn.execute(insert(hidden).values(key='ref_updates'))\n",
     "def replay(conn):\n    conn.execute(text('INSERT INTO op_events VALUES (1)'))\n",
+    "def replay(conn):\n    conn.execute(insert(system_config).values(key='ref_updates'))\n",
+    "from src.database.tables import system_config as hidden\n"
+    "def replay(conn):\n    conn.execute(update(hidden).values(value='replay'))\n",
+    "def replay(conn):\n    conn.execute(text('DELETE FROM system_config'))\n",
     "from src.database.tables import events as hidden\n"
     "def replay(conn):\n    conn.execute(insert(hidden).values(payload='ref_updates'))\n",
 ])
