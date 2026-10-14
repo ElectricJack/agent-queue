@@ -5842,8 +5842,10 @@
         "integration-controls"
       ],
       "default_arm": true,
-      "digest": "sha256:4447771d5216ae942fd9b68ba0d20b5d43d17366422239e07059fe928882b1d5",
+      "digest": "sha256:aaea82853da0fb516667deb640f13d4415b8dd3dc4747bb7daa18f52fcde66f0",
       "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
         "src.commands.project_commands",
         "src.config",
         "src.database.tables",

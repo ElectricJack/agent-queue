@@ -2381,7 +2381,8 @@ class TestRootDeliveryGatesTheWholeTree:
         ]
 
 
-async def test_cancelling_git_operation_reaps_process(mgr, tmp_path, monkeypatch):
+@pytest.mark.parametrize("result_runner", [False, True])
+async def test_cancelling_git_operation_reaps_process(mgr, tmp_path, monkeypatch, result_runner):
     import sys
 
     original_create = asyncio.create_subprocess_exec
@@ -2395,7 +2396,9 @@ async def test_cancelling_git_operation_reaps_process(mgr, tmp_path, monkeypatch
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-    request = asyncio.create_task(mgr._arun_unlocked(["reset", "--hard"], cwd=str(tmp_path)))
+    operation = (mgr.arun_git_result(["commit-tree", "HEAD^{tree}"], cwd=str(tmp_path))
+                 if result_runner else mgr._arun_unlocked(["reset", "--hard"], cwd=str(tmp_path)))
+    request = asyncio.create_task(operation)
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
         request.cancel()

@@ -624,7 +624,9 @@ async def _check_promotion_stranded(ctx: DoctorContext) -> CheckResult:
         or "every open promotion intent has an admissible task", data={"stranded": stranded})
 
 
-async def stalled_train_batches(ctx: DoctorContext, *, now=None, project_ids=None) -> list[dict]:
+async def stalled_train_batches(
+    ctx: DoctorContext, *, now=None, project_ids=None, alert_after_seconds=None,
+) -> list[dict]:
     """Age alarms for sealed inputs, independent of the legacy Subject journal."""
     from sqlalchemy import union_all
 
@@ -663,7 +665,8 @@ async def stalled_train_batches(ctx: DoctorContext, *, now=None, project_ids=Non
         repair_id = (ordinary_repair_id(row["batch_id"], row["repair_attempt_count"])
                      if row["repair_attempt_count"] else None)
         repair = repairs.get(repair_id)
-        if repair is not None and repair["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}:
+        if (alert_after_seconds is None and repair is not None
+                and repair["status"] not in {"COMPLETED", "FAILED", "BLOCKED"}):
             continue  # Existing task/repair capacity diagnostics own this wait.
         lane = lanes.get((row["project_id"], row["repository_id"], row["target_ref"]), {})
         progress_at = max(row["updated_at"], repair["updated_at"] if repair else 0)
@@ -671,12 +674,13 @@ async def stalled_train_batches(ctx: DoctorContext, *, now=None, project_ids=Non
             progress_at = max(progress_at, lane.get("progress_at", 0))
         policy = IntegrationTrainPolicy.model_validate(
             (row["hierarchical_integration_policy"] or {}).get("train") or {})
-        due_at = progress_at + policy.settling_cap_seconds
-        due_at = max(due_at, lane.get("deferred_until", 0) + 60)
-        if lane.get("running"):
-            due_at = max(due_at, lane.get("visit_started_at", 0)
-                         + train.visit_timeout_seconds + 60)
-        if now <= due_at:
+        due_at = progress_at + (alert_after_seconds or policy.settling_cap_seconds)
+        if alert_after_seconds is None:
+            due_at = max(due_at, lane.get("deferred_until", 0) + 60)
+            if lane.get("running"):
+                due_at = max(due_at, lane.get("visit_started_at", 0)
+                             + train.visit_timeout_seconds + 60)
+        if now < due_at:
             continue
         findings.append({
             "batch_id": row["batch_id"], "project_id": row["project_id"],
@@ -685,7 +689,7 @@ async def stalled_train_batches(ctx: DoctorContext, *, now=None, project_ids=Non
             "progress_at": progress_at, "due_at": due_at,
             "age_seconds": now - progress_at, "observation": lane,
             "detail": f"sealed batch {row['batch_id']} has no progress for "
-                      f"{int((now - progress_at) / 60)}m past its visit deadline; inspect "
+                      f"{int((now - progress_at) / 60)}m; inspect "
                       f"aq integration status {row['project_id']} and its candidate checks",
         })
     return findings

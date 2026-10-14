@@ -80,6 +80,23 @@ with no progress past the settling cap, allowing bounded visits and announced
 retry deadlines. Paused batches and unfinished repairs retain their own
 diagnostics. Inspect the named lane and checks before changing batch intent.
 
+The daemon also opens one durable escalation per sealed, open batch after 60
+minutes without progress. It notifies the project supervisor and queues a Discord
+incident through the escalation outbox. Snapshot errors, running visits and retry
+deadlines do not postpone this alert; a recent repair update does. Paused, aborted
+and promoted batches are excluded. Cancel the incident after recovery; the alert
+itself does not pause or resume delivery.
+
+An empty loose object in a retained integration clone triggers automatic recovery
+after a failed fetch. The daemon quarantines zero-byte objects under
+`.git/aq-empty-object-backups/`, refetches the authorized origin without trusting
+local tips, and requires `git fsck --full` to pass. A `pending` marker retains an
+interrupted or failed recovery for the next visit. Local candidates and refs stay
+in place: an object available only locally cannot be restored from origin, so its
+snapshot remains unknown and requires operator recovery. Retained clones enable
+Git fsync for committed data. See the
+[recovery contract](../specs/design/integration-repository-recovery.md).
+
 The `IntegrationTrain.visit(target, seal_now=True)` and
 `DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing
 window for one call. They preserve all admission and publication checks;

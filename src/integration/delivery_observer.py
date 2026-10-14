@@ -542,10 +542,13 @@ class DeliveryObserver:
         return self.data_dir / digest / "observer"
 
     async def _store(self, target: DeliveryTarget) -> Path:
+        from src.integration.repository_recovery import harden_retained_repository
+
         path = self.store_path(target.repository_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
             await self.git.acreate_checkout(target.repository_url, str(path), no_checkout=True)
+        await harden_retained_repository(self.git, path)
         return path
 
     async def _snapshot(

@@ -992,6 +992,71 @@ async def truth_snapshot(setup, *, target_ref="refs/heads/main"):
     )
 
 
+@pytest.mark.parametrize("interrupted", [False, True])
+async def test_retained_store_recovers_empty_object_and_hardens_writes(setup, interrupted):
+    from src.git.manager import GitError
+
+    _db, service, source, remote, repo = setup
+    store = await service.store(repo)
+    oid = git(source, "rev-parse", "HEAD")
+    obj = store / ".git" / "objects" / oid[:2] / oid[2:]
+    obj.unlink(missing_ok=True)
+    obj.parent.mkdir(exist_ok=True)
+    obj.write_bytes(b"")
+    normal_fetch = service.git.afetch_origin
+    if interrupted:
+        async def fail_refetch(*args, **kwargs):
+            if kwargs.get("refetch"):
+                raise GitError("refetch temporarily unavailable")
+            return await normal_fetch(*args, **kwargs)
+        with patch.object(service.git, "afetch_origin", fail_refetch):
+            with pytest.raises(GitError, match="temporarily unavailable"):
+                await service.store(repo)
+        assert not obj.exists()
+        assert (store / ".git" / "aq-empty-object-backups" / "pending").exists()
+    assert await service.store(repo) == store
+    git(store, "fsck", "--full", "--no-dangling")
+    assert git(store, "cat-file", "-t", oid) == "commit"
+    assert git(store, "config", "core.fsync") == "committed"
+    assert git(store, "config", "core.fsyncMethod") == "fsync"
+    assert git(remote, "rev-parse", "main") == oid
+
+
+async def test_empty_local_only_object_remains_unknown_and_preserves_local_refs(setup):
+    _db, service, _source, remote, repo = setup
+    store = await service.store(repo)
+    base = git(store, "rev-parse", "HEAD")
+    git(store, "config", "user.name", "Tester")
+    git(store, "config", "user.email", "tester@example.test")
+    local = git(store, "commit-tree", base + "^{tree}", "-p", base, "-m", "local candidate")
+    git(store, "update-ref", "refs/aq/batch-objects/local", local)
+    obj = store / ".git" / "objects" / local[:2] / local[2:]
+    obj.unlink()
+    obj.write_bytes(b"")
+    snapshot = await truth_snapshot(setup)
+    assert snapshot.error and snapshot.error.startswith("snapshot_git_error:")
+    assert git(store, "rev-parse", "refs/aq/batch-objects/local") == local
+    assert (store / ".git" / "aq-empty-object-backups" / "pending").exists()
+    assert git(remote, "rev-parse", "main") == base
+
+
+async def test_concurrent_retained_store_hardening_is_serialized_once(setup):
+    import asyncio
+
+    from unittest.mock import AsyncMock
+
+    _db, service, _source, _remote, repo = setup
+    store = await service.store(repo, fetch=False)
+    service.git._retained_fsync_stores.clear()
+    run = AsyncMock(wraps=service.git._arun_unlocked)
+    with patch.object(service.git, "_arun_unlocked", run):
+        stores = await asyncio.gather(*(service.store(repo, fetch=False) for _ in range(10)))
+    assert stores == [store] * 10
+    configurations = [call.args[0] for call in run.await_args_list if call.args[0][0] == "config"]
+    assert configurations == [["config", "core.fsync", "committed"],
+                              ["config", "core.fsyncMethod", "fsync"]]
+
+
 async def test_snapshot_scopes_generation_and_fences_target_movement(setup):
     from dataclasses import replace
 
