@@ -1602,8 +1602,9 @@ class DatabaseBatches:
                 source_base_on=epic_source_base_on).read_on(conn, ids[0])
         if (not graph.node(graph.epic_id).container
                 or graph.repository_id != target.repository_id or graph.project_holds
-                or any(node.holds or node.task_id != graph.node(graph.epic_id).parent_id
-                       and node.required and node.request.task_status != "COMPLETED"
+                or any(node.required and (node.holds
+                       or node.task_id != graph.node(graph.epic_id).parent_id
+                       and node.request.task_status != "COMPLETED")
                        for node in graph.nodes)):
             return None
         return graph
@@ -2303,7 +2304,7 @@ class DaemonLanes:
             refused: list[dict] = []
             for node in graph.nodes:
                 head = snapshot.for_target(node.branch_ref).target_oid if node.branch_ref else None
-                if not node.container or not head:
+                if not node.required or not node.container or not head:
                     continue
                 if not node.policy.check_names:
                     resolved[(head, node.policy)] = None

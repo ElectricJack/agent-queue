@@ -123,6 +123,22 @@ The decision is written on the abandon comment and on every retirement the archi
 queues (`task archived (<disposition>): <note>`), so the audited bundle-then-delete
 path carries it. Remove records `obsolete`.
 
+The archive transaction also writes `task.delivery_abandoned` with the explicit
+`obsolete` or `retire` disposition before parent settlement. Git-first epic
+readiness and PR collection keep the archived rows and their original statuses
+as history, but exclude that explicitly abandoned subtree from required delivery.
+A plain delivery archive remains required; an event on active work is not a
+waiver. Existing retained abandonment events carry the same decision.
+
+Ordinary container settlement does not retain an aggregate passing completion.
+The train still requires current Git containment for the remaining sources,
+configured checks, tree reviews, holds and gates, and a fresh fenced head before
+it records an aggregate completion and opens its PR. Legacy checkpoints and
+cancelled episodes stay historical; archive never synthesizes verification or
+passing evidence. Read-only train status retains the latest bounded visit until
+the next bounded visit refreshes it, so a pre-archive blocker can remain visible
+in the cache temporarily.
+
 ## Completed but undelivered
 
 COMPLETED means the worker finished, not that the code reached the default branch.

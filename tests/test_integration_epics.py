@@ -298,6 +298,58 @@ async def test_archived_required_child_uses_ordinary_completion_and_git(epic_cas
     assert readiness.ready and readiness.sources[0].request.archived
 
 
+@pytest.mark.parametrize("disposition", ["obsolete", "retire", None])
+async def test_archive_decision_preserves_history_and_only_abandons_explicit_subtree(
+    epic_case, disposition
+):
+    case = epic_case
+    for task_id, parent in (("retired", "epic"), ("retired-child", "retired")):
+        await case.db.create_task(Task(
+            id=task_id, project_id="p", repo_id="r", title=task_id, description="",
+            parent_task_id=parent, status=TaskStatus.PAUSED,
+        ))
+        await case.db.add_task_label(task_id, "hold:historical")
+    before, observed = await evaluate(case)
+    assert not before.ready
+    assert await case.db.archive_task(
+        "retired", archive_reason="explicit no-drop retirement",
+        abandon_undelivered=disposition is not None,
+        abandon_reason="explicit no-drop retirement", disposition=disposition,
+    )
+    readiness, _ = await evaluate(case)
+    graph = readiness.graph
+    for task_id in ("retired", "retired-child"):
+        history = await case.db.get_archived_task(task_id)
+        assert history["status"] == "PAUSED"
+        assert graph.node(task_id).request.archived
+        assert graph.node(task_id).required is (disposition is None)
+        assert await case.db.get_task_completion(task_id) is None
+    assert readiness.ready is (disposition is not None)
+    expected = ("child",) if disposition else ("child", "retired")
+    assert tuple(node.task_id for node in graph.children("epic")) == expected
+    # A decision that changes the graph invalidates an earlier evaluation.
+    async with case.db.immediate() as conn:
+        assert not await case.evaluator.current_on(conn, before, observed)
+    if disposition:
+        # The surviving parent's hold remains authoritative even after waiver.
+        await case.db.add_task_label("epic", "hold:operator")
+        held, _ = await evaluate(case)
+        assert held.state == "held" and ("epic", "hold:operator") in held.blockers
+
+
+@pytest.mark.parametrize("payload", ['{"disposition":"obsolete"}', 'invalid',
+                                      '{"disposition":"deliver"}'])
+async def test_abandonment_event_cannot_waive_active_work(epic_case, payload):
+    case = epic_case
+    await case.db.log_event("task.delivery_abandoned", project_id="p", task_id="child",
+                            payload=payload)
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "child").values(status="PAUSED"))
+    readiness, _ = await evaluate(case)
+    assert readiness.graph.node("child").required
+    assert ("child", "work_paused") in readiness.blockers
+
+
 @pytest.mark.parametrize("waived_child", [False, True])
 async def test_empty_or_fully_waived_nested_container_keeps_its_own_tree_review(epic_case,
                                                                           waived_child):

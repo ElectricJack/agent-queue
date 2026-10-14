@@ -5104,13 +5104,6 @@ class TaskCommandsMixin:
                 project_id=task.project_id,
                 task_id=task_id,
             )
-            if abandon_undelivered:
-                await self.db.log_event(
-                    "task.delivery_abandoned",
-                    project_id=task.project_id,
-                    task_id=task_id,
-                    payload=json.dumps({"disposition": disposition}),
-                )
             await self._emit_task_graph_change("task.archived", task)
             return {
                 "archived": task_id,

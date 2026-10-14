@@ -390,6 +390,17 @@ class ArchiveQueryMixin:
             task = await self._get_task_conn(tid, conn=conn)
             if task is not None:
                 await self._archive_one(task, conn=conn, retirement_reason=retirement_reason)
+        if abandon_undelivered:
+            # Readiness must see the accepted decision with the archive, even
+            # if the command is interrupted before its post-commit notices.
+            # The root decision covers the entire atomically archived subtree.
+            await self.log_event(
+                "task.delivery_abandoned",
+                project_id=project_id,
+                task_id=task_id,
+                payload=json.dumps({"disposition": disposition}),
+                conn=conn,
+            )
         if defer_projection:
             # The change-set caller retains the old dependents/parent and
             # performs their projection and stale-claim release as one pass.

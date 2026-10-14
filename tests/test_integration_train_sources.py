@@ -4191,6 +4191,94 @@ async def collect_epic(case):
     return delivered.target_sha
 
 
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+async def test_obsolete_archive_settles_work_but_requires_fresh_collected_completion(
+    collected_epic, monkeypatch
+):
+    from src.database.tables import (
+        integration_parent_episodes, integration_repair_operations, task_integration_checkpoints,
+    )
+    from src.integration.epics import EpicGraphReader
+    from src.integration.train_sources import epic_policy_on, epic_source_base_on
+    from tests.test_integration_service import _minimal_policy_values
+
+    case = collected_epic
+    await completed(case.world, "obsolete", parent="epic", done=False)
+    await case.db.transition_task("obsolete", TaskStatus.PAUSED)
+    head = await collect_epic(case)
+    await review_epic(case)
+    blocked = await case.train.request_visit(case.target)
+    assert ("obsolete", "work_paused") in {
+        (item["task_id"], item["code"]) for item in blocked.detail["blockers"]
+    }
+    reader = EpicGraphReader(policy_on=epic_policy_on, source_base_on=epic_source_base_on)
+    async with case.db.immediate() as conn:
+        # Legacy orphan settlement already cancelled this episode. Its
+        # checkpoint is history, not current aggregate verification.
+        await conn.execute(insert(integration_parent_episodes).values(
+            id="legacy-episode", parent_task_id="epic", repository_id="r", generation=2,
+            pre_collection_checkpoint_sha=case.base, created_at=case.now[0],
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="epic", repository_id="r", branch="aq/epic", generation=2,
+            checkpoint_sha=case.base, state="awaiting_children", version=0,
+            updated_at=case.now[0], episode_id="legacy-episode",
+        ))
+        await conn.execute(insert(integration_repair_operations).values(
+            id="legacy-operation", target_kind="parent", parent_task_id="epic",
+            episode_id="legacy-episode", state="cancelled",
+            policy_snapshot=_minimal_policy_values(), artifact_snapshot={},
+            required_check_version="legacy", created_at=case.now[0], updated_at=case.now[0],
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="IN_PROGRESS"))
+
+    await case.db.set_task_meta("epic", "container", True)
+
+    # Observe the same transaction boundary used by archive's parent rollup.
+    settle = case.db.settle_containers
+    async def inspect_archive(seeds, *, conn, **kwargs):
+        graph = await reader.read_on(conn, "epic")
+        assert graph.node("obsolete").request.archived
+        assert not graph.node("obsolete").required
+        return await settle(seeds, conn=conn, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(case.db, "settle_containers", inspect_archive)
+        assert await case.db.archive_task(
+            "obsolete", abandon_undelivered=True, disposition="obsolete",
+            abandon_reason="no eligible legacy-only tables; no drop required",
+            archive_reason="no eligible legacy-only tables; no drop required",
+        )
+    assert (await case.db.get_task("epic")).status == TaskStatus.COMPLETED
+    assert (await case.db.get_archived_task("obsolete"))["status"] == "PAUSED"
+    assert await case.db.get_task_completion("epic") is None
+    assert (await case.db.get_integration_checkpoint("epic"))["checkpoint_sha"] == case.base
+    assert (await case.db.get_integration_operation("legacy-operation"))["state"] == "cancelled"
+
+    # Read-only status still reports the old visit until a bounded fresh visit.
+    status = IntegrationStatusService(case.db, git_first="active", train=case.train)
+    stale = await status.train_status("p")
+    assert any(item["code"] == "work_paused" for item in stale["blockers"])
+    case.now[0] += 1000
+    refreshed = await case.train.request_visit(case.target)
+    assert refreshed.state == "idle"
+    [opened] = refreshed.detail["epic_completions"]
+    assert opened["outcome"] == "opened" and opened["head_sha"] == head
+    assert "`obsolete`" in case.train.lane_for.git.acreate_pr.await_args.kwargs["body"]
+    fresh = await status.train_status("p")
+    assert not any(item["code"] == "work_paused" for item in fresh["blockers"])
+    completion = await case.db.get_task_completion("epic")
+    assert completion.outcome == "pass" and completion.commits == [head]
+    assert git(case.origin.url, "rev-parse", "main") == case.base
+    # Ordinary root delivery still builds and checks its own candidate.
+    root = await case.train.visit(MAIN, seal_now=True)
+    assert root.state == "testing", root
+    case.github.runs[root.candidate_sha] = "success"
+    assert (await case.train.visit(MAIN)).state == "delivered"
+    git(case.origin.url, "merge-base", "--is-ancestor", head,
+        git(case.origin.url, "rev-parse", "main"))
+
+
 async def review_epic(case, *, verdict="approved", decision="approve"):
     subject, head = await TreeReviews.observe(await snapshot(case.world, case.target),
                                             "epic", case.target.target_ref)
@@ -4858,11 +4946,19 @@ async def test_closed_epic_sync_after_abort_hands_code_conflicts_to_worker(colle
             await conn.execute(update(task_branch_origins).where(
                 task_branch_origins.c.task_id.in_(("child-a", "child-b")),
             ).values(retired_at=time.time()))
-        for tid in ("child-a", "child-b"):
-            # Exercise already archived legacy inputs without authorizing a new
-            # archive of work that has only reached the epic, not main.
-            await case.db.archive_task(tid, abandon_undelivered=True,
-                                      abandon_reason="legacy archive fixture", disposition="retire")
+        from sqlalchemy import delete
+
+        from src.database.tables import archived_tasks
+
+        # Seed historical delivery archives, without an abandonment decision.
+        # An explicit retire disposition now waives these sources; that is a
+        # different case from preserving required inputs after a legacy archive.
+        async with case.db.immediate() as conn:
+            for tid in ("child-a", "child-b"):
+                row = (await conn.execute(select(tasks).where(tasks.c.id == tid))).mappings().one()
+                values = {key: value for key, value in row.items() if key in archived_tasks.c}
+                await conn.execute(insert(archived_tasks).values(**values, archived_at=time.time()))
+                await conn.execute(delete(tasks).where(tasks.c.id == tid))
     prior = Batch("aborted-epic-work", "p", "r", case.target.target_ref)
     store = BatchStore(case.db)
     members = [BatchMember(tid, source, case.base, order)
