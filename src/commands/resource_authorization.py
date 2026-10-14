@@ -145,6 +145,8 @@ AUDITED_READS |= {"playbook_state_get", "playbook_state_list", "playbook_state_i
 
 
 def resource_requirements(name: str) -> tuple[str, ...]:
+    if name == "playbook_script_run":
+        return ("pinned_script_invocation",)
     if name in STATE_COMMANDS:
         return ("invocation_namespace_or_operator",)
     if name in SESSION_COMMANDS:
@@ -240,6 +242,10 @@ async def authorize_resources(
     if command == "message_send" and principal.kind is PrincipalKind.PLAYBOOK:
         # Shared submission validation resolves recipient ownership and derives
         # sender provenance. Authored sender fields cannot become resource authority.
+        return None
+    if command == "playbook_script_run":
+        # The handler checks the actual pinned step, run and capability; its
+        # data arguments never enter generic identifier/project inference.
         return None
     if command in STATE_COMMANDS:
         # This handler derives namespace membership from a pinned invocation;

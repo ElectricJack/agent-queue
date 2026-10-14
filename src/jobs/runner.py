@@ -69,6 +69,11 @@ async def supervise(directory: Path) -> None:
         os.environ["AQ_JOB_ID"] = job["id"]
         intent = {"job_id": job["id"], "nonce": nonce, **await identity()}
         await asyncio.to_thread(atomic_json, directory / "intent.json", intent)
+        if job.get("owner_kind") == "playbook":
+            from src.jobs.playbook import run
+
+            await run(directory, job, intent)
+            return
         box = BoxLock(job["contract"]["lock_dir"], job["contract"]["capacity"])
         started, exit_code, infra, cancelled, output_failed = None, None, None, False, False
         parser = PytestOutputParser()

@@ -27,6 +27,8 @@ from typing import Annotated, Any, Final, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
+from src.playbooks.script_policy import ScriptProgram
+from src.playbooks.script_inputs import PinnedScript
 from src.playbooks.expressions import (
     Condition,
     Identifier,
@@ -212,6 +214,17 @@ class ToolUsePolicy(V2Base):
 # --------------------------------------------------------------------------
 # §4.5 — the seven steps
 # --------------------------------------------------------------------------
+
+
+# E2 owns the dispatch boundary's type; E3 installs its executor and consumers.
+
+
+class ScriptStep(StepBase):
+    type: Literal["script"] = "script"
+    program: ScriptProgram
+    environment: dict[str, Value] = Field(default_factory=dict)
+    save_result_as: Identifier | None = None
+    transitions: dict[str, Identifier]
 
 
 class CommandStep(StepBase):
@@ -569,6 +582,14 @@ def step_values(step: Any, *, scoped: bool = False) -> list[Any]:
             values.extend(walk_value(node, scoped=scoped))
     for node in getattr(step, "inputs", {}).values():
         values.extend(walk_value(node, scoped=scoped))
+    if isinstance(step, ScriptStep):
+        program = step.program
+        inputs = [*(program.argv[1:] if program.argv else program.arguments),
+                  *step.environment.values()]
+        if program.stdin is not None:
+            inputs.append(program.stdin)
+        for node in inputs:
+            values.extend(walk_value(node, scoped=scoped))
     if isinstance(step, DecisionStep):
         for case in step.cases:
             values.extend(condition_values(case.when, scoped=scoped))
@@ -636,6 +657,8 @@ def granted_aq_commands(definition: Any) -> frozenset[str]:
     """
     found: set[str] = set()
     for step in getattr(definition, "steps", {}).values():
+        if isinstance(step, ScriptStep):
+            found.add("playbook_script_run")
         command = getattr(step, "command", None)
         if isinstance(command, str) and command:
             found.add(command)
@@ -697,6 +720,9 @@ class TrustedExecutionMetadata(V2Base):
     """
 
     state_schema_version: Annotated[int, Field(strict=True, ge=1)] | None = None
+    scripts: dict[Identifier, PinnedScript] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
 
 
 class PlaybookDefinition(V2Base):

@@ -65,7 +65,12 @@ class JobService:
         run_seconds=None,
         adapter_request_hash=None,
         attempt_id=None,
+        script=None,
     ):
+        if owner_kind == "playbook":
+            from src.jobs.playbook import submit
+
+            return await submit(self, script)
         cfg = self.settings
         if not cfg.enabled:
             raise JobError("jobs.disabled")
@@ -293,6 +298,10 @@ class JobService:
         if job["state"] in TERMINAL:
             return job
         if job["state"] == "queued":
+            if job["owner_kind"] == "playbook":
+                from src.jobs.playbook import settle_unlaunched
+
+                return await settle_unlaunched(self, job, "cancelled")
             result = build_result(job, {"cancelled": True})
             return await self.db.transition_job(
                 job["id"],
@@ -329,6 +338,13 @@ class JobService:
                     if owner_finished:
                         await self.cancel(job)
                         job = await self.db.get_job(job["id"])
+                if job["owner_kind"] == "playbook":
+                    run = await self.db.load_run(job["playbook_run_id"])
+                    if not run or run.lifecycle.value in {
+                        "cancelled", "cancelling", "completed", "failed", "timed_out", "blocked"
+                    }:
+                        await self.cancel(job)
+                        job = await self.db.get_job(job["id"])
                 if job["state"] != "queued":
                     await self.reconcile(job)
                 if owner_finished:
@@ -339,6 +355,11 @@ class JobService:
                 rows = await self.db.list_jobs(active=True, limit=1000)
                 for job in rows:
                     if job["state"] == "queued" and job["queue_deadline"] <= time.time():
+                        if job["owner_kind"] == "playbook":
+                            from src.jobs.playbook import settle_unlaunched
+
+                            await settle_unlaunched(self, job, "admission_timed_out")
+                            continue
                         result = build_result(job, {"infra_reason": "queue_timeout"})
                         await self.db.transition_job(
                             job["id"],
@@ -366,6 +387,14 @@ class JobService:
             )
 
     async def launch(self, job):
+        if job["owner_kind"] == "playbook":
+            run = await self.db.load_run(job["playbook_run_id"])
+            if not run or run.lifecycle.value in {"cancelled", "cancelling", "completed", "failed",
+                                                   "timed_out", "blocked"}:
+                await self.cancel(job)
+                return
+            if run.lifecycle.value != "running":
+                return
         changed = await self.db.transition_job(
             job["id"], job["state_version"], "starting", launch_at=time.time()
         )
@@ -374,6 +403,11 @@ class JobService:
         directory = await asyncio.to_thread(job_directory, Path(self.config.data_dir), job["id"])
         await asyncio.to_thread(atomic_json, directory / "request.json", changed)
         try:
+            payload = None
+            if job["owner_kind"] == "playbook":
+                from src.jobs.playbook import launch_payload
+
+                payload = await launch_payload(self, changed)
             proc = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-m",
@@ -381,7 +415,7 @@ class JobService:
                 str(directory),
                 cwd=str(self.root),
                 env=job["contract"]["env"],
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE if payload else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
@@ -389,11 +423,19 @@ class JobService:
             reap = asyncio.create_task(proc.wait())
             self._children.add(reap)
             reap.add_done_callback(self._children.discard)
-        except OSError:
+            if payload:
+                proc.stdin.write(payload)
+                await proc.stdin.drain()
+                proc.stdin.close()
+        except (OSError, ValueError, RuntimeError):
             # No spawn retry, even if the caller cannot distinguish pre/post exec.
             await self.reconcile(changed)
 
     async def reconcile(self, job):
+        if job["owner_kind"] == "playbook":
+            from src.jobs.playbook import reconcile
+
+            return await reconcile(self, job)
         nonce = job["runner_nonce"]
         try:
             directory = await asyncio.to_thread(
@@ -580,7 +622,10 @@ class JobService:
         for job in rows:
             old = now - job["ended_at"]
             eviction = reserve and reserved + cfg.head_bytes + cfg.tail_bytes > cfg.log_budget_bytes
-            if job["output_retention"] != "expired" and (old > cfg.log_days * 86400 or eviction):
+            # Script streams and their bounded binding are one protected result;
+            # keep the reservation and pin until result retention retires them.
+            if (job["owner_kind"] != "playbook" and job["output_retention"] != "expired"
+                    and (old > cfg.log_days * 86400 or eviction)):
                 directory = await asyncio.to_thread(
                     job_directory, Path(self.config.data_dir), job["id"]
                 )
@@ -589,6 +634,10 @@ class JobService:
                 await self.db.expire_job_output(job["id"])
                 reserved -= job["output_reservation_bytes"]
             if old > cfg.result_days * 86400:
+                if job["owner_kind"] == "playbook":
+                    from src.jobs.playbook import retire
+
+                    await retire(self, job)
                 import shutil
 
                 snapshot_ws = None

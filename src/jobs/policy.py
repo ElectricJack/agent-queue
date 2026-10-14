@@ -147,7 +147,9 @@ def _next_admission(rows: list[dict], now: float, capacity: int, per_owner_activ
     for row in sorted((r for r in rows if r["state"] == "queued"), key=lambda r: queue_key(r, now)):
         if row["job_class"] == "exclusive":
             return row if not active else None
-        if counts.get(row["owner_id"], 0) >= per_owner_active:
+        if counts.get(row["owner_id"], 0) >= (
+            1 if row.get("owner_kind") == "playbook" else per_owner_active
+        ):
             continue
         if used + row["weight"] <= capacity:
             return row

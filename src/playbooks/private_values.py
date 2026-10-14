@@ -286,6 +286,14 @@ class PrivateValueService:
             row = (await conn.execute(query)).mappings().first()
         if row is None:
             raise PrivateValueError("private_value_unavailable")
+        return self.decode_row(row, owner=owner)
+
+    def decode_row(self, row: Mapping[str, Any], *, owner: PrivateOwner) -> Any:
+        """Authenticate a stored row or detached producer's encrypted receipt."""
+        if (row["owner_kind"], row["owner_id"], row["scope_kind"], row["scope_owner"]) != (
+            owner.kind, owner.identifier, owner.scope_kind, owner.scope_owner
+        ):
+            raise PrivateValueError("private_value_unauthorized")
         if row["expires_at"] is not None and row["expires_at"] <= time.time():
             raise PrivateValueError("private_value_expired")
         key = self._keys.get(row["key_id"])

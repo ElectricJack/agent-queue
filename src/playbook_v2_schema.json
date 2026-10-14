@@ -1640,6 +1640,32 @@
       "title": "ForEachStep",
       "type": "object"
     },
+    "InputPin": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_count": {
+          "minimum": 0,
+          "title": "Byte Count",
+          "type": "integer"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "byte_count"
+      ],
+      "title": "InputPin",
+      "type": "object"
+    },
     "IntegrationPolicy": {
       "additionalProperties": false,
       "properties": {
@@ -2499,6 +2525,56 @@
       "title": "OutcomeSchedule",
       "type": "object"
     },
+    "PinnedScript": {
+      "additionalProperties": false,
+      "properties": {
+        "executable_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Executable Sha256",
+          "type": "string"
+        },
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/InputPin"
+          },
+          "title": "Inputs",
+          "type": "array"
+        },
+        "program": {
+          "$ref": "#/$defs/ScriptProgram"
+        },
+        "program_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Program Sha256",
+          "type": "string"
+        },
+        "runtime_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Runtime Sha256",
+          "type": "string"
+        },
+        "source_revision": {
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "version": {
+          "const": 1,
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "program",
+        "program_sha256",
+        "source_revision",
+        "runtime_sha256",
+        "executable_sha256"
+      ],
+      "title": "PinnedScript",
+      "type": "object"
+    },
     "PolicyAction": {
       "additionalProperties": false,
       "properties": {
@@ -2837,6 +2913,353 @@
         "source"
       ],
       "title": "Rule",
+      "type": "object"
+    },
+    "ScriptLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "stderr_bytes": {
+          "default": 1048576,
+          "maximum": 1048576,
+          "minimum": 1,
+          "title": "Stderr Bytes",
+          "type": "integer"
+        },
+        "stdout_bytes": {
+          "default": 1048576,
+          "maximum": 1048576,
+          "minimum": 1,
+          "title": "Stdout Bytes",
+          "type": "integer"
+        },
+        "wall_seconds": {
+          "default": 60,
+          "maximum": 900,
+          "minimum": 1,
+          "title": "Wall Seconds",
+          "type": "integer"
+        }
+      },
+      "title": "ScriptLimits",
+      "type": "object"
+    },
+    "ScriptProgram": {
+      "additionalProperties": false,
+      "description": "Source-authored DTO, independently of the compiler's semantic body.\n\nRuntime is a reviewed operator manifest identifier, never a host path. Argv\nhas a literal first element; all other elements and ``arguments`` are values.\nExactly one of script/argv/shell is legal. No template engine touches code.",
+      "properties": {
+        "arguments": {
+          "default": [],
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "binding_ref": "#/$defs/BindingRef",
+                "coalesce": "#/$defs/CoalesceValue",
+                "context_ref": "#/$defs/ContextRef",
+                "diff": "#/$defs/DiffValue",
+                "event_ref": "#/$defs/EventRef",
+                "filter": "#/$defs/FilterValue",
+                "len": "#/$defs/LenValue",
+                "list": "#/$defs/ListValue",
+                "literal": "#/$defs/LiteralValue",
+                "loop_ref": "#/$defs/LoopRef",
+                "map": "#/$defs/MapValue",
+                "object": "#/$defs/ObjectValue",
+                "template": "#/$defs/TemplateValue"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/LiteralValue"
+              },
+              {
+                "$ref": "#/$defs/EventRef"
+              },
+              {
+                "$ref": "#/$defs/ContextRef"
+              },
+              {
+                "$ref": "#/$defs/BindingRef"
+              },
+              {
+                "$ref": "#/$defs/LoopRef"
+              },
+              {
+                "$ref": "#/$defs/ListValue"
+              },
+              {
+                "$ref": "#/$defs/ObjectValue"
+              },
+              {
+                "$ref": "#/$defs/TemplateValue"
+              },
+              {
+                "$ref": "#/$defs/CoalesceValue"
+              },
+              {
+                "$ref": "#/$defs/FilterValue"
+              },
+              {
+                "$ref": "#/$defs/MapValue"
+              },
+              {
+                "$ref": "#/$defs/LenValue"
+              },
+              {
+                "$ref": "#/$defs/DiffValue"
+              }
+            ]
+          },
+          "title": "Arguments",
+          "type": "array"
+        },
+        "argv": {
+          "anyOf": [
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "discriminator": {
+                      "mapping": {
+                        "binding_ref": "#/$defs/BindingRef",
+                        "coalesce": "#/$defs/CoalesceValue",
+                        "context_ref": "#/$defs/ContextRef",
+                        "diff": "#/$defs/DiffValue",
+                        "event_ref": "#/$defs/EventRef",
+                        "filter": "#/$defs/FilterValue",
+                        "len": "#/$defs/LenValue",
+                        "list": "#/$defs/ListValue",
+                        "literal": "#/$defs/LiteralValue",
+                        "loop_ref": "#/$defs/LoopRef",
+                        "map": "#/$defs/MapValue",
+                        "object": "#/$defs/ObjectValue",
+                        "template": "#/$defs/TemplateValue"
+                      },
+                      "propertyName": "type"
+                    },
+                    "oneOf": [
+                      {
+                        "$ref": "#/$defs/LiteralValue"
+                      },
+                      {
+                        "$ref": "#/$defs/EventRef"
+                      },
+                      {
+                        "$ref": "#/$defs/ContextRef"
+                      },
+                      {
+                        "$ref": "#/$defs/BindingRef"
+                      },
+                      {
+                        "$ref": "#/$defs/LoopRef"
+                      },
+                      {
+                        "$ref": "#/$defs/ListValue"
+                      },
+                      {
+                        "$ref": "#/$defs/ObjectValue"
+                      },
+                      {
+                        "$ref": "#/$defs/TemplateValue"
+                      },
+                      {
+                        "$ref": "#/$defs/CoalesceValue"
+                      },
+                      {
+                        "$ref": "#/$defs/FilterValue"
+                      },
+                      {
+                        "$ref": "#/$defs/MapValue"
+                      },
+                      {
+                        "$ref": "#/$defs/LenValue"
+                      },
+                      {
+                        "$ref": "#/$defs/DiffValue"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Argv"
+        },
+        "cwd": {
+          "default": "scratch",
+          "enum": [
+            "scratch",
+            "inputs"
+          ],
+          "title": "Cwd",
+          "type": "string"
+        },
+        "env_allowlist": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Env Allowlist",
+          "type": "array"
+        },
+        "interpreter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interpreter"
+        },
+        "json_required": {
+          "default": false,
+          "title": "Json Required",
+          "type": "boolean"
+        },
+        "limits": {
+          "$ref": "#/$defs/ScriptLimits"
+        },
+        "output": {
+          "default": "text",
+          "enum": [
+            "text",
+            "json"
+          ],
+          "title": "Output",
+          "type": "string"
+        },
+        "runtime": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Runtime",
+          "type": "string"
+        },
+        "script": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Script"
+        },
+        "shell": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shell"
+        },
+        "source_kind": {
+          "default": "repository",
+          "enum": [
+            "repository",
+            "vault"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "stdin": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "binding_ref": "#/$defs/BindingRef",
+                  "coalesce": "#/$defs/CoalesceValue",
+                  "context_ref": "#/$defs/ContextRef",
+                  "diff": "#/$defs/DiffValue",
+                  "event_ref": "#/$defs/EventRef",
+                  "filter": "#/$defs/FilterValue",
+                  "len": "#/$defs/LenValue",
+                  "list": "#/$defs/ListValue",
+                  "literal": "#/$defs/LiteralValue",
+                  "loop_ref": "#/$defs/LoopRef",
+                  "map": "#/$defs/MapValue",
+                  "object": "#/$defs/ObjectValue",
+                  "template": "#/$defs/TemplateValue"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/LiteralValue"
+                },
+                {
+                  "$ref": "#/$defs/EventRef"
+                },
+                {
+                  "$ref": "#/$defs/ContextRef"
+                },
+                {
+                  "$ref": "#/$defs/BindingRef"
+                },
+                {
+                  "$ref": "#/$defs/LoopRef"
+                },
+                {
+                  "$ref": "#/$defs/ListValue"
+                },
+                {
+                  "$ref": "#/$defs/ObjectValue"
+                },
+                {
+                  "$ref": "#/$defs/TemplateValue"
+                },
+                {
+                  "$ref": "#/$defs/CoalesceValue"
+                },
+                {
+                  "$ref": "#/$defs/FilterValue"
+                },
+                {
+                  "$ref": "#/$defs/MapValue"
+                },
+                {
+                  "$ref": "#/$defs/LenValue"
+                },
+                {
+                  "$ref": "#/$defs/DiffValue"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stdin"
+        },
+        "supporting_files": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Supporting Files",
+          "type": "array"
+        }
+      },
+      "required": [
+        "runtime"
+      ],
+      "title": "ScriptProgram",
       "type": "object"
     },
     "SourceRef": {
@@ -3289,6 +3712,15 @@
       "additionalProperties": false,
       "description": "Source-derived execution pins; never caller authority or compiler output.\n\nState and script owners extend this strict model with reviewed pins. Command\nsecurity policy remains in the execution contracts, not in author assertions.",
       "properties": {
+        "scripts": {
+          "patternProperties": {
+            "^[a-z0-9][a-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/PinnedScript"
+            }
+          },
+          "title": "Scripts",
+          "type": "object"
+        },
         "state_schema_version": {
           "anyOf": [
             {
