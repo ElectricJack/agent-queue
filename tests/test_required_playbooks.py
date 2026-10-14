@@ -65,7 +65,7 @@ def test_first_install_has_an_explicit_minimal_inventory(tmp_path, empty_vault):
         (tmp_path / "vault").mkdir()
     expected = {
         "default-assignment-routing", "provider-usage-probe", "provider-failover",
-        "default-pipeline", "supervisor-failure-triage", "morning-report", "stuck-task-watch",
+        "default-pipeline", "supervisor-failure-triage", "morning-report",
     }
     assert set(INITIAL_SYSTEM_PLAYBOOK_IDS) == expected
     assert set(install_initial_playbooks(str(tmp_path))) == expected
@@ -1152,18 +1152,13 @@ async def test_activation_writes_reach_the_timer_service_without_a_restart(tmp_p
         handler.orchestrator = SimpleNamespace(playbook_manager=runtime)
         timer = TimerService(event_bus=SimpleNamespace(emit=AsyncMock()), playbook_manager=runtime)
         timer.start()
-        assert "timer.10m" in timer.active_intervals  # probe and stuck-task watch
+        assert "timer.10m" in timer.active_intervals  # usage probe
+        assert "timer.15m" not in timer.active_intervals  # watch requires deliberate import
 
         paused = await handler._cmd_set_playbook_enabled(
             {"playbook_id": "provider-usage-probe", "enabled": False}
         )
         assert paused["success"] is True
-        await timer.tick()
-        assert "timer.10m" in timer.active_intervals  # the watch still subscribes
-        paused_watch = await handler._cmd_set_playbook_enabled(
-            {"playbook_id": "stuck-task-watch", "enabled": False}
-        )
-        assert paused_watch["success"] is True
         await timer.tick()
         assert "timer.10m" not in timer.active_intervals
 

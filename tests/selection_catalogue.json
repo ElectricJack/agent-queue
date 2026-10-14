@@ -962,6 +962,7 @@
         "tests/test_playbook_state.py",
         "tests/test_playbook_state_notify.py",
         "tests/test_playbook_wait_repository.py",
+        "tests/test_stuck_task_watch.py",
         "tests/test_v2_dry_run.py",
         "tests/test_v2_engine.py",
         "tests/test_v2_engine_repository.py",
@@ -16346,6 +16347,48 @@
       ],
       "markers": [],
       "summary": "Unit tests for the in-memory streams registry (no HTTP, no subprocess)."
+    },
+    "tests/test_stuck_task_watch.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f1b387f9123625f3c5563cc3c6da0debc594c6428ebfcf47ac4a97964c873725",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.playbook_state_queries",
+        "src.database.tables",
+        "src.doctor.observations",
+        "src.messages.delivery",
+        "src.models",
+        "src.observations.snapshots",
+        "src.playbooks.artifact_store",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.private_values",
+        "src.playbooks.profiles",
+        "src.playbooks.proposal",
+        "src.playbooks.required",
+        "src.playbooks.run_state",
+        "src.playbooks.services",
+        "src.playbooks.state",
+        "src.playbooks.state_notify",
+        "src.playbooks.validation",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "integration",
+        "parametrize"
+      ],
+      "summary": "Reviewed watch policy through the real engine, handler and disposable PostgreSQL."
     },
     "tests/test_subagent_events.py": {
       "areas": [

@@ -1,20 +1,23 @@
 ---
 playbook_id: stuck-task-watch
-artifact_sha256: sha256:1a74993b0b29772a513b4d83275978a9d056e94f818ccc4538054f0705c4c1c0
-source_sha256: sha256:f8bcded1876b0b88ba54f174b584508e041483793cefe451e25bae1f7e6d2f5f
-contract_fingerprint: sha256:564af3103b83d1e1b6f2987477e1a09928fc4532eeaae4b971336ad2e9ba8682
+artifact_sha256: sha256:7fe10168b5994a92041dc103eb9762b2c6565fffcb73d3a1a605d4a0d2740cc0
+source_sha256: sha256:67d06dadcbb12883eee6797a6af0deb05b0673bd44c56df73522be0aeffd7ad9
+contract_fingerprint: sha256:4aa33f37590847b3228057512c83b1fae6eaf7175646193b01aa7c3919de6e96
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
+  - list_projects
+  - list_tasks
   - get_stuck_tasks
+  - doctor_run
+  - playbook_state_list
+  - playbook_state_notify
   - message_send
   harness_tools: []
   plugin_tools: []
 profiles_referenced: []
 ---
 
-# Stuck-task watch artifact manifest
+# Deliberate-install acceptance fixture
 
-The deterministic graph reads on timer.10m, ends quietly for an empty list,
-and sends every nonempty summary to session:supervisor-global. The two grants
-permit observation and messaging only. No watch memory or repair capability.
+Reviewed policy lineage: rev-smart-flare r1, rev-steady-ridge r1; historical acceptance identity stark-vault-94. This recording has no installation or activation authority. The reminder fixture uses a separate namespace. See source.md for per-partition completeness and pre-scan CAS rules.

@@ -1,14 +1,29 @@
 # Stuck-task watch
 
-The system `stuck-task-watch` V2 playbook runs on `timer.10m`. It calls the
-read-only `get_stuck_tasks` command. An empty list ends the run; a nonempty
-list is sent through `message_send` to `session:supervisor-global` as one
-summary with one line per task: project, task ID, state, elapsed minutes,
-reason and suggested diagnostic command.
+The optional system `stuck-task-watch` V2 playbook runs on `timer.15m`. It uses
+reusable snapshot, collection and notification-state primitives. A complete
+active-project inventory and pre-scan notification-state manifest precede every
+diagnostic scan. Findings go to `session:supervisor-global` through atomic
+`playbook_state_notify`; the playbook never repairs work.
 
-Every tick sends again while tasks remain stuck. There is no watch memory,
-deduplication, six-hour reminder window or cleared notification. The playbook
-never repairs work. Supervisors choose the next action.
+The watch observes exactly the five finding kinds in `task_observations_v1`,
+all BLOCKED tasks, and `get_stuck_tasks` rows whose actual state is ASSIGNED
+with age greater than 1,800 seconds or IN_PROGRESS with age greater than 7,200
+seconds. Aged ORPHANED rows qualify; younger ORPHANED and all READY rows do not.
+Producer exclusions below still apply to the stuck-task source.
+
+Each project/source/task identity has an independent notification episode.
+Doctor findings retain their producer key. Repeated observations update evidence
+without another message; a complete scan clears absent keys using the saved
+pre-scan revisions. Incomplete partitions and failed page traversals cannot clear
+their episodes. Conflicts defer to the next tick without refreshing the revision.
+Inactive projects retain state without notifications or clears.
+
+The base policy has no reminder interval. The separately reviewed
+`stuck-task-watch-reminder` fixture repeats after 86,400 seconds and has its own
+namespace. Namespace schema version 1 survives recompilation, restart and
+disable/re-enable. Supervisors choose the next action. The previous stateless
+ten-minute policy remains a legacy test recording.
 
 ## Detection
 
@@ -39,6 +54,6 @@ is needed.
 ## Installation
 
 Ship the source, deterministic reviewed artifact, manifest and fixture together.
-It is a first-install default, not a daemon readiness requirement. Existing
-installations explicitly import and activate the shipped system bundle; a
-restart never replaces operator policy.
+Neither watch is a first-install default or a daemon readiness requirement.
+Operators explicitly import and activate the intended reviewed bundle; a restart
+never replaces operator policy. See the [rollout guide](../guides/playbook-building-blocks.md).

@@ -1,0 +1,22 @@
+{
+  "new_playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder/artifact.json": "42c98bd5ec4be7a1221ebcbfed731424df1ba3f5cf4635944664867ba1052065",
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder/artifact.sha256": "464d3f84065ac694328cbb2d5854a6a85020fcc6f47426bbfe8ddb11bd8f3a5f",
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder/diagnostics.json": "d5cc0e9f803b49bae1d8dd92e10f5a3fb25392adde38eaa4f481e8281139ab55",
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder/manifest.md": "e2a6cb87761c9b601ce6970e2ce13ff86234cf1a894bc805ed7d9f03e506b952",
+    "tests/fixtures/playbooks/v2/stuck-task-watch-reminder/source.md": "d6b66e0de2103e6f907d6f4c1641cf25d677bb9dc83c828086acd1a38a11836c"
+  },
+  "playbook_fixtures": {
+    "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json": {
+      "preserved_previous_path": "tests/fixtures/playbooks/v2/stuck-task-watch-legacy.artifact.json",
+      "previous_sha256": "1a74993b0b29772a513b4d83275978a9d056e94f818ccc4538054f0705c4c1c0",
+      "sha256": "7fe10168b5994a92041dc103eb9762b2c6565fffcb73d3a1a605d4a0d2740cc0"
+    },
+    "tests/fixtures/playbooks/v2/stuck-task-watch/diagnostics.json": {
+      "preserved_previous_path": "tests/fixtures/playbooks/v2/stuck-task-watch-legacy.diagnostics.json",
+      "previous_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "sha256": "d5cc0e9f803b49bae1d8dd92e10f5a3fb25392adde38eaa4f481e8281139ab55"
+    }
+  },
+  "reason": "F2 replaces the historical stateless watch with reviewed opt-in episode state policy and adds a separate opt-in reminder namespace. Legacy and C2 golden evidence is unchanged; historical post-C2 artifact and diagnostics bytes are preserved."
+}

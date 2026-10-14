@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "tests/fixtures/contracts/legacy-command-descriptors.json"
 C2_CHANGES = ROOT / "tests/fixtures/contracts/observation-contract-changes.json"
 SCRIPT_CHANGES = ROOT / "tests/fixtures/contracts/script-contract-changes.json"
+WATCH_CHANGES = ROOT / "tests/fixtures/contracts/watch-contract-changes.json"
 
 
 @pytest.fixture(autouse=True)
@@ -66,6 +67,21 @@ def _digest(value):
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
     ).encode()).hexdigest()
+
+
+def _watch_changes():
+    changes = json.loads(WATCH_CHANGES.read_text())
+    assert set(changes["playbook_fixtures"]) == {
+        "tests/fixtures/playbooks/v2/stuck-task-watch/artifact.json",
+        "tests/fixtures/playbooks/v2/stuck-task-watch/diagnostics.json",
+    }
+    reminder = "tests/fixtures/playbooks/v2/stuck-task-watch-reminder/"
+    assert set(changes["new_playbook_fixtures"]) == {
+        reminder + name for name in (
+            "artifact.json", "artifact.sha256", "diagnostics.json", "manifest.md", "source.md",
+        )
+    }
+    return changes
 
 
 def _snapshot(*, handlers=(), explicit=(), fallback=None, typed=None, plugins=()):
@@ -128,10 +144,22 @@ def test_legacy_playbook_fixtures_are_unchanged():
         "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json",
     }
     changes = {**changes, **_script_changes()["playbook_fixtures"]}
+    watch = _watch_changes()["playbook_fixtures"]
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
             digest = changes[path]["sha256"]
+        if path in watch:
+            assert watch[path]["previous_sha256"] == digest
+            historical = ROOT / watch[path]["preserved_previous_path"]
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            assert watch[path]["sha256"] != digest
+            digest = watch[path]["sha256"]
+        assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
+
+
+def test_watch_reminder_additions_match_explicit_pins():
+    for path, digest in _watch_changes()["new_playbook_fixtures"].items():
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
 
 

@@ -1,0 +1,170 @@
+[
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "blocked_clear"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'key' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "blocked_clear"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'last_value' could not be determined statically, so the check against unknown was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "blocked_clear"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'page_token' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "blocked_page"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "blocked_page"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'last_value' could not be determined statically, so the check against unknown was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "blocked_present"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "blocked_scan"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "doctor_clear"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'key' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "doctor_clear"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'last_value' could not be determined statically, so the check against unknown was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "doctor_clear"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'page_token' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "doctor_page"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'snapshot_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "doctor_page"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'key' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "doctor_present"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'last_value' could not be determined statically, so the check against unknown was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "doctor_present"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'page_token' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "inventory_page"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'page_token' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "state_page"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'snapshot_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "state_page"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'expected_revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "stuck_clear"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'key' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "stuck_clear"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'last_value' could not be determined statically, so the check against unknown was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "stuck_clear"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'page_token' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "stuck_page"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "stuck_page"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'last_value' could not be determined statically, so the check against unknown was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "stuck_present"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "watch-stalled-work",
+    "severity": "info",
+    "step_id": "stuck_scan"
+  }
+]
