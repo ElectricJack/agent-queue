@@ -9,7 +9,7 @@ from src.git.manager import is_valid_git_oid
 from src.integration.delivery_path import (
     MANAGED_MODES, effective_integration_mode, task_repository_url,
 )
-from src.integration.models import RequiredCheckSet
+from src.integration.models import RequiredCheckSet, validate_policy_producers
 from src.integration.source_ci import classify_source_checks
 
 
@@ -31,6 +31,7 @@ async def completion_checks(db, config, task, project, *, audit=False) -> Comple
     policy = project.hierarchical_integration_policy
     if policy is not None:
         # A configured policy must not silently become an empty requirement.
+        validate_policy_producers(policy)
         required = RequiredCheckSet.model_validate(policy["root"]["required_checks"])
         return CompletionChecks(required.names, required)
     names = tuple(config.integration.merge_required_checks)
@@ -108,7 +109,29 @@ async def verify_completion_ci(db, git, config, task, project, *, commit=None,
             return unavailable(head, "Close commit differs from the task's source commit")
         repository_url = await task_repository_url(db, task, project)
         repository = await git.bind_github_repository(repository_url)
+        from src.projects.github import parse_github_repository
+
+        if repository.full_name != parse_github_repository(repository_url).full_name:
+            return unavailable(head, "CI repository identity changed")
         published = await git.aremote_branch_head(repository=repository, branch=branch)
+        # Review/vault work may never publish a source branch or trigger CI.
+        # Only exact base equality on a clean assigned checkout proves that;
+        # intent or task type must not hide documentation/code commits.
+        if published in (None, head):
+            repo = await db.get_repo(task.repo_id) if task.repo_id else None
+            base = repo.default_branch if repo else project.repo_default_branch
+            if base and await _unchanged_source(git, workspace_path, ref, branch, head,
+                                               repository, base):
+                local = await git.arev_parse(workspace_path, ref)
+                published = await git.aremote_branch_head(repository=repository, branch=branch)
+                if (local == head and published in (None, head)
+                        and await _unchanged_source(git, workspace_path, ref, branch, head,
+                                                    repository, base)):
+                    return {"state": "green", "head_sha": head, "base_sha": head,
+                            "base_branch": base, "branch": branch, "repository_url": repository_url,
+                            "reason": "no_source_changes", "failing_checks": [],
+                            "pending_checks": [], "missing_checks": [], "checks": []}
+                return unavailable(head, "Task source or base changed during no-change verification")
         if published != head:
             return unavailable(head, "Task branch is not published at the completion commit")
         observed = await observe_completion_ci(git, repository_url, head, required)
@@ -119,3 +142,16 @@ async def verify_completion_ci(db, git, config, task, project, *, commit=None,
         return observed
     except Exception:
         return unavailable(None, "Required completion CI policy or source is unavailable")
+
+
+async def _unchanged_source(git, workspace, ref, branch, head, repository, base) -> bool:
+    try:
+        if await git.ahas_uncommitted_changes(workspace, strict=True) is not False:
+            return False
+        if await git.aget_current_branch(workspace, strict=True) != branch:
+            return False
+        if await git.arev_parse(workspace, ref) != head:
+            return False
+        return await git.aremote_branch_head(repository=repository, branch=base) == head
+    except Exception:
+        return False  # Unavailable no-change proof must not waive configured CI.

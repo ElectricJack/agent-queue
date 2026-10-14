@@ -12,6 +12,13 @@ names, judge every reported check. An unconfigured project has no new completion
 CI requirement. An invalid configured policy is unavailable evidence, never an
 implicit waiver. Merge `warn`/`off` does not waive explicitly declared checks.
 
+New project policy writes must use canonical positive decimal GitHub App IDs
+for both parent and root required-check producers (GitHub Actions is `15368`).
+Reject slugs, signs, leading zeroes, numbers and booleans before activation;
+existing frozen operation snapshots remain readable. The read-only doctor check
+`integration.ci_producer` reports stored invalid identities with project and
+boundary, including policies with no `ci` block and disabled projects.
+
 Resolve the task's own repository, local branch commit, and published branch
 commit. All must agree with any explicit close commit. Read authenticated check
 runs for that SHA, reject foreign heads/producers, and check branch identity
@@ -20,6 +27,25 @@ cancelled, red, or unreadable checks refuse close and retain the worker's claim.
 Failing closes and obsolete retirement remain available. Managed publishers keep
 their existing exact-candidate validation; completion is still distinct from
 delivery to the default branch.
+
+A clean checkout on the assigned task branch whose commit equals the
+authenticated repository's default-branch commit has no source changes to
+trigger CI. Recheck branch, cleanliness, source commit and default commit before
+accepting this exemption; unknown or changed evidence does not waive CI. Use the
+task's bound repository and its default branch when present. Record the exact
+source/base equality as completion CI evidence so later audits do not require
+source checks for that accepted unchanged commit. Task type and no-op intent
+alone never waive checks; documentation commits still require configured CI.
+
+Review-only deliverables (including implicit research/design reviews), read-only
+roles and no-code closes must not auto-commit or publish dirty checkout drafts,
+even on error or skip-verification paths. Preserve the files and retain the claim
+with actionable feedback: submit the review to the vault, move the local draft
+outside the source checkout, and retry. The clean unchanged checkout then closes
+as no work for the source repository, without requiring a source PR or CI.
+Committed source changes and tasks declaring source deliverables still follow
+the normal delivery rules. Spec-ingest/database-only roles use the same unchanged
+source proof without needing git-push or CI-audit capabilities.
 
 Check before close side effects and again after completion-pipeline remediation.
 Record the verified source SHA in the accepted completion record, so a branch

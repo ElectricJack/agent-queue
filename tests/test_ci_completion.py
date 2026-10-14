@@ -104,6 +104,94 @@ async def test_green_required_checks_record_exact_source(setup):
     assert all(call.args[1] == HEAD for call in git.acommit_check_runs.await_args_list)
 
 
+@pytest.mark.parametrize("published", [HEAD, None])
+async def test_unchanged_branch_closes_without_source_ci_and_audits_cleanly(setup, published):
+    handler, db, git, _, _ = setup
+    git.ahas_uncommitted_changes.return_value = False
+    git.aget_current_branch.return_value = "aq/t"
+    git.aremote_branch_head.side_effect = lambda *, branch, repository: (
+        HEAD if branch == "main" else published
+    )
+    git.acommit_check_runs.return_value = []
+    result = await close(handler)
+    assert result["success"] is True, result
+    proof = await db.get_task_meta("t", "completion_ci")
+    assert proof["reason"] == "no_source_changes"
+    assert proof["head_sha"] == proof["base_sha"] == HEAD
+    assert (await db.get_task_completion("t")).commits == [HEAD]
+    audit = await handler.execute("ci_completed_status", {"project_id": "p"})
+    assert audit["checked"] == 0
+    assert audit["unresolved"] == []
+    git.acommit_check_runs.assert_not_awaited()
+
+
+@pytest.mark.parametrize("kind", ["dirty", "unknown_status", "other_branch", "changed_base",
+                                      "unknown_base", "foreign_source", "foreign_repository"])
+async def test_no_change_exemption_requires_git_proof(setup, kind):
+    handler, _, git, _, _ = setup
+    git.ahas_uncommitted_changes.return_value = False
+    git.aget_current_branch.return_value = "aq/t"
+    git.acommit_check_runs.return_value = []
+    if kind == "dirty":
+        git.ahas_uncommitted_changes.return_value = True
+    elif kind == "unknown_status":
+        git.ahas_uncommitted_changes.return_value = None
+    elif kind == "other_branch":
+        git.aget_current_branch.return_value = "other-work"
+    elif kind in {"changed_base", "unknown_base", "foreign_source"}:
+        git.aremote_branch_head.side_effect = lambda *, branch, repository: (
+            (OTHER if kind != "unknown_base" else None)
+            if branch == ("aq/t" if kind == "foreign_source" else "main") else HEAD
+        )
+    else:
+        git.bind_github_repository.return_value = GitHubRepositoryBinding(999, "other/repo")
+    result = await close(handler, work_outcome="no-op")
+    assert result["success"] is False
+    assert result["code"] == "completion.required_ci"
+
+
+@pytest.mark.parametrize("change", ["dirty", "checkout", "local", "base", "published"])
+async def test_unchanged_source_is_rechecked_before_waiving_ci(setup, change):
+    _, db, git, _, config = setup
+    git.ahas_uncommitted_changes.return_value = False
+    git.aget_current_branch.return_value = "aq/t"
+    if change == "dirty":
+        git.ahas_uncommitted_changes.side_effect = [False, True]
+    elif change == "checkout":
+        git.aget_current_branch.side_effect = ["aq/t", "other-work"]
+    elif change == "local":
+        git.arev_parse.side_effect = [HEAD, HEAD, OTHER]
+    else:
+        calls = {}
+
+        async def remote(*, branch, repository):
+            calls[branch] = calls.get(branch, 0) + 1
+            moved = branch == ("main" if change == "base" else "aq/t")
+            return OTHER if moved and calls[branch] > 1 else HEAD
+
+        git.aremote_branch_head.side_effect = remote
+    result = await verify_completion_ci(db, git, config, await db.get_task("t"),
+                                        await db.get_project("p"))
+    assert result["state"] == "unknown"
+    git.acommit_check_runs.assert_not_awaited()
+
+
+async def test_no_change_proof_uses_bound_repository_default_branch(setup):
+    _, db, git, _, config = setup
+    await db.create_repo(RepoConfig(id="repo", project_id="p", url=URL,
+                                   default_branch="trunk", source_type=RepoSourceType.CLONE))
+    await db.update_task("t", repo_id="repo")
+    git.ahas_uncommitted_changes.return_value = False
+    git.aget_current_branch.return_value = "aq/t"
+    result = await verify_completion_ci(db, git, config, await db.get_task("t"),
+                                        await db.get_project("p"))
+    assert result["reason"] == "no_source_changes"
+    assert result["base_branch"] == "trunk"
+    assert {call.kwargs["branch"] for call in git.aremote_branch_head.await_args_list} == {
+        "aq/t", "trunk",
+    }
+
+
 async def test_restart_recovers_the_verified_source(setup, monkeypatch):
     handler, db, _, _, _ = setup
 
@@ -282,3 +370,56 @@ def test_audit_contract_and_worker_scope():
     assert check_command_scope("ci_completed_status", {"project_id": "p"}, supervisor) is None
     assert check_command_scope("ci_completed_status", {"project_id": "other"}, supervisor)
     assert check_command_scope("ci_completed_status", {"project_id": "other"}, LOCAL_SCOPE) is None
+
+
+def project_policy():
+    return {
+        "parent": {"required_checks": {"version": "v1", "names": [REQUIRED],
+                                       "producer_id": "15368"},
+                   "repair": {"debug_intelligence_class": "standard-high"}},
+        "root": {"required_checks": {"version": "v1", "names": [REQUIRED],
+                                     "producer_id": "15368"},
+                 "repair": {"debug_intelligence_class": "standard-high"}},
+        "branchless_parent": "skip", "on_failed_child": "block",
+    }
+
+
+@pytest.mark.parametrize("boundary", ["parent", "root"])
+@pytest.mark.parametrize("producer", ["github-actions", "", "0", "-1", "015368", " 15368",
+                                          "15368\n", "١٥٣٦٨", 15368, True, None])
+async def test_project_policy_write_rejects_invalid_producers_without_changes(setup, boundary, producer):
+    handler, db, _, _, _ = setup
+    policy = project_policy()
+    policy[boundary]["required_checks"]["producer_id"] = producer
+    before = await db.get_project("p")
+    result = await handler.execute("edit_project", {
+        "project_id": "p", "hierarchical_integration_policy": policy,
+        "expected_integration_generation": 0, "reason": "test producer validation",
+    })
+    assert result["success"] is False, result
+    assert f"{boundary}.required_checks.producer_id" in result["error"]
+    assert result["error_code"] == "invalid_ci_producer"
+    after = await db.get_project("p")
+    assert after.hierarchical_integration_policy == before.hierarchical_integration_policy
+    assert after.hierarchical_integration_generation == 0
+
+
+async def test_project_policy_write_accepts_numeric_producers(setup):
+    handler, db, _, _, _ = setup
+    result = await handler.execute("edit_project", {
+        "project_id": "p", "hierarchical_integration_policy": project_policy(),
+        "expected_integration_generation": 0, "reason": "test producer validation",
+    })
+    assert result["outcome"] == "configured", result
+    stored = (await db.get_project("p")).hierarchical_integration_policy
+    for boundary in ("parent", "root"):
+        assert stored[boundary]["required_checks"]["producer_id"] == "15368"
+
+
+async def test_legacy_slug_is_unavailable_completion_ci(setup):
+    handler, db, git, _, _ = setup
+    policy = project_policy()
+    policy["root"]["required_checks"]["producer_id"] = "github-actions"
+    await db.update_project("p", hierarchical_integration_policy=policy)
+    assert (await close(handler))["ci"]["state"] == "unknown"
+    git.acommit_check_runs.assert_not_awaited()
