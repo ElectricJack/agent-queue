@@ -2498,7 +2498,15 @@ default branch's exact head, when that head is train-produced or attested and
 its own trusted checks pass every failing name. The repair input pins the
 default ref, SHA, check names and provenance. Its ordinary filing dedup key
 (`repair:<batch-id>:sync-default-branch`) bounds sync to one task per batch across
-candidate generations, restarts and archival. The worker retains every frozen
+candidate generations, restarts and archival. Hierarchical frontier admission
+recognizes this key as well as the numeric ordinary repair key. The sync task
+must still be the deterministic filing for the batch's current allocation,
+with its exact repair input and managed branch reservation in the designated
+repository; it receives no canonical task origin. A released reservation or a
+mismatched batch, allocation, repository or branch does not authorize admission.
+Candidate observation restores a detached reservation only through the existing
+allocator recovery and fresh exact publication proof, without filing another
+task or refreshing an active writer's fence. The worker retains every frozen
 member, resolves source conflicts and regenerates generated files; publication
 still requires trusted checks and attestation on the repaired exact candidate.
 The train inspects the pinned merge without changing refs or resolving code,
