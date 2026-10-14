@@ -1,7 +1,80 @@
 import os
 import pytest
 import yaml
-from src.config import DatabaseConfig, load_config
+from src.config import DatabaseConfig, WaitPolicyConfig, load_config
+
+
+def test_wait_policy_defaults_are_disabled_and_match_approved_policy():
+    policy = WaitPolicyConfig()
+    assert policy.validate() == []
+    assert not policy.v2_enabled
+    assert not policy.hibernation_enabled
+    assert not policy.scheduler_waits_enabled
+    assert policy.v1_bodies == "translate"
+    assert policy.in_place_ceiling_seconds == 1800
+    assert policy.hibernate_margin == 2.0
+    assert policy.resume_cost_minutes == 10
+    assert policy.min_samples == 5
+    assert policy.loop_window_registrations == 3
+    assert policy.loop_window_seconds == 3600
+    assert policy.branch_admission_deadline_seconds == 1800
+    assert policy.transition_budget_seconds == 120
+    assert policy.resume_launch_attempts == 2
+    assert {
+        kind: (row.escalate_after_seconds, row.expected_duration_seconds)
+        for kind, row in policy.kinds.items()
+    } == {
+        "task": (14400, 3600), "dependency": (14400, 3600),
+        "pull_request": (14400, 3600), "batch": (14400, 2700),
+        "job": (7200, 900), "message": (7200, 1800),
+        "playbook_condition": (7200, 1800), "ci_check": (5400, 1200),
+        "ci_run": (5400, 1500), "resource": (1800, None),
+        "timer": (300, None), "human": (None, None),
+    }
+
+
+def test_wait_policy_project_overrides_inherit_each_field_and_isolate_canary(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost/aq_cfg_test"},
+        "wait_policy": {
+            "resume_cost_minutes": 20,
+            "hibernation_enabled": True,
+            "kinds": {"task": {"escalate_after_seconds": 12000}},
+            "projects": {
+                "canary": {
+                    "v2_enabled": True,
+                    "hibernation_enabled": False,
+                    "scheduler_waits_enabled": True,
+                    "resume_cost_minutes": 40,
+                    "in_place_ceiling_seconds": 7200,
+                    "hibernate_margin": 3,
+                    "kinds": {"task": {"expected_duration_seconds": 6000}},
+                },
+                "inherits": {},
+            },
+        },
+    }))
+    policy = load_config(str(path)).wait_policy
+    canary = policy.resolve_project("canary")
+    assert canary.v2_enabled and canary.scheduler_waits_enabled
+    assert not canary.hibernation_enabled
+    assert canary.resume_cost_minutes == 40
+    assert canary.in_place_ceiling_seconds == 7200
+    assert canary.hibernate_margin == 3
+    assert canary.kinds["task"].escalate_after_seconds == 12000
+    assert canary.kinds["task"].expected_duration_seconds == 6000
+    for project in ("inherits", "unconfigured"):
+        resolved = policy.resolve_project(project)
+        assert not resolved.v2_enabled
+        assert not resolved.scheduler_waits_enabled
+        assert resolved.hibernation_enabled
+        assert resolved.resume_cost_minutes == 20
+        assert resolved.kinds["task"].expected_duration_seconds == 3600
+    canary.kinds["job"].escalate_after_seconds = 10000
+    assert policy.kinds["job"].escalate_after_seconds == 7200
+    assert WaitPolicyConfig().kinds["job"].escalate_after_seconds == 7200
 
 
 @pytest.fixture

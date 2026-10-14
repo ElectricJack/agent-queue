@@ -936,6 +936,57 @@ until an operator restores health/readiness and the dashboard, then verifies wit
 System Config shows the private, bounded `deploy-history.json` log.
 See [branch tracking](design/branch-tracking-deployment.md).
 
+### 4.16 `wait_policy` Section
+
+Maps to `WaitPolicyConfig`. This section is hot reloadable. Values are read
+at each wait decision; registry consumers snapshot the three rollout flags
+once per cycle. All flags (`v2_enabled`, `hibernation_enabled`,
+`scheduler_waits_enabled`) default to `false`; declaring this section does not
+activate the wait v2 runtime. `v1_bodies` defaults to `translate` and also
+accepts `refuse`.
+
+Global defaults are `in_place_ceiling_seconds: 1800`, `hibernate_margin: 2.0`,
+`resume_cost_minutes: 10`, `min_samples: 5`, `loop_window_registrations: 3`,
+`loop_window_seconds: 3600`, `branch_admission_deadline_seconds: 1800`,
+`transition_budget_seconds: 120`, and `resume_launch_attempts: 2`.
+
+`kinds` maps each wait kind to `WaitKindPolicy`, with
+`escalate_after_seconds` and `expected_duration_seconds`. Partial global
+kind entries preserve the omitted defaults. Escalation defaults are 14400
+for `task`, `dependency`, `pull_request`, and `batch`; 7200 for `job`,
+`message`, and `playbook_condition`; 5400 for `ci_check` and `ci_run`; 1800
+for `resource`; and 300 for `timer` after its due time. Expected durations
+are respectively 3600, 3600, 3600, 2700, 900, 1800, 1800, 1200, and 1500
+seconds for the first nine kinds. Timer duration comes from its due time;
+`human` and `resource` have no configured duration estimate. Human waits
+have no escalation policy and cannot be overridden.
+
+`projects.<project-id>` maps to `WaitProjectOverrides`. It accepts the three
+rollout flags, `in_place_ceiling_seconds`, `resume_cost_minutes`,
+`hibernate_margin`, and partial `kinds` entries. Absent or null override
+fields inherit the global value. `WaitPolicyConfig.resolve_project(id)`
+returns an independent effective policy in project → global → default order.
+This supports one project's v2 canary while global rollout flags stay off.
+
+Unknown keys at any depth and unknown kind names are errors. Ceilings and
+deadlines must be integers between 60 and 86400 seconds; the transition
+budget must be between 1 and 86400 seconds. Counts must be positive
+integers, resume cost must be finite and positive, and the margin must be
+finite and at least 1.0. Expected durations must be nonnegative integers.
+
+```yaml
+wait_policy:
+  kinds:
+    task:
+      escalate_after_seconds: 18000
+  projects:
+    expensive-resume:
+      resume_cost_minutes: 40
+      in_place_ceiling_seconds: 7200
+    canary:
+      v2_enabled: true
+```
+
 ## 5. Loading Behavior
 
 ### 5.1 Call Sequence

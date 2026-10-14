@@ -21,9 +21,92 @@ from src.config import (
     ProviderFailoverConfig,
     SchedulingConfig,
     ScratchProbeConfig,
+    WaitKindPolicy,
+    WaitPolicyConfig,
+    WaitProjectOverrides,
     load_config,
 )
 from tests.db_fixtures import lease_dsn
+
+
+@pytest.mark.parametrize("name,value", [
+    ("v2_enabled", "false"), ("hibernation_enabled", 1),
+    ("scheduler_waits_enabled", None), ("v1_bodies", "unknown"),
+    ("in_place_ceiling_seconds", 59), ("in_place_ceiling_seconds", 86401),
+    ("hibernate_margin", 0.9), ("hibernate_margin", float("nan")),
+    ("resume_cost_minutes", -1), ("resume_cost_minutes", float("inf")),
+    ("min_samples", 0), ("min_samples", True),
+    ("loop_window_registrations", -1), ("loop_window_seconds", 0),
+    ("branch_admission_deadline_seconds", -1), ("transition_budget_seconds", -1),
+    ("resume_launch_attempts", 0), ("projects", []), ("kinds", []),
+])
+def test_wait_policy_invalid_scalars_return_config_errors(name, value):
+    errors = WaitPolicyConfig(**{name: value}).validate()
+    assert any(error.section == "wait_policy" and error.field == name for error in errors)
+    assert all(isinstance(error, ConfigError) for error in errors)
+
+
+def test_wait_policy_aggregates_nested_validation_errors():
+    policy = WaitPolicyConfig(
+        projects={
+            "broken": WaitProjectOverrides(
+                resume_cost_minutes=-10, in_place_ceiling_seconds=90000,
+                kinds={
+                    "task": WaitKindPolicy(-1, -1),
+                    "unknown": WaitKindPolicy(),
+                    "human": WaitKindPolicy(),
+                },
+            ),
+        },
+    )
+    errors = {error.field for error in policy.validate()}
+    assert errors == {
+        "projects.broken.resume_cost_minutes", "projects.broken.in_place_ceiling_seconds",
+        "projects.broken.kinds.task.escalate_after_seconds",
+        "projects.broken.kinds.task.expected_duration_seconds",
+        "projects.broken.kinds.unknown", "projects.broken.kinds.human",
+    }
+    app = AppConfig(wait_policy=policy)
+    assert errors <= {error.field for error in app.validate() if error.section == "wait_policy"}
+
+
+@pytest.mark.parametrize("values,path", [
+    ({"typo": 1}, "typo"),
+    ({"kinds": {"unknown": {}}}, "kinds.unknown"),
+    ({"kinds": {"task": {"typo": 1}}}, "kinds.task.typo"),
+    ({"kinds": {"human": {"escalate_after_seconds": 3600}}}, "kinds.human"),
+    ({"projects": {"p": {"typo": 1}}}, "projects.p.typo"),
+    ({"projects": {"p": {"kinds": {"human": {}}}}}, "projects.p.kinds.human"),
+    ({"projects": {"p": {"kinds": {"job": {"typo": 1}}}}}, "projects.p.kinds.job.typo"),
+    ({"projects": {"p": {"resume_cost_minutes": -1}}}, "projects.p.resume_cost_minutes"),
+    ({"projects": {"p": {"v2_enabled": "true"}}}, "projects.p.v2_enabled"),
+    ({"projects": []}, "projects"),
+    ({"projects": {"p": []}}, "projects.p"),
+    ({"kinds": []}, "kinds"),
+    ({"kinds": {"task": []}}, "kinds.task"),
+    ({"resume_cost_minutes": "ten"}, "resume_cost_minutes"),
+    ([], "must be a mapping"),
+    (None, "must be a mapping"),
+])
+def test_wait_policy_loader_rejects_unknown_keys_and_invalid_shapes(tmp_path, values, path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "messaging_platform": "none",
+        "database": {"url": "postgresql://u:p@localhost/aq_test"},
+        "wait_policy": values,
+    }))
+    with pytest.raises(ConfigValidationError) as exc:
+        load_config(str(config_file))
+    assert any("[wait_policy]" in error and path in error for error in exc.value.errors)
+
+
+@pytest.mark.parametrize("seconds", [60, 86400])
+def test_wait_policy_accepts_deadline_and_ceiling_boundaries(seconds):
+    assert WaitPolicyConfig(
+        in_place_ceiling_seconds=seconds,
+        branch_admission_deadline_seconds=seconds,
+        kinds={"task": WaitKindPolicy(seconds, 0)},
+    ).validate() == []
 
 
 class TestGitHubAppConfigValidation:

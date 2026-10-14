@@ -241,6 +241,40 @@ class TestConfigWatcher:
         result = await watcher.reload()
         assert result["changed_sections"] == []
 
+    async def test_wait_policy_reload_applies_project_canary_and_preserves_previous_config(
+        self, config_dir, bus,
+    ):
+        _, config_path = config_dir
+        config = load_config(str(config_path))
+        watcher = ConfigWatcher(str(config_path), bus, config)
+        events = []
+        bus.subscribe("config.reloaded", lambda data: events.append(data))
+        data = yaml.safe_load(config_path.read_text())
+        data["wait_policy"] = {
+            "resume_cost_minutes": 20,
+            "projects": {"canary": {"v2_enabled": True, "resume_cost_minutes": 40}},
+        }
+        config_path.write_text(yaml.safe_dump(data))
+
+        result = await watcher.reload()
+
+        assert result["changed_sections"] == ["wait_policy"]
+        assert result["applied"] == ["wait_policy"]
+        assert result["restart_required"] == []
+        assert config.wait_policy.resolve_project("canary").v2_enabled
+        assert config.wait_policy.resolve_project("canary").resume_cost_minutes == 40
+        assert not config.wait_policy.resolve_project("other").v2_enabled
+        assert config.wait_policy.resolve_project("other").resume_cost_minutes == 20
+        assert not events[0]["previous_config"].wait_policy.resolve_project("canary").v2_enabled
+
+        # A malformed reload preserves the last validated policy.
+        data["wait_policy"]["projects"]["canary"]["resume_cost_minutes"] = -1
+        config_path.write_text(yaml.safe_dump(data))
+        rejected = await watcher.reload()
+        assert "error" in rejected
+        assert config.wait_policy.resolve_project("canary").resume_cost_minutes == 40
+        assert len(events) == 1
+
     @pytest.mark.asyncio
     async def test_reload_detects_hot_reloadable_change(self, config_dir, bus):
         _tmp_path, config_path = config_dir
