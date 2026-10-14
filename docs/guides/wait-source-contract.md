@@ -1,0 +1,103 @@
+# Wait source writer and consumer contract
+
+Source rows are committed unconditionally, including while wait activation is off.
+A notification is a prompt to drain the outbox, never satisfaction evidence. Writers
+use their owning transaction; a rollback removes both the event and its NOTIFY.
+Replaying `(source_key, source_generation, source_revision)` inserts nothing.
+
+| Condition | Canonical source identity | Generation / owning writer |
+| --- | --- | --- |
+| task | `task:<task>` | task claim epoch / status writers |
+| dependency | `dependency:<dependent>:<upstream>:<type>` | upstream claim epoch / edge and upstream status/delivery writers |
+| job | `job:<job>` | attempt 1; retry creates a new job / terminal result writer |
+| message | `message:<thread>` | 0 / all message insert paths |
+| human task comment | `human:task_comment:<task>` | task claim epoch / `add_task_comment`, user author only |
+| review | `review:<review>` | document revision / guarded review transition |
+| batch | `batch:<batch>` | baseline generation / lifecycle writers and integration outbox |
+| playbook condition | `playbook_condition:<run>:<wait>` | registered wait snapshot version / all five wait resolution paths |
+| CI check | `ci_check:<repository>:<exact-sha>:<check-name>` | 0 / successful new `ExactChecks` observation upsert |
+| timer | the wait's persisted source identity | the wait's persisted generation / due-deadline CAS |
+| resource | `resource:<blocker>:<opaque-admission-identity>` | 0 / the explicit invalidation bridge below |
+
+`ci_run` and pull-request events belong to the watcher leaf. They are not covered by
+the existing exact-check writer. The listener/timer leaf owns non-due deadlines.
+These are consumer/producer seams, not claims that those runtimes are enabled.
+
+## Resource matching decision
+
+Supervisor decision `msg-ea555d920d0d41eea8a556871fdf2090` explicitly corrects the
+implementation spec section 9.1 scheduler-cycle-generation wording for this bounded
+implementation. The current scheduler and `AdmissionSnapshot` have no cycle counter;
+external resource mutations also occur outside scheduler cycles. Resource streams
+and subscriptions therefore use **generation 0**. Cycle/observation/mutation identity
+is the opaque revision, not an incarnation. A revision change permits reobservation;
+it is not a permanent equality requirement against the registration snapshot.
+Approved review/spec bytes remain unchanged. This correction does not imply full-plan
+runtime acceptance. A future real incarnation requires coordinated producer/subscriber
+fencing, not a timestamp, truncated hash or per-event generation.
+
+Canonical blockers are only `slot`, `workspace`, `provider`, `backoff`, `budget`,
+`policy_hold`, `branch_owner`, and `batch_hold`. An identity comes from the admission
+reader's normalization and contains whatever scope/instance/config/owner binding that
+reader needs. A pool profile or workspace/provider label is a **producer** identity;
+it is never guessed to be that opaque admission identity.
+
+Producer events use `resource_invalidation:<producer>:<mutation-identity>`, generation
+0. They are durable invalidations, not resource condition kinds. They carry no config
+values, secrets, message bodies or satisfaction verdicts.
+
+| Actual transition | Producer identity and revision | Candidate typed blockers |
+| --- | --- | --- |
+| pool measurement | fleet profile / measurement timestamp revision | all eight; the new admission snapshot also invalidates time-dependent predicates |
+| workspace release | actual workspace, project scoped / mutation UUID | slot, workspace, branch_owner |
+| provider state transition | provider, fleet scoped / committed transition generation revision | slot, provider, backoff, budget |
+| completed config reload | global / reload UUID retained on replay | all eight |
+
+The broad pool/config mappings deliberately allow extra **reobservations**, never
+extra satisfactions. In particular, a pool cycle B can reobserve a wait registered in
+cycle A with the same generation 0. No producer infers a typed condition key from a
+profile alone. A project-scoped workspace invalidation cannot select foreign-project
+subscriptions; global invalidations require each reader to check its own scope.
+
+## Bridge and remaining consumer seams
+
+`resource_invalidation_candidates(conn, committed_event, after_id='', limit=200)`
+authenticates the event's sequence, key, generation, revision and payload against the
+outbox. It pages pending verified resource subscriptions, checking their persisted
+canonical key, generation, watermark and verified project/owner/session binding.
+Continue paging with the last returned wait id until the page is empty.
+
+`reobserve_resource_candidates(conn, candidates, verify=...)` invokes the consumer's
+fresh typed verifier and returns only satisfied evidence with matching canonical
+source/generation/project/owner/session/claim binding and a fresh result pointer.
+It writes no outcome and sends no wake. The callback must check the **current** owner
+fences and call `registry.verify(conn, Condition.from_record(row['condition']),
+service_scope)` with the actual admission reader. Its snapshot must reobserve owner,
+project, config and predicate freshness, not copy the event payload's claim.
+
+The registry leaf owns the authoritative admission reader/normalizer and generation-0
+adapter snapshot; this branch does not invent its identity fields. The listener leaf
+must route `resource_invalidation:` rows through this bridge instead of only doing
+exact-key matching, page all candidates, and preserve its normal cursor/lease protocol.
+The dispatcher leaf must perform its guarded owner/source lock, typed reobservation
+and outcome CAS/delivery transaction; a candidate or producer outcome_ref cannot
+satisfy a wait. These consumer seams must be tested in their owning leaves before
+runtime activation. Writer/bridge fixtures here exercise actual pool/workspace/provider/
+config transitions, durable subscription bindings and authoritative reobservation;
+they do not claim that the absent listener/dispatcher is running.
+
+## Watermark, locks and retention
+
+Call `await db.wait_source_watermark(source_key=None)` on its dedicated connection
+**before** acquiring graph/owner/source locks or writing source events. There is no
+caller-connection parameter. An already-mutating caller must pass a bound prefetched
+before its transaction. Writers hold shared transaction advisory lock `0x415157414954`.
+The short reader exclusively try-locks it without queueing, then reads the committed
+maximum and durable source cursor floor under explicit connection-level READ COMMITTED.
+Release the fence before dispatch/registration locks; registration post-observes its
+source in its own transaction. A bare MAX or an old REPEATABLE READ snapshot can skip
+an earlier allocated sequence that commits late.
+
+Retention removes at most 1000 dispatched rows strictly older than seven days and
+at or below the durable source cursor. Pending/unread rows remain. The cursor supplies
+a floor after all old rows are purged and a reader restarts with a fresh pool.

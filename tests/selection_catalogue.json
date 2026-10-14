@@ -42,7 +42,8 @@
         "tests/test_agent_waits.py",
         "tests/test_wait_dispatch.py",
         "tests/test_wait_migration.py",
-        "tests/test_wait_queries.py"
+        "tests/test_wait_queries.py",
+        "tests/test_wait_resource_sources.py"
       ]
     },
     "api-contract": {
@@ -17810,6 +17811,25 @@
         "parametrize"
       ],
       "summary": "Source outbox atomicity, commit ordering, watermark and safe retention."
+    },
+    "tests/test_wait_resource_sources.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:85c7a299ef0bcd324d8461cfe2c80ec20044e46bf60e6bef64f7c16fc5ae0a67",
+      "imports": [
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.core",
+        "src.scheduler",
+        "src.waits.resource_sources",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Actual resource producers, persisted registry bindings and fresh service proofs."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [

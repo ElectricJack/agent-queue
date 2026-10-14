@@ -9,31 +9,36 @@ Keys: task:<id> uses claim_epoch; dependency:<dependent>:<upstream>:<type>
 uses the upstream claim_epoch; job:<id> uses attempt 1 (retries have new ids).
 human:task_comment:<task> uses claim_epoch.
 playbook_condition:<run>:<wait> uses the registered wait's snapshot_version.
-message:<thread-id>, ci_check:<repo>:<sha>:<name>, and
-resource:<workspace|provider|pool>:<id> use generation 0. Review:<id> uses
-the document revision; batch:<id> uses baseline_generation; timers reuse the
-registered source identity. Resource cycle identities are revisions. Config uses
-resource:config. wait_source_watermark supplies the safe bound for cursor drains.
+message:<thread-id> and ci_check:<repo>:<sha>:<name> use generation 0.
+review:<id> uses the document revision; batch:<id> uses baseline_generation;
+timers reuse the registered source identity. Resource producers publish
+resource_invalidation:<producer>:<mutation-identity> at generation 0; the explicit
+resource_sources bridge reobserves canonical resource:<blocker>:<opaque-identity>
+subscriptions, also at generation 0. Observation/cycle identities are revisions.
+See docs/guides/wait-source-contract.md for mapping and remaining consumer seams.
+wait_source_watermark supplies the safe bound for cursor drains.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import time
 import uuid
 
-from sqlalchemy import or_, select, text
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
+
+from src.waits.resource_sources import resource_invalidation
 
 # Writers share this lock until commit. A short exclusive watermark read waits
 # for their commits before exposing MAX(seq), without serializing source writers.
-_SOURCE_SEQUENCE_LOCK = 0x415157414954
+from src.waits.source_sql import _SEQUENCE_LOCK
+
+_SOURCE_SEQUENCE_LOCK = _SEQUENCE_LOCK
 
 
 def payload_hash(payload: dict) -> str:
-    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False, ensure_ascii=False)
     return hashlib.sha256(body.encode()).hexdigest()
 
 
@@ -54,29 +59,12 @@ async def record_source_event(
     PostgreSQL discards both the row and NOTIFY on rollback. Payloads contain
     evidence identities/state, never message bodies, configuration or credentials.
     """
-    from src.database.tables import wait_source_events
+    from src.waits.source_sql import source_batch_statement
 
-    if not source_key or not revision or not outcome_ref or generation < 0:
-        raise ValueError("source identity, nonnegative generation and revision are required")
-    digest = payload_hash(payload)
-    await conn.execute(
-        text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key": _SOURCE_SEQUENCE_LOCK}
-    )
-    now = time.time()
-    seq = (await conn.execute(
-        insert(wait_source_events).values(
-            id="wse-" + uuid.uuid4().hex,
-            source_key=source_key, source_generation=generation, source_revision=revision,
-            occurred_at=now if occurred_at is None else occurred_at, committed_at=now,
-            outcome_ref=outcome_ref, payload_hash=digest, payload=payload,
-        ).on_conflict_do_nothing(constraint="uq_wait_source_events_revision")
-        .returning(wait_source_events.c.seq)
-    )).scalar_one_or_none()
-    if seq is not None:
-        await conn.execute(
-            text("SELECT pg_notify('aq_wait_source', :seq)"), {"seq": str(seq)}
-        )
-    return seq
+    return (await conn.execute(source_batch_statement([dict(
+        source_key=source_key, generation=generation, revision=revision,
+        outcome_ref=outcome_ref, payload=payload, occurred_at=occurred_at,
+    )]))).scalar_one_or_none()
 
 
 async def record_task_transition(conn, task_id: str, old_status: str, new_status: str) -> None:
@@ -272,10 +260,11 @@ async def execute_workspace_release(conn, statement):
     result = await conn.execute(statement)
     for row in rows:
         await record_source_event(
-            conn, source_key=f"resource:workspace:{row['id']}", generation=0,
-            revision=uuid.uuid4().hex, outcome_ref=f"workspace:{row['id']}",
-            payload={"workspace_id": row["id"], "project_id": row["project_id"],
-                     "state": "released"},
+            conn, **resource_invalidation(
+                producer="workspace", identity=row["id"], project_id=row["project_id"],
+                revision=uuid.uuid4().hex, outcome_ref=f"workspace:{row['id']}",
+                payload={"workspace_id": row["id"], "state": "released"},
+            ),
         )
     return result
 
@@ -284,11 +273,14 @@ async def record_pool_observations(db, measurement, now):
     """Persist sizing inputs at the cycle boundary; size_pools remains pure policy."""
     from dataclasses import asdict
 
+    observations = []
     for key, supply in measurement.supply.items():
-        await db.wait_source_commit(
-            source_key=f"resource:pool:{key.profile_id}", generation=0, revision=str(now),
+        observations.append(resource_invalidation(
+            producer="pool", identity=key.profile_id, revision=str(now),
             outcome_ref=f"pool:{key.profile_id}", occurred_at=now,
             payload={"profile_id": key.profile_id, "supply": asdict(supply),
                      "demand": measurement.demand.get(key, 0),
                      "bounds": list(measurement.bounds[key])},
-        )
+        ))
+    if observations:
+        await db.wait_source_batch_commit(observations)

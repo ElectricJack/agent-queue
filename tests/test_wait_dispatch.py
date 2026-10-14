@@ -15,7 +15,8 @@ from src.playbooks.run_state import RunLifecycle
 from src.playbooks.waits import WaitChangeSet
 from src.scheduler import PoolKey, PoolSupply
 from src.waits.sources import (
-    execute_task_status_mutation, insert_message_with_source_event, record_pool_observations,
+    execute_task_status_mutation, insert_message_with_source_event, payload_hash,
+    record_pool_observations,
 )
 from tests.test_integration_checks import REQUIRED, head, row
 from tests.test_playbook_run_repository import ARTIFACT, seed_artifact
@@ -49,6 +50,18 @@ async def test_status_cas_same_status_and_transaction_rollback(db):
     rows = await events(db, "task:source")
     assert len(rows) == 1 and rows[0]["payload"]["status"] == "READY"
     assert (await db.get_task("source")).status is TaskStatus.READY
+
+
+async def test_fused_task_and_edge_payload_hashes_match_canonical_unicode_json(db):
+    task_id = 'source:é/東京/"quoted"/\n'
+    await db.create_task(Task(id=task_id, project_id="p", title="Unicode", description=""))
+    await db.add_dependency("owner", task_id)
+    await db.transition_task(task_id, TaskStatus.READY)
+    task_events = await events(db, f"task:{task_id}")
+    edge_events = await events(db, f"dependency:owner:{task_id}:blocks")
+    assert len(task_events) == 1 and len(edge_events) == 2
+    for event in task_events + edge_events:
+        assert event["payload_hash"] == payload_hash(event["payload"])
 
 
 async def test_legacy_status_write_records_only_real_transitions(db):
@@ -168,7 +181,7 @@ async def test_workspace_release_is_by_actual_workspace_and_idempotent(db):
                                         source_type=RepoSourceType.LINK, locked_by_task_id="owner"))
     assert await db.release_workspaces_for_task("owner") == 1
     assert await db.release_workspaces_for_task("owner") == 0
-    assert len(await events(db, "resource:workspace:w")) == 1
+    assert len(await events(db, "resource_invalidation:workspace:w")) == 1
 
 
 async def test_provider_transition_and_replayed_generation(db):
@@ -177,7 +190,7 @@ async def test_provider_transition_and_replayed_generation(db):
                   "generation": 1, "at": 1}
     await db.save_provider_availability(value, transition)
     await db.save_provider_availability(value, transition)
-    assert len(await events(db, "resource:provider:codex")) == 1
+    assert len(await events(db, "resource_invalidation:provider:codex")) == 1
 
 
 async def test_config_reload_replay_keeps_one_observation_and_no_config_secrets(db):
@@ -188,7 +201,7 @@ async def test_config_reload_replay_keeps_one_observation_and_no_config_secrets(
     data = {"config": config, "changed_sections": ["scheduling"]}
     await Orchestrator._on_config_reloaded(orch, data)
     await Orchestrator._on_config_reloaded(orch, data)
-    rows = await events(db, "resource:config")
+    rows = await events(db, "resource_invalidation:config:global")
     assert len(rows) == 1 and "never-persist" not in str(rows)
 
 
@@ -246,4 +259,4 @@ async def test_pool_sizing_observation_is_replayed_by_cycle(db):
                                   bounds={key: (0, 2)})
     await record_pool_observations(db, measurement, 100)
     await record_pool_observations(db, measurement, 100)
-    assert len(await events(db, "resource:pool:worker")) == 1
+    assert len(await events(db, "resource_invalidation:pool:worker")) == 1

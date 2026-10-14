@@ -13514,10 +13514,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1733,
+      "line": 1748,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "fc1f232c48ab821d4bc5a1d4f70e520f6cecc43e72b9a12ae5e7b51dfd6bdd1f",
+      "owner_fingerprint": "64d0596d8db91d846257eb0710381ee2cfe0ec2f5628a8b900b1fa9c996fefc3",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle metadata cleanup, guarded retry routing and accepted-close identity. Explicit restart/reopen supersedes the previous supervisor recovery incident and archives its notification in the READY-write transaction, preserving diagnosis and budget. Ordinary status projection retains holds. Integration status, branch reservations and ref replay authority remain in dedicated records."
@@ -15330,6 +15330,15 @@
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary slot_reset_failure diagnostic: bounded reason, attempt/retry policy, workspace/session identity and timestamp. PostgreSQL contention bypasses this write; contains no remote OIDs, publication intent or ref replay authority."
+    },
+    "src/database/queries/event_queries.py::EventQueryMixin.log_events::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 50,
+      "owner": "EventQueryMixin.log_events",
+      "call": "insert",
+      "owner_fingerprint": "7aa14b4c07e9e2c8f22c2d9b1bd3940ac686a60d93e475cadf01cfc7496d9ba6",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Generic bulk audit-log writer used for pool.bounds_rescoped fanout; preserves the existing audit rows and has no integration ref replay authority."
     }
   },
   "generic_dependencies": {
@@ -16214,7 +16223,9 @@
     "src/waits/sources.py::record_task_transition": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
     "src/waits/sources.py::record_dependency_change": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
     "src/waits/sources.py::record_dependency_source_change": "Generic dependency observation fanout on upstream evidence changes; integration callers remain charged independently.",
-    "src/waits/sources.py::execute_task_status_mutation": "Generic task status outbox bridge for guarded bulk/legacy writes; integration-specific callers retain their ownership."
+    "src/waits/sources.py::execute_task_status_mutation": "Generic task status outbox bridge for guarded bulk/legacy writes; integration-specific callers retain their ownership.",
+    "src/waits/source_sql.py::task_transition_statement": "Generic guarded task/dependency source outbox CTE, used by all task status writers; writes only ordinary task state and universal wait evidence, with no integration policy or ref replay authority. Integration-specific callers remain charged.",
+    "src/waits/sources.py::payload_hash": "Generic canonical JSON SHA-256 for universal wait evidence, including resource invalidation authentication; no integration lifecycle, ref identity or replay authority."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

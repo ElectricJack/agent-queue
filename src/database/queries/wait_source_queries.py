@@ -19,6 +19,17 @@ class WaitSourceQueriesMixin:
         async with self._engine.begin() as owned:
             return await record_source_event(owned, **event)
 
+    async def wait_source_batch_commit(self, events, *, conn=None):
+        """Commit a measurement's source rows and notification in one statement."""
+        from src.waits.source_sql import source_batch_statement
+
+        if not events:
+            return []
+        if conn is not None:
+            return list((await conn.execute(source_batch_statement(events))).scalars())
+        async with self._engine.begin() as owned:
+            return list((await owned.execute(source_batch_statement(events))).scalars())
+
     async def wait_source_watermark(self, *, source_key=None) -> int:
         """Read after subscribing, then drain through this committed high watermark.
 
