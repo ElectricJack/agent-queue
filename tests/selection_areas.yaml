@@ -143,7 +143,7 @@ areas:
     match: [tests/test_collaboration*.py]
   - id: agent-waits
     description: "Durable typed agent waits: ownership and claim fencing, producer snapshots, deadlines, CAS results, outbox retries and wait commands."
-    match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py]
+    match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py, tests/test_waits.py, tests/test_wait_*.py]
   - id: agent-cron
     description: "Session-owned recurring prompts: recurrence, durable delivery, scope, lifecycle and CLI."
     match: [tests/test_agent_cron.py]

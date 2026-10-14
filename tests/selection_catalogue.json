@@ -39,7 +39,11 @@
       "modules": [
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
-        "tests/test_agent_waits.py"
+        "tests/test_agent_waits.py",
+        "tests/test_wait_commands.py",
+        "tests/test_wait_migration.py",
+        "tests/test_wait_queries.py",
+        "tests/test_waits.py"
       ]
     },
     "api-contract": {
@@ -17752,6 +17756,101 @@
         "asyncio"
       ],
       "summary": "Tests for the internal vibecop plugin."
+    },
+    "tests/test_wait_commands.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:57323603d2d6069ea7c036ddc773525c440513d0efcbceb0b3bfbfde9d9b3beb",
+      "imports": [
+        "src.api.codegen",
+        "src.api.models.wait",
+        "src.api.scope",
+        "src.api.target_scope",
+        "src.cli.auto_commands",
+        "src.cli.inventory",
+        "src.cli.waits",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.contracts.wait",
+        "src.commands.contracts.wait_v2",
+        "src.commands.principal",
+        "src.config",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.mcp_registration",
+        "src.profiles.capabilities",
+        "src.profiles.capability_sync",
+        "src.profiles.drift",
+        "src.tools.definitions",
+        "src.waits.conditions",
+        "src.waits.legacy",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified wait surfaces, principal fences and dormant runtime composition."
+    },
+    "tests/test_wait_migration.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:a699ed3975e1d07ff6f7bee0f703f6e17c9c3c925f57194d482d2db5921bbcf4",
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Verified-wait DDL on fresh and pre-v2 disposable PostgreSQL schemas."
+    },
+    "tests/test_wait_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:184fc7153ab14014f42d3a0e52b76e67de7e8056751d5b9bd57118ddc320daff",
+      "imports": [
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified registration and source races on disposable PostgreSQL."
+    },
+    "tests/test_waits.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f581ac56616efbce581113c7f0e2a8db267a6a128c7870bbb4e7efc628365a25",
+      "imports": [
+        "src.api.models.task",
+        "src.commands.task_commands",
+        "src.database.queries.metrics_queries",
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.events",
+        "src.sessions.obsolete",
+        "src.state_machine",
+        "src.waits.conditions",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified-wait lifecycle vocabulary (implementation §6; services remain opt-in)."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [

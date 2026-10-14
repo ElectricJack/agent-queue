@@ -280,11 +280,19 @@ class PoolsMixin:
             if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
         }
         measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        task_statuses = await self.db.get_task_statuses([
+            s.task_id for s in measurement.pool_sessions if s.task_id
+        ])
         from src.routing.readiness import orchestrator_ready_projects
 
         ready_projects = await orchestrator_ready_projects(self)
         sessions_by_project: dict[str, list[SessionRecord]] = {}
         for session in measurement.pool_sessions:
+            status = task_statuses.get(session.task_id)
+            if status == TaskStatus.HIBERNATED.value or (
+                status == TaskStatus.RESUME_PENDING.value and session.state != "starting"
+            ):
+                continue  # Continuation ownership carries no live pool seat.
             if session.project_id is not None:
                 sessions_by_project.setdefault(session.project_id, []).append(session)
 

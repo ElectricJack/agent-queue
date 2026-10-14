@@ -22,11 +22,16 @@ import { ProviderIntentChip } from "./TaskProviderRouting";
  * running or claimed because the daemon refuses it then.
  */
 
+const SUSPENDED = ["WAITING", "HIBERNATED", "RESUME_PENDING"];
+
 export const STATUS_OPTIONS = [
   "PENDING",
   "READY",
   "IN_PROGRESS",
   "WAITING_INPUT",
+  "WAITING",
+  "HIBERNATED",
+  "RESUME_PENDING",
   "COMPLETED",
   "FAILED",
   "BLOCKED",
@@ -130,8 +135,10 @@ export function diffTaskForm(
 ): Record<string, unknown> {
   const body: Record<string, unknown> = { task_id: task.id };
   if (form.title !== baseline.title) body.title = form.title;
-  if (form.status && form.status !== baseline.status && task.status !== "PAUSED")
+  if (form.status && form.status !== baseline.status && task.status !== "PAUSED"
+      && !SUSPENDED.includes(task.status ?? "") && !SUSPENDED.includes(form.status)) {
     body.status = form.status;
+  }
   const priorityNum = parseOptionalInt(form.priority);
   if (priorityNum !== parseOptionalInt(baseline.priority)) body.priority = priorityNum;
   if (form.task_type !== baseline.task_type) body.task_type = form.task_type || null;
@@ -174,7 +181,7 @@ export default function TaskFieldsEditor({
     ? `${routedClass} (hint ${currentClass})`
     : currentClass || "—";
   const classKnown = !currentClass || classRows.some((row) => row.id === currentClass);
-  const routingLocked = task.status === "IN_PROGRESS" || !!task.assigned_agent;
+  const routingLocked = task.status === "IN_PROGRESS" || SUSPENDED.includes(task.status ?? "") || !!task.assigned_agent;
   const routingHint = routingLocked
     ? "Locked while the task is running or claimed — stop it first."
     : undefined;
@@ -242,12 +249,12 @@ export default function TaskFieldsEditor({
         <ReadField label="Agent" value={task.assigned_agent ?? "—"} />
         <EditableSelect
           label="Status"
-          editing={editing && task.status !== "PAUSED"}
+          editing={editing && task.status !== "PAUSED" && !SUSPENDED.includes(task.status ?? "")}
           value={editing ? form.status : task.status ?? "—"}
           displayValue={statusDisplay(task)}
-          options={STATUS_OPTIONS}
+          options={STATUS_OPTIONS.filter((s) => !SUSPENDED.includes(s) || s === task.status)}
           onChange={(v) => setForm({ ...form, status: v })}
-          hint="Admin override — bypasses the state machine."
+          hint="Task lifecycle status."
         />
         <EditableInput
           label="Priority"
