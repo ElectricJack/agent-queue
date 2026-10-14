@@ -216,7 +216,7 @@ write into a successor checkout. Cleanup has a separate bounded safety margin;
 if startup or termination cannot be proved complete, retain the exact claim,
 workspace acquisition receipt, claim file and integration attachment. Record a
 `prepare_cleanup_unproved` hold, using the existing scrubbed failure description.
-Neither expiry, retry nor deferred owner handoff may clear that hold. An operator
+Once recorded, neither expiry, retry nor deferred owner handoff may clear that hold. An operator
 needs fresh process/source evidence and the supported recovery owner to resolve
 it; absence of a marker or expiration of a deadline is not that proof.
 

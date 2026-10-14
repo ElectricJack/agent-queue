@@ -53,7 +53,9 @@ that held source. Later failures cannot overwrite a newer epoch's record. No
 second reason formatter, automatic hold clearing, or live retry-counter reset was
 added.
 
-The durable hold covers claimed preparation. It is not a general process registry
+The durable hold becomes effective when its failure transaction commits and covers
+claimed preparation. It is not a launch journal or a proof against a concurrent
+external release before that commit, and is not a general process registry
 for unclaimed initial slot provisioning. Deliberately detached operator setup
 commands, daemon/host death before recording an uncertainty, and future supported
 hold lifting require separate process/source evidence. Automatic live repair is
@@ -79,8 +81,41 @@ The regression fixtures use real temporary repositories and bounded barriers:
   generation and owner attachment across expiry, retry and all owner handoff paths.
   The fixture also checks secret scrubbing and unchanged retry budget.
 
-Focused regression run: 22 passed. The area and real disposable swarm receipts are
-recorded below and on the task after they finish; no whole suite is required.
+Focused regression run: **22 passed**. Final 19-file area run: **1,512 passed,
+1 expected xfail**, no failures (604.81 seconds). Ruff, selection-catalogue
+regeneration and `git diff --check` passed. The comparison baseline was the
+recorded vault note `full-suite-baseline-2026-09-22.md`; no fresh baseline or
+whole-suite run was performed.
+
+The area command used the disposable PostgreSQL server on localhost:5534:
+
+```sh
+aq test tests/test_git_manager.py tests/test_git_manager_async.py \
+  tests/test_git_mutex.py tests/test_git_identity.py tests/test_worktree_manager.py \
+  tests/test_worktree_prepare.py tests/test_worktree_acquisition.py \
+  tests/test_worktree_reaper.py tests/test_worktree_doctor.py \
+  tests/test_claim_commands.py tests/test_session_reconciler.py \
+  tests/test_workspace_attachments.py tests/test_integration_owner_retry_recovery.py \
+  tests/test_integration_owner_recovery_sweep.py tests/test_integration_owner_recovery.py \
+  tests/test_integration_workspace_handoff.py tests/test_preparation_failure.py \
+  tests/test_stranded_work.py tests/test_selection_catalogue.py -q
+```
+
+Tested production commit: `18107effed870a7ee500dc6918455758fc7d7d09`.
+Final documentation updates retain the same source trees:
+
+- `src`: `c59c3bf2b5d6c7723b949aea7004c846581006b6`
+- `scripts`: `b5c11dd9bdac5e806305d0b53ec344a3072f7196`
+- `migrations`: `ea773ae7398671705711a4918a9dcf27328607d4`
+
+The mandatory real PostgreSQL/no-LLM swarm **passed S1–S20**, including ordinary
+train delivery with oversized history; the disposable daemon stopped cleanly.
+The command was `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh`, with
+`AQ_E2E_HOME=/tmp/wise87-cancel-e2e-18107`, `AQ_E2E_PORT=18989`,
+`E2E_DB_NAME=agent_queue_e2e_wise87_cancel_18107`, and test PostgreSQL port 5534.
+No real providers, tmux agents, external messaging or operator database were used.
+Logs: `/tmp/wise87-final-focused.log`, `/tmp/wise87-area.log`,
+`/tmp/wise87-swarm.log`.
 
 ## Incident closure and recovery evidence still required
 
