@@ -2408,16 +2408,22 @@ class TaskQueryMixin:
 
     # ---- task_metadata (key-value store) ----
 
-    async def set_task_meta(self, task_id: str, key: str, value) -> None:
+    async def set_task_meta(self, task_id: str, key: str, value, *, conn=None) -> None:
         """Upsert a single metadata key for a task. *value* is JSON-serialised."""
         encoded = json.dumps(value)
-        async with self._engine.begin() as conn:
+        async def _write(conn):
             stmt = pg_insert(task_metadata).values(task_id=task_id, key=key, value=encoded)
             await conn.execute(
                 stmt.on_conflict_do_update(
                     index_elements=["task_id", "key"], set_={"value": stmt.excluded.value},
                 )
             )
+
+        if conn is not None:
+            await _write(conn)
+        else:
+            async with self._engine.begin() as conn:
+                await _write(conn)
 
     async def get_task_meta(self, task_id: str, key: str):
         """Return a single metadata value (JSON-decoded), or ``None``."""

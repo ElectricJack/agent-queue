@@ -591,6 +591,11 @@ repository lock waits. Command arguments and credentials are omitted. The claim
 response carries `claim_timing`; task explain and its dashboard show live progress
 and the last completed timing saved in task metadata. Nested totals are inclusive,
 not additive. Diagnostics cannot change a claim outcome if their persistence fails.
+The ordinary claim keeps its existing end-to-end statement and checkout budgets:
+the reserved holder's session write feeds its workspace update in one statement,
+and completed timing uses the activation checkout after the activation transaction
+commits. Timing has its own transaction, so a SQL error rolls back only diagnostics.
+The checkout is acquired after the filesystem reset and released after timing is saved.
 A locally available exact origin SHA needs no full origin fetch when resetting
 an exact target to that immutable commit. Child preservation, retry/continuation
 branches, branch-valued origins and missing origins still refresh remote refs. All origin, owner, retained-source,

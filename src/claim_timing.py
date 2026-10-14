@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import logging
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncConnection
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,8 @@ class ClaimTiming:
     running: list[tuple[str, float]] = field(default_factory=list)
     result: str | None = None
     finished: float | None = None
+    activation_stack: AsyncExitStack | None = field(default=None, repr=False)
+    persistence_connection: AsyncConnection | None = field(default=None, repr=False)
 
     def snapshot(self) -> dict:
         now = self.finished if self.finished is not None else time.monotonic()

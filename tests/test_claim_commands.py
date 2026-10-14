@@ -5239,13 +5239,20 @@ async def test_daemon_shutdown_cancels_preparation_before_resource_release(handl
     assert (await db.get_session(sid)).task_id == "t1"
 
 
-async def test_timing_persistence_error_cannot_fail_activation(handler, db, tmp_path, monkeypatch):
+@pytest.mark.parametrize("database_error", [False, True])
+async def test_timing_persistence_error_cannot_fail_activation(
+    handler, db, tmp_path, monkeypatch, database_error,
+):
     await mktask(db, "t1", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
     original = db.set_task_meta
 
     async def set_meta(task_id, key, value, **kwargs):
         if key == "claim_timing":
+            if database_error:
+                # Abort the diagnostic transaction itself, after activation
+                # committed on the same pooled connection.
+                await kwargs["conn"].exec_driver_sql("SELECT 1 / 0")
             raise RuntimeError("diagnostic persistence unavailable")
         return await original(task_id, key, value, **kwargs)
 
@@ -5254,6 +5261,9 @@ async def test_timing_persistence_error_cannot_fail_activation(handler, db, tmp_
     assert result["result"] == "claimed"
     assert (await db.get_session(sid)).claim_phase == "active"
     assert result["claim_timing"]["result"] == "claimed"
+    assert await db.get_task_meta("t1", "claim_timing") is None
+    await db.set_task_meta("t1", "after_timing_error", True)
+    assert await db.get_task_meta("t1", "after_timing_error") is True
 
 
 @pytest.mark.parametrize("changed", ["task", "instance"])

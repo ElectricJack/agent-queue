@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import time
+from contextlib import AsyncExitStack
 from dataclasses import replace
 
 # Re-exported for backwards compatibility: the claim-file helpers moved to the
@@ -1069,6 +1070,23 @@ class ClaimCommandsMixin:
         return outcome
 
     async def _run_claim_preparation(self, session, row, task, cap, *, slot, admission):
+        # Keep activation's checkout until diagnostics have been saved in a
+        # separate transaction. A diagnostic failure cannot roll back the
+        # claim, and a successful claim needs no fifth pool checkout.
+        timing = current_claim_timing.get()
+        async with AsyncExitStack() as stack:
+            if timing is not None:
+                timing.activation_stack = stack
+            try:
+                return await self._complete_claim_preparation(
+                    session, row, task, cap, slot=slot, admission=admission,
+                )
+            finally:
+                if timing is not None:
+                    timing.activation_stack = None
+                    timing.persistence_connection = None
+
+    async def _complete_claim_preparation(self, session, row, task, cap, *, slot, admission):
         key = (session.id, task.claim_epoch)
         preparation_key = (session.id, task.id, task.claim_epoch)
         timing = current_claim_timing.get()
@@ -1082,7 +1100,14 @@ class ClaimCommandsMixin:
                 timing.finish(outcome["result"])
                 outcome["claim_timing"] = timing.snapshot()
                 try:
-                    await self.db.set_task_meta(task.id, "claim_timing", timing.snapshot())
+                    if timing.persistence_connection is None:
+                        await self.db.set_task_meta(task.id, "claim_timing", timing.snapshot())
+                    else:
+                        async with timing.persistence_connection.begin():
+                            await self.db.set_task_meta(
+                                task.id, "claim_timing", timing.snapshot(),
+                                conn=timing.persistence_connection,
+                            )
                 except Exception:
                     logger.warning("Could not save claim timing for %s", task.id, exc_info=True)
             results = self.orchestrator.claim_preparation_results
@@ -1468,13 +1493,8 @@ class ClaimCommandsMixin:
                     stage = "verify_preparation"
                     await verify_preparation(origin, conn=conn)
                 stage = "activate_claim"
-                activated = await self.db.activate_claim(
-                    session.id,
-                    task.id,
-                    epoch=epoch,
-                    now=time.time(),
-                    conn=conn,
-                    branch_name=prepared_branch,
+                activation_args = dict(
+                    epoch=epoch, now=time.time(), branch_name=prepared_branch,
                     # A successful preparation clears its pause checkpoint
                     # and failure ladder together, so a later, unrelated
                     # prepare starts at minimum.  Done inside the activation
@@ -1483,6 +1503,20 @@ class ClaimCommandsMixin:
                     clear_preparation_metadata=True,
                     admission=admission,
                 )
+                timing = current_claim_timing.get()
+                if conn is None and timing is not None and timing.activation_stack is not None:
+                    connection = await timing.activation_stack.enter_async_context(
+                        self.db._engine.connect()
+                    )
+                    timing.persistence_connection = connection
+                    async with connection.begin():
+                        activated = await self.db.activate_claim(
+                            session.id, task.id, conn=connection, **activation_args,
+                        )
+                else:
+                    activated = await self.db.activate_claim(
+                        session.id, task.id, conn=conn, **activation_args,
+                    )
                 if activated and hierarchy_enabled:
                     stage = "finalize_preparation"
                     await verify_preparation(origin, conn=conn, finalize=True)

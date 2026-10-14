@@ -980,7 +980,7 @@ class ClaimQueryMixin:
         just stamped, and both metadata keys go out in one multi-row upsert
         (spec §15).
         """
-        await conn.execute(
+        holder = (
             update(sessions)
             .where(sessions.c.id == session_id)
             .values(
@@ -990,6 +990,17 @@ class ClaimQueryMixin:
                 last_claim_epoch=claim_epoch,
             )
         )
+        if agent_id and agent_reserved:
+            # take_claim_slot already locked this session, and take_task
+            # reserved the agent. Feed the holder write into the workspace
+            # update so PostgreSQL performs both in one round trip, in order.
+            holder = holder.returning(sessions.c.project_id).cte("claim_holder")
+            project_id = select(holder.c.project_id).scalar_subquery()
+        else:
+            await conn.execute(holder)
+            project_id = select(sessions.c.project_id).where(
+                sessions.c.id == session_id
+            ).scalar_subquery()
         slot = None
         if agent_id:
             if not agent_reserved:
@@ -1004,9 +1015,7 @@ class ClaimQueryMixin:
                 update(workspaces)
                 .where(
                     workspaces.c.project_id
-                    == select(sessions.c.project_id)
-                    .where(sessions.c.id == session_id)
-                    .scalar_subquery(),
+                    == project_id,
                     workspaces.c.workspace_path == work_dir,
                     workspaces.c.enabled.is_(True),
                     workspaces.c.locked_by_agent_id == agent_id,
