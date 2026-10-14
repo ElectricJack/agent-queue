@@ -67,12 +67,19 @@ def _git_repo_seed(tmp_path_factory):
         check=True,
         capture_output=True,
     )
+    # Receive-pack runs in the remote with its own config. Prevent detached
+    # maintenance from changing the seed while per-test copytree walks it.
+    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
+    for key, value in settings:
+        _git(["config", key, value], cwd=str(remote))
     clone = tmp_path / "clone"
     subprocess.run(
         ["git", "clone", str(remote), str(clone)],
         check=True,
         capture_output=True,
     )
+    for key, value in settings:
+        _git(["config", key, value], cwd=str(clone))
     # Initial commit
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
