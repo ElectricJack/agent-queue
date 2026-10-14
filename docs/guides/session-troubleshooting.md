@@ -608,7 +608,7 @@ aq integration status          # what still holds the branch
 If the writer is gone and the sweep did not clear it:
 
 ```bash
-aq integration release-owner --owner-row-id <row>
+aq integration release-owner --owner-row-id <row> --apply
 ```
 
 ## A pool worker that stopped asking for work

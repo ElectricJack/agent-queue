@@ -1460,7 +1460,7 @@ class Orchestrator(
                     "Integration branch handoff is unproven; task resources were retained. "
                     + session_stop
                     + f"Preview `aq integration release-owner --task-id {task_id} --dry-run`, "
-                    "then apply without --dry-run to preserve work and release the attachment. "
+                    "then add --apply to preserve work and release the attachment. "
                     f"Retry `aq task stop {task_id}` if still in progress, "
                     f"then `aq task restart {task_id}`. No recovery incident is required."
                 )

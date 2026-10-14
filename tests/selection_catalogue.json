@@ -8436,9 +8436,10 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:875816204ecd567398786b7fc9266d3fc148faba2b4cd9ff0077a55b061f2df5",
+      "digest": "sha256:3ea826e75bd2eb775c26d050d2dd464ee1dd6ad40ba4bd07d269787660a13d6a",
       "imports": [
         "src.api.auth",
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
         "src.database.queries.claim_queries",

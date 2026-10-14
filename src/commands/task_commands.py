@@ -39,7 +39,9 @@ from src.models import (
     INTEGRATION_MODES,
     TASK_TYPE_VALUES,
     WORKSPACE_MODE_VALUES,
+    AgentState,
     DepType,
+    ProjectStatus,
     Task,
     TaskStatus,
     TaskType,
@@ -4301,6 +4303,116 @@ class TaskCommandsMixin:
         if error:
             return {"error": error}
         return {"stopped": args["task_id"]}
+
+    async def recover_orphaned_integration_task(self, task_id: str, session) -> dict | None:
+        """Preserve and release a stopped pool claim before the orphan fallback.
+
+        None means no retained integration attachment belongs to this session.
+        Every other result retains responsibility here: a refused proof must
+        not fall through to a transition that loses the recoverable assignment.
+        """
+        from sqlalchemy import select
+
+        from src.claim_file import remove_claim_file_if_matches
+        from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
+        from src.database.queries.integration_state_queries import session_attached_clause
+        from src.database.tables import integration_branch_owners, sessions, task_metadata, tasks
+        from src.integration.owner_recovery import RECOVERABLE_STATES, owner_recovery_for
+
+        if session.lifecycle != "pool":
+            return None
+        async with self.db._engine.connect() as conn:
+            owners = (await conn.execute(select(integration_branch_owners).where(
+                integration_branch_owners.c.owner_id == task_id,
+                integration_branch_owners.c.session_id == session.id,
+                integration_branch_owners.c.owner_role.in_(("worker", "repair")),
+                integration_branch_owners.c.handoff_state.in_(RECOVERABLE_STATES),
+            ))).mappings().all()
+        if not owners:
+            return None
+        orch = self.orchestrator
+        retained = {"success": False, "outcome": "retained"}
+        if (
+            not self.config.integration.owner_recovery_sweep
+            or task_id in orch._running_tasks or orch._task_control_held(task_id)
+        ):
+            return retained
+        async with orch._task_control_lock(task_id):
+            task = await self.db.get_task(task_id)
+            current = await self.db.get_session(session.id)
+            if (
+                task is None or task.status is not TaskStatus.IN_PROGRESS
+                or current is None or current.instance_token != session.instance_token
+                or current.state != "stopped" or current.desired_state != "stopped"
+                or current.task_id != task_id or current.claim_phase != "active"
+                or current.last_claim_epoch != task.claim_epoch
+                or task.assigned_agent_id != current.agent_id
+                or not current.agent_id or task.resume_after is not None
+            ):
+                return retained
+            project = await self.db.get_project(task.project_id)
+            constraint = await self.db.get_project_constraint(task.project_id)
+            agent = await self.db.get_agent(current.agent_id)
+            workspace = await self.db.get_workspace_for_agent(current.agent_id)
+            if (
+                project is None or project.status is not ProjectStatus.ACTIVE
+                or constraint is not None and constraint.pause_scheduling
+                or agent is None or agent.current_task_id != task_id
+                or agent.state not in {AgentState.BUSY, AgentState.RETIRED}
+                or project.hierarchical_integration_mode not in {"train", "hierarchy"}
+                or task.repo_id != project.integration_repository_id
+                or workspace is None or await self.db.workspace_has_job_pin(workspace.id)
+                or workspace.locked_by_task_id != task_id
+                or workspace.locked_by_agent_id != current.agent_id
+                or os.path.realpath(workspace.workspace_path) != os.path.realpath(current.work_dir)
+                or len(owners) != 1 or owners[0]["workspace_id"] != workspace.id
+                or owners[0]["repository_id"] != task.repo_id
+                or owners[0]["ref"].removeprefix("refs/heads/") != (
+                    task.branch_name or ""
+                ).removeprefix("refs/heads/")
+            ):
+                return retained
+            async with self.db._engine.connect() as conn:
+                if (await conn.execute(select(sessions.c.id).where(
+                    sessions.c.agent_id == current.agent_id,
+                    sessions.c.id != current.id, session_attached_clause(),
+                ))).first() is not None:
+                    return retained
+                if await self.db.is_container(task_id, conn=conn):
+                    return retained
+                eligible = apply_label_filters(select(tasks.c.id).where(
+                    tasks.c.id == task_id, ~blocked_predicate(),
+                ), exclude_hold=True)
+                if (await conn.execute(eligible)).first() is None:
+                    return retained
+                if (await conn.execute(select(task_metadata.c.key).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == "manual_pause",
+                ))).first() is not None:
+                    return retained
+                owner = await self.db._recovery_owner(conn, {
+                    "id": task_id, "project_id": task.project_id,
+                })
+                if owner["kind"] != "supervisor":
+                    return retained
+            recovery = owner_recovery_for(orch)
+            if recovery is None:
+                return retained
+            result = await recovery.recover(owners[0]["id"], principal="session-reconciler")
+            if result.outcome not in {"released", "preserved_and_released"}:
+                return {**retained, "recovery": result.to_dict()}
+            remove_claim_file_if_matches(current.work_dir, task_id, task.claim_epoch)
+            await self.db.add_task_comment(
+                task_id,
+                f"Orphan sweep recovered stopped pool writer {current.id}, claim epoch "
+                f"{task.claim_epoch}; owner recovery preserved its branch and released the "
+                "retained claim to READY without a manual session kill or restart.",
+                author_kind="supervisor", author_id="session-reconciler",
+            )
+            await self._emit_task_graph_change(
+                "task.restarted", await self.db.get_task(task_id), reason="integration_owner_recovery",
+            )
+            return {"success": True, "outcome": "recovered", "recovery": result.to_dict()}
 
     async def recover_missing_session_task(self, task_id: str, *, now: float) -> dict:
         """Internal orphan-sweep command; never use operator restart's budget reset.

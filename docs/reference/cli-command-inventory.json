@@ -4763,6 +4763,7 @@
           "--task-id",
           "--owner-row-id",
           "--dry-run",
+          "--apply",
           "--json",
           "--brief",
           "--save-output",

@@ -408,7 +408,12 @@ the claim to READY. `aq task stop TASK_ID` uses the same proof for a retained pr
 and also returns it to READY; `aq task restart TASK_ID` can then retry it. This preserves
 the task's existing resume point and never discards dirty or unpublished work.
 
-Preview `aq integration release-owner --task-id TASK_ID --dry-run`. The existing
+The orphan sweep automatically preserves and releases a confirmed stopped pool
+writer's retained active claim to READY before the `session_not_live` fallback.
+It leaves refused proofs and operator holds in place for recovery and respects
+`integration.owner_recovery_sweep: false`.
+
+Preview `aq integration release-owner --task-id TASK_ID` (or add `--dry-run`). The existing
 owner recovery probes the provider, verifies the current fence, preserves
 unpublished work and releases only a proved stopped attachment. It refuses a
 live writer, reused checkout or changed fence. Repair handoff and retry remain
@@ -416,7 +421,7 @@ Subject decisions under the frozen policy and unchanged stage budget.
 
 A project supervisor can use this control for a task left
 `BLOCKED/session_close_hard_failure` with `integration_handoff_unproven`. Review
-the dry-run result, then remove `--dry-run` to release the stopped attachment.
+the dry-run result, then add `--apply` to release the stopped attachment.
 If its session is still live, stop that exact session through the normal session
 control and wait for confirmed termination; a stopped database status alone is
 insufficient. Release preserves the task's failure status. After reviewing the
