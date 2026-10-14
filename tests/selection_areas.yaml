@@ -73,6 +73,7 @@ areas:
     description: "Task hierarchy: dotted child ids, set-parent and children reads, container settlement and close, subtree delete/archive, phases, standing parents and hierarchy doctor checks and statement budgets."
     match:
       - tests/test_hierarchy_*.py
+      - tests/test_task_split.py
       - tests/test_phases.py
       - tests/perf/test_hierarchy_statements.py
       - tests/test_worker_filing.py

@@ -1255,6 +1255,7 @@
         "tests/test_hierarchy_queries.py",
         "tests/test_hierarchy_settlement.py",
         "tests/test_phases.py",
+        "tests/test_task_split.py",
         "tests/test_worker_filing.py"
       ]
     },
@@ -17452,6 +17453,28 @@
       ],
       "markers": [],
       "summary": "Dock markers from live attempts, not ``agents.current_task_id``."
+    },
+    "tests/test_task_split.py": {
+      "areas": [
+        "task-hierarchy"
+      ],
+      "default_arm": true,
+      "digest": "sha256:37164bf622e4b0599e08b53e8d7c0038764cf64b9cc3f43bdddb7ac1719780d4",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.provenance",
+        "src.mcp_registration",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Started mixed tasks retain code ownership while explicit acceptance moves out."
     },
     "tests/test_task_subtask_commands.py": {
       "areas": [

@@ -17567,6 +17567,99 @@
         "type": "object"
       }
     },
+    "task_split": {
+      "name": "task_split",
+      "description": "Keep code on its existing delivery path and relocate explicit remaining acceptance.",
+      "input_schema": {
+        "$defs": {
+          "TaskSplitMoved": {
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "minLength": 1,
+                "title": "Title",
+                "type": "string"
+              },
+              "acceptance": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "title": "Acceptance",
+                "type": "array"
+              },
+              "placement": {
+                "description": "Post-delivery operations become a root; finite build work stays beside the source.",
+                "enum": [
+                  "operational_root",
+                  "child"
+                ],
+                "title": "Placement",
+                "type": "string"
+              },
+              "delivery_targets": {
+                "description": "Same-project code leaves whose verified delivery gates operational work; include the source.",
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "title": "Delivery Targets",
+                "type": "array"
+              }
+            },
+            "required": [
+              "title",
+              "acceptance",
+              "placement"
+            ],
+            "title": "TaskSplitMoved",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "retained_acceptance": {
+            "description": "Exact source criteria retained; together with moved.acceptance, an exhaustive partition.",
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Retained Acceptance",
+            "type": "array"
+          },
+          "moved": {
+            "$ref": "#/$defs/TaskSplitMoved"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "expected_generation": {
+            "description": "Parent integration checkpoint generation; for roots or disabled integration, split metadata generation (initially 0).",
+            "minimum": 0,
+            "title": "Expected Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_id",
+          "retained_acceptance",
+          "moved",
+          "reason",
+          "expected_generation"
+        ],
+        "title": "TaskSplitArgs",
+        "type": "object"
+      }
+    },
     "vault_rebuild_index": {
       "name": "vault_rebuild_index",
       "description": "Rebuild vault hub files with optional LLM-generated summaries.",
@@ -17832,6 +17925,7 @@
     "get_task_tree": "task",
     "task_children": "task",
     "task_progress": "task",
+    "task_split": "task",
     "reparent_task": "task",
     "get_task_dependencies": "task",
     "task_deps": "task",

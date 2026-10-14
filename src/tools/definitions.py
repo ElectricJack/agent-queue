@@ -203,6 +203,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_task_tree": "task",
     "task_children": "task",
     "task_progress": "task",
+    "task_split": "task",
     "reparent_task": "task",
     "get_task_dependencies": "task",
     "task_deps": "task",
