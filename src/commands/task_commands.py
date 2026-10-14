@@ -26,6 +26,7 @@ from src.commands.helpers import (
 )
 from src.commands.principal import matches_session_instance
 from src.database.queries.hierarchy_queries import PHASE_KEY, STANDING_PARENT_KEY, HierarchyError
+from src.database.queries.ingest_batch_queries import task_batch_summary
 from src.database.queries.task_queries import (
     TERMINAL_BLOCKED_META_KEY,
     TaskProjectMoveError,
@@ -63,6 +64,8 @@ from src.state_machine import (
     validate_waits_for,
 )
 from src.task_graph.activity import attach_activity, load_activity, task_activity
+from src.task_graph.ingestion import merge_ingestion
+from src.task_graph.readiness import load_readiness
 from src.task_names import (
     MAX_NAMING_DEPTH,
     MAX_STRUCTURAL_DEPTH,
@@ -742,6 +745,9 @@ class TaskCommandsMixin:
         from src.task_graph.readiness import attach_readiness
 
         await attach_readiness(self.db, task_dicts)
+        from src.task_graph.ingestion import attach_ingestion
+
+        await attach_ingestion(self.db, task_dicts)
 
         if show_dependencies:
             await self._enrich_with_dependencies(task_dicts, capped_tasks)
@@ -812,9 +818,8 @@ class TaskCommandsMixin:
                 d["project_id"] = t.project_id
             return {**d, **activity.get(t.id, {}), **readiness.get(t.id, {})}
 
-        from src.task_graph.readiness import load_readiness
-
         readiness = await load_readiness(self.db, [self._task_to_dict(t) for t in tasks])
+        await merge_ingestion(self.db, [self._task_to_dict(t) for t in tasks], readiness)
         activity = await load_activity(self.db, [t.id for t in tasks])
         by_project: dict[str, list[dict]] = {}
         for t in tasks:
@@ -1009,6 +1014,9 @@ class TaskCommandsMixin:
                 root, children, compact=compact, readiness_map=readiness,
             )
         await attach_activity(self.db, [entry["root"] for entry in trees])
+        from src.task_graph.ingestion import attach_ingestion
+
+        await attach_ingestion(self.db, [entry["root"] for entry in trees])
         # Enrich root task dicts with dependency info when requested.
         if show_dependencies:
             root_dicts = [entry["root"] for entry in trees]
@@ -1355,6 +1363,9 @@ class TaskCommandsMixin:
 
         rows = [self._task_to_dict(t) for t in children]
         await attach_readiness(self.db, rows)
+        from src.task_graph.ingestion import attach_ingestion
+
+        await attach_ingestion(self.db, rows)
         return {"success": True, "task_id": task_id, "count": len(rows), "children": rows}
 
     async def _cmd_task_progress(self, args: dict) -> dict:
@@ -3768,7 +3779,6 @@ class TaskCommandsMixin:
         # Effective integration policy + its source, so surfaces can show
         # where the mode comes from instead of another ambiguous flag.
         from src.integration.delivery_path import effective_integration_mode
-
         project = await self.db.get_project(task.project_id)
         effective_mode, mode_source = await effective_integration_mode(
             self.db, task, default_mode=self.orchestrator.config.integration.default_mode
@@ -3777,7 +3787,10 @@ class TaskCommandsMixin:
         info["integration_mode_source"] = mode_source
 
         info["needs_attention"] = await self.db.get_task_meta(task.id, "needs_attention")
+        info["delivery_condition"] = await self.db.get_task_meta(task.id, "delivery_condition")
         info["reroute"], info["provider_hold"] = await self._task_provider_view(task, project)
+        async with self.db._engine.connect() as conn:
+            info["held_batch"] = await task_batch_summary(conn, task.id)
         completion = await self.db.get_task_completion(task.id)
         info["completion"] = asdict(completion) if completion else None
 

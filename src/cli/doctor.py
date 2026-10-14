@@ -134,6 +134,8 @@ def _as_dict(obj: Any) -> dict:
 
 @cli.command("doctor")
 @click.option("--fix", is_flag=True, help="Apply fixes for failing fixable checks, then re-run.")
+@click.option("--leave-gated", is_flag=True,
+              help="Leave legacy spec proposals on their existing approval path during --fix.")
 @click.option("--json", "as_json", is_flag=True, help="Emit the versioned JSON envelope.")
 @click.option(
     "--check",
@@ -143,7 +145,9 @@ def _as_dict(obj: Any) -> dict:
 )
 @click.pass_context
 @_handle_errors
-def doctor(ctx: click.Context, fix: bool, as_json: bool, checks: tuple[str, ...]) -> None:
+def doctor(
+    ctx: click.Context, fix: bool, leave_gated: bool, as_json: bool, checks: tuple[str, ...],
+) -> None:
     """Check whether this install is healthy, and what to do about it."""
     from rich.table import Table
 
@@ -152,7 +156,8 @@ def doctor(ctx: click.Context, fix: bool, as_json: bool, checks: tuple[str, ...]
     async def _fetch():
         async with _get_client(api_url) as client:
             return await client.execute(
-                "doctor", {"fix": fix, "checks": list(checks) or None}
+                "doctor", {"fix": fix, "checks": list(checks) or None,
+                           **({"leave_gated": True} if leave_gated else {})}
             )
 
     json_mode = as_json or bool((ctx.obj or {}).get("json"))

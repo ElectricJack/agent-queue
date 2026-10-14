@@ -2278,6 +2278,54 @@
         }
       }
     },
+    "/api/projects/{project_id}/batches/{batch_id}": {
+      "get": {
+        "summary": "Get Ingest Batch",
+        "operationId": "get_ingest_batch",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestBatchDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/reviews/pull-requests/summary": {
       "get": {
         "summary": "Get Pull Request Project Summaries",
@@ -16172,8 +16220,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
-        "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+        "summary": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+        "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
         "operationId": "doctor",
         "requestBody": {
           "content": {
@@ -20429,6 +20477,51 @@
         }
       }
     },
+    "/api/task/spec-ingest-legacy-adopt": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+        "description": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+        "operationId": "spec_ingest_legacy_adopt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecIngestLegacyAdoptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/spec-ingest-legacy-inventory": {
       "post": {
         "tags": [
@@ -20690,6 +20783,141 @@
                 "schema": {
                   "$ref": "#/components/schemas/TaskBatchProposeResponse"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-release": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+        "description": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+        "operationId": "task_batch_release",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-retire": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+        "description": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+        "operationId": "task_batch_retire",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchRetireRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-review-record": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+        "description": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+        "operationId": "task_batch_review_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchReviewRecordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -34281,6 +34509,18 @@
             "title": "Fix",
             "description": "Apply fixes for failing fixable checks, then re-run them."
           },
+          "leave_gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Gated",
+            "description": "Leave legacy spec proposals on their existing human gate."
+          },
           "checks": {
             "anyOf": [
               {
@@ -41713,6 +41953,28 @@
               }
             ]
           },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
+          },
           "route_source": {
             "anyOf": [
               {
@@ -44217,6 +44479,16 @@
               }
             ],
             "title": "Parent Task Id"
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -44364,6 +44636,59 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HeldBatchSummary": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "held",
+              "reviewing",
+              "needs_scope",
+              "released",
+              "retired"
+            ],
+            "title": "State"
+          },
+          "structure_revision": {
+            "type": "integer",
+            "title": "Structure Revision"
+          },
+          "reviewer_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Task Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "lineage": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Lineage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "state",
+          "structure_revision",
+          "source",
+          "lineage"
+        ],
+        "title": "HeldBatchSummary",
+        "description": "Ingestion membership survives release; ``state`` says whether it still holds work."
       },
       "HierarchyRefusalResponse": {
         "properties": {
@@ -44820,6 +45145,229 @@
           "project_id"
         ],
         "title": "ImportRequest"
+      },
+      "IngestBatchDetail": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "held",
+              "reviewing",
+              "needs_scope",
+              "released",
+              "retired"
+            ],
+            "title": "State"
+          },
+          "structure_revision": {
+            "type": "integer",
+            "title": "Structure Revision"
+          },
+          "reviewer_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Task Id"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "lineage": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Lineage"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "structure_digest": {
+            "type": "string",
+            "title": "Structure Digest"
+          },
+          "source_review_id": {
+            "type": "string",
+            "title": "Source Review Id"
+          },
+          "source_revision": {
+            "type": "integer",
+            "title": "Source Revision"
+          },
+          "source_content_sha256": {
+            "type": "string",
+            "title": "Source Content Sha256"
+          },
+          "decision_id": {
+            "type": "string",
+            "title": "Decision Id"
+          },
+          "members": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Members"
+          },
+          "membership": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Membership"
+          },
+          "check_results": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Results"
+          },
+          "section_verdicts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Section Verdicts"
+          },
+          "reverse_coverage_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reverse Coverage Verdict"
+          },
+          "walkthrough_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Walkthrough Verdict"
+          },
+          "structural_findings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Structural Findings"
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff"
+          },
+          "receipts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Receipts"
+          },
+          "release_receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Receipt"
+          },
+          "release_actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Actor"
+          },
+          "release_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Revision"
+          },
+          "release_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Digest"
+          },
+          "released_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Released At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "state",
+          "structure_revision",
+          "source",
+          "lineage",
+          "project_id",
+          "structure_digest",
+          "source_review_id",
+          "source_revision",
+          "source_content_sha256",
+          "decision_id",
+          "members",
+          "membership"
+        ],
+        "title": "IngestBatchDetail",
+        "description": "Durable review evidence, including receipts superseded by a graph edit."
       },
       "InspectPlaybookRunRequest": {
         "properties": {
@@ -49430,6 +49978,16 @@
               }
             ],
             "title": "Parent Task Id"
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "x": {
             "type": "number",
@@ -75500,6 +76058,56 @@
         ],
         "title": "SpecApproveResponse"
       },
+      "SpecIngestLegacyAdoptRequest": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": ""
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id",
+            "description": ""
+          },
+          "packet_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packet Sha256",
+            "description": ""
+          },
+          "leave_gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Gated",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id"
+        ],
+        "title": "SpecIngestLegacyAdoptRequest"
+      },
       "SpecIngestLegacyInventoryRequest": {
         "properties": {
           "project_id": {
@@ -77702,11 +78310,277 @@
               }
             ],
             "title": "Diff"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "ready",
+                  "held",
+                  "reviewing",
+                  "needs_scope",
+                  "released",
+                  "retired",
+                  "committed",
+                  "discarded"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "structure_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Revision"
+          },
+          "structure_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Structure Digest"
+          },
+          "members": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Members"
+          },
+          "lineage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lineage"
+          },
+          "release_receipt": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Receipt"
+          },
+          "reviewer_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Task Id"
+          },
+          "replayed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replayed"
           }
         },
         "type": "object",
         "title": "TaskBatchProposeResponse",
-        "description": "A proposal is created, not applied \u2014 unless ingestion applies it live.\n\nA batch carrying a live spec-ingest role's approved-document authority is\napplied in the same call: ``committed`` is then true and ``task_ids`` is\nthat batch's receipt, exactly as a commit's would be. Every other proposal\nstages in ``ready`` and waits for approval."
+        "description": "Ordinary proposals stage for approval; ingestion materializes held work.\n\nDesign-kind ingestion returns a released batch with a server receipt.\nImplementation ingestion returns held members pending fidelity review."
+      },
+      "TaskBatchReleaseRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "expected_digest": {
+            "type": "string",
+            "title": "Expected Digest",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest"
+        ],
+        "title": "TaskBatchReleaseRequest"
+      },
+      "TaskBatchRetireRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "reason"
+        ],
+        "title": "TaskBatchRetireRequest"
+      },
+      "TaskBatchReviewRecordRequest": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "expected_revision": {
+            "type": "integer",
+            "title": "Expected Revision",
+            "description": ""
+          },
+          "expected_digest": {
+            "type": "string",
+            "title": "Expected Digest",
+            "description": ""
+          },
+          "section_verdicts": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Section Verdicts",
+            "description": ""
+          },
+          "reverse_coverage_verdict": {
+            "type": "string",
+            "title": "Reverse Coverage Verdict",
+            "description": ""
+          },
+          "walkthrough_verdict": {
+            "type": "string",
+            "title": "Walkthrough Verdict",
+            "description": ""
+          },
+          "structural_findings": {
+            "items": {},
+            "type": "array",
+            "title": "Structural Findings",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordRequest"
       },
       "TaskBatchUpdateRequest": {
         "properties": {
@@ -79242,6 +80116,28 @@
                 "type": "null"
               }
             ]
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
           },
           "route_source": {
             "anyOf": [
@@ -80918,6 +81814,28 @@
               }
             ]
           },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
+          },
           "route_source": {
             "anyOf": [
               {
@@ -81465,6 +82383,28 @@
                 "type": "null"
               }
             ]
+          },
+          "held_batch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldBatchSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery_condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Condition"
           },
           "route_source": {
             "anyOf": [

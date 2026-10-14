@@ -423,6 +423,16 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     queryClient.invalidateQueries({ queryKey: ["providers", "held-tasks"] });
     return;
   }
+  if (type === "batch.held" || type === "batch.receipt_recorded" || type === "batch.needs_scope" || type === "batch.released") {
+    const batch = event as { batch_id: string; project_id: string };
+    queryClient.invalidateQueries({ queryKey: ["batch", batch.project_id, batch.batch_id] });
+    queryClient.invalidateQueries({ queryKey: ["proposal", batch.batch_id] });
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    queryClient.invalidateQueries({ queryKey: ["task"] });
+    queryClient.invalidateQueries({ queryKey: ["explain"] });
+    queryClient.invalidateQueries({ queryKey: ["asks"] });
+    return;
+  }
   if (type === "proposal.status_changed") {
     const pid = (event as ProposalStatusChangedEvent).proposal_id;
     queryClient.invalidateQueries({ queryKey: ["proposal", pid] });

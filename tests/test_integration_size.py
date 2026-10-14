@@ -303,7 +303,10 @@ def test_human_ask_evidence_keeps_source_authority_charged(report, manifest):
 
 
 def test_ingest_storage_keeps_outbox_adapter_charged(report, manifest):
-    for name in ("ingest_batches", "ingest_batch_members", "ingest_batch_receipts"):
+    for name in (
+        "approved_document_snapshots", "ingest_batches", "ingest_batch_members",
+        "ingest_batch_receipts",
+    ):
         assert f"src/database/tables.py::{name}" in manifest["generic_dependencies"]
         assert name not in report["tables"]
     path = "src/integration/outbox.py"

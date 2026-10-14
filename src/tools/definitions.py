@@ -5121,8 +5121,10 @@ _ALL_TOOL_DEFINITIONS = [
             "concurrently with per-check timeouts; a check that crashes or "
             "times out reports 'error' rather than hanging the command.  "
             "Pass fix=true to apply the fix of each failing fixable check and "
-            "re-run it (fixes are idempotent and only touch derived state — "
-            "WAL, expired log dirs — never tasks, vault files or branches).  "
+            "re-run it. Fixes are idempotent; ingestion.legacy_proposals may "
+            "materialize an uncommitted proposal into held work only with "
+            "immutable approval authority. Pass leave_gated=true to retain "
+            "the legacy approval path. Other checks repair derived state. "
             "The returned exit_code is 2 when any check errored, 1 when any "
             "warned, otherwise 0."
         ),
@@ -5132,6 +5134,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "fix": {
                     "type": "boolean",
                     "description": "Apply fixes for failing fixable checks, then re-run them.",
+                },
+                "leave_gated": {
+                    "type": "boolean",
+                    "description": "Leave legacy spec proposals on their existing human gate.",
                 },
                 "checks": {
                     "type": "array",
@@ -9408,6 +9414,11 @@ from src.commands.contracts.builtin import (  # noqa: E402
     EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
 )
 from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+from src.commands.contracts.builtin import (  # noqa: E402
+    TaskBatchReleaseArgs as _TaskBatchReleaseArgs,
+    TaskBatchRetireArgs as _TaskBatchRetireArgs,
+    TaskBatchReviewRecordArgs as _TaskBatchReviewRecordArgs,
+)
 
 for _definition in _ALL_TOOL_DEFINITIONS:
     if _definition["name"] == "task_batch_update":
@@ -9417,8 +9428,22 @@ _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
     "batch_reconcile": "task", "ensure_fidelity_review": "task",
+    "spec_ingest_legacy_adopt": "task", "task_batch_review_record": "task",
+    "task_batch_release": "task", "task_batch_retire": "task",
 })
 _ALL_TOOL_DEFINITIONS.extend([
+    {"name": "task_batch_review_record",
+     "description": "Attest every mapped section and whole-batch intent on the exact held graph; "
+                    "only the live assigned fidelity reviewer.",
+     "input_schema": _TaskBatchReviewRecordArgs.model_json_schema()},
+    {"name": "task_batch_release",
+     "description": "Verify source approval, the live graph and its fidelity receipt, then "
+                    "release a held batch; service, project supervisor or operator only.",
+     "input_schema": _TaskBatchReleaseArgs.model_json_schema()},
+    {"name": "task_batch_retire",
+     "description": "Retire a held batch whose members and reviewer are already retired, "
+                    "retaining its receipts; service, project supervisor or operator only.",
+     "input_schema": _TaskBatchRetireArgs.model_json_schema()},
     {"name": "ensure_spec_ingest",
      "description": "Ensure one role task per applied approval decision, including archived receipts.",
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
@@ -9440,6 +9465,14 @@ _ALL_TOOL_DEFINITIONS.extend([
                       "properties": {"project_id": {"type": "string"},
                                      "after_id": {"type": "string"}},
                       "required": ["project_id"]}},
+    {"name": "spec_ingest_legacy_adopt",
+     "description": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+     "input_schema": {"type": "object", "additionalProperties": False,
+                      "properties": {"proposal_id": {"type": "string"},
+                                     "decision_id": {"type": "string"},
+                                     "packet_sha256": {"type": "string"},
+                                     "leave_gated": {"type": "boolean"}},
+                      "required": ["proposal_id"]}},
 ])
 
 

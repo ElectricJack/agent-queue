@@ -4465,13 +4465,17 @@
     },
     {
       "name": "doctor",
-      "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+      "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
       "input_schema": {
         "type": "object",
         "properties": {
           "fix": {
             "type": "boolean",
             "description": "Apply fixes for failing fixable checks, then re-run them."
+          },
+          "leave_gated": {
+            "type": "boolean",
+            "description": "Leave legacy spec proposals on their existing human gate."
           },
           "checks": {
             "type": "array",
@@ -12586,6 +12590,177 @@
       }
     },
     {
+      "name": "task_batch_review_record",
+      "description": "Attest every mapped section and whole-batch intent on the exact held graph; only the live assigned fidelity reviewer.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "section_verdicts": {
+            "additionalProperties": {
+              "enum": [
+                "faithful",
+                "fixed",
+                "scope_question"
+              ],
+              "type": "string"
+            },
+            "title": "Section Verdicts",
+            "type": "object"
+          },
+          "reverse_coverage_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Reverse Coverage Verdict",
+            "type": "string"
+          },
+          "walkthrough_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Walkthrough Verdict",
+            "type": "string"
+          },
+          "structural_findings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Structural Findings",
+            "type": "array"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "task_batch_release",
+      "description": "Verify source approval, the live graph and its fidelity receipt, then release a held batch; service, project supervisor or operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest"
+        ],
+        "title": "TaskBatchReleaseArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "task_batch_retire",
+      "description": "Retire a held batch whose members and reviewer are already retired, retaining its receipts; service, project supervisor or operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "reason"
+        ],
+        "title": "TaskBatchRetireArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "ensure_spec_ingest",
       "description": "Ensure one role task per applied approval decision, including archived receipts.",
       "input_schema": {
@@ -12703,6 +12878,31 @@
         },
         "required": [
           "project_id"
+        ]
+      }
+    },
+    {
+      "name": "spec_ingest_legacy_adopt",
+      "description": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "proposal_id": {
+            "type": "string"
+          },
+          "decision_id": {
+            "type": "string"
+          },
+          "packet_sha256": {
+            "type": "string"
+          },
+          "leave_gated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "proposal_id"
         ]
       }
     },
@@ -19904,91 +20104,6 @@
         }
       }
     },
-    "task_batch_review_record": {
-      "name": "task_batch_review_record",
-      "description": "Attest every mapped section and whole-batch intent on the exact held graph.",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "batch_id": {
-            "minLength": 1,
-            "title": "Batch Id",
-            "type": "string"
-          },
-          "expected_revision": {
-            "minimum": 1,
-            "title": "Expected Revision",
-            "type": "integer"
-          },
-          "expected_digest": {
-            "minLength": 1,
-            "title": "Expected Digest",
-            "type": "string"
-          },
-          "section_verdicts": {
-            "additionalProperties": {
-              "enum": [
-                "faithful",
-                "fixed",
-                "scope_question"
-              ],
-              "type": "string"
-            },
-            "title": "Section Verdicts",
-            "type": "object"
-          },
-          "reverse_coverage_verdict": {
-            "enum": [
-              "faithful",
-              "fixed",
-              "scope_question"
-            ],
-            "title": "Reverse Coverage Verdict",
-            "type": "string"
-          },
-          "walkthrough_verdict": {
-            "enum": [
-              "faithful",
-              "fixed",
-              "scope_question"
-            ],
-            "title": "Walkthrough Verdict",
-            "type": "string"
-          },
-          "structural_findings": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Structural Findings",
-            "type": "array"
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Project Id"
-          }
-        },
-        "required": [
-          "batch_id",
-          "expected_revision",
-          "expected_digest",
-          "section_verdicts",
-          "reverse_coverage_verdict",
-          "walkthrough_verdict",
-          "structural_findings"
-        ],
-        "title": "TaskBatchReviewRecordArgs",
-        "type": "object"
-      }
-    },
     "task_failure_triage_notify": {
       "name": "task_failure_triage_notify",
       "description": "Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident.",
@@ -20820,6 +20935,10 @@
     "spec_ingest_legacy_inventory": "task",
     "batch_reconcile": "task",
     "ensure_fidelity_review": "task",
+    "spec_ingest_legacy_adopt": "task",
+    "task_batch_review_record": "task",
+    "task_batch_release": "task",
+    "task_batch_retire": "task",
     "ask_list": "review",
     "ask_show": "review",
     "ask_history": "review",

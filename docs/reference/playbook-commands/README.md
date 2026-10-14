@@ -537,6 +537,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`show_playbook_graph`](show_playbook_graph.md) | Show Playbook Graph | Execute the show_playbook_graph command. |
 | [`skip_task`](skip_task.md) | Skip Task | Skip a BLOCKED/FAILED task to unblock its dependency chain. |
 | [`spec_approve`](spec_approve.md) | Spec Approve | Execute the spec_approve command. |
+| [`spec_ingest_legacy_adopt`](spec_ingest_legacy_adopt.md) | Spec Ingest Legacy Adopt | Execute the spec_ingest_legacy_adopt command. |
 | [`spec_ingest_legacy_inventory`](spec_ingest_legacy_inventory.md) | Spec Ingest Legacy Inventory | Execute the spec_ingest_legacy_inventory command. |
 | [`spec_ingest_reconcile`](spec_ingest_reconcile.md) | Spec Ingest Reconcile | Execute the spec_ingest_reconcile command. |
 | [`start_agent_terminal`](start_agent_terminal.md) | Start Agent Terminal | Execute the start_agent_terminal command. |
@@ -548,6 +549,8 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_restart`](supervisor_restart.md) | Supervisor Restart | Execute the supervisor_restart command. |
 | [`task_batch_discard`](task_batch_discard.md) | Task Batch Discard | Execute the task_batch_discard command. |
 | [`task_batch_propose`](task_batch_propose.md) | Task Batch Propose | Execute the task_batch_propose command. |
+| [`task_batch_release`](task_batch_release.md) | Release a reviewed ingestion batch | Verify source approval, the live graph and its fidelity receipt before release. |
+| [`task_batch_retire`](task_batch_retire.md) | Finalize an obsolete ingestion batch | Require prior supported retirement of every member and reviewer; retain evidence. |
 | [`task_batch_review_record`](task_batch_review_record.md) | Record a batch fidelity review | Attest every mapped section and whole-batch intent on the exact held graph. |
 | [`task_batch_update`](task_batch_update.md) | Task Batch Update | Execute the task_batch_update command. |
 | [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |

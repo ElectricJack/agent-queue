@@ -389,6 +389,28 @@ Under Tier 1 (`sessions.provider: fake`) nothing actually reads this Role —
 - On `session_exhausted` or `drain_requested`, run `aq session drain-ack`.
 MD
 
+# S21 impersonates the assigned role reviewer through its real session token.
+mkdir -p "$E2E_VAULT/agent-types/fidelity-reviewer"
+cat > "$E2E_VAULT/agent-types/fidelity-reviewer/profile.md" <<'MD'
+---
+id: fidelity-reviewer
+name: "E2E Fidelity Reviewer"
+---
+
+## Role
+Review the pinned ingestion batch. The Tier 1 runner supplies the judgments.
+
+## Config
+```json
+{"harness":"claude","lifecycle":"task","default_class":"deep-high","needs_workspace":false}
+```
+
+## Capabilities
+```json
+{"harness_tools":["Bash"],"plugin_tools":[],"aq_commands":["approved_spec_packet","task_batch_validate","task_batch_review_record","task_show","task_heartbeat","task_close"]}
+```
+MD
+
 # S19 exercises the scoped graph capability through a session token. The
 # production planner is task-lifecycle, while the fake-provider kit needs a
 # pullable session for its CLI runner to impersonate, so this fixture keeps
