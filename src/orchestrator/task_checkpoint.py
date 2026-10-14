@@ -180,6 +180,7 @@ async def prepare_checkpoint(
     saved = await db.get_task_meta(task_id, CHECKPOINT_META)
     if not saved:
         return None
+    saved = _retained_stop_restoration(saved, task_id)
     if saved.get("branch") is None:
         raise GitError("Paused checkpoint has detached HEAD and no proved branch; "
                        "retain the checkpoint for guarded recovery; workspace was left unchanged")
@@ -230,6 +231,23 @@ async def prepare_checkpoint(
     if tip is not None and tip != saved["head"]:
         raise GitError("Paused task branch changed since its checkpoint; workspace was left unchanged")
     return saved
+
+
+def _retained_stop_restoration(saved, task_id):
+    """Use separate exact branch proof; preserve the durable detached capture."""
+    if saved.get("branch") is not None or "retained_stop_branch" not in saved:
+        return saved
+    proof = saved["retained_stop_branch"]
+    identity = saved.get("retained_stop_identity") or {}
+    task = identity.get("task") or {}
+    if (proof.get("task_id") != task_id or task.get("id") != task_id
+            or proof.get("source") != saved.get("source")
+            or proof.get("head") != saved.get("head")
+            or proof.get("claim") != identity.get("claim")
+            or not proof.get("branch")
+            or proof["branch"] != str(task.get("branch_name") or "").removeprefix("refs/heads/")):
+        raise GitError("Retained checkpoint branch proof changed; workspace was left unchanged")
+    return saved | {"branch": proof["branch"]}
 
 
 async def _reconcile_handoff_checkpoint(git, workspace, saved, handoff_sha, branch_tip):
@@ -290,6 +308,7 @@ async def restore_checkpoint(
     )
     if not saved:
         return None
+    saved = _retained_stop_restoration(saved, task_id)
     if saved.get("branch") is None:
         raise GitError("Paused checkpoint has no proved branch; workspace was left unchanged")
     await _validate_checkpoint_task(db, task_id, saved, expected_branch)

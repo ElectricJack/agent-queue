@@ -15622,7 +15622,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:557ab2bb6912ca84aa32aeaa13b3fab9cfcdccbb2ac61e2dc3180aa9ac2408af",
+      "digest": "sha256:b4bf4ba090418fbd1c8240a2d837df5dd69b1f18458ace083ca25ac360330bc5",
       "imports": [
         "src.sessions",
         "src.sessions.dialogs",
@@ -15632,6 +15632,7 @@
         "src.sessions.transcripts.watcher"
       ],
       "markers": [
+        "parametrize",
         "skipif",
         "usefixtures"
       ],
@@ -16520,7 +16521,7 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:fa9f4aa278f3c63c3e0cea09266ae8e58d13a4f3f1fe4f6b2ab05c90c32e9ac7",
+      "digest": "sha256:8a9d3560022dee951be2e386049f49b5d81dfa56324a553403265162d18fe6cb",
       "imports": [
         "src.api.auth",
         "src.api.codegen",
@@ -16530,10 +16531,13 @@
         "src.database.queries.claim_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.git.process",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.core",
+        "src.orchestrator.retained_workspace",
         "src.orchestrator.task_checkpoint",
+        "src.orchestrator.worktree_manager",
         "src.scheduler",
         "src.sessions.fake",
         "src.sessions.harness_registry",

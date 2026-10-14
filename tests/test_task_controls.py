@@ -198,6 +198,10 @@ class FakeProvider:
         assert handle.instance_token == "instance"
         self.running.discard(handle.name)
 
+    async def confirm_stopped(self, handle):
+        assert handle.instance_token == "instance"
+        return handle.name not in self.running
+
 
 async def running_session(env, tmp_path, *, lifecycle="pool"):
     import time
@@ -242,6 +246,11 @@ async def running_session(env, tmp_path, *, lifecycle="pool"):
     )
     provider = FakeProvider()
     env.orch.session_providers = SimpleNamespace(create=lambda *_: provider)
+    workspace = await env.db.get_workspace("workspace")
+    await env.db.set_task_meta("t", "claim_workspace", {
+        "workspace_id": "workspace", "generation": workspace.generation,
+        "session_id": "s", "instance_token": "instance", "claim_epoch": task.claim_epoch,
+    })
     return provider, task
 
 
@@ -510,55 +519,372 @@ async def test_status_override_cannot_fake_pause_without_stopping_execution(env,
     assert (await env.db.get_task("t")).status == TaskStatus.READY
 
 
-@pytest.mark.parametrize("name", ["edit_task", "set_task_status"])
-@pytest.mark.parametrize("status", ["BLOCKED", "FAILED"])
-async def test_stop_finishes_retained_workspace_after_status_change(env, tmp_path, name, status):
-    """A status edit must leave a supported way to reclaim an exact stopped slot."""
+async def retained_slot(env, tmp_path):
     import json
     from unittest.mock import AsyncMock
+    from src.models import RepoConfig, RepoSourceType, Workspace, WorkspaceKind, WorktreeSentinel
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
 
-    repo, git = make_git_repo(tmp_path, "retained")
-    git("checkout", "--detach")
-    head = git("rev-parse", "HEAD")
+    base, base_git = make_git_repo(tmp_path, "base")
+    remote = str(tmp_path / "origin.git")
+    base_git("init", "--bare", remote)
+    base_git("remote", "add", "origin", remote)
+    base_git("push", "origin", "main")
+    repo = tmp_path / "slot"
+    base_git("worktree", "add", "-b", "aq/t", str(repo))
+    def git(*args):
+        return base_git("-C", str(repo), *args)
+    await env.db.create_repo(RepoConfig(id="repo", project_id="p", url=remote,
+                                      source_type=RepoSourceType.CLONE))
+    await env.db.upsert_workspace_kind(WorkspaceKind(project_id="p", id="project-repo"))
+    await env.db.create_workspace(Workspace(
+        id="base", project_id="p", workspace_path=str(base),
+        source_type=RepoSourceType.CLONE, kind_id="project-repo",
+    ))
     provider, task = await running_session(env, repo)
+    await env.db.update_task("t", repo_id="repo", branch_name="aq/t")
+    await env.db.update_workspace("workspace", slot_index=0, base_workspace_id="base",
+                                  kind_id="project-repo", generation=7, source_type="worktree")
+    await env.orch._worktree_slots().ensure_git_exclude(repo)
     provider.confirm_stopped = AsyncMock(return_value=True)
-    provider.running.discard("task-session")
-    await env.db.update_session("s", state="stopped", desired_state="stopped")
     workspace = await env.db.get_workspace("workspace")
-    receipt = {
+    await env.db.set_task_meta("t", "claim_workspace", {
         "workspace_id": workspace.id, "generation": workspace.generation,
         "session_id": "s", "instance_token": "instance", "claim_epoch": task.claim_epoch,
-    }
-    await env.db.set_task_meta("t", "claim_workspace", receipt)
+    })
     claim = repo / ".aq" / "claim.json"
-    claim.parent.mkdir()
+    claim.parent.mkdir(exist_ok=True)
     claim.write_text(json.dumps({
         "task_id": "t", "session_id": "s", "claim_epoch": task.claim_epoch,
     }))
-    with (repo / ".git" / "info" / "exclude").open("a") as exclude:
-        exclude.write("\n/.aq/\n")
+    WorktreeSlotManager.write_sentinel(repo, WorktreeSentinel(
+        slot="slot", slot_index=0, base_workspace_id="base", project_id="p",
+        workspace_id="workspace", task_id="t", branch="aq/t",
+    ))
+    return repo, git, provider, task
+
+
+@pytest.mark.parametrize("name", ["edit_task", "set_task_status"])
+@pytest.mark.parametrize("status", ["BLOCKED", "FAILED"])
+async def test_stop_finishes_retained_workspace_after_status_change(env, tmp_path, name, status):
+    """Exact stopped managed slots return to eligible capacity without reopening work."""
+    repo, git, provider, task = await retained_slot(env, tmp_path)
+    git("checkout", "--detach")
+    head = git("rev-parse", "HEAD")
+    provider.running.discard("task-session")
+    await env.db.update_session("s", state="stopped", desired_state="stopped")
     assert git("status", "--porcelain") == ""
-    assert await env.db.count_available_workspaces("p") == 0
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 0
 
     changed = await command(env, name, status=status)
     assert "error" not in changed, changed
     assert (await env.db.get_task("t")).status.value == status
     assert git("rev-parse", "HEAD") == head
-    assert claim.exists()
-    # Baseline reaches this assertion with resources intact, then refuses
-    # solely because status is no longer IN_PROGRESS, before checking evidence.
+    assert (repo / ".aq" / "claim.json").exists()
     stopped = await command(env, "stop_task")
     assert "error" not in stopped, stopped
     assert (await env.db.get_task("t")).status.value == status
     assert (await env.db.get_task("t")).retry_count == task.retry_count
-    assert await env.db.count_available_workspaces("p") == 1
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 1
     assert git("rev-parse", "HEAD") == head
+    assert not (repo / ".aq" / "claim.json").exists()
+    assert provider.confirm_stopped.await_count >= 2
+    checkpoint = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert checkpoint["branch"] is None
+    assert checkpoint["retained_stop_branch"]["branch"] == "aq/t"
+
+
+@pytest.mark.parametrize("status", ["BLOCKED", "FAILED"])
+async def test_retained_stop_preserves_unpublished_staging_and_restores(env, tmp_path, status):
+    from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
+
+    repo, git, _, _ = await retained_slot(env, tmp_path)
+    (repo / "committed.txt").write_text("unpublished\n")
+    git("add", "committed.txt")
+    git("commit", "-m", "Unpublished work")
+    (repo / "committed.txt").write_text("staged\n")
+    git("add", "committed.txt")
+    (repo / "committed.txt").write_text("unstaged\n")
+    (repo / "untracked.txt").write_text("untracked\n")
+    head, index, status_before = git("rev-parse", "HEAD"), git("write-tree"), git("status", "--porcelain")
+    await command(env, "set_task_status", status=status)
+    stopped = await command(env, "stop_task")
+    assert "error" not in stopped, stopped
+    assert (git("rev-parse", "HEAD"), git("write-tree"), git("status", "--porcelain")) == (
+        head, index, status_before,
+    )
+    saved = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert git("show", f"{saved['commit']}:untracked.txt") == "untracked"
+    assert git("show", f"{saved['index_tree']}:committed.txt") == "staged"
+    # Reuse consumes no checkpoint: a later exact continuation restores both layers.
+    git("reset", "--hard", "main")
+    git("clean", "-fd")
+    prepared = await prepare_checkpoint(env.db, env.orch.git, "t", str(repo))
+    await restore_checkpoint(env.db, env.orch.git, "t", str(repo), saved=prepared)
+    assert git("rev-parse", "HEAD") == head
+    assert git("write-tree") == index
+    assert (repo / "committed.txt").read_text() == "unstaged\n"
+    assert (repo / "untracked.txt").read_text() == "untracked\n"
+
+
+@pytest.mark.parametrize("proof", [
+    "generation", "instance", "epoch", "claim", "sentinel", "job", "preparation_hold",
+    "preparing", "provider", "process", "process_unknown", "checkpoint", "branch", "origin", "base",
+])
+async def test_retained_stop_refuses_unproved_release(env, tmp_path, monkeypatch, proof):
+    from src.orchestrator import retained_workspace
+    from unittest.mock import AsyncMock
+
+    repo, git, provider, task = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("irreplaceable\n")
+    head, index = git("rev-parse", "HEAD"), git("write-tree")
+    await command(env, "set_task_status", status="BLOCKED")
+    if proof == "generation":
+        await env.db.update_workspace("workspace", generation=8)
+    elif proof == "instance":
+        await env.db.update_session("s", instance_token="successor")
+    elif proof == "epoch":
+        await env.db.update_task("t", claim_epoch=task.claim_epoch + 1)
+    elif proof == "claim":
+        (repo / ".aq" / "claim.json").unlink()
+    elif proof == "sentinel":
+        from src.models import WORKTREE_SENTINEL_NAME
+        (repo / WORKTREE_SENTINEL_NAME).unlink()
+    elif proof == "job":
+        await env.db.update_workspace("workspace", job_pin_count=1)
+    elif proof == "preparation_hold":
+        await env.db.set_task_meta("t", "prepare_cleanup_unproved", {"claim_epoch": task.claim_epoch})
+    elif proof == "preparing":
+        await env.db.update_session("s", claim_phase="preparing")
+    elif proof == "provider":
+        provider.confirm_stopped.return_value = None
+    elif proof == "process":
+        monkeypatch.setattr(retained_workspace, "workspace_quiescent", AsyncMock(return_value=False))
+    elif proof == "process_unknown":
+        monkeypatch.setattr(retained_workspace, "workspace_quiescent",
+                            AsyncMock(side_effect=PermissionError("process inventory unavailable")))
+    elif proof == "checkpoint":
+        monkeypatch.setattr(retained_workspace, "capture_checkpoint",
+                            AsyncMock(side_effect=RuntimeError("checkpoint unavailable")))
+    elif proof == "branch":
+        git("checkout", "--detach", "HEAD~0")
+        other = git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Other branch head")
+        git("update-ref", "refs/heads/aq/t", other)
+    elif proof == "origin":
+        git("remote", "set-url", "origin", str(tmp_path / "foreign.git"))
+    elif proof == "base":
+        foreign, _ = make_git_repo(tmp_path, "foreign")
+        await env.db.update_workspace("base", workspace_path=str(foreign))
+    result = await command(env, "stop_task")
+    assert "error" in result, result
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (await env.db.get_session("s")).task_id == "t"
+    assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
+    assert (repo / "work.txt").read_text() == "irreplaceable\n"
+    assert git("rev-parse", "HEAD") == head
+    assert git("write-tree") == index
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 0
+
+
+async def test_retained_stop_retries_same_identity_after_reload(env, tmp_path):
+    repo, git, provider, _ = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("keep\n")
+    await command(env, "set_task_status", status="FAILED")
+    provider.confirm_stopped.return_value = None
+    assert "error" in await command(env, "stop_task")
+    identity = await env.db.get_task_meta("t", "retained_workspace_stop")
+    reloaded = Orchestrator(env.config)
+    reloaded.db = env.db
+    reloaded.session_providers = env.orch.session_providers
+    provider.confirm_stopped.return_value = True
+    assert await reloaded.stop_task("t") is None
+    receipt = await env.db.get_task_meta("t", "retained_workspace_stop")
+    assert receipt["identity"] == identity["identity"]
+    assert receipt["cleanup_pending"] is False
+    assert (repo / "work.txt").read_text() == "keep\n"
+    assert git("branch", "--show-current") == ""
+    assert await reloaded.stop_task("t") is None  # Ambiguous response retry is harmless.
+
+
+async def test_retained_stop_old_snapshot_cannot_adopt_new_acquisition(env, tmp_path):
+    import json
+
+    repo, _, provider, task = await retained_slot(env, tmp_path)
+    await command(env, "set_task_status", status="BLOCKED")
+    provider.confirm_stopped.return_value = None
+    assert "error" in await command(env, "stop_task")
+    before = await env.db.get_task_meta("t", "retained_workspace_stop")
+    # Even a complete new receipt cannot refresh the old stop into a successor.
+    await env.db.update_task("t", claim_epoch=task.claim_epoch + 1)
+    await env.db.update_session("s", last_claim_epoch=task.claim_epoch + 1)
+    await env.db.update_workspace("workspace", generation=8)
+    receipt = before["identity"]["claim"] | {"generation": 8, "claim_epoch": task.claim_epoch + 1}
+    await env.db.set_task_meta("t", "claim_workspace", receipt)
+    marker = {"task_id": "t", "session_id": "s", "claim_epoch": task.claim_epoch + 1}
+    (repo / ".aq" / "claim.json").write_text(json.dumps(marker))
+    provider.confirm_stopped.return_value = True
+    result = await command(env, "stop_task")
+    assert "successor" in result.get("error", ""), result
+    assert json.loads((repo / ".aq" / "claim.json").read_text()) == marker
+    assert (await env.db.get_workspace("workspace")).generation == 8
+    assert await env.db.get_task_meta("t", "retained_workspace_stop") == before
+
+
+@pytest.mark.parametrize("owner_role", ["worker", "repair", "verifier"])
+async def test_retained_stop_hands_off_only_its_native_writer_owner(env, tmp_path, owner_role):
+    from sqlalchemy import insert, select
+    from src.database.tables import integration_branch_owners
+
+    repo, _, _, _ = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("unpublished\n")
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="owner", repository_id="repo", ref="aq/t", owner_id="t", owner_role=owner_role,
+            fence_token=9, handoff_state="attached", session_id="s", workspace_id="workspace",
+            created_at=1, updated_at=1,
+        ))
+    await command(env, "set_task_status", status="BLOCKED")
+    result = await command(env, "stop_task")
+    async with env.db.immediate() as conn:
+        owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
+    if owner_role == "verifier":
+        assert "error" in result
+        assert owner["workspace_id"] == "workspace"
+    else:
+        assert "error" not in result, result
+        assert owner["fence_token"] == 9
+        assert owner["handoff_state"] == "released"
+        assert owner["workspace_id"] is None
+        assert owner["confirmed_workspace_id"] == "workspace"
+
+
+async def test_retained_stop_waits_for_unmarked_detached_child(env, tmp_path):
+    import asyncio
+    import os
+    import sys
+
+    repo, _, _, _ = await retained_slot(env, tmp_path)
+    await command(env, "set_task_status", status="BLOCKED")
+    child = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)",
+        cwd=repo, start_new_session=True, stdout=asyncio.subprocess.PIPE,
+        env={k: v for k, v in os.environ.items() if not k.startswith("AQ_")},
+    )
+    try:
+        assert await asyncio.wait_for(child.stdout.readline(), 5) == b"ready\n"
+        result = await command(env, "stop_task")
+        assert "process still uses" in result.get("error", ""), result
+        assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+        assert (repo / ".aq" / "claim.json").exists()
+    finally:
+        child.terminate()
+        await child.wait()
+    assert "error" not in await command(env, "stop_task")
+
+
+async def test_managed_pause_returns_capacity_only_after_full_checkpoint(env, tmp_path):
+    repo, git, provider, _ = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("staged\n")
+    git("add", "work.txt")
+    index = git("write-tree")
+    (repo / "work.txt").write_text("unstaged\n")
+    result = await command(env, "pause_task")
+    assert "error" not in result, result
+    assert (await env.db.get_task("t")).status == TaskStatus.PAUSED
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 1
+    assert provider.confirm_stopped.await_count >= 1
+    assert git("write-tree") == index
+    assert (repo / "work.txt").read_text() == "unstaged\n"
+    assert not (repo / ".aq" / "claim.json").exists()
+
+
+@pytest.mark.parametrize("proof", ["generation", "job", "preparation_hold", "provider", "checkpoint"])
+async def test_managed_pause_retains_source_on_missing_proof(env, tmp_path, monkeypatch, proof):
+    from src.orchestrator import task_checkpoint
+    from unittest.mock import AsyncMock
+
+    repo, _, provider, task = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("keep\n")
+    await env.db.pause_task("t")
+    if proof == "generation":
+        await env.db.update_workspace("workspace", generation=8)
+    elif proof == "job":
+        await env.db.update_workspace("workspace", job_pin_count=1)
+    elif proof == "preparation_hold":
+        await env.db.set_task_meta("t", "prepare_cleanup_unproved", {"claim_epoch": task.claim_epoch})
+    elif proof == "provider":
+        provider.confirm_stopped.return_value = None
+    else:
+        monkeypatch.setattr(task_checkpoint, "capture_checkpoint",
+                            AsyncMock(side_effect=RuntimeError("capture unavailable")))
+    for _ in range(3):
+        result = await command(env, "pause_task")
+        assert "error" in result, result
+    assert (await env.db.get_task_meta("t", "manual_pause"))["cleanup_pending"] is True
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (repo / ".aq" / "claim.json").exists()
+    assert (repo / "work.txt").read_text() == "keep\n"
+
+
+@pytest.mark.parametrize("control", ["pause_task", "stop_task"])
+@pytest.mark.parametrize("stage", ["checkpoint", "provider", "adapter", "execution"])
+async def test_cleanup_uncertainty_survives_control_retry_and_reload(
+    env, tmp_path, monkeypatch, control, stage,
+):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from src.git.process import ProcessCleanupError
+    from src.orchestrator import retained_workspace, task_checkpoint
+
+    repo, _, provider, _ = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("keep\n")
+    if control == "stop_task":
+        await command(env, "set_task_status", status="BLOCKED")
+    module = retained_workspace if control == "stop_task" else task_checkpoint
+    if stage == "checkpoint":
+        monkeypatch.setattr(module, "capture_checkpoint",
+                            AsyncMock(side_effect=ProcessCleanupError("unknown")))
+    elif stage == "provider":
+        monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=ProcessCleanupError("unknown")))
+    elif stage == "adapter":
+        env.orch._adapters["agent"] = SimpleNamespace(
+            stop=AsyncMock(side_effect=ProcessCleanupError("unknown")),
+        )
+    else:
+        async def execution():
+            raise ProcessCleanupError("unknown")
+        running = asyncio.create_task(execution())
+        await asyncio.gather(running, return_exceptions=True)
+        env.orch._running_tasks["t"] = running
+    result = await command(env, control)
+    assert "termination is unproved" in result.get("error", ""), result
+    hold = await env.db.get_task_meta("t", "prepare_cleanup_unproved")
+    assert hold
+    monkeypatch.undo()
+    reloaded = Orchestrator(env.config)
+    reloaded.db = env.db
+    reloaded.session_providers = env.orch.session_providers
+    if control == "pause_task":
+        with pytest.raises(ValueError, match="termination is unproved"):
+            await reloaded.pause_task("t")
+    else:
+        assert "termination is unproved" in await reloaded.stop_task("t")
+    assert await env.db.get_task_meta("t", "prepare_cleanup_unproved") == hold
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert (repo / ".aq" / "claim.json").exists()
+    assert (repo / "work.txt").read_text() == "keep\n"
 
 
 async def test_reserved_parent_pause_marker_cannot_be_forged(env):
     result = await command(env, "task_set", meta={"manual_pause_withholds_children": True})
     assert "reserved" in result.get("error", "")
     assert await env.db.get_task_meta("t", "manual_pause_withholds_children") is None
+
+
+async def test_retained_stop_receipt_cannot_be_forged_through_task_set(env):
+    result = await command(env, "task_set", meta={"retained_workspace_stop": {"cleanup_pending": False}})
+    assert "reserved" in result.get("error", ""), result
+    assert await env.db.get_task_meta("t", "retained_workspace_stop") is None
 
 
 async def test_preparing_reused_pool_session_is_stopped_despite_previous_epoch(env, tmp_path):
@@ -1566,7 +1892,7 @@ async def test_checkpoint_task_identity_precedes_all_git_changes(env, tmp_path, 
     assert (await env.db.get_task("t")).branch_name == "main"
 
 
-@pytest.mark.parametrize("outcome", ["activate", "pause_before_activation", "foreign_checkpoint"])
+@pytest.mark.parametrize("outcome", ["activate", "block_before_activation", "foreign_checkpoint"])
 async def test_checkpoint_capture_restore_and_pool_activation_fences(
     env, tmp_path, monkeypatch, outcome
 ):
@@ -1619,17 +1945,25 @@ async def test_checkpoint_capture_restore_and_pool_activation_fences(
         started_at=time.time(), claim_phase="preparing", last_claim_epoch=task.claim_epoch,
     )
     await env.db.create_session(session)
+    workspace = await env.db.get_workspace("workspace")
+    await env.db.set_task_meta("t", "claim_workspace", {
+        "workspace_id": "workspace", "generation": workspace.generation,
+        "session_id": "next", "instance_token": "instance", "claim_epoch": task.claim_epoch,
+    })
     if outcome == "foreign_checkpoint":
         await env.db.set_task_meta("t", "manual_pause_checkpoint", {**saved, "task_id": "peer"})
-    elif outcome == "pause_before_activation":
+    elif outcome == "block_before_activation":
         reset = manager.reset_slot_for_task
 
-        async def pause_after_restore(*args, **kwargs):
+        async def block_after_restore(*args, **kwargs):
             branch = await reset(*args, **kwargs)
-            await env.db.pause_task("t")
+            # Preparation holds the workspace acquisition lock. A native pause
+            # serializes behind that lock (covered separately); a task-only
+            # status edit can still invalidate activation at this boundary.
+            await env.db.transition_task("t", TaskStatus.BLOCKED, force=True)
             return branch
 
-        monkeypatch.setattr(manager, "reset_slot_for_task", pause_after_restore)
+        monkeypatch.setattr(manager, "reset_slot_for_task", block_after_restore)
         monkeypatch.setattr(env.orch, "_worktree_slots", lambda: manager)
     result = await env.handler._prepare_and_activate(session, session, task)
     current = await env.db.get_task("t")
@@ -1661,7 +1995,7 @@ async def test_checkpoint_capture_restore_and_pool_activation_fences(
         )
     else:
         assert result["result"] == "prepare_failed"
-        assert current.status == TaskStatus.PAUSED
+        assert current.status == TaskStatus.BLOCKED
         assert current_session.claims == 0
         assert await env.db.get_task_meta("t", "manual_pause_checkpoint") == saved
         assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"

@@ -335,6 +335,25 @@ re-enabling it; do not delete Git locks or discard a retained branch.
 that have activated no claim after 15 minutes despite matching READY work or
 preparation refusals, even if their claim loop keeps reporting activity.
 
+### Retained workspace after a task status change
+
+An administrative change to BLOCKED or FAILED does not prove the workspace's
+writer stopped. The existing recovery owner can run `aq task stop <id>` to
+finish cleanup of an exactly identified managed slot without changing that
+status or its retry counters. Stop checks the acquisition generation, claim and
+session instance, source repository and branch, job and integration ownership,
+and fresh provider/process termination evidence. It captures a full checkpoint
+of HEAD, staged, unstaged and untracked work before releasing the reservation.
+The worktree and its registration remain available for later qualified reuse.
+
+For a pending manual pause, repeat `aq task pause <id>`. Its
+`manual_pause.cleanup_pending` receipt and checkpoint context describe unfinished
+cleanup. Managed slots stay held if a full checkpoint cannot be written, even
+after automatic retries end. Resolve the reported proof through the existing
+recovery owner, then retry the same control. Resume, deleting a claim or lock,
+or clearing pause/preparation metadata is not a cleanup procedure. A changed
+session or generation never inherits the old cleanup's authority.
+
 ### Interactive prompts on idle workers
 
 `aq doctor --check pools.session_awaiting_input` distinguishes a silent claim

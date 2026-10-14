@@ -1143,10 +1143,25 @@ class Orchestrator(
     async def _finish_manual_pause(
         self, task_id: str, snapshot: dict, *, deferrable: bool = False
     ) -> None:
+        from src.database.queries.task_queries import PauseFenceError
+        from src.git.process import ProcessCleanupError
+
+        try:
+            await self._finish_manual_pause_resources(task_id, snapshot, deferrable=deferrable)
+        except ProcessCleanupError as exc:
+            await self.db.record_task_pause_cleanup_uncertainty(task_id, snapshot)
+            raise PauseFenceError(
+                "Pause child termination is unproved; source and recovery hold were retained"
+            ) from exc
+
+    async def _finish_manual_pause_resources(
+        self, task_id: str, snapshot: dict, *, deferrable: bool = False
+    ) -> None:
         """Confirm stop before releasing the old claim; safe to retry after reload."""
         if not snapshot.get("cleanup_pending"):
             return
         from src.database.queries.task_queries import PauseFenceError
+        from src.git.process import ProcessCleanupError
         from src.sessions.provider import SessionHandle
 
         await self.db.validate_task_pause(task_id, snapshot)
@@ -1167,7 +1182,12 @@ class Orchestrator(
             _, pending = await asyncio.wait({p for _, p in preparations}, timeout=5.0)
             if pending:
                 raise ValueError("Task is paused; preparation cleanup is still running. Repeat Pause.")
-            await asyncio.gather(*(p for _, p in preparations), return_exceptions=True)
+            from src.git.process import ProcessCleanupError
+
+            settled = await asyncio.gather(*(p for _, p in preparations), return_exceptions=True)
+            for result in settled:
+                if isinstance(result, ProcessCleanupError):
+                    raise result
             proofs = list(snapshot.get("preparations_stopped", []))
             for key, _ in preparations:
                 proof = {
@@ -1198,14 +1218,16 @@ class Orchestrator(
                     await token_store.revoke_session(session.id)
                 provider = self.session_providers.create(session.provider, self.config)
                 try:
-                    await provider.stop(
+                    await asyncio.wait_for(provider.stop(
                         SessionHandle(
                             name=session.name,
                             provider=session.provider,
                             instance_token=session.instance_token,
                         ),
                         grace=2.0,
-                    )
+                    ), timeout=10)
+                except ProcessCleanupError:
+                    raise
                 except Exception as exc:
                     raise ValueError(
                         "Task is paused, but its session could not stop. Repeat Pause."
@@ -1224,7 +1246,9 @@ class Orchestrator(
         )
         if adapter is not None:
             try:
-                await adapter.stop()
+                await asyncio.wait_for(adapter.stop(), timeout=10)
+            except ProcessCleanupError:
+                raise
             except Exception as exc:
                 raise ValueError(
                     "Task is paused, but its adapter could not stop. Repeat Pause."
@@ -1249,6 +1273,10 @@ class Orchestrator(
                 raise ValueError(
                     "Task is paused; execution cleanup is still running. Repeat Pause."
                 )
+        if bg_task and bg_task.done() and not bg_task.cancelled():
+            error = bg_task.exception()
+            if isinstance(error, ProcessCleanupError):
+                raise error
         await self.db.validate_task_pause(task_id, snapshot)
         owned_workspaces = [
             ws for ws in await self.db.list_workspaces() if ws.locked_by_task_id == task_id
@@ -1281,6 +1309,14 @@ class Orchestrator(
             task_id, snapshot,
             before_release=release_sentinel if ws else None,
         )
+        if ws and ws.is_slot:
+            from src.claim_file import remove_claim_file_if_matches
+
+            for identity in snapshot["sessions"]:
+                remove_claim_file_if_matches(
+                    ws.workspace_path, task_id, snapshot["claim_epoch"],
+                    session_id=identity["id"],
+                )
         if adapter is not None and self._adapters.get(agent_id) is adapter:
             self._adapters.pop(agent_id, None)
         self._task_exec_start.pop(task_id, None)
@@ -1310,35 +1346,53 @@ class Orchestrator(
     async def _checkpoint_paused_workspace(
         self, task_id: str, ws, *, deferrable: bool, snapshot: dict
     ) -> bool:
-        """Preserve a paused slot's work, and converge even when that is impossible.
+        """Preserve work with bounded automatic retries and exact source fences.
 
-        Returns True when the pause may finish, False while a bounded retry is
-        still backing off.  Capture failure used to raise unconditionally, and
-        the monitoring cascade retries a pending pause every cycle — so a slot
-        that cannot produce a commit at all spun forever on "remains paused;
-        stop cleanup will retry". A workspace that is simply gone converges immediately (there
-        is nothing left to retry for); anything else gets
-        ``PAUSE_CHECKPOINT_MAX_ATTEMPTS`` tries with backoff, after which we
-        salvage whatever uncommitted work is still reachable, record why no
-        checkpoint exists, and let the pause finish.  A half-paused task is
-        worse than a paused one carrying a note about what could not be kept.
-        Identity changes and unknown writer termination never enter this retry
-        budget: they retain resources for guarded recovery.
+        Managed slots require a full checkpoint and remain owned after the
+        automatic budget expires; explicit Pause can retry the same source.
+        Legacy non-slot workspaces retain their bounded best-effort salvage
+        behavior. Identity changes and unknown writer termination always retain
+        resources for guarded recovery, regardless of the retry budget.
         """
         from src.orchestrator.task_checkpoint import (
             CheckpointIdentityError, capture_checkpoint, validate_checkpoint_branch,
         )
         from src.database.queries.task_queries import PauseFenceError
+        from src.git.process import ProcessCleanupError
 
         async def validate():
             await self.db.validate_task_pause(task_id, snapshot, stopped=True)
             self._validate_paused_workspace_identity(task_id, ws, snapshot)
+            if ws.is_slot:
+                from src.sessions.proctable import workspace_quiescent
+                from src.sessions.provider import SessionHandle
+
+                if not snapshot["sessions"]:
+                    raise PauseFenceError("Managed slot has no exact session termination proof")
+                git_dir = await self.git._arun(
+                    ["rev-parse", "--absolute-git-dir"], cwd=ws.workspace_path,
+                )
+                for identity in snapshot["sessions"]:
+                    provider = self.session_providers.create(identity["provider"], self.config)
+                    try:
+                        confirmed = await asyncio.wait_for(provider.confirm_stopped(SessionHandle(
+                            identity["name"], identity["provider"], identity["instance_token"],
+                        )), timeout=10)
+                        quiet = await workspace_quiescent(
+                            (ws.workspace_path, git_dir), identity["instance_token"],
+                        )
+                    except Exception as exc:
+                        raise PauseFenceError("Managed slot process termination is unproved") from exc
+                    if confirmed is not True or quiet is not True:
+                        raise PauseFenceError("Managed slot process termination is unproved")
 
         async def save(saved):
             self._validate_paused_workspace_identity(task_id, ws, snapshot)
             await self.db.record_task_pause_checkpoint(task_id, snapshot, saved)
 
         state = await self.db.get_task_meta(task_id, PAUSE_CHECKPOINT_RETRY_META) or {}
+        if ws.is_slot and deferrable and state.get("attempts", 0) >= PAUSE_CHECKPOINT_MAX_ATTEMPTS:
+            return False  # Budget exhausted; explicit Pause may retry the same held source.
         if deferrable and state.get("next_attempt_at", 0) > time.time():
             return False
         try:
@@ -1353,7 +1407,7 @@ class Orchestrator(
                     self.db, self.git, task_id, ws.workspace_path, validate=validate, save=save,
                     expected_branch=snapshot.get("branch_name"),
                 )
-        except (PauseFenceError, CheckpointIdentityError):
+        except (PauseFenceError, CheckpointIdentityError, ProcessCleanupError):
             raise
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
@@ -1404,6 +1458,14 @@ class Orchestrator(
             raise
         except Exception as exc:  # a context write must never block convergence
             logger.warning("Could not record pause checkpoint note for %s: %s", task_id, exc)
+        if ws.is_slot:
+            await self.db.set_task_meta(task_id, PAUSE_CHECKPOINT_RETRY_META, {
+                "attempts": attempts, "reason": reason,
+            })
+            raise PauseFenceError(
+                "Managed slot full checkpoint is unproved; source remains held. "
+                "Repeat task pause after preservation is available."
+            )
         return True
 
     async def _salvage_paused_workspace(self, task_id: str, ws, snapshot: dict) -> bool:
@@ -1412,6 +1474,7 @@ class Orchestrator(
             CheckpointIdentityError, salvage_checkpoint, validate_checkpoint_branch,
         )
         from src.database.queries.task_queries import PauseFenceError
+        from src.git.process import ProcessCleanupError
         if not self.config.worktrees.salvage_dirty:
             return False
         async def save(task_id, **context):
@@ -1427,7 +1490,7 @@ class Orchestrator(
                 save=save,
                 expected_branch=snapshot.get("branch_name"),
             )
-        except (PauseFenceError, CheckpointIdentityError):
+        except (PauseFenceError, CheckpointIdentityError, ProcessCleanupError):
             raise
         except Exception as exc:  # best-effort by contract
             logger.warning("Could not salvage paused workspace for %s: %s", task_id, exc)
@@ -1528,6 +1591,10 @@ class Orchestrator(
         task = await self.db.get_task(task_id)
         if not task:
             return f"Task '{task_id}' not found"
+        if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
+            from src.orchestrator.retained_workspace import stop_retained_workspace
+
+            return await stop_retained_workspace(self, task_id)
         if task.status != TaskStatus.IN_PROGRESS:
             return f"Task is not in progress (status: {task.status.value})"
 

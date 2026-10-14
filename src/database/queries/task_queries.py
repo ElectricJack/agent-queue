@@ -92,6 +92,7 @@ class PauseFenceError(ValueError):
 _PAUSE_WORKSPACE_FIELDS = (
     "id", "project_id", "workspace_path", "base_workspace_id",
     "locked_by_task_id", "locked_by_agent_id",
+    "generation", "job_pin_count", "slot_index", "kind_id", "source_type",
 )
 _PAUSE_SESSION_FIELDS = (
     "id", "instance_token", "agent_id", "project_id", "work_dir", "last_claim_epoch",
@@ -943,6 +944,12 @@ class TaskQueryMixin:
                 return await self.validate_task_pause(
                     task_id, snapshot, conn=connection, stopped=stopped
                 )
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        if await conn.scalar(select(task_metadata.c.task_id).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+        )):
+            raise PauseFenceError("Preparation child termination is unproved; retain its recovery hold")
         row = (await conn.execute(select(tasks).where(
             tasks.c.id == task_id
         ).with_for_update())).mappings().one_or_none()
@@ -975,6 +982,17 @@ class TaskQueryMixin:
             ws["project_id"] != row["project_id"] for ws in current
         ):
             raise PauseFenceError("Paused workspace or owner changed; retaining resources for safe recovery")
+        from src.database.tables import job_workspace_pins
+
+        if any(ws["job_pin_count"] for ws in current) or await conn.scalar(
+            select(job_workspace_pins.c.job_id).where(
+                job_workspace_pins.c.workspace_id.in_([ws["id"] for ws in current]),
+            ).limit(1)
+        ):
+            raise PauseFenceError("A job pins the paused workspace; retain it until its owner settles")
+        if any(ws["slot_index"] is not None for ws in current):
+            if (await self._recovery_owner(conn, row))["kind"] != "supervisor":
+                raise PauseFenceError("Integration operation owns the paused workspace cleanup")
         captured_ids = {identity["id"] for identity in snapshot["sessions"]}
         bound_ids = set((await conn.execute(select(sessions.c.id).where(
             sessions.c.task_id == task_id
@@ -1034,10 +1052,47 @@ class TaskQueryMixin:
                 label=label, content=content, created_at=time.time(),
             ))
 
+    async def record_task_pause_cleanup_uncertainty(self, task_id, snapshot):
+        """Preserve unknown Git writers across reload without marking cancellation proved."""
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(tasks).where(
+                tasks.c.id == task_id,
+            ).with_for_update())).mappings().one_or_none()
+            encoded = await self._read_manual_pause(conn, task_id)
+            current = json.loads(encoded) if encoded is not None else None
+            # The inner cleanup may have persisted exact preparation-stop
+            # proofs before the checkpoint failed. Those do not change source
+            # identity; every other snapshot field must still match.
+            def comparable(value):
+                return {k: v for k, v in value.items() if k != "preparations_stopped"}
+            if (row is None or row["claim_epoch"] != snapshot["claim_epoch"] + 1
+                    or current is None or comparable(current) != comparable(snapshot)):
+                return
+            exists = await conn.scalar(select(task_metadata.c.task_id).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+            ))
+            if not exists:
+                await self._upsert_meta(task_id, PREPARE_CLEANUP_HOLD, {
+                    "source": "manual_pause", "claim_epoch": snapshot["claim_epoch"],
+                    "workspaces": snapshot["workspaces"], "sessions": snapshot["sessions"],
+                    "reason": "Checkpoint or preparation child termination is unproved",
+                }, conn=conn)
+
     async def finish_task_pause(self, task_id: str, snapshot: dict, *, before_release=None) -> None:
         """Release only this stopped claim's resources, never a reused worker's."""
         async with self.immediate() as conn:
             await self.validate_task_pause(task_id, snapshot, conn=conn, stopped=True)
+            if any(ws["slot_index"] is not None for ws in snapshot["workspaces"]):
+                raw = await conn.scalar(select(task_metadata.c.value).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == "manual_pause_checkpoint",
+                ))
+                checkpoint = json.loads(raw) if raw is not None else {}
+                if (checkpoint.get("pause_claim_epoch") != snapshot["claim_epoch"]
+                        or checkpoint.get("pause_workspace_id") != snapshot["workspaces"][0]["id"]):
+                    raise PauseFenceError("Full managed-slot checkpoint is unproved; retain the source")
             if any(owner["fence"] is None and owner["workspace_id"] is not None
                    and owner["handoff_state"] in {"attached", "handoff_pending"}
                    for owner in snapshot.get("owners", [])):
