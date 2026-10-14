@@ -5,9 +5,12 @@ identifies an incarnation; a revision identifies one mutation in that incarnatio
 Consumers must observe the authoritative source again, rather than treating an event
 payload as a verdict. No agent/session/command imports belong in this module.
 
-Keys: task:<id> uses claim_epoch; dependency:<dependent-id>, job:<id>,
-message:<thread-id>, playbook_condition:<run-id>, ci_check:<repo>:<sha>:<name>,
-and resource:<workspace|provider|pool>:<id> use generation 0. Review:<id> uses
+Keys: task:<id> uses claim_epoch; dependency:<dependent>:<upstream>:<type>
+uses the upstream claim_epoch; job:<id> uses attempt 1 (retries have new ids).
+human:task_comment:<task> uses claim_epoch.
+playbook_condition:<run>:<wait> uses the registered wait's snapshot_version.
+message:<thread-id>, ci_check:<repo>:<sha>:<name>, and
+resource:<workspace|provider|pool>:<id> use generation 0. Review:<id> uses
 the document revision; batch:<id> uses baseline_generation; timers reuse the
 registered source identity. Resource cycle identities are revisions. Config uses
 resource:config. wait_source_watermark supplies the safe bound for cursor drains.
@@ -150,8 +153,12 @@ async def insert_message_with_source_event(conn, statement):
 
 
 async def record_dependency_change(conn, task_id, depends_on, dep_type, action):
+    from src.database.tables import tasks
+
+    generation = await conn.scalar(select(tasks.c.claim_epoch).where(tasks.c.id == depends_on))
     await record_source_event(
-        conn, source_key=f"dependency:{task_id}", generation=0, revision=uuid.uuid4().hex,
+        conn, source_key=f"dependency:{task_id}:{depends_on}:{dep_type}",
+        generation=generation or 0, revision=uuid.uuid4().hex,
         outcome_ref=f"task:{task_id}", payload={
             "task_id": task_id, "depends_on_task_id": depends_on,
             "dep_type": dep_type, "action": action,
@@ -171,16 +178,30 @@ async def record_dependency_source_change(conn, source_task_id, action):
                                        row["dep_type"], action)
 
 
-async def record_playbook_snapshot(conn, snapshot, receipt=None):
-    await record_source_event(
-        conn, source_key=f"playbook_condition:{snapshot.run_id}", generation=0,
-        revision=str(snapshot.version), outcome_ref=f"playbook:{snapshot.run_id}",
-        occurred_at=snapshot.updated_at,
-        payload={"run_id": snapshot.run_id, "lifecycle": snapshot.lifecycle.value,
-                 "step_id": snapshot.current_step_id,
-                 "wait_id": receipt.wait_id if receipt else None,
-                 "outcome": receipt.outcome if receipt else None},
-    )
+async def execute_playbook_wait_mutation(conn, statement):
+    """Publish a registered wait's resolution with its original incarnation."""
+    from src.database.tables import playbook_waits
+
+    previous = (await conn.execute(select(playbook_waits).where(
+        statement.whereclause,
+    ).with_for_update())).mappings().all()
+    result = await conn.execute(statement)
+    for old in previous:
+        row = (await conn.execute(select(playbook_waits).where(
+            playbook_waits.c.wait_id == old["wait_id"],
+        ))).mappings().one()
+        if row["state"] == old["state"]:
+            continue
+        await record_source_event(
+            conn, source_key=f"playbook_condition:{row['run_id']}:{row['wait_id']}",
+            generation=row["snapshot_version"],
+            revision=f"{row['state']}:{row['claimed_event_id'] or ''}",
+            outcome_ref=f"playbook:{row['run_id']}:wait:{row['wait_id']}",
+            occurred_at=row["claimed_at"],
+            payload={"run_id": row["run_id"], "wait_id": row["wait_id"],
+                     "state": row["state"], "event_id": row["claimed_event_id"]},
+        )
+    return result
 
 
 async def record_batch_event(conn, batch_id):

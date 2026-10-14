@@ -17762,16 +17762,20 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:b7ae4f94dd426c2c4327136b04448e46f4302e7b39cd672478e48fc37d251c27",
+      "digest": "sha256:77564ee54fcc14c44fc8b8f438dc2d099e7b030d6ca82612ece5307c81a0071f",
       "imports": [
         "src.database.tables",
         "src.integration.checks",
         "src.models",
         "src.orchestrator.core",
+        "src.playbooks.run_state",
+        "src.playbooks.waits",
         "src.scheduler",
         "src.waits.sources"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Authoritative source transitions write unconditional, transactional wait events."
     },
     "tests/test_wait_migration.py": {
@@ -17795,8 +17799,9 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:61b0653444f46f0063834dc7d6577a16a2e2f30e04bcb8b57ad2ee08838b73b1",
+      "digest": "sha256:0e4636a50f6badbd6fdbf733da0947ec549eb269a9e0d358b85f29988724c0c8",
       "imports": [
+        "src.database.queries.wait_source_queries",
         "src.database.tables",
         "src.models",
         "src.waits.sources"

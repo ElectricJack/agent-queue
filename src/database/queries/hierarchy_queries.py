@@ -1740,7 +1740,10 @@ class HierarchyQueryMixin:
         )
         from src.waits.sources import record_dependency_change
 
-        await record_dependency_change(conn, task_id, parent_id, "parent-child", "reparented")
+        if old_parent:
+            await record_dependency_change(conn, task_id, old_parent, "parent-child", "removed")
+        if parent_id:
+            await record_dependency_change(conn, task_id, parent_id, "parent-child", "added")
         affected |= await self._collect_affected({task_id}, conn)
         if defer_projection:
             return TransitionResult()
@@ -1891,8 +1894,13 @@ class HierarchyQueryMixin:
 
         from src.waits.sources import record_dependency_change
 
-        for cid in ids:
-            await record_dependency_change(conn, cid, parent_id, "parent-child", "reparented")
+        for row in child_rows:
+            if row.parent_task_id == parent_id:
+                continue
+            if row.parent_task_id:
+                await record_dependency_change(conn, row.id, row.parent_task_id,
+                                               "parent-child", "removed")
+            await record_dependency_change(conn, row.id, parent_id, "parent-child", "added")
         affected = await self._collect_affected(set(ids), conn)
         affected.add(parent_id)
         affected |= old_parents

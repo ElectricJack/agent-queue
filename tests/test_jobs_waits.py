@@ -828,5 +828,6 @@ async def test_terminal_job_source_event_matches_result_and_stale_cas_is_silent(
             wait_source_events.c.source_key == f"job:{job['id']}",
         ))).mappings().all()
     assert len(rows) == 1
+    assert rows[0]["source_generation"] == 1
     assert rows[0]["source_revision"] == str(terminal["state_version"])
     assert rows[0]["occurred_at"] == terminal["ended_at"]

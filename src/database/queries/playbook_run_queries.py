@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.config import PENDING_EVENT_OVERFLOW_POLICIES
-from src.waits.sources import record_playbook_snapshot
+from src.waits.sources import execute_playbook_wait_mutation
 
 from src.database.tables import (
     archived_tasks,
@@ -566,7 +566,6 @@ class PlaybookRunQueryMixin:
                 raise SnapshotVersionConflict(
                     snapshot.run_id, expected, int(current["snapshot_version"])
                 )
-            await record_playbook_snapshot(conn, advanced, receipt)
             try:
                 await conn.execute(insert(playbook_step_receipts).values(**_receipt_row(receipt)))
             except IntegrityError as exc:
@@ -636,7 +635,7 @@ class PlaybookRunQueryMixin:
         if wait_changes.clear_run_waits:
             await self.clear_for_run(run_id, conn=conn)
         if wait_ids:
-            await conn.execute(
+            await execute_playbook_wait_mutation(conn,
                 update(playbook_waits)
                 .where(
                     playbook_waits.c.wait_id.in_(wait_ids),
@@ -714,7 +713,6 @@ class PlaybookRunQueryMixin:
                 raise SnapshotVersionConflict(
                     run_id, expected_version, int(row["snapshot_version"])
                 )
-            await record_playbook_snapshot(conn, advanced)
             # A paused run owns active durable waits.  Cancelling it directly
             # must retire those waits before this transaction commits, or a
             # later event can claim a terminal run after a restart.
@@ -1080,7 +1078,7 @@ class PlaybookRunQueryMixin:
             if not matches(wait, event):
                 continue
             claimed_at = event.received_at
-            result = await conn.execute(
+            result = await execute_playbook_wait_mutation(conn,
                 update(playbook_waits)
                 .where(
                     playbook_waits.c.wait_id == wait.wait_id,
@@ -1359,7 +1357,7 @@ class PlaybookRunQueryMixin:
                     cursor = (row["created_at"], row["wait_id"])
                     if not matches(_row_to_wait(row), canonical):
                         continue
-                    result = await conn.execute(
+                    result = await execute_playbook_wait_mutation(conn,
                         update(playbook_waits)
                         .where(
                             playbook_waits.c.wait_id == row["wait_id"],
@@ -1435,7 +1433,7 @@ class PlaybookRunQueryMixin:
                         )
                     )
                     continue
-                result = await conn.execute(
+                result = await execute_playbook_wait_mutation(conn,
                     update(playbook_waits)
                     .where(
                         playbook_waits.c.wait_id == row["wait_id"],
@@ -1518,7 +1516,7 @@ class PlaybookRunQueryMixin:
     async def clear_for_run(self, run_id: str, *, conn: AsyncConnection | None = None) -> int:
         """Deactivate every active wait of one run; returns how many moved."""
         async with self._wait_conn(conn) as active:
-            result = await active.execute(
+            result = await execute_playbook_wait_mutation(active,
                 update(playbook_waits)
                 .where(
                     playbook_waits.c.run_id == run_id,

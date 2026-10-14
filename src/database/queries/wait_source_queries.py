@@ -26,7 +26,9 @@ class WaitSourceQueriesMixin:
         MAX(seq) alone can skip an earlier sequence committed late. Release this
         fence before dispatching or locking source/owner rows, then drain through
         the returned bound. Registration takes this before its mutation transaction
-        and re-observes its source afterwards. Cursor progress supplies a floor
+        and re-observes its source afterwards. READ COMMITTED gives each lock
+        attempt and the final read a fresh snapshot, even on a stricter engine.
+        Cursor progress supplies a floor
         after retention removes old rows.
         """
         async def read(active):
@@ -38,15 +40,17 @@ class WaitSourceQueriesMixin:
                 wait_listener_cursors.c.listener_key == "source",
             ))).scalar_one_or_none() or 0
             return max(high, cursor)
-        async with self._engine.begin() as owned:
-            # Never queue an exclusive lock behind writers: a later writer may
-            # hold a source row an earlier writer still needs. A queued reader
-            # would block its shared lock and invert that existing row order.
-            async with asyncio.timeout(30):
-                while not await owned.scalar(text("SELECT pg_try_advisory_xact_lock(:key)"),
-                                             {"key": _SOURCE_SEQUENCE_LOCK}):
-                    await asyncio.sleep(0.01)
-            return await read(owned)
+        async with self._engine.connect() as connection:
+            owned = await connection.execution_options(isolation_level="READ COMMITTED")
+            async with owned.begin():
+                # Never queue an exclusive lock behind writers: a later writer may
+                # hold a source row an earlier writer still needs. A queued reader
+                # would block its shared lock and invert that existing row order.
+                async with asyncio.timeout(30):
+                    while not await owned.scalar(text("SELECT pg_try_advisory_xact_lock(:key)"),
+                                                 {"key": _SOURCE_SEQUENCE_LOCK}):
+                        await asyncio.sleep(0.01)
+                return await read(owned)
 
     async def purge_wait_source_events(self, *, now=None, limit=1000) -> int:
         """Remove dispatched rows older than seven days, never unread cursor history."""

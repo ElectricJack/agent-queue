@@ -369,7 +369,7 @@ class JobQueriesMixin:
                 from src.waits.sources import record_source_event
 
                 await record_source_event(
-                    conn, source_key=f"job:{job_id}", generation=0, revision=str(version + 1),
+                    conn, source_key=f"job:{job_id}", generation=1, revision=str(version + 1),
                     outcome_ref=f"job:{job_id}", occurred_at=fields["ended_at"],
                     payload={"job_id": job_id, "state": state, "task_id": row["task_id"]},
                 )

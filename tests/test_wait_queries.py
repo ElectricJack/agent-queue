@@ -4,6 +4,9 @@ import asyncio
 
 import pytest
 from sqlalchemy import insert, select, update
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from src.database.queries.wait_source_queries import WaitSourceQueriesMixin
 
 from src.database.tables import wait_deadlines, wait_listener_cursors, wait_records, wait_source_events
 from src.models import Project
@@ -39,6 +42,9 @@ async def test_revision_replay_and_rollback_are_atomic(db):
 
 
 async def test_watermark_cannot_pass_an_earlier_inflight_writer(db):
+    # A transaction opened under the engine's stricter default must not keep
+    # the failed try-lock query's old snapshot after the writer commits.
+    db._engine = db._engine.execution_options(isolation_level="REPEATABLE READ")
     async with db._engine.connect() as first_conn:
         tx = await first_conn.begin()
         first = await record_source_event(first_conn, **source("first"))
@@ -105,6 +111,19 @@ async def test_watermark_retention_keeps_unread_events_and_cursor_floor(db):
                                       .order_by(wait_source_events.c.seq))).scalars()) == [pending, unread]
     assert await db.wait_source_watermark(source_key="absent") == pending
     assert await db.wait_source_watermark() == unread
+    async with db._engine.begin() as conn:
+        await conn.execute(update(wait_source_events).values(dispatched_at=old))
+        await conn.execute(update(wait_listener_cursors).values(last_seq=unread))
+    assert await db.purge_wait_source_events(now=old + 7 * 86400 + 1) == 2
+    # Reconstruct the reader with a fresh pool: retention must not erase the
+    # durable source floor or allow a restarted listener to rewind its cursor.
+    restarted = WaitSourceQueriesMixin()
+    restarted._engine = create_async_engine(db._engine.url)
+    try:
+        assert await restarted.wait_source_watermark() == unread
+        assert await restarted.wait_source_commit(**source("after-restart")) > unread
+    finally:
+        await restarted._engine.dispose()
 
 
 async def timer(db, *, generation=1, deadline_type="due", cancelled_at=None):

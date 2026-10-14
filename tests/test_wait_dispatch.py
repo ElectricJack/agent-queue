@@ -11,12 +11,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.tables import messages, tasks, wait_source_events
 from src.integration.checks import ExactChecks
 from src.models import Project, RepoSourceType, Task, TaskStatus, Workspace
+from src.playbooks.run_state import RunLifecycle
+from src.playbooks.waits import WaitChangeSet
 from src.scheduler import PoolKey, PoolSupply
 from src.waits.sources import (
     execute_task_status_mutation, insert_message_with_source_event, record_pool_observations,
 )
 from tests.test_integration_checks import REQUIRED, head, row
-from tests.test_playbook_run_repository import ARTIFACT, make_receipt, make_snapshot, seed_artifact
+from tests.test_playbook_run_repository import ARTIFACT, seed_artifact
+from tests.test_playbook_wait_repository import Event, make_receipt, make_wait, pause_run_on_waits
 from tests.test_review_queries import _review, _revision
 
 
@@ -69,25 +72,31 @@ async def test_dependency_insert_remove_and_replay(db):
     await db.add_dependency("owner", "source")
     await db.remove_dependency("owner", "source")
     await db.remove_dependency("owner", "source")
-    assert [e["payload"]["action"] for e in await events(db, "dependency:owner")] == [
+    assert [e["payload"]["action"] for e in await events(db, "dependency:owner:source:blocks")] == [
         "added", "removed",
     ]
 
 
 async def test_dependency_receives_upstream_status_transition_once(db):
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "source").values(claim_epoch=7))
     await db.add_dependency("owner", "source")
     await db.transition_task("source", TaskStatus.READY)
     await db.transition_task("source", TaskStatus.READY)
-    rows = await events(db, "dependency:owner")
+    rows = await events(db, "dependency:owner:source:blocks")
     assert [e["payload"]["action"] for e in rows] == ["added", "status_changed"]
     assert rows[-1]["payload"]["depends_on_task_id"] == "source"
+    assert {row["source_generation"] for row in rows} == {7}
 
 
 async def test_user_comment_only_records_verified_human_evidence(db):
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "source").values(claim_epoch=7))
     await db.add_task_comment("source", "answer", author_kind="user", author_id="dashboard")
     await db.add_task_comment("source", "note", author_kind="supervisor", author_id="supervisor-p")
-    rows = await events(db, "task_comment:source")
+    rows = await events(db, "human:task_comment:source")
     assert len(rows) == 1 and "answer" not in str(rows[0]["payload"])
+    assert rows[0]["source_generation"] == 7
 
 
 async def test_messages_include_internal_inserts_but_never_duplicate_or_leak_bodies(db):
@@ -196,12 +205,39 @@ async def test_exact_sha_check_record_ignores_stale_observation(db):
     assert len(rows) == 1 and rows[0]["payload"]["conclusion"] == "success"
 
 
-async def test_playbook_boundary_records_the_committed_snapshot_version(db):
+@pytest.mark.parametrize("resolution", ["clear", "expire", "claim", "boundary", "cancel"])
+async def test_playbook_resolution_uses_registered_wait_snapshot_generation(db, resolution):
     await seed_artifact(db, ARTIFACT)
-    snapshot = await db.create_run(make_snapshot())
-    await db.commit_boundary(replace(snapshot, current_step_id="review"), make_receipt(snapshot))
-    rows = await events(db, "playbook_condition:run-1")
-    assert len(rows) == 1 and rows[0]["source_revision"] == "1"
+    snapshot = await pause_run_on_waits(db, make_wait(deadline_at=1_000_001))
+    key = "playbook_condition:run-1:wait-1"
+    assert not await events(db, key)
+    if resolution == "clear":
+        with pytest.raises(RuntimeError):
+            async with db._engine.begin() as conn:
+                await db.clear_for_run("run-1", conn=conn)
+                raise RuntimeError("abort")
+        assert not await events(db, key)
+        await db.clear_for_run("run-1")
+        await db.clear_for_run("run-1")
+    elif resolution == "expire":
+        await db.expire_due(1_000_002)
+        await db.expire_due(1_000_003)
+    elif resolution == "claim":
+        event = Event("pr.merged", "e1", {"pr": {"number": 41}})
+        await db.claim_for_event(event, now=1_000_002)
+        await db.claim_for_event(event, now=1_000_003)
+    elif resolution == "boundary":
+        await db.commit_boundary(
+            replace(snapshot, lifecycle=RunLifecycle.RUNNING),
+            make_receipt(snapshot, attempt=2), WaitChangeSet(clear_wait_ids=("wait-1",)),
+        )
+    else:
+        await db.request_cancel("run-1", expected_version=snapshot.version,
+                                reason="test", requested_by="supervisor")
+    rows = await events(db, key)
+    assert len(rows) == 1
+    assert rows[0]["source_generation"] == snapshot.version
+    assert rows[0]["payload"]["wait_id"] == "wait-1"
 
 
 async def test_pool_sizing_observation_is_replayed_by_cycle(db):
