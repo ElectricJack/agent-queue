@@ -34,11 +34,12 @@ from enum import Enum
 from typing import Any
 
 from src.commands.authorization import authorize_command
-from src.commands.principal import PrincipalKind
+from src.commands.principal import ExecutionPrincipal, PrincipalKind
 from src.commands.contracts.models import OutcomeClass
 from src.llm.client import LLMToolTurn, LLMToolTurnBoundaryError
 from src.llm.types import TokenUsage
 from src.playbooks.artifact_ref import ArtifactRef
+from src.playbooks.authority import bind, binds_run_authority, caller_record, effect_principal
 from src.playbooks.definition import (
     AgentTaskStep,
     CommandStep,
@@ -789,7 +790,14 @@ class PlaybookEngine:
                 )
                 continue
 
-            denied = isinstance(step, CommandStep) and not self._authorized(step, principal)
+            step_principal = principal
+            if (isinstance(step, CommandStep) and binds_run_authority(artifact)
+                    and isinstance(principal, ExecutionPrincipal)):
+                # Preview the effect under the authority live would bind.
+                step_principal = bind(
+                    principal, artifact, run_id_for(cursor.rule_id), cursor.step_id
+                )
+            denied = isinstance(step, CommandStep) and not self._authorized(step, step_principal)
             if denied:
                 # The live walk's stage 5.  Package 0 owns the decision and the
                 # engine only routes it, so a denial is a resolved outcome the
@@ -803,7 +811,7 @@ class PlaybookEngine:
                 )
             else:
                 result = await self._execute_symbolic(
-                    step, cursor, artifact, artifact_ref, principal, inputs,
+                    step, cursor, artifact, artifact_ref, step_principal, inputs,
                     authored_key=authored_key,
                     budget=budget,
                     mode=mode,
@@ -1129,6 +1137,7 @@ class PlaybookEngine:
             deadline_at=deadline_at,
             started_at=now,
             updated_at=now,
+            caller=caller_record(principal, artifact),
         )
         try:
             snapshot = await repository.create_run(snapshot)
@@ -2412,8 +2421,17 @@ class PlaybookEngine:
             )
 
         # 5. Authorize.  Package 0 owns the decision; the engine only routes
-        #    it, so an artifact can declare an edge for a denial.
-        if isinstance(step, CommandStep) and not self._authorized(step, principal):
+        #    it, so an artifact can declare an edge for a denial.  A gated
+        #    artifact's effect acts for the run's recorded caller, re-derived
+        #    now, never for whoever drives this attempt (an operator retry).
+        step_principal = principal
+        if isinstance(step, (CommandStep, ScriptStep)):
+            step_principal = await effect_principal(
+                snapshot, artifact, principal, self.services, step_id
+            )
+            if isinstance(step, CommandStep):
+                attempt.principal = step_principal
+        if isinstance(step, CommandStep) and not self._authorized(step, step_principal):
             attempt.outcome = "unauthorized"
             attempt.error = f"capability denied: {step.command}"
             return await finish(
@@ -2477,7 +2495,7 @@ class PlaybookEngine:
             artifact=artifact,
             rule_id=snapshot.rule_id,
             step_id=step_id,
-            principal=principal,
+            principal=step_principal,
             scope=scope,
             services=self.services,
             mode=mode,
@@ -3345,7 +3363,10 @@ class PlaybookEngine:
         ctx = StepContext(
             run_id=snapshot.run_id, dispatch_id=snapshot.dispatch_id or "",
             artifact_ref=artifact_ref, artifact=artifact, rule_id=snapshot.rule_id,
-            step_id=attempt.step_id, principal=attempt.principal,
+            step_id=attempt.step_id,
+            principal=await effect_principal(
+                snapshot, artifact, attempt.principal, self.services, attempt.step_id
+            ),
             scope=self._scope(snapshot, artifact), services=self.services,
             iteration_path=snapshot.iteration_path,
             attempt=snapshot.attempts[attempt_key(attempt.step_id, attempt.iteration,

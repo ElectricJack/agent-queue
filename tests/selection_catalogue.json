@@ -953,6 +953,7 @@
         "tests/test_playbook_pending_events_policy.py",
         "tests/test_playbook_private_values.py",
         "tests/test_playbook_receipts.py",
+        "tests/test_playbook_run_authority.py",
         "tests/test_playbook_run_overlay.py",
         "tests/test_playbook_run_repository.py",
         "tests/test_playbook_script.py",
@@ -12425,6 +12426,30 @@
       ],
       "markers": [],
       "summary": "Execution receipts — attempt identity and default-deny projection."
+    },
+    "tests/test_playbook_run_authority.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:574f7dc92c4fa16e92744a19fee03c39c670749ab260971a55159149d088c02c",
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.principal",
+        "src.database",
+        "src.database.tables",
+        "src.playbooks.authority",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
+        "src.playbooks.run_state",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Run-bound authority for manual, recovery and preview execution of gated artifacts."
     },
     "tests/test_playbook_run_overlay.py": {
       "areas": [
