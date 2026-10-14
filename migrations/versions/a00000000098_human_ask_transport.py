@@ -14,6 +14,23 @@ branch_labels = None
 depends_on = None
 
 
+def _ensure_foreign_keys(table: sa.Table, columns: tuple[str, ...]) -> None:
+    # Column._copy() omits foreign keys. Add them separately even when an
+    # interrupted upgrade already added the nullable transport columns.
+    existing = sa.inspect(op.get_bind()).get_foreign_keys(table.name)
+    for name in columns:
+        for foreign_key in table.c[name].foreign_keys:
+            if not any(fk["constrained_columns"] == [name] for fk in existing):
+                op.create_foreign_key(
+                    f"fk_{table.name}_{name}",
+                    table.name,
+                    foreign_key.column.table.name,
+                    [name],
+                    [foreign_key.column.name],
+                    ondelete=foreign_key.ondelete,
+                )
+
+
 def upgrade():
     from src.database.tables import (
         conversation_inputs, ask_external_bindings, human_communication_modes,
@@ -31,6 +48,7 @@ def upgrade():
     ):
         if name not in existing:
             op.add_column("outbound_deliveries", outbound_deliveries.c[name]._copy())
+    _ensure_foreign_keys(outbound_deliveries, ("ask_id", "binding_id", "project_id"))
     checks = {c["name"] for c in inspector.get_check_constraints("outbound_deliveries")}
     for constraint in outbound_deliveries.constraints:
         if isinstance(constraint, sa.CheckConstraint) and constraint.name not in checks:
@@ -52,6 +70,7 @@ def upgrade():
     }
     for name in additions - columns:
         op.add_column("conversation_inputs", conversation_inputs.c[name]._copy())
+    _ensure_foreign_keys(conversation_inputs, ("ask_id", "project_id"))
     op.alter_column("conversation_inputs", "conversation_id", nullable=True)
     for fk in inspector.get_foreign_keys("conversation_inputs"):
         if fk["constrained_columns"] == ["conversation_id"]:

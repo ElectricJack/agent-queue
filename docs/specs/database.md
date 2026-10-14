@@ -3593,13 +3593,15 @@ what makes a delivery sent — `idx_outbound_deliveries_due`
 | `created_at` | REAL | NOT NULL | When the row was written |
 | `updated_at` | REAL | NOT NULL | Last state change |
 
-Revision 93 adds nullable ask-transport pins: `ask_id` (FK human_asks),
+Revision 98 adds nullable ask-transport pins: `ask_id` (FK human_asks),
 `binding_id` (FK ask_external_bindings), `project_id` (FK projects),
 `decision_generation`, `display_version`, `mode_generation`, `root_generation`,
 `send_kind`, `write_started_at` and `attempt_token`. All foreign keys restrict
 deletion. `send_kind` is root, root_edit, reply, move_notice or redirect.
 `ck_outbound_deliveries_ask` requires the identity and generation pins for ask-owned
 rows; the ask, binding and mode indexes support scoped transport recovery.
+The upgrade creates missing foreign keys independently of column additions, so
+replaying an incomplete upgrade also restores references on existing columns.
 
 ### Table: `morning_reports`
 
