@@ -8674,6 +8674,42 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
+    },
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, continuations, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, wait_records, workspaces": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Claim and integration schema imports; job_workspace_pins joins retained branch ownership as a refusal fence for repairing an idle misplaced workspace lock."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Repairs only an idle misplaced agent workspace lock after checking foreign claims, live sessions, retained integration ownership and job pins. Reads integration owners as a refusal fence; changes workspace locks only, never branch ownership, publication or ref replay state."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only attached/handoff-pending integration-owner and job-pin fence. Prevents slot recreation or abandoned-merge recovery from changing retained checkouts; grants no release, delivery or ref replay authority."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": {
+      "reason": "Shared target-scope schema import continues to expose integration subjects, batches, evidence and branch ownership alongside universal wait targets; charge the complete import."
+    },
+    "src/waits/adapters/batch.py::BatchAdapter.snapshot": {
+      "reason": "Integration-specific batch observation: reads lifecycle, generation, repair stage, ejection record and member task blockers from the authoritative integration ledger. Read-only wait evidence; charge the complete method."
+    },
+    "src/waits/adapters/batch.py::import from src.database.tables import integration_batch_members as members": {
+      "reason": "Integration batch membership schema import used to derive wait blockers; remains integration-owned."
+    },
+    "src/waits/adapters/batch.py::import from src.database.tables import integration_batches as batches": {
+      "reason": "Authoritative integration batch schema import for the settlement adapter; remains integration-owned."
+    },
+    "src/waits/adapters/ci.py::CIAdapter.authorise": {
+      "reason": "Exact-head CI authorisation reads integration batches and candidate revisions, or a matching job/task, to prove the head belongs to an authorised stage. Charge the complete definition including its job alternative."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_batches as batches": {
+      "reason": "Integration batch schema import used by exact-head CI stage authorisation; remains integration-owned."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_candidate_revisions as revisions": {
+      "reason": "Integration candidate revision schema import used by exact-head CI stage authorisation; remains integration-owned."
     }
   },
   "exclusions": {
@@ -8771,7 +8807,18 @@
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
-    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
+    "src/database/tables.py::wait_records": "Verified-wait condition and outcome storage owned by session waits; integration_outcome is a source kind, not an integration delivery journal.",
+    "src/database/tables.py::continuations": "Verified-wait resume checkpoint and admission storage owned by sessions; no Git ref mutation or delivery replay state.",
+    "src/database/tables.py::wait_source_events": "Generic wait outbox for all source kinds. Payloads are evidence hints; consumers re-observe authoritative state, never replay integration refs or lifecycle from this table.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source evidence bridge for batch transitions. It writes only the universal wait outbox; integration policy and authoritative batch state remain in src/integration.",
+    "src/waits/sources.py::execute_batch_mutation": "Transaction-preserving bridge from existing batch writes to the generic wait source outbox; contains no integration policy, ref replay or duplicate authority.",
+    "src/commands/contracts/wait.py::WaitRegisterArgs.owner_kind": "Universal service-owner discriminator for scheduler, integration and playbook waits. It declares a typed scope only; authenticated command and ledger checks supply authority. No integration lifecycle or ref replay state.",
+    "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_scope": "Universal authenticated wait-owner scope derivation for services, playbooks, tasks and sessions. Naming integration as one service owner grants no integration mutation authority; integration-specific adapters remain charged.",
+    "src/database/queries/wait_queries.py::verify_owner": "Universal transaction-local wait ownership and live-claim fence. Integration is one service owner kind; this function validates project/session/task identity without reading or mutating the integration ledger.",
+    "src/database/queries/wait_queries.py::register_wait": "Universal verified subscription transaction: idempotency, observation, semantic cycle guard, server-injected sleep policy, deadlines and edges. Writes only generic wait state; integration-specific condition verification is separately charged to its adapters.",
+    "src/database/tables.py::wait_edges": "Universal semantic/resource wait graph across all source kinds. Stores waiter/blocker identities and observation revisions, not integration branch ownership, delivery lifecycle or Git ref replay state.",
+    "src/database/tables.py::wait_deadlines": "Universal due/escalation/ceiling/transition/reservation deadlines attached to wait records. Timer scheduling state for all wait kinds; no integration publication intent, lifecycle journal or ref replay authority."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -16167,7 +16214,25 @@
     "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently.",
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
-    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority."
+    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
+    "src/models.py::SUSPENDED_TASK_STATUSES": "Generic task lifecycle vocabulary shared with verified waits; contains no delivery state or ref mutation.",
+    "src/waits/sources.py::execute_batch_mutation": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::insert_message_with_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_task_transition": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
+    "src/waits/sources.py::record_dependency_change": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
+    "src/waits/sources.py::record_dependency_source_change": "Generic dependency observation fanout on upstream evidence changes; integration callers remain charged independently.",
+    "src/waits/sources.py::execute_task_status_mutation": "Generic task status outbox bridge for guarded bulk/legacy writes; integration-specific callers retain their ownership.",
+    "src/waits/source_sql.py::task_transition_statement": "Generic guarded task/dependency source outbox CTE, used by all task status writers; writes only ordinary task state and universal wait evidence, with no integration policy or ref replay authority. Integration-specific callers remain charged.",
+    "src/waits/sources.py::payload_hash": "Generic canonical JSON SHA-256 for universal wait evidence, including resource invalidation authentication; no integration lifecycle, ref identity or replay authority.",
+    "src/commands/contracts/wait_v2.py::register_wait_v2_contracts": "Universal verified-wait contract registration invoked by the shared command composition root. Typed dispatch and caller checks do not implement integration policy; integration-specific commands remain charged.",
+    "src/waits/adapters/base.py::foreign": "Generic wait scope refusal with deliberately redacted object identity; integration adapters remain charged independently.",
+    "src/waits/adapters/base.py::invalid": "Generic typed-condition validation refusal shared by all wait adapters; no integration policy or storage.",
+    "src/waits/adapters/base.py::row": "Generic SQLAlchemy single-row reader shared by condition adapters; integration-specific queries and predicates remain charged to their callers.",
+    "src/waits/adapters/base.py::unresolved": "Generic source-verification refusal shared by all wait adapters; no integration policy or storage.",
+    "src/waits/conditions.py::canonical": "Generic stable JSON encoding for condition request hashes; no integration lifecycle, ref identity or replay authority.",
+    "src/waits/graph.py::would_create_cycle": "Generic reachability guard over task dependencies and active semantic wait edges. Resource holds are excluded from semantic cycles; no integration ownership or delivery policy."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

@@ -9745,6 +9745,42 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
+    },
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, continuations, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, wait_records, workspaces": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Claim and integration schema imports; job_workspace_pins joins retained branch ownership as a refusal fence for repairing an idle misplaced workspace lock."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Repairs only an idle misplaced agent workspace lock after checking foreign claims, live sessions, retained integration ownership and job pins. Reads integration owners as a refusal fence; changes workspace locks only, never branch ownership, publication or ref replay state."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only attached/handoff-pending integration-owner and job-pin fence. Prevents slot recreation or abandoned-merge recovery from changing retained checkouts; grants no release, delivery or ref replay authority."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": {
+      "reason": "Shared target-scope schema import continues to expose integration subjects, batches, evidence and branch ownership alongside universal wait targets; charge the complete import."
+    },
+    "src/waits/adapters/batch.py::BatchAdapter.snapshot": {
+      "reason": "Integration-specific batch observation: reads lifecycle, generation, repair stage, ejection record and member task blockers from the authoritative integration ledger. Read-only wait evidence; charge the complete method."
+    },
+    "src/waits/adapters/batch.py::import from src.database.tables import integration_batch_members as members": {
+      "reason": "Integration batch membership schema import used to derive wait blockers; remains integration-owned."
+    },
+    "src/waits/adapters/batch.py::import from src.database.tables import integration_batches as batches": {
+      "reason": "Authoritative integration batch schema import for the settlement adapter; remains integration-owned."
+    },
+    "src/waits/adapters/ci.py::CIAdapter.authorise": {
+      "reason": "Exact-head CI authorisation reads integration batches and candidate revisions, or a matching job/task, to prove the head belongs to an authorised stage. Charge the complete definition including its job alternative."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_batches as batches": {
+      "reason": "Integration batch schema import used by exact-head CI stage authorisation; remains integration-owned."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_candidate_revisions as revisions": {
+      "reason": "Integration candidate revision schema import used by exact-head CI stage authorisation; remains integration-owned."
     }
   },
   "shared_state": {
