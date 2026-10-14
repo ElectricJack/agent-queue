@@ -1265,12 +1265,24 @@ def s7_claim_race(state: dict) -> str:
                 )
             )
         outcomes = []
-        for p in procs:
+        for worker, p in zip(workers, procs, strict=True):
             out, _err = p.communicate(timeout=120)
             payload = json.loads(out.strip() or "{}")
             data = payload.get("data") or {}
             details = (payload.get("error") or {}).get("details") or {}
             result = data.get("result") or details.get("result") or "unknown"
+            if result == "claim_in_progress":
+                check(data.get("task_id") == task_id,
+                      f"race is preparing a different task: {data}")
+                preparing_epoch = data.get("claim_epoch")
+                check(isinstance(preparing_epoch, int) and preparing_epoch > 0,
+                      f"race preparation omitted its generation: {data}")
+                # Keep selection concurrent and immediate, then join the
+                # winning generation once before asserting final ownership.
+                data = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
+                result = data.get("result") or "unknown"
+                check(data.get("claim_epoch") == preparing_epoch,
+                      f"race preparation changed generation: {data}")
             if result == "claimed":
                 check(data.get("task", {}).get("id") == task_id,
                       f"race claimed a different task: {data}")
@@ -2723,7 +2735,7 @@ def s17_phased_graph(state: dict) -> str:
         fixture_ready,
         what="the first phase-1 task to reach the claim frontier",
     )
-    first_claim = first_worker.claim_next()
+    first_claim = first_worker.claim_next(wait=int(CONVERGE_TIMEOUT))
     check(first_claim.get("result") == "claimed", f"first phase-1 claim: {first_claim}")
     check(first_worker.task_id in phase_one_nodes, f"withheld runner was claimed: {first_worker.task_id}")
 
@@ -2752,7 +2764,7 @@ def s17_phased_graph(state: dict) -> str:
             project_id=project_id,
         )
         worker = Worker.adopt(session["id"])
-        claim = worker.claim_next()
+        claim = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
         check(claim.get("result") == "claimed", f"{what} claim: {claim}")
         check(worker.task_id == expected_task_id, f"{what} claimed {worker.task_id}")
         return worker
