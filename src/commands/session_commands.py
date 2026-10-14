@@ -195,6 +195,7 @@ class SessionCommandsMixin:
             "claim_failure_count": session.claim_failure_count,
             "claim_failure_reason": session.claim_failure_reason,
             "claim_failure_at": session.claim_failure_at,
+            "failed_preparation": session.failed_preparation,
             "quarantined_at": session.quarantined_at,
             "sleep_reason": session.sleep_reason,
             "epoch": session.epoch,

@@ -1019,6 +1019,7 @@ class ClaimSessionSummary(BaseModel):
     cap: int | None = None
     desired_state: str | None = None
     claim_phase: str | None = None
+    failed_preparation: dict[str, Any] | None = None
 
 
 class TaskClaimResponse(BaseModel):

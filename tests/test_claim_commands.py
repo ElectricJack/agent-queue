@@ -11,9 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import asyncpg
 import pytest
 from hypothesis import HealthCheck, given, settings, strategies as st
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import DBAPIError
 
+from src.api.models.session import SessionSummary
+from src.api.models.task import TaskClaimResponse
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database.tables import (
@@ -965,6 +967,7 @@ class TestClaim:
                     id=f"origin-{task_id}",
                     task_id=task_id,
                     repository_id="repo",
+                    branch_name=f"aq/{task_id}",
                     parent_task_id="parent",
                     parent_repository_id="repo",
                     parent_ref="aq/parent",
@@ -1158,6 +1161,127 @@ class TestClaim:
         assert await db.get_task_meta("child", "branch_fenced") is None
         assert await db.get_task_meta("child", "needs_attention") is None
         assert await db.get_task_meta("child", "claim_prepare_backoff_attempts") is None
+
+    @pytest.mark.parametrize("owner_state", ["missing", "foreign", "unknown_attachment"])
+    async def test_canonical_refusals_retain_selected_identity_after_cleanup_and_drain(
+        self, handler, db, tmp_path, owner_state,
+    ):
+        """Real origin/fence preparation errors on disposable PostgreSQL, no error stub."""
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, wd = await pool_session(db, tmp_path)
+        if owner_state == "missing":
+            async with db.immediate() as conn:
+                await conn.execute(delete(integration_branch_owners).where(
+                    integration_branch_owners.c.owner_id == "child",
+                ))
+        elif owner_state == "foreign":
+            await ownership.transfer(fence, "foreign-producer", "worker")
+        else:
+            async with db.immediate() as conn:
+                await conn.execute(update(integration_branch_owners).where(
+                    integration_branch_owners.c.owner_id == "child",
+                ).values(handoff_state="attached", session_id="unknown", workspace_id="unknown"))
+        for attempt in range(1, 3):
+            restarted = CommandHandler(handler.orchestrator, handler.config)
+            result = await scoped(restarted, sid)._cmd_task_claim({"next": True})
+            assert result["result"] == ("prepare_failed" if attempt == 1 else "drain_requested")
+            assert "BranchBusy: canonical branch is not reserved by this task" in result["reason"]
+            assert result["task"] is None and result["claim_epoch"] is None
+            current = await db.get_session(sid)
+            diagnostic = result["session"]["failed_preparation"]
+            assert diagnostic == current.failed_preparation
+            assert TaskClaimResponse.model_validate(result).session.failed_preparation == diagnostic
+            assert diagnostic["diagnostic_only"] is True
+            assert diagnostic["task_id"] == "child"
+            assert diagnostic["repository_id"] == "repo" and diagnostic["branch"] == "aq/child"
+            assert diagnostic["origin"]["id"] == "origin-child"
+            assert diagnostic["origin"]["creation_generation"] == 1
+            assert diagnostic["checkpoint"]["version"] == 0
+            assert diagnostic["checkpoint"]["generation"] == 0
+            assert diagnostic["claim_epoch"] == attempt
+            assert diagnostic["session_instance"] == "t"
+            assert diagnostic["preparation_started_at"] <= diagnostic["observed_at"]
+            assert len(json.dumps(diagnostic)) < 8000
+            if owner_state == "missing":
+                assert diagnostic["owners"] == []
+            elif owner_state == "foreign":
+                assert diagnostic["owners"][0]["owner_id"] == "foreign-producer"
+            else:
+                assert diagnostic["owners"][0]["handoff_state"] == "attached"
+            # Existing session diagnostics expose the observation after task cleanup.
+            assert restarted._session_dict(current)["failed_preparation"] == diagnostic
+            assert SessionSummary.model_validate(
+                restarted._session_dict(current),
+            ).failed_preparation == diagnostic
+            assert current.task_id is None and current.claim_phase is None and current.claims == 0
+            assert not (wd / ".aq" / "claim.json").exists()
+            assert (await db.get_task("child")).status is TaskStatus.READY
+            denied = await restarted._assert_session_owns(
+                "child", session_id=sid, claim_epoch=diagnostic["claim_epoch"],
+            )
+            assert denied["result"] == "out_of_scope"
+            if attempt == 1:
+                cooldown = await restarted._cmd_task_claim({"next": True})
+                assert cooldown["session"]["failed_preparation"] == diagnostic
+                assert (await db.get_session(sid)).claim_failure_count == 1
+                await expire_claim_refusal(db, sid, "child")
+        assert current.desired_state == "stopped"
+        assert (await db.get_workspace("ws-agent-1")).enabled
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
+    @pytest.mark.parametrize("changed", [
+        "instance", "epoch", "task", "active", "released", "preparation", "task_creation",
+    ])
+    async def test_failed_preparation_observation_refuses_stale_or_successor_claim(
+        self, handler, db, tmp_path, changed,
+    ):
+        await mktask(db, "t", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await h._cmd_task_claim({"next": True})
+        assert claimed["result"] == "claimed"
+        await db.update_session(sid, claim_phase="preparing")
+        observed = await db.get_session(sid)
+        task = await db.get_task("t")
+        if changed == "task":
+            await mktask(db, "successor", profile_id="worker")
+        fields = {
+            "instance": {"instance_token": "successor"}, "epoch": {"last_claim_epoch": 2},
+            "task": {"task_id": "successor"}, "active": {"claim_phase": "active"},
+            "released": {"task_id": None, "claim_phase": None},
+            "preparation": {"claim_phase_at": observed.claim_phase_at + 1},
+            "task_creation": {},
+        }[changed]
+        await db.update_session(sid, **fields)
+        if changed == "task_creation":
+            await db.update_task("t", created_at=task.created_at + 1)
+        await db.record_failed_preparation(
+            sid, instance_token="t", task_id="t", claim_epoch=1,
+            preparation_started_at=observed.claim_phase_at, task_created_at=task.created_at,
+            failure={"stage": "slot_reset", "error_type": "Error", "reason": "stale"},
+            now=time.time(),
+        )
+        assert (await db.get_session(sid)).failed_preparation is None
+
+    async def test_successful_retry_clears_failed_preparation_diagnostic(
+        self, handler, db, tmp_path,
+    ):
+        await mktask(db, "t", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = RuntimeError("Bearer secret-token-value; password=secret-value")
+        h = scoped(handler, sid)
+        failed = await h._cmd_task_claim({"next": True})
+        diagnostic = failed["session"]["failed_preparation"]
+        assert diagnostic["task_id"] == "t"
+        assert diagnostic["origin"] is None and diagnostic["checkpoint"] is None
+        assert "secret-token-value" not in json.dumps(diagnostic)
+        assert "secret-value" not in json.dumps(diagnostic)
+        await expire_claim_refusal(db, sid, "t")
+        reset.side_effect = None
+        claimed = await h._cmd_task_claim({"next": True})
+        assert claimed["result"] == "claimed"
+        assert (await db.get_session(sid)).failed_preparation is None
 
     async def test_repeating_fenced_branch_drains_idle_worker_without_blocking_task(
         self, handler, db, tmp_path

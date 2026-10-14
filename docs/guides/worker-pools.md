@@ -320,6 +320,27 @@ sizing stops relaunching into the limit (provider-failover D13).
 
 ### Repeated claim preparation refusals
 
+Failed claim responses include `session.failed_preparation`, also visible in
+`aq session show`. It retains the last selected task, designated repository/ref,
+origin generation, checkpoint version/generation, observed owner fences, session
+instance, preparation start, claim epoch and failure time/reason after the task
+binding is released. It is bounded and scrubbed; missing evidence stays null.
+Successful activation clears it. `task: null` and `claim_epoch: null` still mean
+there is no active claim: this old observation never authorizes work on the task.
+
+A canonical producer refusal (`canonical branch is not reserved by this task`)
+requires checking the exact current origin, checkpoint and owner, rather than
+assuming ordinary sync-repair allocation failed. An owning project supervisor
+can reserve a detached READY/BLOCKED producer with
+`aq integration reserve-owner --task-id TASK`. An attached or unresolved owner
+requires the provider-backed, work-preserving `release-owner` preview and proof
+described in [integration recovery](hierarchical-integration-trains.md).
+Live or unknown writers, held workspaces, foreign/successor fences and changed
+source/ref evidence remain refused. Never use the historical snapshot as the
+proof or restart the unchanged reporting worker. If an older stopped session
+has no snapshot, the failed task identity remains unresolved until independent
+original evidence identifies it; a null response cannot identify a task.
+
 The session cooldown guard (§4) drains idle workers on their second identical
 blocker and leaves their workspace enabled. This path does not reach the
 three-failure workspace quarantine. Retained preparations have a separate limit:

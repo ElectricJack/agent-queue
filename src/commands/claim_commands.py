@@ -1400,6 +1400,11 @@ class ClaimCommandsMixin:
             from src.preparation_failure import describe_preparation_failure
 
             failure = describe_preparation_failure(exc, stage)
+            await self.db.record_failed_preparation(
+                session.id, instance_token=session.instance_token, task_id=task.id,
+                claim_epoch=epoch, preparation_started_at=row.claim_phase_at,
+                task_created_at=task.created_at, failure=failure.record(), now=time.time(),
+            )
             logger.warning(
                 "claim %s/%s (epoch %s, workspace %s): prepare failed: %s",
                 session.id, task.id, epoch, slot.id if slot else None, failure.reason,
@@ -1661,6 +1666,7 @@ class ClaimCommandsMixin:
             "cap": cap,
             "desired_state": row.desired_state,
             "claim_phase": row.claim_phase,
+            "failed_preparation": row.failed_preparation,
         }
 
     def _simple(self, result: ClaimResult, reason: str, row=None, cap=None) -> dict:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -13,6 +14,7 @@ from src.preparation_failure import (
     MAX_REASON_CHARS,
     PreparationFailure,
     describe_preparation_failure,
+    preparation_identity,
     safe_message,
     safe_text,
 )
@@ -147,6 +149,37 @@ def test_messages_and_reason_are_bounded():
 def test_workspace_identity_text_is_scrubbed_and_bounded():
     assert safe_text("/workspace/api_key=fixture-secret-value/slot") == "/workspace/api_key=***"
     assert len(safe_text("/workspace/" + "x" * 1000)) == MAX_MESSAGE_CHARS
+
+
+def test_preparation_identity_is_bounded_scrubbed_and_allowlisted():
+    session = {
+        "id": "session", "instance_token": "instance", "last_claim_epoch": 3,
+        "claim_phase_at": 12.0, "api_token": "do-not-copy",
+    }
+    task = {
+        "id": "task", "created_at": 1.0, "created_by_kind": None,
+        "branch_name": "aq/api_key=fixture-secret", "description": "do-not-copy",
+    }
+    origin = {
+        "id": "origin", "creation_generation": 8, "reserved": True,
+        "base_refresh": {"password": "do-not-copy"},
+        "branch_name": "aq/" + "x" * 5000,
+    }
+    checkpoint = {"version": 5, "generation": 4, "arbitrary": "do-not-copy"}
+    owner = {"owner_id": "task", "ref": "aq/token=secret", "arbitrary": "do-not-copy"}
+    failure = describe_preparation_failure(RuntimeError("Bearer fixture-secret-value"), "slot_reset")
+    record = preparation_identity(
+        session, task, "https://user:fixture-password@host/repo", origin,
+        checkpoint, [owner] * 5, failure.record(), 13.0,
+    )
+    text = json.dumps(record)
+    assert "do-not-copy" not in text
+    assert "fixture-secret" not in text and "fixture-password" not in text
+    assert len(record["origin"]["branch_name"]) == MAX_MESSAGE_CHARS
+    assert len(record["owners"]) == 2
+    assert len(text) < 8000
+    assert record["origin"]["creation_generation"] == 8
+    assert record["checkpoint"]["version"] == 5
 
 
 def test_broken_str_falls_back_to_type_without_failing():
