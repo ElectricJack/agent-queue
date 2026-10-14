@@ -87,6 +87,14 @@ remain within their own project. Resolution still needs the verified answer.
 
 ## Task Creation
 
+Keep pool workers executing or closing their own tasks. Never tell a worker to
+hold idle for source mapping, integration controls or delivery paperwork. Read
+the project's integration mode first: with the train off, train controls are
+not prerequisites for worker publication and close. Resolve actual command
+refusals through their owner; preserve human holds and integration ownership.
+If execution needs an answer, give concrete guidance or one bounded durable
+message wait; never an indefinite hold with no retries.
+
 Task descriptions MUST be self-contained and actionable — the agent has never seen this conversation. Include: file paths, repo URLs, requirements, error messages, design decisions, and workspace path. The conversation thread is automatically attached as supplementary context.
 
 Never pass a route. The project's router (its bound routing playbook) picks

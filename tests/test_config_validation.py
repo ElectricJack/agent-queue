@@ -1123,6 +1123,16 @@ class TestSubstrateLoaderDefaults:
         assert cfg.sessions.provider == SessionsConfig().provider
         assert cfg.sessions.lease_ttl_seconds == 90
 
+    def test_idle_claim_timeout_defaults_loads_and_rejects_negative(self, tmp_path):
+        from src.config import SessionsConfig
+
+        assert SessionsConfig().idle_claim_timeout_seconds == 900
+        cfg = self._load(tmp_path, sessions={"idle_claim_timeout_seconds": 120})
+        assert cfg.sessions.idle_claim_timeout_seconds == 120
+        assert not SessionsConfig(idle_claim_timeout_seconds=0).validate()
+        errors = SessionsConfig(idle_claim_timeout_seconds=-1).validate()
+        assert any(error.field == "idle_claim_timeout_seconds" for error in errors)
+
     def test_sessions_explicit_values_override_defaults(self, tmp_path):
         cfg = self._load(
             tmp_path,
