@@ -1,6 +1,7 @@
 # Retained workspace stop rework — wise-stone-87
 
-Status: implementation under validation; this document does not authorize live recovery.
+Status: local implementation verified; original live acceptance remains unproved.
+This document does not authorize live recovery.
 Starting source: `116134665b82d7d2f4551f9d3e91dd14ce2c8555`.
 
 The operator's new request covers two lifecycle boundaries: a task that leaves
@@ -178,4 +179,46 @@ Review then identified the release/claim-retirement crash window described
 above. The correction keeps the checkpoint durable before retiring the marker,
 and keeps capacity reserved until marker retirement and database release both
 finish. Restart regressions cover retry, successor acquisition and lost checkpoint
-evidence. Final-source checks for that correction are recorded below when complete.
+evidence. A second regression covers restoration, successful successor activation,
+old callback refusal and another qualified stop on the same task; activation
+retires only a completed receipt and preserves pending cleanup.
+
+## Final candidate verification receipts
+
+Final production source: `e0214151da8b195cc69706efb9e67bed4e4562a3`.
+Ancestry checks confirm it contains `116134665b82d7d2f4551f9d3e91dd14ce2c8555`,
+`18107effed870a7ee500dc6918455758fc7d7d09` and the supervisor-qualified
+`5a3e0d9bdd4db04eae156c48b4f8a639d228da0a`.
+
+- Final combined focused and affected area run: `aq test
+  tests/test_task_controls.py tests/test_task_controls_api.py
+  tests/test_session_runtime_units.py tests/test_selection_catalogue.py
+  tests/test_claim_commands.py tests/test_session_reconciler.py
+  tests/test_integration_workspace_handoff.py tests/test_worktree_acquisition.py
+  tests/test_worktree_prepare.py tests/test_surface_commands.py -q` —
+  **1,001 passed, one existing strict xfail, 14 warnings in 459.29 seconds**;
+  `/tmp/wise87-final-combined.log`. PostgreSQL used the disposable test service
+  on localhost:5534. The expected failure is the same phase-three auto-merge
+  case named above.
+- The two successor-claim regressions also passed independently in 22.11 seconds;
+  `/tmp/wise87-repeat-claim-v2.log`. Earlier crash-retirement focused coverage
+  passed 41 cases, and its full focused run passed 251 cases; the final combined
+  run supersedes those earlier lifecycle receipts.
+- The broader 1,536-test related area run above covers unchanged Git, reaper,
+  integration ownership and preparation-diagnostic paths. No full-suite run.
+- Selection catalogue generation, changed-path Ruff and `git diff --check`
+  passed for the final implementation.
+- Final-source `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` — all
+  **20 scenarios passed**, including ordinary train delivery; exit 0,
+  `/tmp/wise87-final-e2e.log`. The disposable daemon used port 18995,
+  home `/tmp/wise87-retained-e2e-e0214151d`, test PostgreSQL on localhost:5534
+  and database `agent_queue_e2e_wise87_retained_e0214151d`. The wrapper stopped
+  its daemon after the run. Earlier candidate swarms also passed all 20 scenarios;
+  this run is the final-source receipt. No real provider, external messaging or
+  operator database/daemon was exercised.
+
+The final publication adds documentation only to the verified production source.
+Historical incident causality, current live self-healing, foreign-host/source
+qualification and the original human acceptance remain unproved. The local
+repair and fixture receipts do not authorize an original-task PASS or incident
+clearance. The supervisor and existing recovery owner retain those gates.
