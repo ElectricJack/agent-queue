@@ -5015,6 +5015,23 @@ integration_outbox_artifact_pins = Table(
 )
 
 
+# One immutable obligation-retirement manifest per default-target binding.
+# Soft identities preserve operator evidence after task/project archival.
+integration_delivery_cutovers = Table(
+    "integration_delivery_cutovers",
+    metadata,
+    Column("project_id", Text, primary_key=True),
+    Column("repository_id", Text, primary_key=True),
+    Column("target_ref", Text, primary_key=True),
+    Column("plan_digest", Text, nullable=False),
+    Column("manifest", JSONB, nullable=False),
+    Column("operator_id", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("length(plan_digest) = 64", name="ck_integration_delivery_cutovers_digest"),
+    CheckConstraint("length(operator_id) > 0", name="ck_integration_delivery_cutovers_operator"),
+)
+
+
 # A terminal child of a terminal parent delivered outside the train (by the
 # development publisher or before trains existed) can never get a train
 # receipt: its parent is never collected.  ``aq integration

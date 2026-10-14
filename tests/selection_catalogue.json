@@ -523,6 +523,7 @@
         "tests/test_doctor_integration_checks.py",
         "tests/test_integration_app_mode.py",
         "tests/test_integration_legacy_park_retirement.py",
+        "tests/test_integration_manual_control.py",
         "tests/test_integration_protection.py",
         "tests/test_integration_troubleshooting_doc.py",
         "tests/test_integration_trust_manifest.py"
@@ -8340,6 +8341,37 @@
         "parametrize"
       ],
       "summary": "Adversarial lease expiry and publication races on real PostgreSQL and Git."
+    },
+    "tests/test_integration_manual_control.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "digest": "sha256:504462d501d707c0049d553d16c3a4e69848dd95e9fb68b52011871340659418",
+      "imports": [
+        "src.commands",
+        "src.commands.contracts.integration",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.delivery_branches",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.gitops",
+        "src.integration.lock",
+        "src.integration.manual_control",
+        "src.integration.ownership",
+        "src.integration.provenance",
+        "src.integration.train_sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Manual mode and one-time legacy retirement over PostgreSQL and real Git."
     },
     "tests/test_integration_mode.py": {
       "areas": [

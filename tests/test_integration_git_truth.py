@@ -416,10 +416,13 @@ async def test_missing_source_is_unknown_even_when_branchless(repository):
     assert proof.state == DeliveryState.UNKNOWN and proof.reason == "missing_git_provenance"
 
 
-async def test_explicit_retained_no_artifact_is_distinct_from_missing_source(repository):
+@pytest.mark.parametrize("strict", [False, True])
+async def test_explicit_retained_no_artifact_is_distinct_from_missing_source(repository, strict):
     repo = repository
-    request = await repo.retain(repo.base, artifact=False)
-    assert (await (await repo.snapshot()).is_delivered(request)).state == DeliveryState.NO_ARTIFACT
+    request = replace(await repo.retain(repo.base, artifact=False), strict_containment=strict)
+    snapshot = await repo.snapshot()
+    assert (await snapshot.is_delivered(request)).state == DeliveryState.NO_ARTIFACT
+    assert (await snapshot.observation.evaluate(request)).state == DeliveryState.NO_ARTIFACT
 
 
 async def test_passing_empty_completion_at_its_contained_base_is_no_change(repository):

@@ -871,7 +871,8 @@ async def test_cleanup_retention_expected_old_ambiguous_delete_and_replay(setup)
     assert ops.git.deletes == 1
 
 
-async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
+@pytest.mark.parametrize("mode", ["development", "disabled"])
+async def test_subject_cleanup_keeps_default_and_every_flow_target(setup, mode):
     db, ops, s, _, repo, _, head, _ = setup
     await db.create_project(Project(id="p", name="Promotion cleanup"))
     await db.create_repo(RepoConfig(
@@ -881,6 +882,7 @@ async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
     async with db.immediate() as conn:
         await conn.execute(update(projects).where(projects.c.id == "p").values(
             promotion_flow=[{"target": "staging"}, {"target": "aq/release"}],
+            hierarchical_integration_mode=mode, integration_repository_id="r",
         ))
     protected = ("dev", "staging", "aq/release", "gh-pages")
     items = []
@@ -897,10 +899,12 @@ async def test_subject_cleanup_keeps_default_and_every_flow_target(setup):
         return False
 
     result = await SubjectCleanup(ops, inventory=inventory, held=held)(s, CleanupArgs())
-    assert result.outcome == "clean", result
+    assert result.outcome == ("clean" if mode == "development" else "pending"), result
     assert result.detail["retained"] == [f"refs/heads/{branch}" for branch in protected]
-    assert result.detail["deleted"] == ["refs/heads/aq/ordinary"]
-    assert ops.git.deletes == 1
+    assert result.detail["deleted"] == (["refs/heads/aq/ordinary"] if mode == "development" else [])
+    assert ops.git.deletes == (1 if mode == "development" else 0)
+    if mode == "disabled":
+        assert await ops.git.aremote_branch_head(repository=repo.binding, branch="aq/ordinary") == head
     for branch in protected:
         assert await ops.git.aremote_branch_head(repository=repo.binding, branch=branch) == head
 

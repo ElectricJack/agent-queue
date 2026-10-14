@@ -38,6 +38,8 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_record_root_noop",
         "integration_record_delivered",
         "integration_quiesce",
+        "integration_off",
+        "integration_retire_legacy",
         "integration_retire_legacy_park",
         "integration_migrate_provenance_refs",
         "integration_reconcile_expired_mutation",
@@ -838,6 +840,45 @@ class IntegrationRetireLegacyParkValue(CommandValue):
     event_id: int | None = None
     sha256: str | None = None
     dry_run: bool = True
+
+
+class IntegrationOffArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    dry_run: bool = True
+    expected_plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def exact_control(self):
+        if not self.reason.strip():
+            raise ValueError("reason must be nonblank")
+        if not self.dry_run and self.expected_plan_digest is None:
+            raise ValueError("apply requires the exact preview plan digest")
+        return self
+
+
+class LegacyRetirementEntry(CommandArgs):
+    task_id: str = Field(min_length=1)
+    completion_id: str = Field(min_length=1)
+    source_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    content_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+class IntegrationRetireLegacyArgs(IntegrationOffArgs):
+    entries: list[LegacyRetirementEntry] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def unique_generations(self):
+        if len({entry.task_id for entry in self.entries}) != len(self.entries):
+            raise ValueError("select each task generation exactly once")
+        return self
+
+
+class IntegrationManualValue(CommandValue):
+    project_id: str | None = None
+    dry_run: bool = True
+    plan: dict[str, Any] | None = None
+    plan_digest: str | None = None
 
 
 class IntegrationQuiesceArgs(CommandArgs):
@@ -2396,6 +2437,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         registry.register(CommandRegistration(
             name, contract, cutover_control, None if read_only else cutover_preview))
     for name, args_model, applied, value_model in (
+        ("integration_off", IntegrationOffArgs, "disabled", IntegrationManualValue),
+        ("integration_retire_legacy", IntegrationRetireLegacyArgs, "retired", IntegrationManualValue),
         ("integration_migrate_provenance_refs", IntegrationMigrateProvenanceRefsArgs, "migrated",
          IntegrationMigrateProvenanceRefsValue),
         ("integration_retire_legacy_park", IntegrationRetireLegacyParkArgs, "retired",
@@ -2429,6 +2472,21 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
             supports_preview=True,
         )
+        if name in {"integration_off", "integration_retire_legacy"}:
+            subject = (EffectSubject.INTEGRATION_OPERATION if name == "integration_off"
+                       else EffectSubject.DELIVERY_EVIDENCE)
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    ReadClause(subject=subject),
+                    UpdateClause(subject=subject,
+                                 when=ClausePredicate(arg_equals=("dry_run", False))),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Disable automatic integration" if name == "integration_off"
+                          else "Retire legacy delivery obligations",
+                    summary="Local operator applies an exact preview without manufacturing delivery proof.",
+                ),
+            })
         if name == "integration_migrate_provenance_refs":
             contract = contract.model_copy(update={
                 "execution": contract.execution.model_copy(update={"effects": (
