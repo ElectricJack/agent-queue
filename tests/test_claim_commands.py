@@ -1919,6 +1919,101 @@ class TestClaim:
         assert await retire_stopped_slot_claim(db, str(wd)) is (proof == "ended")
         assert (read_claim_file(wd) is None) is (proof == "ended")
 
+    async def test_native_pause_preserves_marker_until_exact_attempt_retirement(
+        self, handler, db, tmp_path,
+    ):
+        from src.claim_file import read_claim_file
+        from src.database.tables import task_session_attempts
+        from src.orchestrator.workspace_claim_recovery import retire_stopped_slot_claim
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        await db.create_workspace(Workspace(
+            id="base", project_id=PROJECT_ID, workspace_path=str(tmp_path),
+            source_type=RepoSourceType.LINK,
+        ))
+        await db.update_workspace("ws-agent-1", base_workspace_id="base")
+        assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
+        marker = read_claim_file(wd)
+        protected = wd / "protected-source.txt"
+        protected.write_text("paused source\n")
+        provider = MagicMock(stop=AsyncMock())
+        handler.orchestrator.session_providers.create = MagicMock(return_value=provider)
+        handler.orchestrator._checkpoint_paused_workspace = AsyncMock(return_value=True)
+        handler._current_scope = None  # The fixture's operator invokes supported Pause.
+
+        result = await handler._cmd_pause_task({"task_id": "t1"})
+
+        assert "error" not in result, result
+        assert (await db.get_task("t1")).status == TaskStatus.PAUSED
+        provider.stop.assert_awaited_once()
+        assert provider.stop.call_args.args[0].instance_token == "t"
+        old = await db.get_session(sid)
+        assert (old.state, old.desired_state, old.task_id) == ("stopped", "stopped", None)
+        slot = await db.get_workspace("ws-agent-1")
+        assert (slot.locked_by_task_id, slot.locked_by_agent_id) == (None, None)
+        assert read_claim_file(wd) == marker
+
+        # A stopped projection and an unlocked row do not establish the
+        # exact ended attempt required by the retirement helper.
+        async with db._engine.connect() as conn:
+            ended = (await conn.execute(select(task_session_attempts.c.ended_at).where(
+                task_session_attempts.c.session_id == sid,
+                task_session_attempts.c.task_id == "t1",
+                task_session_attempts.c.session_started_at == old.started_at,
+            ))).scalar_one()
+        assert ended is not None
+        assert await retire_stopped_slot_claim(db, str(wd))
+        assert read_claim_file(wd) is None
+        assert protected.read_text() == "paused source\n"
+
+    async def test_successor_marker_check_precedes_checkout_and_stopped_retirement(
+        self, handler, db, tmp_path,
+    ):
+        from src.claim_file import read_claim_file
+        from src.orchestrator.workspace_claim_recovery import retire_stopped_slot_claim
+
+        await mktask(db, "old", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        await db.create_workspace(Workspace(
+            id="base", project_id=PROJECT_ID, workspace_path=str(tmp_path),
+            source_type=RepoSourceType.LINK,
+        ))
+        await db.update_workspace("ws-agent-1", base_workspace_id="base")
+        assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
+        marker = read_claim_file(wd)
+        await db.release_claim(
+            sid, task_status=TaskStatus.PAUSED, context="test", now=time.time(),
+            release_workspace_lock=True,
+        )
+        await db.update_session(sid, state="stopped", desired_state="stopped")
+        protected = wd / "protected-source.txt"
+        protected.write_text("old source\n")
+        successor, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+        await db.update_workspace("ws-agent-2", locked_by_agent_id=None)
+        await db.update_session(successor, work_dir=str(wd))
+        await db.update_workspace("ws-agent-1", locked_by_agent_id="agent-2")
+        await mktask(db, "new", profile_id="worker")
+        manager = handler.orchestrator._worktree_slots.return_value
+        manager.reset_slot_for_task.reset_mock()
+        manager.ensure_slot_checkout = AsyncMock()
+
+        result = await settled_claim(scoped(handler, successor), {"next": True})
+
+        assert result["result"] == "prepare_failed", result
+        assert "foreign claim" in result["reason"]
+        manager.ensure_slot_checkout.assert_not_awaited()
+        manager.reset_slot_for_task.assert_not_awaited()
+        assert not await retire_stopped_slot_claim(db, str(wd))
+        assert read_claim_file(wd) == marker
+        assert protected.read_text() == "old source\n"
+        fresh = await db.get_session(successor)
+        assert fresh.last_claim_epoch == (await db.get_task("new")).claim_epoch == 1
+        failure = await db.get_task_meta("new", "claim_preparation_failure")
+        assert failure["session_id"] == successor
+        assert failure["claim_epoch"] == fresh.last_claim_epoch
+        assert fresh.last_claim_result == "prepare_failed"
+
     async def test_slot_reset_retry_preserves_unrelated_attention(self, db):
         await mktask(db, "t1", profile_id="worker")
         await db.set_task_meta("t1", "slot_reset_failure", {"reason": "old reset failure"})
