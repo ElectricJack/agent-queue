@@ -42,6 +42,7 @@
         "tests/test_agent_waits.py",
         "tests/test_wait_commands.py",
         "tests/test_wait_dispatch.py",
+        "tests/test_wait_graph.py",
         "tests/test_wait_holding.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_outcomes.py",
@@ -17832,6 +17833,25 @@
         "parametrize"
       ],
       "summary": "Authoritative source transitions write unconditional, transactional wait events."
+    },
+    "tests/test_wait_graph.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:3cdef87877891a366dd387d18ce4c59a65ce8c8e8fb782b37643dbc917580df5",
+      "imports": [
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.explain",
+        "src.waits.graph",
+        "src.waits.registry"
+      ],
+      "markers": [],
+      "summary": "Wait graph propagation, retraction, cycles and persisted explanations."
     },
     "tests/test_wait_holding.py": {
       "areas": [
