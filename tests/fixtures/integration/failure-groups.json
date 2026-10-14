@@ -1,0 +1,39 @@
+{
+  "head": "candidate-sha",
+  "checks": [
+    {
+      "id": 101, "name": "linux", "job": "ci", "platform": "linux",
+      "head_sha": "candidate-sha", "app": {"id": 15368},
+      "status": "completed", "conclusion": "failure",
+      "output": {"annotations": [
+        {"kind": "build", "path": "src/native/core.cpp", "message": "src/native/core.cpp:42: error: missing symbol 0x123abc"},
+        {"kind": "test", "path": "tests/native/test_core.py", "message": "AssertionError: compiler did not run"}
+      ]}
+    },
+    {
+      "id": 102, "name": "windows", "job": "ci", "platform": "windows",
+      "head_sha": "candidate-sha", "app": {"id": 15368},
+      "status": "completed", "conclusion": "failure"
+    },
+    {
+      "id": 103, "name": "lint", "head_sha": "candidate-sha", "app": {"id": 15368},
+      "status": "completed", "conclusion": "failure",
+      "output": {"annotations": [
+        {"kind": "other", "path": "src/shared.py", "message": "F401 unused import", "annotation_level": "failure"},
+        {"kind": "other", "path": "src/preexisting.py", "message": "F821 unknown name", "annotation_level": "failure"}
+      ]}
+    }
+  ],
+  "job_logs": [
+    {"check_id": 102, "records": [
+      {"kind": "test", "test_id": "test_a", "test_file": "tests/api/test_routes.py", "module": "src/api/routes.py", "stack_frames": [{"path": "src/api/service.py"}], "message": "AssertionError: expected 12 got 13 at 0xdeadbeef in /tmp/pytest-of-runner/pytest-123/data"},
+      {"kind": "test", "test_id": "test_b", "test_file": "tests/api/test_routes.py", "module": "src/api/routes.py", "message": "TypeError: route is unavailable"},
+      {"kind": "test", "test_file": "tests/db/test_query.py", "module": "src/db/query.py", "message": "AssertionError: query failed"}
+    ]}
+  ],
+  "members": [
+    {"task_id": "api", "source_base_sha": "E", "source_sha": "S-api", "files": ["tests/api/test_routes.py", "src/api/routes.py", "src/api/service.py", "src/shared.py"]},
+    {"task_id": "native", "source_base_sha": "E", "source_sha": "S-native", "files": ["src/native/core.cpp", "src/shared.py"]},
+    {"task_id": "db", "source_base_sha": "E", "source_sha": "S-db", "files": ["tests/db/test_query.py", "src/db/query.py"]}
+  ]
+}

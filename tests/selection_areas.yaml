@@ -391,6 +391,7 @@ areas:
   - id: integration-trains
     description: "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup, plus the end-to-end regression scenarios for incidents that needed a hand fix."
     match:
+      - tests/test_integration_failure_groups.py
       - tests/test_integration_size.py
       - tests/test_integration_state.py
       - tests/test_integration_service.py
