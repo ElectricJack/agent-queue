@@ -66,6 +66,7 @@ from src.database.tables import (
     task_session_attempts,
     task_workspace_requirements,
     tasks,
+    workspace_kinds,
     workspaces,
 )
 from src.models import AgentProfile, AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
@@ -490,6 +491,30 @@ def numeric_meta_value(column, *, default: str = "0"):
     )
 
 
+def pool_primary_kind():
+    """One repository kind per pool task; vault-only keeps the legacy default."""
+    requirements = task_workspace_requirements.alias("pool_primary_requirement")
+    return select(case(
+        (func.count() > 1, None),
+        else_=func.coalesce(func.min(requirements.c.kind_id), "project-repo"),
+    )).where(
+        requirements.c.task_id == tasks.c.id,
+        requirements.c.kind_id != "vault",
+    ).correlate(tasks).scalar_subquery()
+
+
+def pool_primary_kind_valid():
+    """Resolve the project override before checking its execution capabilities."""
+    kind = workspace_kinds.alias("pool_execution_kind")
+    return select(and_(kind.c.writable, kind.c.lockable, kind.c.is_git_repo,
+                       kind.c.mode.in_(("worktree", "exclusive-clone")))).where(
+        kind.c.id == pool_primary_kind(),
+        kind.c.project_id.in_((tasks.c.project_id, "__system__")),
+    ).order_by((kind.c.project_id == tasks.c.project_id).desc()).limit(1).correlate(
+        tasks
+    ).scalar_subquery().is_(True)
+
+
 def _claim_preparation_predicates():
     origin = task_branch_origins.alias("claim_stack_origin")
     repair = tasks.alias("claim_stack_repair")
@@ -510,10 +535,7 @@ def _claim_preparation_predicates():
             origin.c.stack_snapshot.op("?")("preparation_conflict"),
             ~repair_passed,
         )),
-        "workspace_requirement": ~exists(select(literal(1)).where(
-            task_workspace_requirements.c.task_id == tasks.c.id,
-            task_workspace_requirements.c.kind_id.notin_(("project-repo", "vault")),
-        )),
+        "workspace_requirement": pool_primary_kind_valid(),
         "claim_prepare_backoff": ~exists(select(literal(1)).where(
             task_metadata.c.task_id == tasks.c.id,
             task_metadata.c.key == PREPARE_BACKOFF_UNTIL_KEY,
@@ -812,6 +834,7 @@ class ClaimQueryMixin:
         hierarchy_mode: ProjectIntegrationMode | None = None,
         allowed_task_ids: set[str] | None = None,
         excluded_task_ids: set[str] | None = None,
+        workspace_kind: str = "project-repo",
     ) -> str | None:
         """Select the §10 frontier with FOR UPDATE SKIP LOCKED.
 
@@ -839,6 +862,7 @@ class ClaimQueryMixin:
                 .where(
                     _frontier_where(project_id, hierarchy_mode, router_ready=bool(router_ready)),
                     profile_ok,
+                    pool_primary_kind() == workspace_kind,
                 )
                 .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
                 .limit(1)
@@ -2348,7 +2372,9 @@ class ClaimQueryMixin:
         hierarchy_mode: ProjectIntegrationMode | None = None,
         pool_profiles: Mapping[str, AgentProfile] | None = None,
         include_repair_counts: bool = False,
-    ) -> dict[str | None, int] | dict[str | None, tuple[int, int]]:
+        by_workspace_kind: bool = False,
+    ) -> (dict[str | None, int] | dict[str | None, tuple[int, int]]
+          | dict[tuple[str | None, str], int] | dict[tuple[str | None, str], tuple[int, int]]):
         """Count structural work, restricted to verified development admission when supplied.
 
         *router_ready* counts only claimable work (:func:`route_claimable`),
@@ -2360,6 +2386,7 @@ class ClaimQueryMixin:
         cannot claim its task. Structural callers may omit this snapshot.
         With *include_repair_counts*, values are ``(ready, train_repairs)``;
         both counts use the same frontier and one database round trip.
+        With *by_workspace_kind*, keys are ``(profile_id, primary_kind)``.
         """
         if hierarchy_mode is None:
             from src.integration.delivery_observer import hierarchy_frontier_modes
@@ -2368,17 +2395,26 @@ class ClaimQueryMixin:
                 self, project_ids={project_id}
             )).get(project_id)
         columns = [tasks.c.profile_id, func.count()]
+        primary_kind = pool_primary_kind()
+        if by_workspace_kind:
+            columns.insert(1, primary_kind.label("workspace_kind"))
         if include_repair_counts:
             columns.append(func.count().filter(active_train_repair()))
         stmt = select(*columns).where(
             _frontier_where(project_id, hierarchy_mode, router_ready=router_ready),
         ).group_by(tasks.c.profile_id)
+        if by_workspace_kind:
+            stmt = stmt.group_by(primary_kind)
         if allowed_task_ids is not None:
             stmt = stmt.where(tasks.c.id.in_(allowed_task_ids))
         if pool_profiles is not None:
             stmt = stmt.where(_pool_profiles_predicate(pool_profiles))
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).fetchall()
+        if by_workspace_kind:
+            if include_repair_counts:
+                return {(pid, kind): (int(n), int(repairs)) for pid, kind, n, repairs in rows}
+            return {(pid, kind): int(n) for pid, kind, n in rows}
         if include_repair_counts:
             return {pid: (int(n), int(repairs)) for pid, n, repairs in rows}
         return {pid: int(n) for pid, n in rows}

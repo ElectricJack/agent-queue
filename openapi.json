@@ -13002,6 +13002,51 @@
         }
       }
     },
+    "/api/project/workspace-cutover": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+        "description": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+        "operationId": "workspace_cutover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceCutoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/workspace-doctor": {
       "post": {
         "tags": [
@@ -21389,6 +21434,18 @@
             ],
             "title": "Name",
             "description": "Workspace name (optional)"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled",
+            "description": "Enable admission (default true). Register a cutover target with false."
           },
           "kind_id": {
             "anyOf": [
@@ -77325,6 +77382,56 @@
           "task_id"
         ],
         "title": "WithheldTask"
+      },
+      "WorkspaceCutoverRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project owning both bases."
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id",
+            "description": "Current enabled base."
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id",
+            "description": "New disabled, idle base of the same kind."
+          },
+          "apply": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Apply",
+            "description": "Apply the preview (default false)."
+          },
+          "expected_proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Proof",
+            "description": "Exact SHA256 proof returned by preview."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "source_id",
+          "target_id"
+        ],
+        "title": "WorkspaceCutoverRequest"
       },
       "WorkspaceDoctorRequest": {
         "properties": {

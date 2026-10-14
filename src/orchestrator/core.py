@@ -3724,13 +3724,15 @@ class Orchestrator(
                 except Exception:
                     logger.warning("Existing workspace binding audit failed for %s", project.id)
             # Slot rows whose index >= cap are retired (§5).
-            cap = project.max_concurrent_agents or 0
+            from src.workspace_disable import kind_slot_cap
+
             for ws in workspaces:
                 if not ws.is_slot:
                     continue
                 if ws.locked_by_task_id or ws.locked_by_agent_id:
                     continue  # in use; not a candidate
-                if (ws.slot_index or 0) < cap:
+                kind = await self.db.resolve_workspace_kind(project.id, ws.kind_id or "project-repo")
+                if (ws.slot_index or 0) < kind_slot_cap(project.max_concurrent_agents or 0, kind):
                     continue  # still within cap; kept as inventory
                 try:
                     await mgr.reap_slot(ws, reason="retired")
@@ -3744,7 +3746,7 @@ class Orchestrator(
             from src.models import KIND_MODE_WORKTREE
 
             for ws in workspaces:
-                if ws.is_slot:
+                if ws.is_slot or not ws.enabled:
                     continue
                 if ws.kind_id is None:
                     continue

@@ -18016,10 +18016,11 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:9cbf9c09ff2a7f4de572a1c5fca3f25e3fd2f6b251f5b877eeb21aa4b1f2799e",
+      "digest": "sha256:b2b97016207a11254762333e1a7a4a235d5569888fd7383c3a33f476149fb603",
       "imports": [
         "src.commands.handler",
         "src.config",
+        "src.database.tables",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.task_checkpoint",
@@ -18027,7 +18028,9 @@
         "src.runtimes.base",
         "src.sessions.proctable"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "add_workspace kind_id parameter + list_workspace_kinds. Spec §10."
     },
     "tests/test_workspace_control_file_exclude.py": {
@@ -18052,11 +18055,15 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:7e7eca27b807b986d0fef4596464240351f842f20300869779d886bd579b5ece",
+      "digest": "sha256:1f2efec6d337e53dd24295ad6a1e9c472ac5e5bb6f32c0d87edae3b5faa675e2",
       "imports": [
-        "src.profiles.workspace_kind_parser"
+        "src.models",
+        "src.profiles.workspace_kind_parser",
+        "src.profiles.workspace_kind_registry"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "WorkspaceKind markdown frontmatter parser. See spec §4.1."
     },
     "tests/test_workspace_kind_registry.py": {

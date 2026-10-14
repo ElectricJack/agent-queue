@@ -1926,6 +1926,8 @@ from .wait_register_request import WaitRegisterRequest
 from .wait_register_response_422 import WaitRegisterResponse422
 from .wait_response import WaitResponse
 from .withheld_task import WithheldTask
+from .workspace_cutover_request import WorkspaceCutoverRequest
+from .workspace_cutover_response_422 import WorkspaceCutoverResponse422
 from .workspace_doctor_request import WorkspaceDoctorRequest
 from .workspace_doctor_response_422 import WorkspaceDoctorResponse422
 from .workspace_reap_request import WorkspaceReapRequest
@@ -3851,6 +3853,8 @@ __all__ = (
     "WaitRegisterResponse422",
     "WaitResponse",
     "WithheldTask",
+    "WorkspaceCutoverRequest",
+    "WorkspaceCutoverResponse422",
     "WorkspaceDoctorRequest",
     "WorkspaceDoctorResponse422",
     "WorkspaceReapRequest",

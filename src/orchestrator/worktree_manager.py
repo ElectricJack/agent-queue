@@ -1443,7 +1443,7 @@ class WorktreeSlotManager:
         unknowable liveness, or removal failure).
         """
         from sqlalchemy import select
-        from src.database.tables import integration_branch_owners, projects, sessions, workspaces
+        from src.database.tables import integration_branch_owners, projects, sessions, workspace_kinds, workspaces
 
         if not hasattr(self.db, "_engine"):
             return False  # retirement needs transactional registered ownership proof
@@ -1453,6 +1453,13 @@ class WorktreeSlotManager:
                 cap = await conn.scalar(select(projects.c.max_concurrent_agents).where(
                     projects.c.id == slot_ws.project_id,
                 ).with_for_update(read=True))
+                kind_row = (await conn.execute(select(workspace_kinds).where(
+                    workspace_kinds.c.project_id.in_((slot_ws.project_id, "__system__")),
+                    workspace_kinds.c.id == (slot_ws.kind_id or "project-repo"),
+                ).order_by((workspace_kinds.c.project_id == slot_ws.project_id).desc())
+                    .limit(1).with_for_update(read=True))).mappings().one_or_none()
+                if cap is not None and kind_row is not None and kind_row["max_slots"] is not None:
+                    cap = min(cap, kind_row["max_slots"])
                 if cap is None or slot_ws.slot_index is None or slot_ws.slot_index < cap:
                     return False
                 row = (await conn.execute(select(workspaces).where(
@@ -1479,7 +1486,8 @@ class WorktreeSlotManager:
                     return False
                 base_ws = await self._base_of(slot_ws)
                 sentinel = self.read_sentinel(slot_dir)
-                if (base_ws is None or base_ws.project_id != slot_ws.project_id
+                if (base_ws is None or not base_ws.enabled
+                        or base_ws.project_id != slot_ws.project_id
                         or sentinel is None or sentinel.workspace_id != slot_ws.id
                         or sentinel.base_workspace_id != base_ws.id
                         or sentinel.project_id != slot_ws.project_id

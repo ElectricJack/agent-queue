@@ -751,6 +751,8 @@ class WorkspaceKind:
     # Shell commands run once inside a freshly created slot, and again when
     # the list changes (worktree-execution §3.6).  Operator-authored config.
     worktree_setup: list[str] = field(default_factory=list)
+    # Optional per-kind bound; the project concurrency limit still applies.
+    max_slots: int | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
 

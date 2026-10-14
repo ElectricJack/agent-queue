@@ -736,6 +736,44 @@ class ClaimCommandsMixin:
             elif kind != "slot":
                 return self._simple(ClaimResult.OUT_OF_SCOPE, kind, row, cap)
             else:
+                # The launch fixes the session's filesystem for its lifetime.
+                # A disabled/retired slot finishes its held task, then drains.
+                from sqlalchemy import select
+                from src.database.tables import workspaces
+
+                workspace_binding = (await conn.execute(select(
+                    workspaces.c.kind_id, workspaces.c.enabled,
+                    workspaces.c.slot_index, workspaces.c.base_workspace_id,
+                ).where(
+                    workspaces.c.project_id == session.project_id,
+                    workspaces.c.workspace_path == row.work_dir,
+                ))).one_or_none()
+                if workspace_binding is None:
+                    await self.db.release_claim_slot(conn, session.id)
+                    return self._simple(
+                        ClaimResult.PREPARE_FAILED, "workspace binding missing at session work_dir", row, cap
+                    )
+                retired = not workspace_binding.enabled
+                if workspace_binding.slot_index is not None:
+                    from src.database.tables import workspace_kinds
+
+                    limit = await conn.scalar(select(workspace_kinds.c.max_slots).where(
+                        workspace_kinds.c.project_id.in_((session.project_id, "__system__")),
+                        workspace_kinds.c.id == (workspace_binding.kind_id or "project-repo"),
+                    ).order_by((workspace_kinds.c.project_id == session.project_id).desc()).limit(1))
+                    cap_slots = max(1, project.max_concurrent_agents or 1)
+                    if limit is not None:
+                        cap_slots = min(cap_slots, limit)
+                    base_enabled = await conn.scalar(select(workspaces.c.enabled).where(
+                        workspaces.c.id == workspace_binding.base_workspace_id,
+                    ))
+                    retired = retired or base_enabled is False or workspace_binding.slot_index >= cap_slots
+                if retired:
+                    await self.db.release_claim_slot(conn, session.id)
+                    await self.db.update_session(session.id, conn=conn, desired_state="stopped")
+                    return self._simple(
+                        ClaimResult.DRAIN_REQUESTED, "workspace disabled or missing", row, cap
+                    )
                 stale_identity = self._stale_git_identity(session, project)
                 if stale_identity is not None:
                     # A new claim never inherits a stale or foreign identity:
@@ -786,6 +824,7 @@ class ClaimCommandsMixin:
                     operator=routing[3] if routing else None,
                     allowed_task_ids=admission.allowed if admission is not None else None,
                     excluded_task_ids=withheld_source_repairs or None,
+                    workspace_kind=workspace_binding.kind_id or "project-repo",
                 )
                 task = None
                 if tid is not None and admission is not None and not await admission.matches(
