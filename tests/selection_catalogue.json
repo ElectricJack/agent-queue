@@ -40,7 +40,9 @@
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
-        "tests/test_wait_migration.py"
+        "tests/test_wait_dispatch.py",
+        "tests/test_wait_migration.py",
+        "tests/test_wait_queries.py"
       ]
     },
     "api-contract": {
@@ -7845,7 +7847,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:f9c6f7d296addf4dd8960bd50038812773b1913e99d7feed8bb7b3bffd6b9048",
+      "digest": "sha256:b55156452cf1bbcb023c022571511c90200c956a46626b3b901cb279f16979f5",
       "imports": [
         "src.database.tables",
         "src.integration.attestation",
@@ -7858,7 +7860,8 @@
         "src.integration.promotion_contracts",
         "src.integration.provenance",
         "src.integration.train",
-        "src.integration.train_sources"
+        "src.integration.train_sources",
+        "src.waits.sources"
       ],
       "markers": [
         "parametrize"
@@ -17754,6 +17757,23 @@
       ],
       "summary": "Tests for the internal vibecop plugin."
     },
+    "tests/test_wait_dispatch.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b7ae4f94dd426c2c4327136b04448e46f4302e7b39cd672478e48fc37d251c27",
+      "imports": [
+        "src.database.tables",
+        "src.integration.checks",
+        "src.models",
+        "src.orchestrator.core",
+        "src.scheduler",
+        "src.waits.sources"
+      ],
+      "markers": [],
+      "summary": "Authoritative source transitions write unconditional, transactional wait events."
+    },
     "tests/test_wait_migration.py": {
       "areas": [
         "agent-waits"
@@ -17769,6 +17789,22 @@
         "parametrize"
       ],
       "summary": "Verified-wait DDL on fresh and pre-v2 disposable PostgreSQL schemas."
+    },
+    "tests/test_wait_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:61b0653444f46f0063834dc7d6577a16a2e2f30e04bcb8b57ad2ee08838b73b1",
+      "imports": [
+        "src.database.tables",
+        "src.models",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Source outbox atomicity, commit ordering, watermark and safe retention."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [

@@ -70,6 +70,16 @@ class ProviderAvailabilityQueryMixin:
         async with self._engine.begin() as conn:
             await conn.execute(stmt)
             if transition is not None:
+                from src.waits.sources import record_source_event
+
+                await record_source_event(
+                    conn, source_key=f"resource:provider:{values['provider']}", generation=0,
+                    revision=str(transition["generation"]),
+                    outcome_ref=f"provider:{values['provider']}",
+                    occurred_at=float(transition["at"]),
+                    payload={"provider": values["provider"], "state": transition["to_state"],
+                             "generation": int(transition["generation"])},
+                )
                 await conn.execute(
                     insert(provider_availability_transitions).values(
                         provider=transition["provider"],

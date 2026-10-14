@@ -8771,7 +8771,10 @@
     "src/commands/operator_authority.py::PROJECT_SETUP_FIELDS": "edit_project argument-name allowlist for operator workers; the charged edit_project handler validates and writes every field. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
-    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged."
+    "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
+    "src/database/tables.py::wait_source_events": "Generic wait outbox for all source kinds. Payloads are evidence hints; consumers re-observe authoritative state, never replay integration refs or lifecycle from this table.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source evidence bridge for batch transitions. It writes only the universal wait outbox; integration policy and authoritative batch state remain in src/integration.",
+    "src/waits/sources.py::execute_batch_mutation": "Transaction-preserving bridge from existing batch writes to the generic wait source outbox; contains no integration policy, ref replay or duplicate authority."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -13034,10 +13037,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/commands/integration_commands.py::IntegrationCommandsMixin._repair_integration_source_ancestry::9eab08d21f786b378f964334010c8a4823b27a4418b6da4ed8f1f302331de9ea": {
-      "line": 906,
+      "line": 851,
       "owner": "IntegrationCommandsMixin._repair_integration_source_ancestry",
       "call": "log_event",
-      "owner_fingerprint": "091ec47c285f9c9d0eb6956078f56d581a0c6309cb0604104db8f335681d8a37",
+      "owner_fingerprint": "f4c9187dca25662dc9b113cb61730807ca67f8f3f9d236a6f90865a817c4c322",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -13352,7 +13355,7 @@
       "line": 308,
       "owner": "AgentQueryMixin._assign_task_to_agent",
       "call": "insert",
-      "owner_fingerprint": "bcb2fe585538f3ba5f66ad45081c0730a91e5de130533c6e0907ee98898a5325",
+      "owner_fingerprint": "0e90b5c5bad294004fa51803bca1d9d30da5bdf30c6670128d49736f269c61c7",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
@@ -13448,10 +13451,10 @@
       "reason": "Legacy subject ref/phase replay journal must disappear at s4_modules."
     },
     "src/database/queries/lifecycle_queries.py::LifecycleQueryMixin.flag_stale_open::e8a2b4864b5a13dbdbed6cc88cc2620503b9e9e167c4c21405eb953fbd12e150": {
-      "line": 167,
+      "line": 168,
       "owner": "LifecycleQueryMixin.flag_stale_open",
       "call": "log_event",
-      "owner_fingerprint": "4dc6402750e5adf9b2c4022a3ed495b66b0746b3edfaf351493b1b66e42ca15a",
+      "owner_fingerprint": "7d988f7d42574bb39578dd3d99f3f334364ec20e7422df05de314651e7140760",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary stale-open advisory, deduplicated supervisor notice and audit event; READY episode identity is rechecked before notification. No ref replay or delivery authority."
@@ -13502,10 +13505,10 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._apply_transition::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1727,
+      "line": 1733,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "2558f39e8c2aa7c967b1907695b71b4704c2ced83295af011a6b518a14c3760e",
+      "owner_fingerprint": "fc1f232c48ab821d4bc5a1d4f70e520f6cecc43e72b9a12ae5e7b51dfd6bdd1f",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle metadata cleanup, guarded retry routing and accepted-close identity. Explicit restart/reopen supersedes the previous supervisor recovery incident and archives its notification in the READY-write transaction, preserving diagnosis and budget. Ordinary status projection retains holds. Integration status, branch reservations and ref replay authority remain in dedicated records."
@@ -14834,10 +14837,10 @@
       "reason": "Clearing the exact holder from the task's own claimed_by_session record when the release takes that claim back; the claim itself, not a hold, ref replay or a duplicate lifecycle write."
     },
     "src/integration/batches.py::BatchStore.set_intent::6d729f7a8f24a4746d37ecea7871dfd209ea8cce995ce7499c8290475b86f660": {
-      "line": 490,
+      "line": 491,
       "owner": "BatchStore.set_intent",
       "call": "log_event",
-      "owner_fingerprint": "c28cfb2c4d6b9602d5625d34c43b813cc458291b509d2eae4e299a0420ddba30",
+      "owner_fingerprint": "fe442b147c2c1c47d3cb73fa8ec908047163c4128f91de9f45fba45b54c12e26",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Operator audit of batch intent with principal and reason. Intent and terminal abort projection remain on the batch row; this event is never replayed and carries no ref-update lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
@@ -14933,19 +14936,19 @@
       "reason": "Associates an isolated conflict repair with its preserved dependent for adoption. Claim-time diagnostic metadata mirrors the origin preparation hold and names exact inputs and paths; it cannot authorize publication or replay refs. Git ancestry, completion identity and current branch fences remain authoritative. Re-reviewed after moving task-description wording to read-only vault templates: the metadata write, locking and admission remain unchanged, with no new ref replay or duplicate lifecycle authority."
     },
     "src/integration/batches.py::BatchStore.eject::02dbb6e454b19e80a1f07be2b10de35299d826ab592437d231735f74ef0f522a": {
-      "line": 388,
+      "line": 389,
       "owner": "BatchStore.eject",
       "call": "log_event",
-      "owner_fingerprint": "3fdef6e7c66ba1aacf96188533b0735d913985a5423fd152762ab544270da006",
+      "owner_fingerprint": "82d2471ea5cb12b7874011a25f73751fb38169f4d0220aef68eef863c0e43022",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of an explicit batch ejection with principal and reason. Admission reads the separate release instruction, not this event; no ref replay or duplicated delivery lifecycle. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
     },
     "src/integration/batches.py::BatchStore.supersede::71ad4246d258b2576f1bae229c1e92b1ae60dbae8a616cd7a77cd72c8e6b53f0": {
-      "line": 440,
+      "line": 441,
       "owner": "BatchStore.supersede",
       "call": "log_event",
-      "owner_fingerprint": "06a16c2d7e881ba72610c415b04fc8d005ff1a749971a9b42aa5847cf80e9e87",
+      "owner_fingerprint": "600ea1102b39843c3053a16e935ac4059b539c2c79170169f0d70fb9ee47bff0",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Audit of an obsolete batch superseded after prerequisite refresh. The batch-owned ejection record authorizes input release; this event never replays refs or asserts delivery. Re-reviewed at the branch-retirement landing: the same transaction now queues an ordinary branch_retirements request; no ref replay or duplicate lifecycle."
@@ -14960,10 +14963,10 @@
       "reason": "Audit of a requested epic refresh with principal and observed train state. Frozen batch inputs and exact Git/check proofs remain authoritative; this event cannot replay refs or authorize delivery."
     },
     "src/integration/promotion_steps.py::settle_promotion::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 1754,
+      "line": 1769,
       "owner": "settle_promotion",
       "call": "insert",
-      "owner_fingerprint": "9c8c038d66d648442433b02dc9d36dd0a5efdcf2911deec07ae0b0780a96f1bd",
+      "owner_fingerprint": "85a65400a4a684c7f6fae5adb44701518265a6ab38f66e2df6d5631427645db2",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Write-once result of a promotion task (source SHA, tag OID and batch id), separate from the immutable request intent. Git ancestry and annotated-tag read-back are always reobserved; this result never authorizes ref replay or substitutes for delivery truth."
@@ -15095,10 +15098,10 @@
       "reason": "Explicit legacy recovery appends the existing subject action journal while closing an unfrozen idle reconciler subject. This duplicate legacy lifecycle writer remains subject to retirement; it is not used by active Git-first train or promotion execution and must disappear with the legacy subject journal."
     },
     "src/integration/train_sources.py::BackmergeAdmission.author::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
-      "line": 532,
+      "line": 552,
       "owner": "BackmergeAdmission.author",
       "call": "insert",
-      "owner_fingerprint": "ec1cde13c4fd4b4f526e4b34eb7db6c8be282c505e0502763c641f59df56ec6e",
+      "owner_fingerprint": "3c8e1d53a3ce0c19e26f22fab650384d9408088815a1ab0fea84b99ea61633ab",
       "integration_signal": true,
       "disposition": "intent",
       "reason": "Pins an owed backmerge source/base/origin/target and its ordinary source task/completion identity; disabled authorship records only debt and older unfrozen inputs may be superseded. These declarative inputs do not assert remote publication or delivery: authorship, source admission and settlement independently reobserve exact Git refs, ancestry, frozen membership and PR evidence. Private-head creation uses the full forty-zero absent-ref lease; this transport correction adds no metadata or ref replay authority."
@@ -15131,10 +15134,10 @@
       "reason": "Explicit LOCAL abandonment appends a cancelled revision to the existing legacy development.operation lifecycle journal after exact event/hash/full-manifest and inactive-authority checks. It preserves prior revisions and makes no delivery claim. This compatibility writer retires with the legacy journal and receives no final-phase allowance."
     },
     "src/integration/root_pr_recovery.py::recover_root_pr_checks::9838abf578dc8c2a386d1d4a9012e2aabe1e175732dd1d51dbe41a2ef7cfc4e9": {
-      "line": 162,
+      "line": 163,
       "owner": "recover_root_pr_checks",
       "call": "log_event",
-      "owner_fingerprint": "4e4f44de3b9395140b13705c7056ce991551ab7c550940c6c4fb84b599584310",
+      "owner_fingerprint": "b55d6bcc3ed49833528a5217803f9b270a623146f71e60f2e29a83478799bc0f",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Transactional audit of a completed root reopened after authenticated exact-head required-check failure and locked completion, origin and policy revalidation. Records the failed source SHA, completion identity and reopen attempt alongside ordinary feedback and bounded recovery accounting; no ref replay instructions, publication authority or duplicate delivery lifecycle. Fresh PR and candidate checks remain required. Current Git delivery evidence is observed outside the transaction and revalidated by the guarded lifecycle writer; the storage disposition remains ordinary."
@@ -16167,7 +16170,15 @@
     "src/portable_setup.py::portable_url": "Generic repository URL sanitizer strips credentials and machine paths; integration-specific project adapters are charged independently.",
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
-    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority."
+    "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
+    "src/waits/sources.py::execute_batch_mutation": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::insert_message_with_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_task_transition": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
+    "src/waits/sources.py::record_dependency_change": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
+    "src/waits/sources.py::record_dependency_source_change": "Generic dependency observation fanout on upstream evidence changes; integration callers remain charged independently.",
+    "src/waits/sources.py::execute_task_status_mutation": "Generic task status outbox bridge for guarded bulk/legacy writes; integration-specific callers retain their ownership."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

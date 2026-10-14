@@ -7,6 +7,7 @@ import logging
 import time
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from src.waits.sources import insert_message_with_source_event
 from src.database.tables import (
     agent_waits,
     jobs,
@@ -119,7 +120,7 @@ class JobQueriesMixin:
                     if job["owner_kind"] == "task" and owner_exists and not waiting:
                         if not messaging_enabled:
                             continue
-                        await conn.execute(
+                        await insert_message_with_source_event(conn,
                             pg_insert(messages)
                             .values(
                                 id=intent["key"],
@@ -365,6 +366,13 @@ class JobQueriesMixin:
                 .one()
             )
             if state in TERMINAL:
+                from src.waits.sources import record_source_event
+
+                await record_source_event(
+                    conn, source_key=f"job:{job_id}", generation=0, revision=str(version + 1),
+                    outcome_ref=f"job:{job_id}", occurred_at=fields["ended_at"],
+                    payload={"job_id": job_id, "state": state, "task_id": row["task_id"]},
+                )
                 await conn.execute(
                     pg_insert(job_outbox)
                     .values(

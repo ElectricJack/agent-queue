@@ -587,6 +587,9 @@ class PoolsMixin:
         now = time.time()
         await self._announce_bounds_rescoped(measurement)
         actions, self._pool_surplus_since = self._size_pool_actions(measurement, now)
+        from src.waits.sources import record_pool_observations
+
+        await record_pool_observations(self.db, measurement, now)
         starts, drains, starvations = place_pool_actions(
             actions=actions, candidates=measurement.candidates
         )

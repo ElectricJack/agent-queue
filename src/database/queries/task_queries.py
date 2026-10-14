@@ -732,6 +732,9 @@ class TaskQueryMixin:
                 stmt = stmt.where(_not_manually_paused())
             result = await conn.execute(stmt.values(**values))
             if result.rowcount == 1 and previous_status is not None:
+                from src.waits.sources import record_task_transition
+
+                await record_task_transition(conn, task_id, previous_status, values["status"])
                 await self._record_recovery_failure_generation_on(
                     conn, task_id, TaskStatus(previous_status), TaskStatus(values["status"]),
                     values["updated_at"],
@@ -1643,6 +1646,9 @@ class TaskQueryMixin:
                 # claim fence).  Nothing was written, so there is nothing to
                 # project or announce.
                 return result
+            from src.waits.sources import record_task_transition
+
+            await record_task_transition(conn, task_id, current_status.value, new_status.value)
             await self._record_recovery_failure_generation_on(
                 conn, task_id, current_status, new_status, values["updated_at"],
             )

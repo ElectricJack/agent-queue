@@ -25,6 +25,7 @@ import uuid
 from sqlalchemy import and_, case, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.tables import messages, projects, sessions, tasks
 from src.models import Message
 
@@ -260,7 +261,7 @@ class MessageQueriesMixin:
             msg.to_kind, msg.to_id = await self._supervisor_recipient(
                 conn, msg.to_kind, msg.to_id, msg.project_id,
             )
-            result = await conn.execute(
+            result = await insert_message_with_source_event(conn,
                 insert(messages).values(
                     id=msg.id,
                     project_id=msg.project_id,
@@ -380,7 +381,7 @@ class MessageQueriesMixin:
             if backlog is None or backlog["total"] <= GLOBAL_SUPERVISOR_BACKLOG_THRESHOLD:
                 return None
             oldest, count = backlog["id"], backlog["total"]
-            result = await conn.execute(pg_insert(messages).values(
+            result = await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, f'aq:global-backlog:{oldest}').hex}",
                 project_id=None, from_kind="system", from_id="delivery-engine",
                 to_kind="user", to_id="dashboard", priority=50,
@@ -544,7 +545,7 @@ class MessageQueriesMixin:
                 # Share the threshold alert's identity: a broken global mailbox
                 # cannot generate one user alert for every unread source row.
                 alert_identity = f"aq:global-backlog:{backlog['id']}"
-            result = await conn.execute(pg_insert(messages).values(
+            result = await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id=f"msg-{uuid.uuid5(uuid.NAMESPACE_URL, alert_identity).hex}",
                 project_id=source["project_id"],
                 from_kind="system", from_id="delivery-engine",
@@ -653,7 +654,7 @@ class MessageQueriesMixin:
                 _competing_delivery(request, attribution_window)
             )).first() is not None:
                 return None
-            result = await conn.execute(
+            result = await insert_message_with_source_event(conn,
                 insert(messages).values(
                     id=reply.id,
                     project_id=reply.project_id,

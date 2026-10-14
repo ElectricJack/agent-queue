@@ -125,6 +125,16 @@ class TaskCommentQueriesMixin:
                 select(tasks.c.project_id).where(tasks.c.id == task_id)
             )).scalar_one()
             await conn.execute(insert(task_comments).values(**comment, project_id=project_id))
+            if author_kind == "user":
+                from src.waits.sources import record_source_event
+
+                await record_source_event(
+                    conn, source_key=f"task_comment:{task_id}", generation=0,
+                    revision=comment["id"], outcome_ref=f"comment:{comment['id']}",
+                    occurred_at=comment["created_at"],
+                    payload={"task_id": task_id, "comment_id": comment["id"],
+                             "project_id": project_id, "author_kind": author_kind},
+                )
         if conn is not None:
             await write(conn)
         else:

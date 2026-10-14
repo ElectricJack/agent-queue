@@ -34,6 +34,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.config import PENDING_EVENT_OVERFLOW_POLICIES
+from src.waits.sources import record_playbook_snapshot
+
 from src.database.tables import (
     archived_tasks,
     playbook_artifacts,
@@ -564,6 +566,7 @@ class PlaybookRunQueryMixin:
                 raise SnapshotVersionConflict(
                     snapshot.run_id, expected, int(current["snapshot_version"])
                 )
+            await record_playbook_snapshot(conn, advanced, receipt)
             try:
                 await conn.execute(insert(playbook_step_receipts).values(**_receipt_row(receipt)))
             except IntegrityError as exc:
@@ -711,6 +714,7 @@ class PlaybookRunQueryMixin:
                 raise SnapshotVersionConflict(
                     run_id, expected_version, int(row["snapshot_version"])
                 )
+            await record_playbook_snapshot(conn, advanced)
             # A paused run owns active durable waits.  Cancelling it directly
             # must retire those waits before this transaction commits, or a
             # later event can claim a terminal run after a restart.

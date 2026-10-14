@@ -4124,6 +4124,12 @@ class Orchestrator(
         previous = data.get("previous_config")
         previous_aspect = getattr(getattr(previous, "graph_layout", None), "row_aspect", None)
         current_aspect = getattr(getattr(config, "graph_layout", None), "row_aspect", None)
+        await self.db.wait_source_commit(
+            source_key="resource:config", generation=0,
+            revision=data.setdefault("source_revision", uuid.uuid4().hex),
+            outcome_ref="config:reload",
+            payload={"changed_sections": list(data.get("changed_sections", []))},
+        )
         self.config = config
         if self._config_watcher is not None:
             self._config_watcher._poll_interval = config.scheduling.config_poll_interval_seconds
