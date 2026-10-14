@@ -835,7 +835,7 @@ class ClaimQueryMixin:
                     _frontier_where(project_id, hierarchy_mode, router_ready=bool(router_ready)),
                     profile_ok,
                 )
-                .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
+                .order_by(tasks.c.effective_priority.asc(), tasks.c.created_at.asc())
                 .limit(1)
             )
             if allowed_task_ids is not None:
