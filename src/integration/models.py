@@ -152,6 +152,9 @@ def validate_policy_producers(raw_policy: Any) -> None:
 class RepairPolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Playbook-owned policy for task-free repair; legacy task repairs ignore these.
+    split_attributed: bool = True
+    deferred_revisit_seconds: int = Field(default=300, gt=0)
     primary_seconds: int = Field(default=1800, gt=0)
     primary_attempts: int = Field(default=3, gt=0)
     debug_seconds: int = Field(default=3600, gt=0)

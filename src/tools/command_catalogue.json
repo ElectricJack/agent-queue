@@ -9303,6 +9303,25 @@
       }
     },
     {
+      "name": "integration_batch_fix",
+      "description": "Inspect or push the batch branch bound to this task-free fixer session.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "status",
+              "push",
+              "rebind"
+            ],
+            "default": "status"
+          }
+        }
+      }
+    },
+    {
       "name": "collaboration_create",
       "description": "Create a bounded collaboration thread between 2 to 4 tasks of one project and invite each once. Operator or supervisor only; replays on idempotency_key.",
       "input_schema": {
@@ -20371,6 +20390,7 @@
     "graph": "Server-side spatial task-graph layout \u2014 synchronous rebuild and tidy jobs"
   },
   "tool_categories": {
+    "integration_batch_fix": "integration",
     "operator_execute": "operator",
     "operator_preflight": "operator",
     "policy_export": "policy",

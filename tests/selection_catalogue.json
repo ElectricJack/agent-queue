@@ -641,6 +641,8 @@
         "tests/test_integration_contracts.py",
         "tests/test_integration_cutover.py",
         "tests/test_integration_dispatch_waits.py",
+        "tests/test_integration_failure_groups.py",
+        "tests/test_integration_fixers.py",
         "tests/test_integration_git_truth.py",
         "tests/test_integration_gitops.py",
         "tests/test_integration_hierarchy.py",
@@ -8904,6 +8906,21 @@
       ],
       "summary": "Reduced parent readiness over real Git and ordinary PostgreSQL task inputs."
     },
+    "tests/test_integration_failure_groups.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:b31f435b155b73778f7257ce477e23e02648efdce2f0f62f934f82abd6aa8508",
+      "imports": [
+        "src.integration.failure_groups",
+        "src.integration.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Recorded red-run normalization, build precedence and frozen-diff attribution."
+    },
     "tests/test_integration_finished_owners.py": {
       "areas": [
         "integration-ownership"
@@ -8923,6 +8940,40 @@
         "parametrize"
       ],
       "summary": "``integration.finished_branch_owners`` — owner rows a finished task never let go."
+    },
+    "tests/test_integration_fixers.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:60f6e679d87933dcb7d4825f3d2da09961ae16a996612b918d87a487e0ab9707",
+      "imports": [
+        "src.api.auth",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.git.github_contracts",
+        "src.git.manager",
+        "src.integration.batches",
+        "src.integration.fixer_batches",
+        "src.integration.fixer_runtime",
+        "src.integration.fixers",
+        "src.integration.gitops",
+        "src.integration.lock",
+        "src.integration.models",
+        "src.integration.train",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.harness_parser",
+        "src.sessions.harness_registry",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Task-free in-place repair survives replay, budget exhaustion and green."
     },
     "tests/test_integration_git_truth.py": {
       "areas": [
@@ -9672,13 +9723,11 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7621dca9251d58b0557d597a4d39e251073e6e38dfaed75c52ccfcdca549b450",
+      "digest": "sha256:bb68dbf8253cd0f4fd59552d7451938e503b9623feb04e1d6eff8cfd5f602469",
       "imports": [
         "src.database.tables",
-        "src.git.manager",
         "src.integration.migration_heads",
         "src.integration.models",
-        "src.integration.source_ci",
         "src.models"
       ],
       "markers": [

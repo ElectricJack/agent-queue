@@ -34,6 +34,15 @@ def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
 
 
+@integration.command("batch-fix")
+@click.option("--action", type=click.Choice(["status", "push", "rebind"]), default="status")
+@click.pass_context
+@_handle_errors
+def integration_batch_fix(ctx, action):
+    """Inspect or publish the batch bound to this fixer session."""
+    _execute(ctx, "integration_batch_fix", {"action": action})
+
+
 @integration.command("supersede-completion")
 @click.argument("task_id")
 @click.option("--project", "project_id", required=True)

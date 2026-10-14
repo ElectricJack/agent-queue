@@ -107,6 +107,7 @@ EXPECTED_AGENT_COMMANDS = {
     # Mandatory routing §7: a worker re-routes a task it filed.
     "task_route",
     "integration_status",
+    "integration_batch_fix",
     # Promotion validation and cached history reads are pinned to the worker's project.
     "promote_schema",
     "promote_validate",
@@ -380,6 +381,14 @@ class TestCheckCommandScope:
 
     def test_agent_command_set_contents(self):
         assert set(AGENT_COMMAND_SET) == EXPECTED_AGENT_COMMANDS
+
+    def test_batch_fixer_is_session_scoped_without_a_task(self):
+        fixer = RequestScope(kind="session", session_id="fixer", project_id="p1")
+        args = {"action": "push"}
+        assert check_command_scope("integration_batch_fix", args, fixer) is None
+        assert args["session_id"] == "fixer" and args["project_id"] == "p1"
+        for foreign in ({"session_id": "other"}, {"project_id": "p2"}):
+            assert "mismatch" in check_command_scope("integration_batch_fix", foreign, fixer)
 
     def test_reparent_task_names_a_task_other_than_the_held_one(self):
         """The moved task is a worker filing, never the held task itself.

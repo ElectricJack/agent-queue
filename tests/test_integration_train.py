@@ -1992,3 +1992,25 @@ async def test_event_during_visit_survives_stale_refusal_backoff():
     assert (await runtime.tick())["started"]
     await runtime.drain()
     assert len(calls) == 3
+
+
+async def test_deferred_epic_revisits_when_due_without_waking_a_fixer():
+    from src.integration.train import TrainVisit
+
+    epic = TrainTarget("p", "r", "refs/heads/epic", "epic")
+    targets = Targets(epic)
+    targets.deferred_revisits = {epic.key: 400.0}
+    runtime = train(targets, Batches(), {}, event_driven=True)
+    now = [100.0]
+    runtime.clock = lambda: now[0]
+    runtime.visit = AsyncMock(return_value=TrainVisit(epic, "idle"))
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    now[0] = 399
+    assert not (await runtime.tick())["started"]
+    now[0] = 400
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    targets.deferred_revisits[epic.key] = 700.0
+    assert not (await runtime.tick())["started"]
+    assert runtime.visit.await_count == 2

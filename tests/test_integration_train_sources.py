@@ -1071,6 +1071,24 @@ async def test_targets_follow_mode_routing_and_open_batches(world):
     assert await DatabaseTargets(db).targets(time.time()) == []
 
 
+async def test_deferred_target_discovery_retains_finite_revisit(world):
+    source = await completed(world, "deferred-source")
+    batch = Batch("deferred", "p", "r", "refs/heads/aq/deferred", created_at=1.0)
+    await BatchStore(world.db).freeze(batch, (
+        BatchMember("deferred-source", source, source),
+    ), trees={"deferred-source": tree(world, source)})
+    async with world.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == batch.id,
+        ).values(intent="aborted", lifecycle="aborted", cleanup_state="retained",
+                 fixer_queue={"status": "deferred", "revisit_at": 400.0}))
+    discovery = DatabaseTargets(world.db)
+    targets = await discovery.targets(100.0)
+    key = ("p", "r", batch.target_ref)
+    assert key in {target.key for target in targets}
+    assert discovery.deferred_revisits == {key: 400.0}
+
+
 @pytest.mark.parametrize("status,open_batch", [
     (TaskStatus.COMPLETED, False), (TaskStatus.IN_PROGRESS, False),
     (TaskStatus.COMPLETED, True),

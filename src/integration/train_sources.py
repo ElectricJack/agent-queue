@@ -386,10 +386,12 @@ class DatabaseTargets:
         self.probe_timeout_seconds = probe_timeout_seconds
         self.flow_problems = flow_problems
         self.retired_targets: set[tuple[str, str, str]] = set()
+        self.deferred_revisits: dict[tuple[str, str, str], float] = {}
 
     async def targets(self, now: float) -> list[TrainTarget]:
         found: dict[tuple[str, str, str], TrainTarget] = {}
         self.retired_targets.clear()
+        self.deferred_revisits.clear()
         async with self.db._engine.connect() as conn:
             rows = (await conn.execute(
                 select(projects.c.id, projects.c.hierarchical_integration_mode,
@@ -430,6 +432,18 @@ class DatabaseTargets:
             epics = await _epic_branches_on(conn, pending)
             batches = (await conn.execute(
                 _open_batch_rows(project_id, repository_id))).mappings().all()
+            batches += (await conn.execute(select(integration_batches).where(
+                integration_batches.c.project_id == project_id,
+                integration_batches.c.repository_id == repository_id,
+                integration_batches.c.fixer_queue["status"].astext == "deferred",
+            ))).mappings().all()
+            for batch in batches:
+                queue = batch["fixer_queue"] or {}
+                if queue.get("status") == "deferred":
+                    key = (project_id, repository_id, batch["target_ref"])
+                    self.deferred_revisits[key] = min(
+                        self.deferred_revisits.get(key, float("inf")), queue["revisit_at"],
+                    )
             completed = (await conn.execute(select(tasks.c.id).where(
                 tasks.c.project_id == project_id,
                 or_(tasks.c.repo_id == repository_id, tasks.c.repo_id.is_(None)),
@@ -824,6 +838,10 @@ class DatabaseBatches:
         admission_blockers = []
         delivered_ids = set()
         current = await self.current(target)
+        if current is None:
+            from src.integration.fixer_batches import FixerBatches
+
+            current = await FixerBatches(self.db, clock=self.clock).resume(target, snapshot, service)
         if current is None:
             from src.integration.repository_incidents import admission_holds
 
@@ -2568,10 +2586,22 @@ class DaemonLanes:
                                               ci=ci)
 
         unattested = local or (local_ci and not ci.requires_hosted(_ci_kind(target)))
+
+        async def observe_deferred(batch, sha):
+            # A finite due observation refreshes existing CI; it neither starts
+            # another run nor consumes a fixer round. Resolve current policy first.
+            exact = await checks.for_candidate(batch, sha)
+            if exact is None:
+                return True
+            from src.integration.train import candidate_head
+
+            return (await exact.refresh(candidate_head(batch, sha))).green
+
         service = BatchService(self.store, gitops, publish=self.publish,
                                eligible=self.batches.eligible, gate=checks.gate,
                                attest=None if unattested else attest,
-                               require_attestation=not unattested)
+                               require_attestation=not unattested,
+                               observe_deferred=observe_deferred)
 
         complete_epic = None
         sync_default_branch = None
@@ -3242,7 +3272,8 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
     config = orchestrator.config.integration
     if getattr(config, "git_first", "shadow") != "active":
         return None
-    from src.integration.repair import OrdinaryRepairService
+    from src.integration.fixers import BatchFixerService
+    from src.integration.fixer_runtime import DaemonFixerRuntime
     from src.integration.dispatch_waits import DispatchWaits
 
     batches = DatabaseBatches(orchestrator.db, clock=clock,
@@ -3256,7 +3287,10 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
         ),
         batches=batches,
         lane_for=lanes,
-        repair=OrdinaryRepairService(orchestrator.db, clock=clock),
+        repair=BatchFixerService(
+            orchestrator.db, DaemonFixerRuntime(orchestrator, lanes=lanes, clock=clock),
+            clock=clock,
+        ),
         baseline=CandidateBaselineService(orchestrator.db, clock=clock),
         event_driven=True,
         waits=waits,

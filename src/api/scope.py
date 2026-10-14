@@ -145,6 +145,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # only for a task that session filed.
         "task_route",
         "integration_status",
+        "integration_batch_fix",
         "promote_schema",
         "promote_validate",
         "promote_rulesets",
