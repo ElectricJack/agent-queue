@@ -40,6 +40,7 @@
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
+        "tests/test_wait_commands.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_queries.py",
         "tests/test_waits.py"
@@ -17755,6 +17756,43 @@
         "asyncio"
       ],
       "summary": "Tests for the internal vibecop plugin."
+    },
+    "tests/test_wait_commands.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:57323603d2d6069ea7c036ddc773525c440513d0efcbceb0b3bfbfde9d9b3beb",
+      "imports": [
+        "src.api.codegen",
+        "src.api.models.wait",
+        "src.api.scope",
+        "src.api.target_scope",
+        "src.cli.auto_commands",
+        "src.cli.inventory",
+        "src.cli.waits",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.contracts.wait",
+        "src.commands.contracts.wait_v2",
+        "src.commands.principal",
+        "src.config",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.mcp_registration",
+        "src.profiles.capabilities",
+        "src.profiles.capability_sync",
+        "src.profiles.drift",
+        "src.tools.definitions",
+        "src.waits.conditions",
+        "src.waits.legacy",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified wait surfaces, principal fences and dormant runtime composition."
     },
     "tests/test_wait_migration.py": {
       "areas": [
