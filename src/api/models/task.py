@@ -1054,6 +1054,19 @@ class TaskBatchAckResponse(BaseModel):
     diff: dict[str, Any] | None = None
 
 
+class TaskBatchValidateResponse(BaseModel):
+    """``task_batch_validate`` — the automatic-check report; nothing is written."""
+
+    success: bool = True
+    project_id: str | None = None
+    batch_id: str | None = None
+    passed: bool = False
+    retryable: bool = False
+    hard: list[dict[str, Any]] = Field(default_factory=list)
+    advisory: list[dict[str, Any]] = Field(default_factory=list)
+    gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ClaimSessionSummary(BaseModel):
     """The calling session's claim bookkeeping, echoed back on every ``task_claim`` reply."""
 
@@ -1418,6 +1431,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_propose": TaskBatchProposeResponse,
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
+    "task_batch_validate": TaskBatchValidateResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
