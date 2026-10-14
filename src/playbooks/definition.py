@@ -678,16 +678,29 @@ def referenced_profile_ids(definition: PlaybookDefinition) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+#: Commands whose effect needs another command's authority.  A command step
+#: grants the dependency only when the artifact's pinned source declaration
+#: (``trusted_execution.required_capabilities``) names it, so the reviewed
+#: source shows every authority the step exercises.
+DECLARED_COMMAND_DEPENDENCIES: dict[str, frozenset[str]] = {
+    "playbook_state_notify": frozenset({"message_send"}),
+}
+
+
 def granted_aq_commands(definition: Any) -> frozenset[str]:
-    """Every AQ command the artifact grants: its command steps' commands and
-    the ``aq_commands`` its steps' tool use names.
+    """Every AQ command the artifact grants: its command steps' commands, the
+    ``aq_commands`` its steps' tool use names, and the declared dependencies
+    of those commands (:data:`DECLARED_COMMAND_DEPENDENCIES`).
 
     Derived from the immutable artifact itself, never from a reviewed
-    manifest, so a repository write cannot grant anything.  A command that
+    manifest, so a repository write cannot grant anything.  A declared
+    capability no step depends on grants nothing.  A command that
     must only run from one kind of playbook (``task_route_apply`` runs only
     from the project's bound router) checks it on the live invocation
     (:mod:`src.playbooks.invocation`).
     """
+    metadata = getattr(definition, "trusted_execution", None)
+    declared = frozenset(getattr(metadata, "required_capabilities", None) or ())
     found: set[str] = set()
     for step in getattr(definition, "steps", {}).values():
         if isinstance(step, ScriptStep):
@@ -695,6 +708,7 @@ def granted_aq_commands(definition: Any) -> frozenset[str]:
         command = getattr(step, "command", None)
         if isinstance(command, str) and command:
             found.add(command)
+            found.update(DECLARED_COMMAND_DEPENDENCIES.get(command, frozenset()) & declared)
         tool_use = getattr(step, "tool_use", None)
         if tool_use is not None:
             found.update(getattr(tool_use, "aq_commands", None) or ())
