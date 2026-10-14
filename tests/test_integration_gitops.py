@@ -202,8 +202,16 @@ def git_history_template(tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp("gitops-history")
     remote = tmp_path / "remote.git"
     git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    # The seed and its copies must stay idle between Git commands: detached
+    # maintenance can remove lock/object files while copytree enumerates them.
+    for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"),
+                       ("receive.autogc", "false")):
+        git(remote, "config", key, value)
     store = tmp_path / "retained"
     git(tmp_path, "clone", str(remote), str(store))
+    for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"),
+                       ("receive.autogc", "false")):
+        git(store, "config", key, value)
     git(store, "config", "user.name", "Tester")
     git(store, "config", "user.email", "tester@example.test")
     base = commit(store, {"base.txt": "base\n"})
