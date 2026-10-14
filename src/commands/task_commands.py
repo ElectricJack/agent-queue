@@ -5034,6 +5034,9 @@ class TaskCommandsMixin:
             ``retire``: the decision for completed work that has not reached
             the default branch. ``obsolete`` and ``retire`` abandon it and
             archive; ``deliver`` keeps the task and reports its delivery.
+            ``replacement`` / ``satisfied_by`` – (obsolete only) retirement
+            evidence. A replacement redirects all dependent edges; evidence
+            alone requires an explicit ``rewire`` edge plan.
         """
         from src.integration.removal_guard import DELIVERY_DISPOSITIONS
 
@@ -5042,6 +5045,15 @@ class TaskCommandsMixin:
         abandon_undelivered = bool(args.get("abandon_undelivered"))
         abandon_reason = args.get("reason")
         disposition = args.get("disposition") or None
+        replacement_task_id = args.get("replacement", args.get("replacement_task_id"))
+        satisfied_by = args.get("satisfied_by")
+        rewire = args.get("rewire")
+        if any(value is not None for value in (replacement_task_id, satisfied_by, rewire)):
+            if not task_id or disposition != "obsolete":
+                return {
+                    "success": False, "code": "obsolete.invalid_disposition",
+                    "error": "Replacement, satisfied-by and rewire require a single obsolete archive.",
+                }
         if disposition is not None and disposition not in DELIVERY_DISPOSITIONS:
             return {
                 "error": f"--disposition must be one of {', '.join(DELIVERY_DISPOSITIONS)}.",
@@ -5109,6 +5121,9 @@ class TaskCommandsMixin:
                     abandoned_by=(self._current_scope or {}).get("session_id") or "operator",
                     archive_reason=abandon_reason,
                     disposition=disposition,
+                    replacement_task_id=replacement_task_id,
+                    satisfied_by=satisfied_by,
+                    rewire=rewire,
                 )
             except HierarchyError as exc:
                 # Same renderer as delete: an ``integration_owned`` refusal

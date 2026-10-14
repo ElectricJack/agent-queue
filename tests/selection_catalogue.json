@@ -2855,7 +2855,7 @@
         "task-archive"
       ],
       "default_arm": true,
-      "digest": "sha256:f88dfbed9b95a516b70d02e3eb2a630e458e58e7680bd1d3de65c323881db94e",
+      "digest": "sha256:c837c5b66f56eb1605e9c899307d7462564fcbc4d5fdee06ce730efeb237e6e5",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -2868,7 +2868,8 @@
         "src.integration.development",
         "src.integration.provenance",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.sessions.obsolete"
       ],
       "markers": [
         "parametrize"

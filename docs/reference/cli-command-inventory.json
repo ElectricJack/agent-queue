@@ -17398,12 +17398,17 @@
           "--abandon-undelivered",
           "--disposition",
           "--reason",
+          "--replacement",
+          "--satisfied-by",
+          "--rewire",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--rewire"
+        ],
         "nullable": []
       }
     },
