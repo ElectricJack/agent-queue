@@ -707,7 +707,8 @@ def test_reviewed_watch_through_disposable_daemon(tmp_path):
                 async with engine.connect() as conn:
                     records = {}
                     for table in (t.messages, t.playbook_state_entries,
-                                  t.playbook_state_operations, t.playbook_step_receipts):
+                                  t.playbook_state_operations, t.playbook_step_receipts,
+                                  t.observation_snapshots):
                         records[table.name] = [dict(row) for row in
                             (await conn.execute(select(table))).mappings()]
                     return records
@@ -715,9 +716,31 @@ def test_reviewed_watch_through_disposable_daemon(tmp_path):
                 await engine.dispose()
 
         def tick(identity):
-            return api("run_playbook", {"playbook_id": "stuck-task-watch", "event": {
+            # Manual runs expose handled failures even when the policy completes.
+            # A bounded publisher log cannot prove absence, so the real doctor
+            # snapshot and its pages are partial; the watch checks each partition.
+            result = world.smoke.api("run_playbook", {"playbook_id": "stuck-task-watch", "event": {
                 "type": "timer.15m", "event_id": identity,
                 "tick_time": datetime.now(timezone.utc).isoformat()}})
+            assert result["status"] == "completed", result
+            assert result["success"] is False
+            failures = result["failed_steps"]
+            assert any(row["step_id"] == "doctor_scan" for row in failures)
+            assert all(row["step_id"] in {"doctor_scan", "doctor_page"}
+                       and row["outcome"] == "failure" for row in failures), result
+            snapshots = asyncio.run(evidence())[t.observation_snapshots.name]
+            doctor, = [row for row in snapshots if row["run_id"] == result["run_id"]
+                       and row["producer"] == "doctor_run"]
+            assert doctor["complete"] is False
+            assert "bounded_log_tail" in doctor["envelope"]["reasons"]
+            assert all(part["kind"] in {"publisher_skip", "publisher_error"}
+                       for part in doctor["coverage"]
+                       if "bounded_log_tail" in part["reasons"])
+            selected = [part for part in doctor["coverage"] if part["project_id"] == "e2e"
+                        and (part["check_id"], part["kind"]) in KINDS]
+            assert {(part["check_id"], part["kind"]) for part in selected} == set(KINDS)
+            assert all(part["complete"] for part in selected), selected
+            return result
 
         key = f"task:e2e:blocked:{task}"
         initial = tick("daemon-first")
