@@ -9799,6 +9799,8 @@
         "required": [],
         "optional": [
           "--project-id",
+          "--git",
+          "--deadline-seconds",
           "--json",
           "--brief",
           "--save-output",

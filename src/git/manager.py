@@ -507,6 +507,16 @@ def _require_authorized_repository(configured_url: str, repository_url: str, *, 
         raise GitError("push destination is not the authorized repository")
 
 
+def _parse_status_branch_header(header: str) -> str:
+    """Branch name from a ``git status --branch`` header (after ``## ``)."""
+    for prefix in ("No commits yet on ", "Initial commit on "):
+        if header.startswith(prefix):
+            return header[len(prefix):].strip()
+    if header.startswith("HEAD (no branch)"):
+        return "HEAD"
+    return header.split("...", 1)[0].split(" ", 1)[0].strip()
+
+
 class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
     _APP_CREDENTIAL_BROKER_TIMEOUT = 30.0
@@ -5662,6 +5672,30 @@ class GitManager:
             return await self._arun(["rev-parse", "--abbrev-ref", "HEAD"], cwd=checkout_path)
         except GitError:
             return None if strict else ""
+
+    async def aread_status_summary(
+        self, checkout_path: str, *, timeout: int | None = None
+    ) -> tuple[str, bool]:
+        """Read ``(branch, dirty)`` with one lock-free ``git status`` call.
+
+        A diagnostic read for listings: ``--no-optional-locks`` keeps it from
+        taking ``index.lock``, so it never contends with a writer resetting the
+        checkout, and it runs through :meth:`_arun_unlocked`, which kills the
+        child on timeout and on cancellation. ``branch`` is ``"HEAD"`` for a
+        detached checkout. Failure raises :class:`GitError`; unlike
+        :meth:`ahas_uncommitted_changes` it never reads as "clean".
+        """
+        output = await self._arun_unlocked(
+            ["--no-optional-locks", "status", "--porcelain=v1", "--branch"],
+            cwd=checkout_path,
+            timeout=timeout,
+        )
+        lines = output.splitlines()
+        if not lines or not lines[0].startswith("## "):
+            raise GitError(f"git status gave no branch header for {checkout_path}")
+        return _parse_status_branch_header(lines[0][3:]), any(
+            line.strip() for line in lines[1:]
+        )
 
     async def ahas_uncommitted_changes(
         self, checkout_path: str, *, strict: bool = False

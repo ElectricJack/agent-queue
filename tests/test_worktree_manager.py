@@ -72,10 +72,18 @@ def _base_repo_seed(tmp_path_factory) -> Path:
         check=True,
         capture_output=True,
     )
+    # Detached auto-maintenance can remove objects/maintenance.lock while a
+    # per-test copytree is reading the shared seed. Receive-pack needs its own
+    # repository-local settings because local transport drops -c flags.
+    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
+    for key, value in settings:
+        _git(["config", key, value], cwd=origin)
     base = tmp_path / "base"
     subprocess.run(
         ["git", "clone", str(origin), str(base)], check=True, capture_output=True
     )
+    for key, value in settings:
+        _git(["config", key, value], cwd=base)
     (base / "README.md").write_text("init\n")
     (base / ".gitignore").write_text("node_modules/\n")
     _git(["add", "-A"], cwd=base)

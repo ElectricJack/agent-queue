@@ -186,7 +186,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/review_keys.py"], areas: ["document-reviews"] }
   - { paths: ["src/schedule.py", "src/scheduler.py", "src/timer_service.py"], areas: ["scheduling"] }
   - { paths: ["src/surface_schema.py"], areas: ["command-dispatch"] }
-  - { paths: ["src/workspace_names.py"], areas: ["workspaces"] }
+  - { paths: ["src/workspace_names.py", "src/workspace_listing.py"], areas: ["workspaces"] }
   - { paths: ["src/playbook_schema.json", "src/playbook_v2_schema.json"], areas: ["playbook-definition"] }
 
   # ---- src/ packages

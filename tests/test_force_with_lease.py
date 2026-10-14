@@ -59,12 +59,19 @@ def _git_repo_seed(tmp_path_factory):
         check=True,
         capture_output=True,
     )
+    # Keep both seeds stable during copytree: detached maintenance can remove
+    # objects/maintenance.lock mid-copy. Local receive-pack needs its own config.
+    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
+    for key, value in settings:
+        _git(["config", key, value], cwd=str(remote))
     clone = tmp_path / "clone"
     subprocess.run(
         ["git", "clone", str(remote), str(clone)],
         check=True,
         capture_output=True,
     )
+    for key, value in settings:
+        _git(["config", key, value], cwd=str(clone))
     (clone / "README.md").write_text("init")
     subprocess.run(
         ["git", "add", "."],

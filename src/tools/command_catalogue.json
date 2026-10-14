@@ -1095,13 +1095,21 @@
     },
     {
       "name": "list_workspaces",
-      "description": "List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each workspace).",
+      "description": "List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task, claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.",
       "input_schema": {
         "type": "object",
         "properties": {
           "project_id": {
             "type": "string",
             "description": "Filter by project ID (optional)"
+          },
+          "git": {
+            "type": "boolean",
+            "description": "Probe each checkout's branch and dirty state with git (default true). False returns lock and owner facts only."
+          },
+          "deadline_seconds": {
+            "type": "number",
+            "description": "Overall time budget for diagnostics (default 10, clamped to 0.5-20). Unfinished probes report timeout/not_started."
           }
         }
       }
