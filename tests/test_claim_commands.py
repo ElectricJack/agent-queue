@@ -702,6 +702,33 @@ class TestClaim:
         assert read_claim_file(wd) == foreign
         handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
 
+    async def test_later_marker_absence_does_not_clear_preparation_failure_evidence(
+        self, handler, db, tmp_path,
+    ):
+        from src.claim_file import read_claim_file, remove_claim_file, write_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        protected = wd / "protected-source.txt"
+        protected.write_text("unrelated source must survive\n")
+        write_claim_file(wd, {
+            "task_id": "foreign", "claim_epoch": 7, "session_id": "foreign-session",
+        })
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+        assert result["result"] == "prepare_failed"
+        evidence = await db.get_task_meta("t1", "claim_preparation_failure")
+        assert "foreign claim" in evidence["reason"]
+        assert evidence["session_id"] == sid
+        assert evidence["claim_epoch"] == (await db.get_session(sid)).last_claim_epoch
+        # Simulate a later owner-only observation after the fixture's marker
+        # is gone. It establishes neither source activation nor a new claim.
+        remove_claim_file(wd)
+        assert read_claim_file(wd) is None
+        assert await db.get_task_meta("t1", "claim_preparation_failure") == evidence
+        assert (await db.get_session(sid)).last_claim_result == "prepare_failed"
+        assert protected.read_text() == "unrelated source must survive\n"
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
     @pytest.mark.parametrize("error", [TimeoutError(), RuntimeError(), RuntimeError("  ")])
     async def test_empty_preparation_exception_has_one_persisted_diagnosis(
         self, handler, db, tmp_path, error,

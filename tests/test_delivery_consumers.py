@@ -12,6 +12,7 @@ surface is checked against the same fixture.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -382,6 +383,29 @@ async def test_explain_and_pool_status_only_read_cached_development_delivery(
     assert next(row for row in status["pools"] if row["profile_id"] == "worker")["ready"] == 0
     for call in forbidden.values():
         call.assert_not_awaited()
+
+
+@pytest.mark.parametrize("warm", [False, True])
+async def test_cached_delivery_read_never_waits_for_an_owned_fetch_lock(world, warm):
+    from src.integration.delivery_observer import DeliveryTarget, _fetch_lock
+
+    _db, origin, observer, _service = world
+    if warm:
+        await observer.observe(["done"])
+    store = await observer._store(DeliveryTarget("p", "r", origin.url, "refs/heads/main"))
+    lock = _fetch_lock(store)
+    async with lock:
+        # This guards a deadlock boundary, not a performance budget. The
+        # held lock must remain owned until the diagnostic returns.
+        view = await asyncio.wait_for(
+            observer.observe(["done"], max_age=observer.READ_MAX_AGE, cached_only=True), 10,
+        )
+        assert lock.locked()
+        if warm:
+            assert view.get("done").satisfied
+        else:
+            assert view.get("done").reason == "snapshot_unavailable"
+            assert not view.get("done").satisfied
 
 
 @pytest.mark.parametrize("failure", ["paused", "train_missing", "stopped", "service_missing"])

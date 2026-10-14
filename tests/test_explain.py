@@ -13,6 +13,7 @@ Covers docs/specs/implementation/work-graph.md §6.3 and §11:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -986,3 +987,47 @@ async def test_explain_returns_persisted_and_live_claim_timing(handler, db):
     result = await handler._cmd_explain_task({"task_id": "timed"})
     assert result["claim_timing"]["current_phase"] == "fetch"
     assert result["claim_timing"]["claim_epoch"] == 2
+
+
+@pytest.mark.parametrize("stage", ["frontier", "admission", "integration"])
+async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
+    handler, db, monkeypatch, stage,
+):
+    """Successful controls do not turn an incomplete explanation into evidence."""
+    await mktask(db, "slow-explain", status=TaskStatus.READY, profile_id="worker")
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def stalled(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with monkeypatch.context() as fault:
+        if stage == "frontier":
+            fault.setattr(db, "claim_frontier_exclusions", stalled)
+        elif stage == "admission":
+            fault.setattr("src.integration.admission.observe_admission", stalled)
+        else:
+            fault.setattr("src.integration.status.IntegrationStatusService.task_blockers", stalled)
+        request = asyncio.create_task(handler._cmd_explain_task({"task_id": "slow-explain"}))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            shown = await handler._cmd_get_task({"task_id": "slow-explain"})
+            assert shown["id"] == "slow-explain"
+            assert shown["status"] == "READY"
+            assert not request.done()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert cancelled.is_set()
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    # The later successful reads establish their own results only. No empty
+    # reason list was produced or persisted for the cancelled request.
+    assert (await handler._cmd_get_task({"task_id": "slow-explain"}))["status"] == "READY"
+    complete = await handler._cmd_explain_task({"task_id": "slow-explain"})
+    assert complete["success"]
+    assert complete["reasons"]
