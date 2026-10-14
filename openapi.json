@@ -16220,8 +16220,8 @@
         "tags": [
           "system"
         ],
-        "summary": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
-        "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it (fixes are idempotent and only touch derived state \u2014 WAL, expired log dirs \u2014 never tasks, vault files or branches).  The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+        "summary": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
+        "description": "Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, and structured extras.  Checks run concurrently with per-check timeouts; a check that crashes or times out reports 'error' rather than hanging the command.  Pass fix=true to apply the fix of each failing fixable check and re-run it. Fixes are idempotent; ingestion.legacy_proposals may materialize an uncommitted proposal into held work only with immutable approval authority. Pass leave_gated=true to retain the legacy approval path. Other checks repair derived state. The returned exit_code is 2 when any check errored, 1 when any warned, otherwise 0.",
         "operationId": "doctor",
         "requestBody": {
           "content": {
@@ -20456,6 +20456,51 @@
                 "schema": {
                   "$ref": "#/components/schemas/SpecApproveResponse"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/spec-ingest-legacy-adopt": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+        "description": "Adopt an uncommitted legacy spec proposal using immutable approval; operator only.",
+        "operationId": "spec_ingest_legacy_adopt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpecIngestLegacyAdoptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -34328,6 +34373,18 @@
             ],
             "title": "Fix",
             "description": "Apply fixes for failing fixable checks, then re-run them."
+          },
+          "leave_gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Gated",
+            "description": "Leave legacy spec proposals on their existing human gate."
           },
           "checks": {
             "anyOf": [
@@ -75865,6 +75922,56 @@
           "snapshot_id"
         ],
         "title": "SpecApproveResponse"
+      },
+      "SpecIngestLegacyAdoptRequest": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id",
+            "description": ""
+          },
+          "decision_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Id",
+            "description": ""
+          },
+          "packet_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packet Sha256",
+            "description": ""
+          },
+          "leave_gated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave Gated",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id"
+        ],
+        "title": "SpecIngestLegacyAdoptRequest"
       },
       "SpecIngestLegacyInventoryRequest": {
         "properties": {

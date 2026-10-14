@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/generated.py`](../../../src/commands/contracts/generated.py) |
-| Contract fingerprint | `sha256:86558a078b89071b108065eb8af52826d9272aeed98a107f23bde8de5839ff2a` |
+| Contract fingerprint | `sha256:625b80fad78b7802a16dba7ba00b0fc849e7bfbb528edd6b938366eafccf6ea1` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `fix` | `boolean` | no | — | Apply fixes for failing fixable checks, then re-run them. |
+| `leave_gated` | `boolean` | no | — | Leave legacy spec proposals on their existing human gate. |
 | `checks` | `string[]` | no | — | Restrict the run to these check ids (e.g. 'db.migrations', 'vault.parse'). |
 
 This generated contract exposes the **playbook** input-schema view. MCP/CLI/API retain their legacy **transport** view.
@@ -46,7 +47,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Composite using fix, checks | — | always |
+| Composite using fix, leave_gated, checks | — | always |
 
 <!-- aq:generated:end -->
 

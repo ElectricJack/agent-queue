@@ -36,6 +36,7 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S18 failure triage         durable task.failed playbook dispatch and supervisor notice
     S19 scoped planner graph   authenticated graph filing and checklist settlement
     S20 train delivery         ordinary close provenance and git-first batch publication
+    S21 held ingestion         approval, held graph, assigned review, release and replay
 """
 
 from __future__ import annotations
@@ -453,7 +454,7 @@ def session_token(session_id: str) -> str:
 
 
 #: The stage profiles a role task keeps (mandatory routing §4, D3): never routed.
-ROLE_PROFILES = frozenset({"triage", "spec-ingest", "reviewer", "final-reviewer"})
+ROLE_PROFILES = frozenset({"triage", "spec-ingest", "fidelity-reviewer", "reviewer", "final-reviewer"})
 #: Why the operator overrides a route in this kit; the override needs 10-400 chars.
 OVERRIDE_REASON = "e2e Tier 1: the operator routes this task by hand"
 
@@ -3174,6 +3175,86 @@ def s19_scoped_planner_graph(state: dict) -> str:
     )
 
 
+def s21_held_ingestion(state: dict) -> str:
+    """Replay committed commands as a restarted client against the real daemon."""
+    del state
+    worker = fresh_workers(1)[0]
+    home = Path(os.environ["AQ_E2E_HOME"])
+    path = home / "vault/projects/e2e/specs/s21-held-ingestion.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\nspec_kind: implementation\n---\n# S21\n"
+                    "## Delivery\nImplement src/s21.py and verify its acceptance.\n")
+    approval = api_checked("spec_approve", {"project_id": PROJECT, "spec_path": str(path)})
+    dispatched = api_checked("ensure_spec_ingest", {
+        "project_id": PROJECT, "decision_id": approval["decision_id"],
+        "packet_sha256": approval["packet_sha256"],
+    })
+
+    def assigned_session(profile, task_id):
+        return wait_for(
+            lambda: next((s for s in collection_rows(api_checked("session_list", {}), "sessions")
+                          if s.get("profile_id") == profile and s.get("task_id") == task_id
+                          and s.get("state") == "running"), None),
+            what=f"S21 {profile} assignment for {task_id}",
+        )
+
+    ingester = assigned_session("spec-ingest", dispatched["task_id"])
+    token = session_token(ingester["id"])
+    graph = {
+        "project_id": PROJECT, "source": f"spec:decision:{approval['decision_id']}",
+        "tasks": [
+            {"tempId": key, "title": f"S21 {key}", "description": f"{path}: {key}",
+             "section_anchor": f"S21 / {key}", "primary_outcome": f"Deliver {key}",
+             "acceptance": [f"Verify {key}"], "constraints": ["Preserve held isolation"],
+             "size": "s", "owned_modules": [f"src/s21_{key}.py"],
+             **({"task_type": "feature", "intelligence_class": "standard-high"}
+                if key == "leaf" else {})}
+            for key in ("epic", "leaf")
+        ],
+        "edges": [{"from": "leaf", "to": "epic", "dep_type": "parent-child"}],
+    }
+    batch = api("task_batch_propose", graph, token=token)
+    check(batch.get("success") and batch.get("state") == "held", f"S21 propose: {batch}")
+    # Lose the first response locally, then reconstruct authentication and retry.
+    replay = api("task_batch_propose", graph, token=session_token(ingester["id"]))
+    check(replay.get("replayed") and replay.get("members") == batch["members"],
+          f"S21 materialization replay duplicated work: {replay}")
+    leaf_id = batch["members"]["leaf"]
+    route_task(leaf_id, POOL_PROFILE, POOL_CLASS)
+    claim = worker.claim_next()
+    check(claim.get("result") == "no_ready_work", f"S21 held leaf was claimable: {claim}")
+    ensure_args = {"project_id": PROJECT, "batch_id": batch["batch_id"],
+                   "structure_revision": batch["structure_revision"]}
+    reviewer = api_checked("ensure_fidelity_review", ensure_args)
+    again = api_checked("ensure_fidelity_review", ensure_args)
+    check(again.get("task_id") == reviewer.get("task_id") and not again.get("created"),
+          f"S21 reviewer replay duplicated assignment: {again}")
+    review_session = assigned_session("fidelity-reviewer", reviewer["task_id"])
+    review_token = session_token(review_session["id"])
+    validation = api("task_batch_validate", {"project_id": PROJECT,
+                     "batch_id": batch["batch_id"], "expected_revision": 1}, token=review_token)
+    check(validation.get("success") and validation.get("passed"), f"S21 validation: {validation}")
+    recorded = api("task_batch_review_record", {
+        "batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+        "expected_digest": batch["structure_digest"],
+        "section_verdicts": {f"S21 / {key}": "faithful" for key in ("epic", "leaf")},
+        "reverse_coverage_verdict": "faithful", "walkthrough_verdict": "faithful",
+        "structural_findings": [],
+    }, token=review_token)
+    check(recorded.get("success") and recorded.get("passing"), f"S21 attestation: {recorded}")
+    release_args = {"batch_id": batch["batch_id"], "expected_revision": batch["structure_revision"],
+                    "expected_digest": batch["structure_digest"]}
+    released = api_checked("task_batch_release", release_args)
+    repeated = api_checked("task_batch_release", release_args)
+    check(repeated.get("already_released")
+          and repeated.get("release_receipt") == released.get("release_receipt"),
+          f"S21 release replay changed evidence: {repeated}")
+    claim_fixture(worker, leaf_id, what="S21 released leaf claim")
+    worker.close(summary="S21 held leaf released by fidelity receipt")
+    worker.drain_ack()
+    return f"batch {batch['batch_id']} held until assigned review; materialization, dispatch and release replayed"
+
+
 @dataclass
 class Scenario:
     key: str
@@ -3214,10 +3295,11 @@ SCENARIOS: list[Scenario] = [
     Scenario("S18", "supervisor failure triage", s18_supervisor_failure_triage, ("playbooks/failure triage",)),
     Scenario("S19", "scoped planner graph", s19_scoped_planner_graph, ("authentication/scoped graph/quota",)),
     Scenario("S20", "train-mode delivery", s20_train_delivery, ("integration/train/provenance",)),
+    Scenario("S21", "held ingestion and replay", s21_held_ingestion, ("ingestion/recovery/fidelity",)),
 ]
 
 # Selecting these IDs replaces S16's serial transcript with independent worlds.
-# The default developer run executes all twenty scenarios.
+# The default developer run executes all twenty-one scenarios.
 FAILOVER_PHASES = [
     Scenario("S16a", "provider outage and rerouting", s16a_provider_outage, ("provider availability/failover",)),
     Scenario("S16b", "provider recovery and all-down", s16b_provider_recovery, ("provider availability/failover",)),

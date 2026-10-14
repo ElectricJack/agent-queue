@@ -6142,12 +6142,14 @@
         "doctor"
       ],
       "default_arm": true,
-      "digest": "sha256:49c54555bc047e21071d990396e1a8d2ad1cb6d76384163828514c777292da05",
+      "digest": "sha256:302e8e61e11b2fca38dd5f5c3c5ed85ccd5c9af0b60914dbbc92e24b8d8a2a65",
       "imports": [
         "src.cli.app",
         "src.commands.ops_commands",
         "src.config",
         "src.database",
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
         "src.doctor",
         "src.doctor.ask_checks",
         "src.doctor.builtin",
@@ -6160,6 +6162,7 @@
         "src.doctor.formula_checks",
         "src.doctor.git_checks",
         "src.doctor.hierarchy_checks",
+        "src.doctor.ingestion_checks",
         "src.doctor.integration_checks",
         "src.doctor.intelligence_class_checks",
         "src.doctor.models",
@@ -7041,7 +7044,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:9d62ffb4baa056bc9556a0d7143267a4d7ad39e361363f3695b103dc7311c486",
+      "digest": "sha256:607511aae8482a348b027c23ff7b5f321b5c56bdfdd3f1a298e8eab7f0304037",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -7049,12 +7052,14 @@
         "src.commands.fidelity_review_commands",
         "src.commands.principal",
         "src.database.queries",
+        "src.database.queries.claim_queries",
         "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
         "src.database.tables",
         "src.models",
         "src.profiles.capabilities",
-        "src.review_keys"
+        "src.review_keys",
+        "src.sessions.obsolete"
       ],
       "markers": [
         "parametrize"
@@ -17645,13 +17650,16 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:db1caf6cdf76b687cc0649cb33c6458545758315ede11f65c5fc890b2c4d6730",
+      "digest": "sha256:83d00ffd0e8dc7ed68105b80377377e0b7b22ddb162228f7369d7585cb3732c9",
       "imports": [
         "src.api.auth",
         "src.api.scope",
+        "src.asks.batch_scope",
         "src.asks.operations",
         "src.commands",
+        "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.principal",
         "src.commands.proposal_commands",
         "src.database.queries",
         "src.database.queries.ingest_batch_queries",
@@ -17660,6 +17668,7 @@
         "src.event_schemas",
         "src.models",
         "src.orchestrator.events",
+        "src.profiles.capabilities",
         "src.vault"
       ],
       "markers": [

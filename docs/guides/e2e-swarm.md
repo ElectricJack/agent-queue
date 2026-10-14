@@ -64,13 +64,18 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-The default run executes all 20 scenarios. `S1`–`S8` cover swarm composition;
+The default run executes all 21 scenarios. `S1`–`S8` cover swarm composition;
 `S9`–`S14` cover the wider stateful CLI surface; `S16` runs a whole provider
 outage against two fake providers; `S17` cooks and works a phased graph; and
 `S18` proves the reviewed supervisor failure-triage playbook against a real
 terminal worker close. `S19` uses a planner's authenticated session token to
 file a graph, prove root/cross-project/foreign-parent denials, race two graph
 batches at quota, and work a graph-seeded checklist through prime and close.
+`S21` snapshots an implementation approval, materializes held work through its
+assigned ingester, verifies the hold against a pool claim, records the assigned
+reviewer's fidelity receipt and releases the leaf. Reconstructing client
+authentication and replaying materialization, reviewer dispatch and release
+proves that a lost response cannot duplicate work or change release evidence.
 Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.

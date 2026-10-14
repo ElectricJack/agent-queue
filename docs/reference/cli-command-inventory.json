@@ -2686,6 +2686,7 @@
         "required": [],
         "optional": [
           "--fix",
+          "--leave-gated",
           "--json",
           "--check",
           "--brief",
@@ -15107,6 +15108,7 @@
         "required": [],
         "optional": [
           "--fix",
+          "--leave-gated",
           "--checks",
           "--json",
           "--brief",
@@ -18391,6 +18393,84 @@
       }
     },
     {
+      "path": "aq system task-batch-release",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_release",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--expected-revision",
+          "--expected-digest"
+        ],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
+      "path": "aq system task-batch-retire",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_retire",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--expected-revision",
+          "--reason"
+        ],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--project-id"
+        ]
+      }
+    },
+    {
       "path": "aq system task-batch-review-record",
       "registration": "generated",
       "owner_kind": "core",
@@ -21280,6 +21360,43 @@
         ],
         "optional": [
           "--project-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task spec-ingest-legacy-adopt",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "spec_ingest_legacy_adopt",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--proposal-id"
+        ],
+        "optional": [
+          "--decision-id",
+          "--packet-sha256",
+          "--leave-gated",
           "--json",
           "--brief",
           "--save-output",
