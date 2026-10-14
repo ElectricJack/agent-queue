@@ -17921,7 +17921,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:296933e1638642fec4ed065ca2269f6690a69e76ef64ab6a7a9fcf8ffbb20e19",
+      "digest": "sha256:c23415302372244dbd08175ff7bc02aad8a850d69a18d30fd3820b495fb55f13",
       "imports": [
         "src.config",
         "src.database.tables",
@@ -17929,6 +17929,7 @@
         "src.models",
         "src.waits.conditions",
         "src.waits.dispatcher",
+        "src.waits.graph",
         "src.waits.holding",
         "src.waits.listener",
         "src.waits.mail",

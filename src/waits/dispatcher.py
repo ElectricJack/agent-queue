@@ -11,20 +11,23 @@ import json
 import time
 from dataclasses import replace
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import insert, select, update
 
-from src.database.queries.wait_queries import REGISTRATION_LOCK, verify_owner
+from src.database.queries.continuation_queries import wait_outcome_envelope
+from src.database.queries.wait_queries import verify_owner
 from src.database.tables import (
     continuations, events, messages, sessions, tasks, wait_deadlines, wait_edges,
     wait_escalations, wait_measurements, wait_records, wait_source_events,
 )
 from src.waits.conditions import Condition, Scope, SourceEvent, WaitError
+from src.waits.explain import owner_key
+from src.waits.graph import clear_edges, lock_component_tasks, lock_graph, recompute_from
 from src.waits.listener import ListenerUnavailable
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 
 
 class WakeDispatcher:
-    def __init__(self, registry, *, clock=time.time, recompute_priority=None,
+    def __init__(self, registry, *, clock=time.time, recompute_priority=recompute_from,
                  resolve_escalation=None, lock_source=None):
         self.registry = registry
         self.clock = clock
@@ -41,7 +44,7 @@ class WakeDispatcher:
         ))).mappings().first()
         if durable is None or dict(durable) != event:
             return {"success": False, "error_code": "wait.source_unresolved"}
-        await conn.execute(select(func.pg_advisory_xact_lock(REGISTRATION_LOCK)))
+        await lock_graph(conn)
         # Lock all task nodes in lexical order, before any wait row. Source
         # writers need not hold the graph lock, so retain their locks through
         # observation and commit as well.
@@ -53,6 +56,12 @@ class WakeDispatcher:
             task_ids.add(cond.parameters["task_id"])
         if cond.kind == "dependency":
             task_ids.add(cond.parameters["depends_on_task_id"])
+        endpoints = (await conn.execute(select(
+            wait_edges.c.waiter_key, wait_edges.c.blocker_key,
+        ).where(wait_edges.c.wait_id == candidate["id"], wait_edges.c.active.is_(True)))).all()
+        changed_keys = {owner_key(candidate), *[f"task:{task_id}" for task_id in task_ids]}
+        changed_keys.update(key for edge in endpoints for key in edge)
+        await lock_component_tasks(conn, changed_keys)
         locked_tasks = (await conn.execute(select(tasks).where(
             tasks.c.id.in_(sorted(task_ids)),
         ).order_by(tasks.c.id).with_for_update())).mappings().all()
@@ -150,12 +159,10 @@ class WakeDispatcher:
             wait_deadlines.c.wait_id == row["id"], wait_deadlines.c.fired_at.is_(None),
             wait_deadlines.c.cancelled_at.is_(None),
         ).values(cancelled_at=now))
-        await conn.execute(update(wait_edges).where(
-            wait_edges.c.wait_id == row["id"], wait_edges.c.active.is_(True),
-        ).values(active=False, cleared_at=now))
+        old_endpoints = await clear_edges(conn, row["id"], now=now)
         if self.recompute_priority is None:
             raise ListenerUnavailable("transactional priority recomputation is required")
-        await self.recompute_priority(conn, row, now=now)
+        await self.recompute_priority(conn, changed_keys | old_endpoints, now=now)
         escalated = (await conn.execute(select(wait_escalations).where(
             wait_escalations.c.wait_id == row["id"], wait_escalations.c.decided_at.is_(None),
         ))).mappings().all()
@@ -163,7 +170,11 @@ class WakeDispatcher:
             if self.resolve_escalation is None:
                 raise ListenerUnavailable("transactional wait escalation resolution is required")
             for escalation in escalated:
-                await self.resolve_escalation(conn, escalation, event, outcome=outcome, now=now)
+                result = await self.resolve_escalation(
+                    conn, escalation, event, outcome=outcome, now=now,
+                )
+                if not isinstance(result, dict) or result.get("success") is not True:
+                    raise ListenerUnavailable("transactional wait escalation resolution refused")
         await conn.execute(insert(wait_measurements).values(
             id=f"outcome:{row['id']}", project_id=row["project_id"], wait_id=row["id"],
             condition_kind=cond.kind, source_class=adapter.source_class(cond),
@@ -189,13 +200,10 @@ class WakeDispatcher:
             from src.waits.mail import held_messages
 
             held = await held_messages(conn, row)
-            envelope = {
-                "kind": "wait_outcome", "wait_id": row["id"], "continuation_generation": None,
-                "outcome": outcome, "condition": cond.as_dict(), "result_ref": result_ref,
-                "decision": None, "summary_ref": None,
-                "held_messages": [message["id"] for message in held],
-                "next_action": "ack_then_continue",
-            }
+            envelope = wait_outcome_envelope(
+                {**row, "outcome": outcome, "result_ref": result_ref},
+                held_messages=[message["id"] for message in held],
+            )
             await insert_message_with_source_event(conn, insert(messages).values(
                 id=f"wait:{row['id']}:outcome", project_id=row["project_id"],
                 from_kind="system", from_id="wait-dispatcher", to_kind="session",

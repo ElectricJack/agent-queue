@@ -9,14 +9,16 @@ from sqlalchemy import insert, update
 
 from src.config import AppConfig
 from src.database.tables import (
-    continuations, messages, sessions, tasks, wait_deadlines, wait_edges, wait_measurements,
+    continuations, escalations, messages, sessions, tasks, wait_deadlines, wait_edges,
+    wait_escalations, wait_measurements,
     wait_source_events,
 )
 from src.messages.delivery import MessageDeliveryEngine
-from src.models import TaskStatus
-from src.waits.conditions import SleepDecision, WaitError
+from src.models import Task, TaskStatus
+from src.waits.conditions import Scope, SleepDecision, WaitError
 from src.waits.dispatcher import WakeDispatcher
 from src.waits.holding import active_wait_for
+from src.waits.graph import recompute_from
 from src.waits.listener import ListenerUnavailable
 from src.waits.mail import acknowledge_in_place
 from src.waits.source_locking import lock_database_source
@@ -30,7 +32,8 @@ env = _env
 def dispatcher(env, **kwargs):
     return WakeDispatcher(env.registry, clock=lambda: NOW + 5,
                           lock_source=lock_database_source,
-                          recompute_priority=kwargs.pop("recompute_priority", AsyncMock()), **kwargs)
+                          recompute_priority=kwargs.pop(
+                              "recompute_priority", AsyncMock(wraps=recompute_from)), **kwargs)
 
 
 async def waiting(env, **kwargs):
@@ -55,6 +58,7 @@ async def test_source_commit_one_wake_held_mail_and_atomic_ack(env, monkeypatch)
     wait = (await records(env))[0]
     assert wait["outcome"] == "satisfied" and wait["cleared_at"] is None
     assert wait["decision_inputs"]["registration_receipt"] == receipt
+    assert await register(env) == receipt
     assert all(row["cancelled_at"] is not None for row in await records(env, wait_deadlines))
     assert all(row["active"] is False for row in await records(env, wait_edges))
     assert len(await records(env, wait_measurements)) == 1
@@ -91,6 +95,7 @@ async def test_source_commit_one_wake_held_mail_and_atomic_ack(env, monkeypatch)
     assert (await env.db.get_message(prior.id)).delivered_at == NOW - 1
     assert await env.db.message_reply_window_start(prior.id) == NOW + 1001
     assert await env.db.get_task_meta("owner", "stall_last_action") == str(NOW + 1001)
+    assert await register(env) == receipt
     async with env.db._engine.begin() as conn:
         assert await acknowledge_in_place(conn, wait_id=receipt["wait_id"], scope=env.scope,
                                           now=NOW + 1002) == ack
@@ -108,9 +113,97 @@ async def test_missing_priority_owner_rolls_back_outcome_and_leased_cursor(env):
     assert not await records(env, messages)
     assert all(row["active"] for row in await records(env, wait_edges))
     assert all(row["dispatched_at"] is None for row in await records(env, wait_source_events))
-    disp.recompute_priority = AsyncMock()
+    disp.recompute_priority = recompute_from
     assert await service.tick()
     assert (await records(env))[0]["outcome"] == "satisfied"
+
+
+async def test_real_graph_retraction_rolls_back_then_commits_with_outcome(env):
+    async def priorities():
+        return {row["id"]: row["effective_priority"] for row in await records(env, tasks)}
+
+    await env.db.update_task("owner", priority=10)
+    await env.db.update_task("source", priority=100)
+    await env.db.create_task(Task(id="tail", project_id="p", title="Tail", description="",
+                                  priority=200))
+    await register(env, {"kind": "task", "task_id": "tail"},
+                   scope=Scope("p", "scheduler", "source", principal="service"),
+                   idempotency_key="source-to-tail")
+    receipt = await waiting(env)
+    for task_id in ("source", "tail"):
+        assert (await priorities())[task_id] == 10
+
+    async def fail_after_recompute(conn, changed_keys, *, now):
+        assert {"task:owner", "task:source"} <= changed_keys
+        await recompute_from(conn, changed_keys, now=now)
+        raise RuntimeError("after retraction")
+
+    disp = dispatcher(env, recompute_priority=fail_after_recompute)
+    service = runtime(env, dispatcher=disp)
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    with pytest.raises(RuntimeError, match="after retraction"):
+        await service.tick()
+    for task_id in ("source", "tail"):
+        assert (await priorities())[task_id] == 10
+    assert not await records(env, messages)
+    assert all(row["outcome"] == "pending" for row in await records(env))
+    disp.recompute_priority = recompute_from
+    assert await service.tick()
+    assert (await priorities())["source"] == 100
+    assert (await priorities())["tail"] == 100
+    assert (await env.db.get_task("tail")).priority == 200
+    terminal = next(row for row in await records(env) if row["id"] == receipt["wait_id"])
+    assert terminal["outcome"] == "satisfied" and terminal["cleared_at"] is None
+    assert len(await records(env, messages)) == 1
+
+
+@pytest.mark.parametrize("callback", [None, "refuse"])
+async def test_unavailable_escalation_resolution_rolls_back_entire_outcome(env, callback):
+    receipt = await waiting(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(escalations).values(
+            id="incident", project_id="p", task_id="owner", source_kind="wait",
+            source_identity=receipt["wait_id"], incident_key=f"wait:{receipt['wait_id']}:1",
+            supervisor_owner="supervisor-p", task_title="Owner", summary="Waiting",
+            investigation="Verified wait", decision_requested="Choose", severity="medium",
+            created_at=NOW, updated_at=NOW,
+        ))
+        await conn.execute(insert(wait_escalations).values(
+            id="wait-incident", wait_id=receipt["wait_id"], generation=1,
+            escalation_id="incident", raised_at=NOW, original_age_seconds=0,
+        ))
+    resolver = AsyncMock(return_value={"success": False}) if callback else None
+    service = runtime(env, dispatcher=dispatcher(env, resolve_escalation=resolver))
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    with pytest.raises(ListenerUnavailable, match="escalation resolution"):
+        await service.tick()
+    assert (await records(env))[0]["outcome"] == "pending"
+    assert all(row["active"] for row in await records(env, wait_edges))
+    assert all(row["cancelled_at"] is None for row in await records(env, wait_deadlines))
+    assert all(row["dispatched_at"] is None for row in await records(env, wait_source_events))
+    assert not await records(env, wait_measurements)
+    assert not await records(env, messages)
+
+
+@pytest.mark.parametrize("replacement", ["claim", "process"])
+async def test_ack_refuses_replacement_holder_without_stamping_mail(env, replacement):
+    receipt = await waiting(env)
+    routine = await mail(env.db, "owner")
+    await env.db.transition_task("source", TaskStatus.COMPLETED)
+    assert await runtime(env, dispatcher=dispatcher(env)).tick()
+    async with env.db._engine.begin() as conn:
+        if replacement == "claim":
+            await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
+        else:
+            await conn.execute(update(sessions).where(sessions.c.id == "s").values(
+                instance_token="replacement",
+            ))
+    with pytest.raises(WaitError):
+        async with env.db._engine.begin() as conn:
+            await acknowledge_in_place(conn, wait_id=receipt["wait_id"], scope=env.scope,
+                                       now=NOW + 6)
+    assert (await env.db.get_message(routine.id)).delivered_at is None
+    assert (await records(env))[0]["cleared_at"] is None
 
 
 async def test_false_payload_and_stale_holder_do_not_wake(env):
