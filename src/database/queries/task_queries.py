@@ -28,6 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from src.routing.sources import LEGACY
+from src.waits.graph import apply_base_priority_change, lock_component_tasks
 
 from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
@@ -332,6 +333,7 @@ class TaskQueryMixin:
                 title=task.title,
                 description=task.description,
                 priority=task.priority,
+                effective_priority=task.priority,
                 status=task.status.value,
                 verification_type=task.verification_type.value,
                 retry_count=task.retry_count,
@@ -658,6 +660,8 @@ class TaskQueryMixin:
             )
         retired = []
         async with self._engine.begin() as conn:
+            if "priority" in values:
+                await lock_component_tasks(conn, {f"task:{task_id}"})
             comment_source_project = None
             if "project_id" in kwargs:
                 # Project moves serialize with hierarchy mutations before
@@ -734,6 +738,8 @@ class TaskQueryMixin:
             if lifecycle & kwargs.keys():
                 stmt = stmt.where(_not_manually_paused())
             result = await conn.execute(stmt.values(**values))
+            if result.rowcount == 1 and "priority" in values:
+                await apply_base_priority_change(conn, task_id, now=values["updated_at"])
             if result.rowcount == 1 and previous_status is not None:
                 await self._record_recovery_failure_generation_on(
                     conn, task_id, TaskStatus(previous_status), TaskStatus(values["status"]),
