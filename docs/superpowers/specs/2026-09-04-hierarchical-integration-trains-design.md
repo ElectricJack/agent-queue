@@ -491,6 +491,18 @@ visit rechecks the member's identity. Explicit eject refusals remain unchanged.
 Task archival or deletion cannot erase that instruction; worker task metadata
 and legacy ejection markers cannot
 authorize release. An ordinary supervisor abort continues withholding its inputs.
+On each root or epic target visit, compare the frozen boundary's required check
+names with the current project policy. If a named check was removed, supersede
+an open, unpromoted batch through the same audited release instruction so its
+unchanged inputs can pass admission and seal under the new policy. Never edit
+the old snapshot or treat old CI as proof for the replacement. Special epic sync
+and refresh batches replace their complete frozen inputs atomically, retaining
+their purpose under a fresh identity instead of using the ordinary frontier.
+Recheck the removed names under the project-policy lock and target freshness under the
+batch fence. Missing policy never authorizes supersession. Missing Git evidence,
+ambiguous member identity and explicit holds retain the batch and name the blocker;
+already delivered inputs settle normally. Promotion batches retain their separately pinned check sets.
+Check additions, ordering changes and version-only edits do not release a batch.
 Pause requires open intent and resume requires paused intent; repeated or invalid
 transitions refuse. Pause, resume, eject and seal-now default to preview and remain
 operator/supervisor controls scoped to the owning project. Eject returns

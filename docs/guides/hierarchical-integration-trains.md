@@ -325,6 +325,16 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 - `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
 - `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.
 
+Removing a required check from project policy causes the next root or epic
+target visit to supersede an open, unpromoted batch that froze that check. Its
+sources can seal under the updated policy; the original snapshot and sources
+remain in the audit history. Special epic sync and refresh batches retain their
+purpose in an atomic replacement. The visit names `batch_required_checks_removed`
+and reports whether it released the batch. Explicit pauses and human holds stay
+in force: resume a paused batch, or release the recorded human decision, before
+replacement can proceed. Missing Git proof retains the batch. Promotion requests
+keep their separately pinned check sets.
+
 The controls keyed by a task, operation, batch or reservation — `redrive-root`,
 `redrive-child`, `reopen-collection`, `reserve-owner`, `release-owner` — take no `project_id`,
 so authorization resolves their target project server-side. `record-noop` is an

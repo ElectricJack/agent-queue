@@ -745,6 +745,16 @@ class DatabaseBatches:
         blockers.extend(admission_blockers)
         current = await self.current(target)
         frozen_members = await service.store.members(current.id) if current is not None else ()
+        if current is not None and target.kind != "promotion":
+            policy_blocker = await self._supersede_removed_checks(
+                target, snapshot, service, current, frozen_members,
+            )
+            if policy_blocker:
+                return BatchSelection(
+                    current if current.intent == "paused" else None,
+                    frozen_members if current.intent == "paused" else (),
+                    (policy_blocker,), existing=True,
+                )
         pending = None
         if not snapshot.error and snapshot.target_oid:
             pending = await self.pending(target, snapshot, blockers=blockers,
@@ -849,6 +859,44 @@ class DatabaseBatches:
     async def current(self, target: TrainTarget) -> Batch | None:
         return next((batch for batch, refreshed in await self._open_batches(target)
                      if refreshed is None), None)
+
+    async def _supersede_removed_checks(self, target, snapshot, service, batch, members):
+        """Release obsolete check pins without rewriting frozen policy or sources."""
+        from src.operator_decisions import OperatorDecisions
+
+        boundary = "parent" if target.kind == "epic" else "root"
+        removed = await service.store.removed_required_checks(batch, boundary)
+        if not removed:
+            return None
+        detail = f"frozen {boundary} checks removed from project policy: {', '.join(removed)}"
+        blocker = {"code": "batch_required_checks_removed", "ref": batch.id,
+                   "batch_id": batch.id, "boundary": boundary,
+                   "removed_checks": list(removed), "released": False, "detail": detail}
+        if batch.intent != "open" or await OperatorDecisions(self.db).holds("batch", batch.id):
+            return {**blocker, "detail": detail + "; explicit hold retains the batch; "
+                    "resume it through the supervisor control to allow replacement"}
+        if snapshot.error or not snapshot.target_oid or not members:
+            return {**blocker, "detail": detail + "; Git evidence is unavailable"}
+        proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
+                  for m in members]
+        if any(proof is None for proof in proofs):
+            return {**blocker, "detail": detail + "; batch delivery cannot be observed"}
+        if all(proofs) and not (batch.epic_sync or batch.epic_refresh):
+            # Git inclusion remains authoritative even if the policy changed
+            # between publication and the visit which records its settlement.
+            return None
+        try:
+            released = await service.store.supersede(
+                batch, members[0].task_id, reason=detail + "; a new batch replaces it",
+                boundary=boundary, removed_checks=removed, authorize=snapshot.is_fresh,
+            )
+        except SupersedeMemberUnavailable as exc:
+            return {**blocker, "code": exc.code, "task_id": exc.task_id,
+                    "detail": f"{detail}; {exc}; restore the member identity or have a "
+                              f"supervisor preview aq integration abort-batch {batch.id}"}
+        return {**blocker, "released": released, "detail": detail + (
+            "; inputs return to admission for a new batch" if released else
+            "; policy, batch or target changed; recheck on the next visit")}
 
     async def _release_undeliverable_batch(
         self, service: BatchService, batch: Batch, undeliverable: dict[str, dict],

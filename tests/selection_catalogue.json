@@ -9147,7 +9147,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:424345f1c10682f2da6c8a2b8b2410cda14958f9dcb21b7c61c28f035036b2e9",
+      "digest": "sha256:fadabbd97be47095fcbc4591ecc82b4e4df39f576f7d7f574f323b745ffc583c",
       "imports": [
         "src.commands",
         "src.commands.integration_commands",
@@ -9194,6 +9194,7 @@
         "src.integration.train_controls",
         "src.integration.train_sources",
         "src.models",
+        "src.operator_decisions",
         "src.orchestrator.core",
         "src.orchestrator.workspace",
         "src.profiles.capabilities",
