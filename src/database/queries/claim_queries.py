@@ -827,12 +827,22 @@ class ClaimQueryMixin:
         default admits unrouted work. See :func:`route_claimable`.
         """
         profile_ok = tasks.c.profile_id == profile_id
+        # Reuse this attempt's expression trees across the repair, affinity
+        # and ordinary probes. Each statement still observes its own database
+        # snapshot; rebuilding the same aliased predicates costs Python time.
+        frontier = _frontier_where(
+            project_id, hierarchy_mode, router_ready=bool(router_ready),
+        )
+        routing = _pool_routing_predicates(
+            operator=operator, enforce_routing=enforce_routing,
+            intelligence_class=intelligence_class,
+        )
 
         def candidate(*, pinned: bool, repair_only: bool = False):
             stmt = (
                 select(tasks.c.id)
                 .where(
-                    _frontier_where(project_id, hierarchy_mode, router_ready=bool(router_ready)),
+                    frontier,
                     profile_ok,
                 )
                 .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
@@ -848,10 +858,7 @@ class ClaimQueryMixin:
                 # The uncorrelated existence gate avoids scanning ordinary
                 # tasks when there is no active repair anywhere in the fleet.
                 stmt = stmt.where(active_train_repair_tasks().exists(), active_train_repair())
-            stmt = stmt.where(*_pool_routing_predicates(
-                operator=operator, enforce_routing=enforce_routing,
-                intelligence_class=intelligence_class,
-            ))
+            stmt = stmt.where(*routing)
             if task_id is not None:
                 stmt = stmt.where(tasks.c.id == task_id)
             return stmt.with_for_update(of=tasks, skip_locked=True)

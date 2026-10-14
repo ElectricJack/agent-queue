@@ -101,3 +101,15 @@ an earlier allocated sequence that commits late.
 Retention removes at most 1000 dispatched rows strictly older than seven days and
 at or below the durable source cursor. Pending/unread rows remain. The cursor supplies
 a floor after all old rows are purged and a reader restarts with a fresh pool.
+
+## Claim frontier compatibility
+
+The wait-schema prerequisite replaced the frontier indexes' base `priority` keys
+with `effective_priority`. The inactive claim selector still orders by base priority;
+that mismatch sorted every probe, including the urgent-repair and affinity probes,
+and scanned the full ordinary frontier. Revision `a00000000098` adds the original
+base-priority index shapes under `idx_tasks_base_claim_frontier*`, retaining the
+effective-priority indexes. This preserves current claim ordering, repair priority
+and all admission predicates without activating priority propagation or reservations.
+The priority/admission owner can retire these compatibility indexes only after its
+runtime adopts and maintains effective priority and verifies the same strict guards.
