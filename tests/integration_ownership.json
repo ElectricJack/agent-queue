@@ -8674,6 +8674,24 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/commands/supervisor_authority.py::operator_or_global_supervisor": {
+      "reason": "Authority gate for audited recovery-hold release, including train delegates; checks local operator or live global supervisor identity without granting publication authority."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Repairs misplaced idle pool workspace locks only after excluding live sessions, claim files, attached integration owners and job pins; preserves branch ownership and Git publication fences."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Imports integration ownership and repair tables for pool workspace reconciliation or recovery-hold deadline guards; all shared import lines remain charged to integration ownership."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._recovery_hold_deadline": {
+      "reason": "Identifies active train repair ownership from immutable filing input and durable batch/stage rows to bound silent supervisor holds; deadline escalates without authorizing execution or publication."
+    },
+    "src/database/queries/task_recovery_queries.py::import from src.database.tables import agent_questions, agents, integration_branch_owners, integration_batches, integration_owner_recoveries, integration_repair_operations, integration_repair_stages, messages, projects, project_constraints, sessions, task_branch_origins, task_comments, task_context, task_metadata, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "reason": "Imports integration ownership and repair tables for pool workspace reconciliation or recovery-hold deadline guards; all shared import lines remain charged to integration ownership."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Protects retained integration writer attachments and managed job pins from missing-slot reprovisioning; read-only ownership guard."
     }
   },
   "exclusions": {
@@ -12935,22 +12953,22 @@
       "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1362,
+      "line": 1459,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
+      "reason": "Records claim preparation failure details or needs_attention diagnostics for slot resets, retained attachments and unpublished repair targets. The changed preparation path preserves ownership fences and bounded retries; these ordinary failure records never authorize Git ref replay or delivery."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1315,
+      "line": 1412,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
+      "reason": "Records claim preparation failure details or needs_attention diagnostics for slot resets, retained attachments and unpublished repair targets. The changed preparation path preserves ownership fences and bounded retries; these ordinary failure records never authorize Git ref replay or delivery."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
       "line": 924,
@@ -13592,13 +13610,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.decide_task_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 937,
+      "line": 1132,
       "owner": "TaskRecoveryQueryMixin.decide_task_recovery",
       "call": "delete",
-      "owner_fingerprint": "99405443a989482f4c3152912b24d02a92cb71c7e6727046d24e932a8809d9ba",
+      "owner_fingerprint": "b85ba098e1d860d83cf574aeed1fe288355b3bf3fcd9331a3b4e9c16bfe10515",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task recovery cleanup of needs_attention before a guarded retry. Current FAILED incidents may now be held without an attempt; retry guards, storage payloads and transaction boundaries remain intact, with no ref replay authority."
+      "reason": "Clears only needs_attention metadata after a guarded retry transitions the task to READY and consumes recovery budget. Hold release remains fenced by incident, timestamp and principal; no Git ref replay or duplicate delivery lifecycle."
     },
     "src/database/queries/triage_queries.py::_write_seen::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
       "line": 77,
@@ -14987,13 +15005,13 @@
       "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
-      "line": 1276,
+      "line": 1374,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Records a named preparation hold when a retained attachment cannot be safely released; ordinary claim diagnostic, never Git publication or ref replay authority."
+      "reason": "Records claim preparation failure details or needs_attention diagnostics for slot resets, retained attachments and unpublished repair targets. The changed preparation path preserves ownership fences and bounded retries; these ordinary failure records never authorize Git ref replay or delivery."
     },
     "src/integration/cutover.py::_Activation.write_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "call": "insert",
@@ -15291,6 +15309,33 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Deletes the claimed_by_session record a durably stopped writer left on a task the operator closes (azure-beacon-38); ordinary claim lifecycle, no ref replay or duplicate integration lifecycle storage."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::aa66b0c4bf394b454a55b04b3048c4ae854edc5b7c2e7dcc2bdeb6a61fa2e5b1": {
+      "line": 1094,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "call": "set_task_meta",
+      "owner_fingerprint": "5320f339dd4403a0b643d4cd1d80c453fcd0e62e4f25d3ae07da6ef69c3a5f35",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Records a branch-fence preparation diagnostic and bounded claim backoff after refusal, including the concrete failure reason. Ownership recovery still proves handoff; metadata cannot replay refs or authorize publication."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::5f457951c70bf9a85748058a4541961a976c9d242448650882070b61af58ba61": {
+      "line": 1354,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Records claim preparation failure details or needs_attention diagnostics for slot resets, retained attachments and unpublished repair targets. The changed preparation path preserves ownership fences and bounded retries; these ordinary failure records never authorize Git ref replay or delivery."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::64d9070466d052e67a1a96dd3a40b4a768057d1acb08c0c4e390c117e3eb58e7": {
+      "line": 1473,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Records claim preparation failure details or needs_attention diagnostics for slot resets, retained attachments and unpublished repair targets. The changed preparation path preserves ownership fences and bounded retries; these ordinary failure records never authorize Git ref replay or delivery."
     }
   },
   "generic_dependencies": {

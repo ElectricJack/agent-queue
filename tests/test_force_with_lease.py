@@ -49,6 +49,14 @@ def _git_commit(cwd: str, filename: str, content: str, message: str) -> str:
     return _git(["rev-parse", "HEAD"], cwd=cwd)
 
 
+def _disable_auto_maintenance(repo: str) -> None:
+    # Configure each seed before commit/push: detached receive-pack maintenance
+    # can otherwise remove objects/maintenance.lock during a per-test copytree.
+    for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"),
+                       ("receive.autogc", "false")):
+        _git(["config", key, value], cwd=repo)
+
+
 @pytest.fixture(scope="session")
 def _git_repo_seed(tmp_path_factory):
     """Create a bare remote + working clone for testing."""
@@ -59,12 +67,14 @@ def _git_repo_seed(tmp_path_factory):
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(str(remote))
     clone = tmp_path / "clone"
     subprocess.run(
         ["git", "clone", str(remote), str(clone)],
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(str(clone))
     (clone / "README.md").write_text("init")
     subprocess.run(
         ["git", "add", "."],
