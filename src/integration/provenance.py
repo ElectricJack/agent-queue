@@ -135,6 +135,34 @@ class GitProvenance:
             raise GitError(result.stderr or "source ancestry is unknown")
         return result.returncode == 0
 
+    async def strict_ancestor(self, source: str, target: str) -> bool:
+        """Exact reachability only; an incomplete negative is not a proof.
+
+        This additive primitive is used by the containment shadow contract.
+        Legacy replacement readers remain unchanged until fenced cutover.
+        """
+        await self.exact(source)
+        await self.exact(target)
+        return await self._strict_ancestor(source, target)
+
+    async def _strict_ancestor(self, source: str, target: str) -> bool:
+        # Callers caching validated immutable objects can avoid resolving twice.
+        contained = await self.ancestor(source, target)
+        if not contained and await self.run("rev-parse", "--is-shallow-repository") != "false":
+            raise GitError("incomplete_shallow_history")
+        return contained
+
+    async def strictly_contained(self, completed: CompletedSource, target_oid: str) -> bool:
+        """Compatibility proof delegate retaining the immutable generation fence."""
+        record = await self.read_completion(completed.identity)
+        if record is None:
+            raise GitError("missing_git_provenance")
+        if record["source_oid"] != completed.source_oid:
+            raise ValueError("completion_source_mismatch")
+        if not record["artifact"]:
+            return False
+        return await self.strict_ancestor(completed.source_oid, target_oid)
+
     async def _validate(self, record: dict, oid: str) -> dict:
         if (not isinstance(record, dict) or record.get("version") != 1
                 or record.get("kind") not in {"completion", "replacement"}):
@@ -358,8 +386,13 @@ class GitProvenance:
         branch = PREFIX + "replacements/" + hashlib.sha256(_json(record).encode()).hexdigest()
         return await self._write(branch, record)
 
-    async def contained(self, completed: CompletedSource, target_oid: str) -> bool:
+    async def contained(self, completed: CompletedSource, target_oid: str, *,
+                        contract_version: str = "legacy-equivalence-v1") -> bool:
         """Proof primitive for the shared evaluator; failures propagate as unknown."""
+        if contract_version == "strict-ancestry-v1":
+            return await self.strictly_contained(completed, target_oid)
+        if contract_version != "legacy-equivalence-v1":
+            raise ValueError("unsupported delivery proof contract")
         await self.exact(target_oid)
         record = await self.read_completion(completed.identity)
         if record is None or record["source_oid"] != completed.source_oid:

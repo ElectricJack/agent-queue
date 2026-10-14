@@ -616,12 +616,13 @@ async def test_cache_keys_repository_and_oid_pair_never_branch(repository):
     assert (await original.is_delivered(request)).satisfied
     renamed = replace(request, branch_name="renamed", task_version=2)
     assert (await original.is_delivered(renamed)).satisfied
-    assert list(repo.truth._cache) == [("r", str(repo.remote), head, head)]
+    assert list(repo.truth._cache) == [(str(repo.path), "r", str(repo.remote), head, head, "legacy-equivalence-v1")]
     await repo.run("push", "--force", "origin", f"{repo.base}:refs/heads/main")
     new = await repo.snapshot()
     assert (await new.is_delivered(renamed, source_base=repo.base)).state == DeliveryState.PENDING
     assert set(repo.truth._cache) == {
-        ("r", str(repo.remote), head, head), ("r", str(repo.remote), head, repo.base),
+        (str(repo.path), "r", str(repo.remote), head, head, "legacy-equivalence-v1"),
+        (str(repo.path), "r", str(repo.remote), head, repo.base, "legacy-equivalence-v1"),
     }
 
 
@@ -654,7 +655,8 @@ async def test_identical_oid_pairs_in_different_repositories_are_separate(reposi
     )
     assert (await other_snapshot.is_delivered(request)).satisfied
     assert set(repo.truth._cache) == {
-        ("r", str(repo.remote), head, head), ("r", str(other_remote), head, head),
+        (str(repo.path), "r", str(repo.remote), head, head, "legacy-equivalence-v1"),
+        (str(repo.path), "r", str(other_remote), head, head, "legacy-equivalence-v1"),
     }
 
 
@@ -680,7 +682,9 @@ async def test_cached_facts_skip_repeat_ancestry_and_cache_is_bounded(repository
     await repo.run("push", "--force", "origin", f"{repo.base}:refs/heads/main")
     snapshot = await repo.snapshot(truth=truth)
     assert (await snapshot.is_delivered(request)).state == DeliveryState.PENDING
-    assert list(truth._cache) == [("r", str(repo.remote), head, repo.base)]
+    assert list(truth._cache) == [
+        (str(repo.path), "r", str(repo.remote), head, repo.base, "legacy-equivalence-v1"),
+    ]
 
 
 async def test_warm_completion_proofs_do_not_launch_git_processes(repository, monkeypatch):
@@ -1226,3 +1230,246 @@ async def test_shared_fetch_failure_never_becomes_delivery_evidence(repository):
     assert all(snapshot.target_oid is None for snapshot in snapshots)
     assert repo.git.afetch_origin.await_count == 1
     assert not truth._fetches
+
+
+@pytest.mark.parametrize("proof", ["trailer", "equal_tree", "whole_patch", "replacement"])
+async def test_strict_shadow_rejects_equivalent_delivery(repository, proof, monkeypatch):
+    from src.integration import git_truth
+    from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION, delivered
+
+    repo = repository
+    _first, source, request = await source_work(repo)
+    await repo.run("checkout", "main")
+    if proof == "trailer":
+        await repo.commit("unrelated", message=f"copied\n\nAQ-Source: task@{source}")
+    else:
+        await repo.run("cherry-pick", "--no-commit", f"{repo.base}..{source}")
+        await repo.run("commit", "-m", "equivalent content under a different identity")
+        if proof != "equal_tree":
+            await repo.commit("unrelated")
+    if proof == "replacement":
+        await GitProvenance(repo.git, str(repo.path), repository_url=str(repo.remote)
+                            ).write_replacement(
+            source_oid=await repo.run("rev-parse", "HEAD"), base_oid=repo.base,
+            replaces=[CompletedSource(CompletionIdentity("p", "r", "task", "close-1"), source)],
+            authority="operator", reason="historical equivalence",
+        )
+    await repo.publish()
+    observed = await repo.snapshot()
+    # Populate the broad proof first; it cannot contaminate strict OID facts.
+    assert (await observed.is_delivered(request, source_base=repo.base)).satisfied
+    monkeypatch.setattr(git_truth, "_whole_patch", AsyncMock(side_effect=AssertionError("patch")))
+    monkeypatch.setattr(git_truth, "_equal_tree", AsyncMock(side_effect=AssertionError("tree")))
+    monkeypatch.setattr(git_truth, "merge_noop", AsyncMock(side_effect=AssertionError("noop")))
+    result = await delivered(request, request.target_ref, observation=observed)
+    assert (result.state, result.reason) == (DeliveryState.PENDING, "source_not_contained")
+    assert result.source_oid == source
+    assert result.generation.generation == request.completion_id
+    assert result.observed_at == observed.observation.observed_at
+    assert result.observation_token == observed.observation.observation_token
+    strict = await repo.snapshot(truth=GitTruth(repo.git, contract_version=CONTAINMENT_CONTRACT_VERSION))
+    assert (await strict.is_delivered(request, source_base=repo.base)).state is DeliveryState.PENDING
+    assert await strict.contains_source(request.task_id, source, repo.base) is False
+    assert (await strict.observation.evaluate(request)).state is DeliveryState.PENDING
+    store = GitProvenance(repo.git, str(repo.path), repository_url=str(repo.remote))
+    assert await store.contained(CompletedSource(result.generation, source), result.target_oid,
+                                 contract_version=CONTAINMENT_CONTRACT_VERSION) is False
+
+
+async def test_strict_retained_generation_survives_deleted_source_branch(repository):
+    from src.integration.delivery_truth import delivered
+
+    repo = repository
+    source = await repo.commit("work")
+    request = await repo.retain(source)
+    await repo.run("push", "origin", "source")
+    await repo.run("checkout", "main")
+    await repo.run("merge", "--no-ff", "source", "-m", "real merge")
+    await repo.publish()
+    await repo.run("push", "origin", "--delete", "source")
+    observed = await repo.snapshot()
+    result = await delivered(replace(request, branch_name=None), request.target_ref,
+                             observation=observed)
+    assert result.state is DeliveryState.CONTAINED
+    assert result.source_oid == source
+    await repo.run("revert", "--no-edit", "-m", "1", "HEAD")
+    await repo.publish()
+    assert (await delivered(request, request.target_ref, observation=await repo.snapshot())
+            ).state is DeliveryState.CONTAINED
+
+
+async def test_strict_generation_and_target_fences(repository):
+    from src.integration.delivery_truth import delivered
+
+    repo = repository
+    source = await repo.commit("work")
+    request = await repo.retain(source)
+    await repo.publish()
+    observed = await repo.snapshot()
+    assert (await observed.delivered(request)).state is DeliveryState.CONTAINED
+    assert (await observed.delivered(replace(request, completion_id="reopened"))
+            ).reason == "missing_git_provenance"
+    assert (await observed.delivered(replace(request, task_status="IN_PROGRESS"))
+            ).state is DeliveryState.PENDING
+    assert (await observed.delivered(replace(request, completion_outcome="fail"))
+            ).reason == "completion_not_passing"
+    assert (await observed.delivered(replace(request, repository_id="foreign"))
+            ).reason == "scope_mismatch"
+    assert (await observed.delivered(replace(request, retained_source_oid=repo.base))
+            ).reason == "completion_source_mismatch"
+    assert (await delivered(request, "main", observation=observed)
+            ).reason == "invalid_target_binding"
+    assert (await delivered(request, request.target_ref)).reason == "observation_unavailable"
+    await repo.run("push", "--force", "origin", f"{repo.base}:main")
+    assert not await observed.is_fresh()
+    assert (await observed.delivered(request)).reason == "observation_stale"
+    assert (await (await repo.snapshot()).delivered(request)).state is DeliveryState.PENDING
+    await repo.run("config", "--file", str(repo.remote / "config"),
+                   "receive.denyDeleteCurrent", "ignore")
+    await repo.run("push", "origin", "--delete", "main")
+    assert (await (await repo.snapshot()).delivered(request)).reason == "target_unavailable"
+
+
+async def test_strict_empty_completion_requires_proof(repository):
+    from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
+
+    repo = repository
+    request = await repo.retain(repo.base)
+    request = replace(request, completion_outcome="pass", completion_commits=())
+    assert (await (await repo.snapshot()).delivered(request)).state is DeliveryState.CONTAINED
+    missing = replace(request, completion_id="missing", branch_name=None, has_recorded_source=False)
+    assert (await (await repo.snapshot()).delivered(missing)).state is DeliveryState.UNKNOWN
+    assert (await (await repo.snapshot()).delivered(replace(missing, code_free_proven=True))
+            ).state is DeliveryState.NOT_APPLICABLE
+    assert (await (await repo.snapshot()).delivered(replace(missing, code_free_proven=True,
+                                                           completion_id=None))
+            ).reason == "missing_completion_identity"
+    for recorded in ({"reported_source": repo.base}, {"completion_commits": (repo.base,)}):
+        assert (await (await repo.snapshot()).delivered(replace(missing, code_free_proven=True,
+                                                               **recorded))
+                ).state is DeliveryState.UNKNOWN
+    no_code = await repo.retain(repo.base, completion="explicit-empty", artifact=False)
+    assert (await (await repo.snapshot()).delivered(no_code)).state is DeliveryState.NOT_APPLICABLE
+    strict = await repo.snapshot(truth=GitTruth(repo.git, contract_version=CONTAINMENT_CONTRACT_VERSION))
+    assert await epic_complete(strict, [no_code], green_oid=repo.base)
+    assert not await epic_complete(strict, [replace(no_code, completion_outcome="fail")],
+                                   green_oid=repo.base)
+
+
+async def test_strict_explicit_observation_supports_scoped_internal_target(repository):
+    repo = repository
+    source = await repo.commit("prepared-source")
+    request = await repo.retain(source)
+    await repo.publish()
+    snapshot = await repo.snapshot()
+    # Prepared-ref owners supply the authorized ref and fetched OID; the reader
+    # must not interpret its name as a branch or resolve an alternate target.
+    target_ref = "refs/aq/prepared/task/close-1"
+    observation = replace(snapshot, observation=replace(snapshot.observation,
+                                                        target_ref=target_ref))
+    assert (await observation.delivered(replace(request, target_ref=target_ref))
+            ).state is DeliveryState.CONTAINED
+    assert (await observation.delivered(request)).reason == "scope_mismatch"
+
+
+async def test_strict_ancestry_disables_replacements_and_withholds_shallow_negatives(repository):
+    repo = repository
+    source = await repo.commit("source")
+    request = await repo.retain(source)
+    await repo.run("checkout", "main")
+    target = await repo.commit("target")
+    await repo.publish()
+    # A replacement target would acquire the source's parents. Strict Git ignores it.
+    replacement = await repo.run("commit-tree", f"{target}^{{tree}}", "-p", source,
+                                 "-m", "replacement target")
+    await repo.run("replace", target, replacement)
+    assert await repo.run("merge-base", "--is-ancestor", source, target) == ""
+    observed = await repo.snapshot()
+    assert (await observed.delivered(request)).state is DeliveryState.PENDING
+    await repo.run("replace", "-d", target)
+    # Real shallow boundary: Git may report a negative despite missing target history.
+    shallow = repo.path / ".git" / "shallow"
+    shallow.write_text(target + "\n")
+    cold = await repo.snapshot(truth=GitTruth(repo.git))
+    assert (await cold.delivered(request)).reason == "incomplete_shallow_history"
+    assert await cold.strictly_contains_source(source) is None
+    shallow.unlink()
+    assert (await cold.delivered(request)).state is DeliveryState.PENDING
+
+
+async def test_strict_proof_cache_is_versioned_bounded_and_diagnostic_only(repository, monkeypatch):
+    repo = repository
+    source = await repo.commit("source")
+    request = await repo.retain(source)
+    await repo.publish()
+    truth = GitTruth(repo.git, cache_limit=1)
+    observed = await repo.snapshot(truth=truth)
+    display = replace(observed, cached_only=True)
+    run = AsyncMock(wraps=repo.git.arun_git_result)
+    monkeypatch.setattr(repo.git, "arun_git_result", run)
+    assert (await display.delivered(request)).reason == "proof_unavailable"
+    run.assert_not_awaited()
+    result = await observed.delivered(request)
+    assert result.state is DeliveryState.CONTAINED
+    run.reset_mock()
+    assert await display.delivered(request) == result
+    assert (await display.delivered(replace(request, task_version=2))).reason == "proof_unavailable"
+    run.assert_not_awaited()
+    next_visit = await repo.snapshot(truth=truth)
+    run.reset_mock()
+    next_result = await next_visit.delivered(request)
+    assert next_result.observation_token != result.observation_token
+    assert next_result.observed_at >= result.observed_at
+    run.assert_not_awaited()
+    assert (await observed.delivered(replace(request, task_version=2))).state is DeliveryState.CONTAINED
+    assert (await display.delivered(request)).reason == "proof_unavailable"
+    assert all(len(cache) <= 1 for cache in (truth._cache, truth._proofs, truth._completions))
+
+
+async def test_strict_failed_git_is_unknown_with_safe_diagnostic(repository, monkeypatch):
+    repo = repository
+    request = await repo.retain(await repo.commit("source"))
+    observed = await repo.snapshot()
+    monkeypatch.setattr(observed.truth, "_completion", AsyncMock(
+        side_effect=GitError("timeout token=private repository content")))
+    result = await observed.delivered(request)
+    assert result.state is DeliveryState.UNKNOWN
+    assert "private" not in result.diagnostic
+    assert "token=" not in result.diagnostic
+
+
+@pytest.mark.parametrize("missing", ["source", "target"])
+async def test_strict_missing_commit_object_withholds_delivery(repository, missing):
+    repo = repository
+    source = await repo.commit("source")
+    request = await repo.retain(source)
+    # Take the batched observation before removing an object. Neither source
+    # nor target absence may turn a Git failure into a successful negative.
+    observed = await repo.snapshot()
+    oid = source if missing == "source" else repo.base
+    (repo.path / ".git" / "objects" / oid[:2] / oid[2:]).unlink()
+    result = await observed.delivered(request)
+    assert result.state is DeliveryState.UNKNOWN
+    assert result.reason == "missing_or_ambiguous_source"
+    assert await observed.strictly_contains_source(source) is None
+
+
+async def test_strict_verified_parent_identity_and_source_are_fenced(repository):
+    from src.integration.delivery_truth import VerifiedParentCompletion
+
+    repo = repository
+    source = await repo.commit("parent")
+    request = await repo.retain(source)
+    parent = VerifiedParentCompletion("p", "r", "source", "episode", "operation", "verified",
+                                      1, source, 100, 2)
+    request = replace(request, requires_parent_completion=True, parent_completion=parent,
+                      completion_id=parent.completion_id)
+    observed = await repo.snapshot()
+    assert (await observed.delivered(request)).state is DeliveryState.PENDING
+    assert (await observed.delivered(replace(request, parent_completion=None))
+            ).reason == "invalid_parent_completion"
+    assert (await observed.delivered(replace(request, parent_completion=replace(parent,
+                                                                             repository_id="other")))
+            ).reason == "invalid_parent_completion"
+    await repo.publish()
+    assert (await (await repo.snapshot()).delivered(request)).state is DeliveryState.CONTAINED

@@ -1264,3 +1264,72 @@ async def test_missing_git_observer_warns_offline_frontier_reader(active_git_wor
     await db.claim_frontier_exclusions("done")
     assert "No Git prerequisite observer" in caplog.text
     assert "invalid when integration.git_first is active" in caplog.text
+
+
+async def test_strict_shared_observation_ignores_disposition_and_receipts(world):
+    from dataclasses import asdict, replace
+
+    from src.database.tables import task_metadata
+    from src.integration.delivery_truth import (
+        DELIVERY_DISPOSITION_KEY, DeliveryDisposition, delivered, load_delivery_requests,
+    )
+    from src.integration.git_truth import GitTruth
+
+    db, origin, _observer, _service = world
+    source = git(origin.clone, "rev-parse", "origin/aq/reopened")
+    disposition = DeliveryDisposition(
+        "p", "r", "reopened", "close-reopened-2", "refs/heads/main", source,
+        git(origin.clone, "rev-parse", "origin/main"), "operator historical evidence", "a" * 64,
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(task_metadata).values(
+            task_id="reopened", key=DELIVERY_DISPOSITION_KEY, value=json.dumps(asdict(disposition)),
+        ))
+    requests = await load_delivery_requests(db, CHILDREN, repository_id="r",
+                                            target_ref="refs/heads/main")
+    observed = await GitTruth(GitManager()).snapshot(
+        str(origin.clone), project_id="p", repository_id="r", repository_url=origin.url,
+        target_ref="refs/heads/main",
+    )
+    answers = {tid: await delivered(request, request.target_ref, observation=observed)
+               for tid, request in requests.items()}
+    assert answers["done"].state is DeliveryState.CONTAINED
+    assert answers["wrong"].state is DeliveryState.UNKNOWN
+    assert answers["missing"].state is DeliveryState.UNKNOWN
+    assert answers["reopened"].state is DeliveryState.PENDING
+    assert answers["reopened"].disposition == disposition
+    assert len({answer.observation_token for answer in answers.values()}) == 1
+    assert len({answer.observed_at for answer in answers.values()}) == 1
+    assert (await delivered(replace(requests["reopened"], completion_id="next-generation"),
+                            "refs/heads/main", observation=observed)).disposition is None
+    assert (await delivered(replace(requests["reopened"], target_ref="refs/heads/other"),
+                            "refs/heads/other", observation=observed)).disposition is None
+    # Lifecycle retirement is separate even when consumers receive legacy settlements.
+    settled = replace(requests["reopened"], settled_repository_id="r",
+                      settled_target_ref="refs/heads/main", settled_completion_id="close-reopened-2",
+                      settled_reason="historical settlement")
+    assert (await observed.delivered(settled)).state is DeliveryState.PENDING
+
+
+async def test_strict_disposition_parser_never_widens_damaged_identity():
+    from src.integration.delivery_truth import delivery_disposition
+
+    for value in (None, "broken json", {}, {"completion_id": None}, {"unknown": "field"}):
+        assert delivery_disposition(value) is None
+
+
+def test_receipt_consumer_inventory_covers_every_direct_source_reference():
+    """Keep the S1 section 2 inventory exhaustive while legacy authority retires."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    inventory = (root / "docs/specs/design/strict-git-containment.md").read_text()
+    references = {
+        str(path.relative_to(root))
+        for path in (root / "src").rglob("*.py")
+        if any(marker in path.read_text() for marker in (
+            "task_delivery_receipts", "list_integration_delivery_receipts",
+        ))
+    }
+    missing = sorted(path for path in references if f"`{path}`" not in inventory)
+    assert not missing, f"Assign receipt reader/writer retirement owners: {missing}"
