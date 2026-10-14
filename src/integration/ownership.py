@@ -435,6 +435,12 @@ class BranchOwnership:
             or (agent_id is not None and workspace["locked_by_agent_id"] != agent_id)
         ):
             raise BranchBusy("workspace is no longer locked by the branch owner")
+        slot = workspaces.alias("owner_attachment_slot")
+        base = await conn.scalar(
+            select(slot.c.id).where(slot.c.base_workspace_id == workspace_id).limit(1)
+        )
+        if base is not None:
+            raise BranchBusy("branch ownership cannot attach to a shared base checkout")
         result = await conn.execute(
             update(integration_branch_owners)
             .where(integration_branch_owners.c.id == row["id"])

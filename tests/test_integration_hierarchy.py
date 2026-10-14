@@ -14,6 +14,8 @@ from sqlalchemy import insert, select, update
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
+    integration_batch_members,
+    integration_batches,
     integration_branch_owners,
     integration_outbox,
     integration_parent_episodes,
@@ -46,6 +48,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import (
+    Agent,
     AgentProfile,
     Project,
     RepoConfig,
@@ -563,6 +566,157 @@ async def test_canonical_set_parent_cannot_bypass_origin_guard(db, hierarchy):
         async with db.immediate() as conn:
             await db.set_parent(child_id, "new", conn=conn)
     assert exc.value.code == "delivery_target_fixed"
+
+
+@pytest.mark.parametrize("materialized", [False, True])
+async def test_ordinary_reparent_moves_unused_train_child_to_root(
+    db, hierarchy, internal_plugins_handler, materialized,
+):
+    await db.update_project("p", hierarchical_integration_mode="train")
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "ops child"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    old_origin = filed["origins"][0]
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.id == old_origin["id"],
+        ).values(materialized=materialized))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "parent",
+        ).values(verified_sha=BASE, verified_generation=1))
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+
+    result = await handler.execute("reparent_task", {"task_id": child_id, "root": True})
+
+    assert result["success"] is True, result
+    assert result["old_parent"] == "parent"
+    assert result["new_parent"] is None
+    assert (await db.get_task(child_id)).parent_task_id is None
+    checkpoint = await db.get_integration_checkpoint("parent")
+    assert checkpoint["generation"] == 2
+    assert checkpoint["verified_sha"] is None
+    async with db._engine.connect() as conn:
+        origins = (await conn.execute(select(task_branch_origins).where(
+            task_branch_origins.c.task_id == child_id,
+        ).order_by(task_branch_origins.c.created_at))).mappings().all()
+    assert len(origins) == 2
+    assert origins[0]["retired_at"] is not None
+    assert origins[1]["retired_at"] is None
+    assert origins[1]["parent_task_id"] is None
+    assert origins[1]["parent_ref"] == "main"
+    assert origins[1]["materialized"] is materialized
+    assert origins[1]["base_sha"] == BASE
+
+
+async def test_no_commit_root_move_preserves_materialized_base_when_default_advanced(
+    db, hierarchy,
+):
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "child"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == child_id,
+        ).values(materialized=True))
+    service = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, branch: NEXT if branch == "main" else BASE,
+    )
+
+    result = await service.mutate_hierarchy(
+        child_id, "reparent", {"parent_id": None, "expected_old_generation": 1},
+    )
+
+    assert result["outcome"] == "updated"
+    origin = await db.get_task_branch_origin_for_promotion(child_id, "repo")
+    assert origin["base_sha"] == BASE
+    assert origin["materialized"] is True
+    assert (await db.get_integration_checkpoint(child_id))["checkpoint_sha"] == BASE
+
+
+@pytest.mark.parametrize("sealed_parent", ["old", "new"])
+async def test_ordinary_reparent_refuses_sealed_source_or_destination(
+    db, hierarchy, internal_plugins_handler, sealed_parent,
+):
+    await _create(db, "old")
+    await _create(db, "new")
+    filed = await hierarchy.file_children("old", [{"title": "child"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="batch", project_id="p", repository_id="repo", request_id="request",
+            source_manifest_digest="digest", base_sha=BASE, lifecycle="sealing",
+            integration_branch="aq/integration/batch", policy_snapshot={}, artifact_snapshot={},
+            cleanup_state="pending", created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(integration_batch_members).values(
+            batch_id="batch", ordinal=0, task_id=sealed_parent, repository_id="repo",
+            source_sha=BASE, source_base_sha=BASE, reviewed_head_sha=BASE, reviewed_tree_sha=BASE,
+            review_evidence={},
+        ))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch",
+        ).values(lifecycle="sealed"))
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+
+    result = await handler.execute("reparent_task", {"task_id": child_id, "parent_id": "new"})
+
+    assert result["code"] == "hierarchy.sealed", result
+    assert (await db.get_task(child_id)).parent_task_id == "old"
+    assert (await db.get_integration_checkpoint("old"))["generation"] == 1
+    assert len([row for row in await _origins(db) if row["task_id"] == child_id]) == 1
+
+
+@pytest.mark.parametrize("blocker", [
+    "commits", "attached_owner", "locked_workspace", "delivered", "completed", "holder",
+])
+async def test_ordinary_train_reparent_refuses_existing_work_atomically(
+    db, hierarchy, internal_plugins_handler, tmp_path, blocker,
+):
+    await _create(db, "parent")
+    filed = await hierarchy.file_children("parent", [{"title": "child"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    if blocker == "holder":
+        await db.create_agent(Agent(id="claimed-agent", name="writer", profile_id="worker"))
+    async with db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == child_id,
+        ).values(materialized=True))
+        if blocker == "attached_owner":
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.owner_id == child_id,
+            ).values(handoff_state="attached", workspace_id="old-slot"))
+        if blocker == "delivered":
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="receipt", domain_key="receipt", source_task_id=child_id,
+                target_task_id="parent", repository_id="repo", target_branch="aq/parent",
+                disposition="code", created_at=1.0,
+            ))
+        if blocker == "completed":
+            await conn.execute(update(tasks).where(tasks.c.id == child_id).values(
+                status="COMPLETED",
+            ))
+        if blocker == "holder":
+            await conn.execute(update(tasks).where(tasks.c.id == child_id).values(
+                assigned_agent_id="claimed-agent",
+            ))
+    if blocker == "locked_workspace":
+        await db.create_workspace(Workspace(
+            id="busy", project_id="p", workspace_path=str(tmp_path / "busy"),
+            locked_by_task_id=child_id, source_type=RepoSourceType.WORKTREE,
+        ))
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = HierarchyIntegration(
+        db, default_head_resolver=lambda _repo, _branch: NEXT if blocker == "commits" else BASE,
+    )
+
+    result = await handler.execute("reparent_task", {"task_id": child_id, "root": True})
+
+    assert result["code"] == "hierarchy.delivery_target_fixed", result
+    assert (await db.get_task(child_id)).parent_task_id == "parent"
+    assert (await db.get_integration_checkpoint("parent"))["generation"] == 1
+    assert len([row for row in await _origins(db) if row["task_id"] == child_id]) == 1
 
 
 async def test_delete_unmaterialized_child_retires_origin_and_invalidates_parent(db, hierarchy):
