@@ -1,4 +1,5 @@
 {
+  "script": null,
   "id": "ensure-review-task",
   "rule_id": "r",
   "step_kind": "command",
