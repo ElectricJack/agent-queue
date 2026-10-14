@@ -62,6 +62,17 @@ def _git(args: list[str], cwd: str | Path) -> str:
     return r.stdout.strip()
 
 
+def _disable_auto_maintenance(repo: Path) -> None:
+    # The seed is copied between tests. Detached maintenance can remove files
+    # during copytree, and receive-pack needs its own bare-repository settings.
+    for key, value in (
+        ("maintenance.auto", "false"),
+        ("gc.auto", "0"),
+        ("receive.autogc", "false"),
+    ):
+        _git(["config", key, value], cwd=repo)
+
+
 @pytest.fixture(scope="session")
 def _base_repo_seed(tmp_path_factory) -> Path:
     """A clone of a bare origin, with one commit on ``main``."""
@@ -72,10 +83,12 @@ def _base_repo_seed(tmp_path_factory) -> Path:
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(origin)
     base = tmp_path / "base"
     subprocess.run(
         ["git", "clone", str(origin), str(base)], check=True, capture_output=True
     )
+    _disable_auto_maintenance(base)
     (base / "README.md").write_text("init\n")
     (base / ".gitignore").write_text("node_modules/\n")
     _git(["add", "-A"], cwd=base)
