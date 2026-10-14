@@ -13502,10 +13502,10 @@
       "line": 1727,
       "owner": "TaskQueryMixin._apply_transition",
       "call": "delete",
-      "owner_fingerprint": "2558f39e8c2aa7c967b1907695b71b4704c2ced83295af011a6b518a14c3760e",
+      "owner_fingerprint": "b02b9e78aa9497f78674469eea809cf51daf3222b77b60a33b57b0cabfee7b31",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task lifecycle metadata cleanup, guarded retry routing and accepted-close identity. Explicit restart/reopen supersedes the previous supervisor recovery incident and archives its notification in the READY-write transaction, preserving diagnosis and budget. Ordinary status projection retains holds. Integration status, branch reservations and ref replay authority remain in dedicated records."
+      "reason": "Ordinary task lifecycle metadata cleanup. Accepted explicit restart/reopen/resume supersedes the old recovery hold in the status transaction, including already-READY tasks; same-failure projection retains holds, and repair delegates defer supersession until branch handoff. Diagnosis/budget remain in recovery records; no ref replay authority."
     },
     "src/database/queries/task_queries.py::TaskQueryMixin._delete_one::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
       "line": 2165,

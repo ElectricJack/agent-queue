@@ -1807,11 +1807,16 @@ class TaskQueryMixin:
                 task_metadata.c.task_id == task_id,
                 task_metadata.c.key == "worker_failure_streak",
             ))
-        if explicit_restart and not _defer_recovery_supersession:
+        if (
+            explicit_restart or context in {"manual_resume", "slot_reset_retry"}
+        ) and not _defer_recovery_supersession:
             released_hold = await self._supersede_restarted_task_recovery_on(
                 conn, task_id, context=context,
             )
-            if released_hold and not any(tid == task_id for tid, _ in result.ready):
+            if (
+                released_hold and not _defer_projection
+                and not any(tid == task_id for tid, _ in result.ready)
+            ):
                 for tid in await self._note_frontier_entry(conn, {task_id}, reason="restarted"):
                     result.ready.append((tid, "restarted"))
         return result

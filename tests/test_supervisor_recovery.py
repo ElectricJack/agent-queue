@@ -648,7 +648,178 @@ async def test_recorded_recovery_hold_excludes_task_projected_back_to_ready(env)
     assert await env.db.count_ready_by_profile("p") == {}
     exclusions = await env.db.claim_frontier_exclusions("t")
     assert [item["code"] for item in exclusions] == ["frontier_recovery_hold"]
+    await env.db.queue_task_recovery_notifications()
     assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
+
+
+@pytest.mark.parametrize("prior", [TaskStatus.READY, TaskStatus.BLOCKED])
+@pytest.mark.parametrize("held", [False, True])
+async def test_resume_supersedes_old_recovery_without_resetting_budgets(env, prior, held):
+    current = await incident(env)
+    if held:
+        assert "error" not in await decide(env, current, "hold")
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    await env.db.update_task("t", status=prior, retry_count=2, route_source="override")
+    await env.db.set_task_meta("t", "supervisor_recovery_attempts", 1)
+    await env.db.pause_task("t")
+    await env.db.queue_task_recovery_notifications()
+    if held:
+        assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == recorded
+    ready = []
+    env.db.set_ready_listener(lambda entries: record_ready(ready, entries))
+
+    result = await env.handler.execute("resume_task", {"task_id": "t"})
+
+    assert "error" not in result, result
+    task = await env.db.get_task("t")
+    assert task.status is prior and task.retry_count == 2
+    assert task.branch_name == "aq/keep" and task.intelligence_class == "deep-high"
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") == 1
+    superseded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert superseded["id"] == current["id"] and superseded["decision"] == "superseded"
+    if held:
+        assert "manual_resume" in superseded["decision_reason"]
+        assert superseded["decision_history"][-1] == {
+            key: recorded[key]
+            for key in ("decision", "decision_reason", "decided_at", "decided_by")
+        }
+    assert (await env.db.get_message("msg-" + current["id"])).archived_at is not None
+    assert "frontier_recovery_hold" not in {
+        item["code"] for item in await env.db.claim_frontier_exclusions("t")
+    }
+    if prior is TaskStatus.READY:
+        assert any(tid == "t" for tid, _ in ready)
+        assert await env.db.count_ready_by_profile("p") == {"worker": 1}
+
+
+async def test_resume_recovery_supersession_rolls_back_with_status(env):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    await env.db.update_task("t", status=TaskStatus.READY)
+    await env.db.pause_task("t")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    message_id = "msg-" + current["id"]
+    archived_at = (await env.db.get_message(message_id)).archived_at
+
+    with pytest.raises(RuntimeError, match="abort resume"):
+        async with env.db.immediate() as conn:
+            encoded = await env.db._read_manual_pause(conn, "t")
+            await env.db._resume_locked(conn, "t", encoded)
+            raise RuntimeError("abort resume")
+
+    assert (await env.db.get_task("t")).status is TaskStatus.PAUSED
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
+    assert await env.db.get_task_meta("t", "manual_pause") is not None
+    assert (await env.db.get_message(message_id)).archived_at == archived_at
+
+
+async def test_resume_supersedes_held_failure_without_worker_attempt(env):
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    await notify(env)
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert current["attempt_id"] is None
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    # Legacy requeueing could retain a no-attempt failure's hold too.
+    await env.db.update_task("t", status=TaskStatus.READY, route_source="override")
+    await env.db.pause_task("t")
+    await env.db.queue_task_recovery_notifications()
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
+
+    result = await env.handler.execute("resume_task", {"task_id": "t"})
+
+    assert "error" not in result, result
+    assert (await env.db.get_task("t")).status is TaskStatus.READY
+    superseded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert superseded["decision"] == "superseded"
+    assert superseded["decision_history"][-1]["decided_at"] == held["decided_at"]
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+
+
+async def test_refused_resume_keeps_recovery_hold(env):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    await env.db.pause_task("t")
+    saved = await env.db.get_task_meta("t", "manual_pause")
+    await env.db.set_task_meta("t", "manual_pause", {**saved, "cleanup_pending": True})
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+
+    with pytest.raises(ValueError, match="session has not stopped"):
+        await env.db.resume_task("t")
+    assert (await env.db.get_task("t")).status is TaskStatus.PAUSED
+    assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == held
+
+
+@pytest.mark.parametrize("change", ["attention", "attempt", "claim_epoch"])
+async def test_scan_supersedes_obsolete_hold_without_losing_diagnosis(env, change):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    await env.db.update_task("t", status=TaskStatus.READY, route_source="override")
+    if change == "attention":
+        # An older resume removed the failure reason but retained its hold.
+        await env.db.set_task_meta("t", "needs_attention", None)
+    elif change == "attempt":
+        await stopped_attempt(env, sid="replacement", started=9000)
+    else:
+        await env.db.update_task("t", claim_epoch=1)
+
+    await asyncio.gather(
+        env.db.queue_task_recovery_notifications(), env.db.queue_task_recovery_notifications(),
+    )
+
+    superseded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert superseded["decision"] == "superseded"
+    assert superseded["decision_history"] == [{
+        key: held[key]
+        for key in ("decision", "decision_reason", "decided_at", "decided_by")
+    }]
+    assert (await env.db.get_message("msg-" + current["id"])).archived_at is not None
+    assert await env.db.claim_frontier_exclusions("t") == []
+    assert await env.db.count_ready_by_profile("p") == {"worker": 1}
+    assert (await env.db.get_task("t")).retry_count == 0
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+
+
+@pytest.mark.parametrize("guard", ["human_gate", "hold_label", "dependency"])
+async def test_resume_releases_recovery_hold_preserving_other_frontier_guards(env, guard):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    await env.db.update_task("t", status=TaskStatus.READY, route_source="override")
+    if guard == "human_gate":
+        gate_id, _ = await env.db.create_gate(
+            project_id="p", gate_type="human", title="Approval", waiter_task_ids=["t"],
+        )
+    elif guard == "hold_label":
+        await env.db.add_task_label("t", "hold:operator")
+    else:
+        await env.db.create_task(Task(id="upstream", project_id="p", title="Upstream", description=""))
+        await env.db.add_dependency("t", "upstream")
+    await env.db.pause_task("t")
+
+    result = await env.handler.execute("resume_task", {"task_id": "t"})
+
+    assert "error" not in result, result
+    codes = {item["code"] for item in await env.db.claim_frontier_exclusions("t")}
+    assert codes and "frontier_recovery_hold" not in codes
+    assert await env.db.count_ready_by_profile("p") == {}
+    if guard == "human_gate":
+        assert (await env.db.get_gate(gate_id))["status"] == "open"
+
+
+async def test_slot_reset_resume_supersedes_old_recovery_hold(env):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    await env.db.set_task_meta("t", "slot_reset_failure", {"error": "reset failed"})
+
+    result = await env.handler.execute("resume_task", {"task_id": "t"})
+
+    assert "error" not in result, result
+    assert (await env.db.get_task("t")).status is TaskStatus.READY
+    superseded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert superseded["decision"] == "superseded"
+    assert "slot_reset_retry" in superseded["decision_reason"]
+    assert await env.db.claim_frontier_exclusions("t") == []
 
 
 @pytest.mark.parametrize("command", ["restart_task", "reopen_with_feedback"])
