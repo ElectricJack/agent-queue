@@ -706,6 +706,93 @@ async def test_retained_stop_retries_same_identity_after_reload(env, tmp_path):
     assert await reloaded.stop_task("t") is None  # Ambiguous response retry is harmless.
 
 
+async def test_retained_stop_cannot_adopt_null_task_holder(env, tmp_path):
+    repo, git, provider, _ = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("unattributed work\n")
+    await command(env, "set_task_status", status="BLOCKED")
+    await env.db.update_workspace("workspace", locked_by_task_id=None)
+    await env.db.update_session("s", task_id=None, claim_phase=None,
+                                state="stopped", desired_state="stopped")
+    await env.db.update_agent("agent", current_task_id=None)
+    provider.running.discard("task-session")
+    (repo / ".aq" / "claim.json").unlink()
+    before = await env.db.get_workspace("workspace")
+    refs = git("show-ref")
+
+    result = await command(env, "stop_task")
+
+    assert "exactly one retained registered workspace" in result.get("error", ""), result
+    assert await env.db.get_workspace("workspace") == before
+    assert before.locked_by_agent_id == "agent"
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 0
+    assert git("show-ref") == refs
+    assert (repo / "work.txt").read_text() == "unattributed work\n"
+    assert await env.db.get_task_meta("t", "retained_workspace_stop") is None
+
+
+@pytest.mark.parametrize("claim_present", [True, False])
+async def test_retained_stop_never_promotes_unproved_detached_head(env, tmp_path, claim_present):
+    repo, git, provider, _ = await retained_slot(env, tmp_path)
+    canonical = git("rev-parse", "refs/heads/aq/t")
+    git("push", "origin", "aq/t")
+    foreign = git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Other task source")
+    git("update-ref", "refs/aq/recovery/unattributed", foreign)
+    git("switch", "--detach", foreign)
+    (repo / "work.txt").write_text("keep foreign work\n")
+    refs, index = git("show-ref"), git("write-tree")
+    await command(env, "set_task_status", status="BLOCKED")
+    await env.db.update_session("s", state="stopped", desired_state="stopped")
+    provider.running.discard("task-session")
+    if not claim_present:
+        (repo / ".aq" / "claim.json").unlink()
+
+    result = await command(env, "stop_task")
+
+    reason = "HEAD differs" if claim_present else "Claim or source sentinel"
+    assert reason in result.get("error", ""), result
+    assert git("rev-parse", "HEAD") == foreign
+    assert git("show-ref") == refs
+    assert git("write-tree") == index
+    assert git("ls-remote", "origin", "refs/heads/aq/t").split()[0] == canonical
+    assert (repo / "work.txt").read_text() == "keep foreign work\n"
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 0
+
+
+async def test_retained_stop_preserves_interrupted_merge_until_full_capture(env, tmp_path):
+    import subprocess
+
+    repo, git, _, _ = await retained_slot(env, tmp_path)
+    git("switch", "-c", "other")
+    (repo / "base.txt").write_text("their change\n")
+    git("commit", "-am", "Other branch")
+    git("switch", "aq/t")
+    (repo / "base.txt").write_text("our change\n")
+    git("commit", "-am", "Task branch")
+    with pytest.raises(subprocess.CalledProcessError):
+        git("merge", "other")
+    merge_head, refs = git("rev-parse", "MERGE_HEAD"), git("show-ref")
+    stages = git("ls-files", "--stage")
+    index_path = repo / git("rev-parse", "--git-path", "index")
+    index, content = index_path.read_bytes(), (repo / "base.txt").read_bytes()
+    claim = (repo / ".aq" / "claim.json").read_bytes()
+    await command(env, "set_task_status", status="BLOCKED")
+
+    result = await command(env, "stop_task")
+
+    assert "error" in result, result
+    assert git("rev-parse", "MERGE_HEAD") == merge_head
+    assert git("show-ref") == refs
+    assert git("ls-files", "--stage") == stages
+    assert index_path.read_bytes() == index
+    assert (repo / "base.txt").read_bytes() == content
+    assert (repo / ".aq" / "claim.json").read_bytes() == claim
+    assert await env.db.get_task_meta("t", "manual_pause_checkpoint") is None
+    assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 0
+
+
 async def test_retained_stop_old_snapshot_cannot_adopt_new_acquisition(env, tmp_path):
     import json
 

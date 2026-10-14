@@ -217,8 +217,103 @@ Ancestry checks confirm it contains `116134665b82d7d2f4551f9d3e91dd14ce2c8555`,
   this run is the final-source receipt. No real provider, external messaging or
   operator database/daemon was exercised.
 
-The final publication adds documentation only to the verified production source.
+Publication `b730b7d53b564a1305d4dba0c21f8e62f2220e63` adds documentation only
+to the verified production source. The feedback follow-up below adds regression
+tests and documentation without changing production source.
 Historical incident causality, current live self-healing, foreign-host/source
 qualification and the original human acceptance remain unproved. The local
 repair and fixture receipts do not authorize an original-task PASS or incident
 clearance. The supervisor and existing recovery owner retain those gates.
+
+## Pending-feedback disposition
+
+The close gate delivered additional task and session feedback before allowing
+completion. Source qualification and the cancelled source wait were already
+handled. The new information is attributed operator or Matter-supervisor reporting;
+no foreign host, files, task, repository or API was inspected here.
+
+The reports describe stopped historical sessions, missing claims, detached source
+identified as another task's HEAD, neutral recovery refs, and canonical task refs
+whose original provenance remains unproved. Neither the intended task name nor
+an observed foreign HEAD qualifies a canonical task branch. Disposable negative
+coverage checks both present and missing claim markers: the foreign HEAD and
+neutral recovery ref stay intact, local and remote canonical refs are unchanged,
+and no checkpoint or capacity release is authorized. Prior owner-release records
+and zero claims do not replace the current source and writer proofs.
+
+The authenticated manual WSL workaround reportedly allowed a batch preparation
+on its first try. A later owner report describes actual ext4 task placement,
+context thrash and an interrupted member merge. These reports do not qualify a
+supported hybrid cutover, current writer termination or original live acceptance.
+An interrupted merge cannot pass this implementation's full checkpoint capture:
+unmerged index stages cause capture to fail, retaining the reservation. A real-Git
+regression verifies that MERGE_HEAD, every index stage, exact index bytes, conflict
+content, refs and the claim remain untouched. The recovery owner must preserve
+that interrupted source; this path does not abort or replay its merge.
+
+A workspace whose `locked_by_task_id` is null but whose agent still holds it has
+no authoritative task-to-workspace binding for task-scoped stop. Stop explicitly
+refuses it rather than adopting it from a historical session, path or task name.
+The null-task holder regression verifies that the agent lock and generation remain,
+source is unchanged and available capacity remains zero even with a stopped,
+task-null session and absent claim. This is the explicit fail-closed disposition
+for the requested operator-path case: task stop is not an orphan-holder release
+API. Existing owner/operator reconciliation must establish exact current holder,
+generation, source/checkpoint, pin/operation and termination proof before any
+retirement. The reported disable/release/repoint sequence is not generalized into
+an authorized recovery recipe.
+
+The reported roughly 68-second mounted-drive failure does not identify the timed
+operation. In this immutable source, `GitManager._GIT_TIMEOUT` is 120 seconds;
+the cited `github.py` 60-second call creates a repository, not a demonstrated
+step in the failing repair preparation. The existing bounded preparation failure
+formatter records stage, exception cause chain and deepest source frame for an
+empty exception. Exact installed source and that failure receipt are needed to
+locate the original inner timeout. No timeout was raised on a timing inference,
+and the manual WSL success does not isolate the historical cause.
+
+Feedback verification: `aq test tests/test_task_controls.py
+tests/test_selection_catalogue.py -q` passed **222 tests**, including all four
+new negative cases, with 14 warnings in 148.09 seconds;
+`/tmp/wise87-feedback-regressions.log`. Catalogue regeneration, changed-path Ruff
+and whitespace checks passed. `src/` and `scripts/` remain byte-identical to
+verified production `e0214151da8b195cc69706efb9e67bed4e4562a3`; the final-source
+20/20 swarm receipt above therefore still applies. Only tests and documentation
+changed after that run.
+
+## Immutable fleet overlap and native combination disposition
+
+Fleet correction `69a45b2594f499a7cc957f6eedd94d26953c1999` was inspected from the
+local Git object store. The supervisor reports its exact hosted run 38500239625
+green 16/16, final-source swarm 20/20, integration area 387, focused 20 and strict
+performance nine. Those are fleet receipts, not independent validation performed
+by this worker. Its PR1518 remains a separate candidate: `69a45b259` is not an
+ancestor of this branch. The 1,001 tests and 20-scenario run above qualify this
+branch's production source only, not a combination with fleet.
+
+The current peer thread received immutable lifecycle source and this overlap
+disposition in `msg-e9460e8128ff453da465c306c62f6227`:
+
+- `claim_queries.activate_claim` is the semantic merge boundary. Preserve fleet's
+  transaction-bound holder proof, activation rechecks and accepted-CAS-dependent
+  CTE writes. Also preserve this branch's retirement of `retained_workspace_stop`
+  only for a completed receipt with an older captured claim epoch, after successful
+  activation. Pending receipts and durable checkpoint context stay intact. Do not
+  add an unconditional stale-key deletion or discard fleet's query-budget work.
+- `core.py` changes are in separate functions: retain this branch's stop/pause
+  cleanup and fleet's per-kind cap and disabled-base pruning behavior.
+- `worktree_manager.py` must retain checkpoint validation before stale-lock
+  cleanup, plus fleet's kind-cap and disabled-base reaper protections.
+- Keep fleet's exact reserved repair-successor acquisition predicate and its
+  current owner/stage/fence/predecessor-instance proof. Ordinary foreign locks
+  stay unavailable. This branch does not replace that integration-owner path.
+- Keep fleet's `record_holder` preparation fixture correction along with this
+  branch's acquisition receipts, crash/repeat-claim and source-preservation
+  regressions. Regenerate selection and ownership manifests from final sources.
+
+Both immutable candidates are retained for native integration; no sibling branch,
+frozen train or batch was merged or changed here. Any actual combined production
+candidate requires focused lifecycle, claim, integration-repair and acquisition
+checks, the existing performance/ownership ratchets without relaxed budgets,
+and its own final-source disposable swarm. Independent branch receipts cannot
+serve as that combined verification. No further idle coordination wait is needed.
