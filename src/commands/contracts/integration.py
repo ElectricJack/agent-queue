@@ -74,6 +74,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_redrive_root",
         "integration_authorize_root",
         "integration_redrive_child",
+        "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
     }
@@ -375,6 +376,46 @@ class IntegrationRedriveChildArgs(CommandArgs):
         ):
             raise ValueError("applying requires expected_head_sha and reason")
         return self
+
+
+class IntegrationRecoverCompletedContainerArgs(IntegrationRedriveChildArgs):
+    project_id: str = Field(min_length=1)
+    repository_id: str = Field(min_length=1)
+    branch: str = Field(min_length=1)
+    expected_completion_id: str | None = Field(default=None, min_length=1)
+    expected_generation: StrictInt | None = Field(default=None, ge=0)
+    expected_version: StrictInt | None = Field(default=None, ge=0)
+    expected_origin_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    expected_snapshot_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def applying_pins_preview(self):
+        if not self.dry_run and any(getattr(self, name) is None for name in (
+            "expected_completion_id", "expected_generation", "expected_version",
+            "expected_origin_sha256", "expected_snapshot_sha256",
+        )):
+            raise ValueError("apply requires completion, generation, version, origin and snapshot from preview")
+        if self.branch.startswith("refs/") or self.branch.startswith("-"):
+            raise ValueError("branch must name the exact task branch without a refs prefix")
+        return self
+
+
+class IntegrationRecoverCompletedContainerValue(CommandValue):
+    remote_head_sha: str | None = None
+    task_id: str | None = None
+    project_id: str | None = None
+    repository_id: str | None = None
+    branch: str | None = None
+    head_sha: str | None = None
+    completion_id: str | None = None
+    origin_sha256: str | None = None
+    snapshot_sha256: str | None = None
+    generation: int | None = None
+    version: int | None = None
+    old_head_sha: str | None = None
+    tree_sha: str | None = None
+    receipt: dict[str, Any] | None = None
+    reason: str | None = None
 
 
 class IntegrationReopenCollectionArgs(IntegrationRedriveChildArgs):
@@ -2353,6 +2394,41 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             return await invoke(args.model_copy(update={"dry_run": True}), ctx)
 
         registry.register(CommandRegistration(name, contract, train_control, train_control_preview))
+    name = "integration_recover_completed_container"
+    if registry.get(name) is None:
+        outcomes = {"preview", "recovered", "already_recovered", "refused", "invalid"}
+        contract = _operational_contract(
+            name, IntegrationRecoverCompletedContainerArgs, sorted(outcomes),
+            successes=frozenset({"preview", "recovered", "already_recovered"}),
+            side_effect=SideEffectClass.COMPOSITE,
+            result_model=IntegrationRecoverCompletedContainerValue, supports_preview=True,
+        )
+        contract = contract.model_copy(update={
+            "execution": contract.execution.model_copy(update={"effects": (
+                ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),
+                ReadClause(subject=EffectSubject.BRANCH_OWNERSHIP),
+                UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION,
+                             when=ClausePredicate(arg_equals=("dry_run", False))),
+            )}),
+            "presentation": CommandPresentation(
+                title="Recover a completed container checkpoint",
+                summary="Prove accepted published pass provenance and CAS only its checkpoint; delivery gates remain.",
+            ),
+        })
+
+        async def recover_completed_container(args, ctx):
+            return await _hierarchy_adapter(
+                "integration_recover_completed_container", args, ctx,
+                IntegrationRecoverCompletedContainerValue,
+                {"preview", "recovered", "already_recovered", "refused", "invalid"},
+            )
+
+        async def recover_completed_preview(args, ctx):
+            return await recover_completed_container(args.model_copy(update={"dry_run": True}), ctx)
+
+        registry.register(CommandRegistration(
+            name, contract, recover_completed_container, recover_completed_preview,
+        ))
     name = "integration_reconcile_expired_mutation"
     if registry.get(name) is None:
         outcomes = ("preview", "applied", "superseded", "refused")

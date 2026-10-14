@@ -605,6 +605,7 @@
         "tests/test_integration_ci_producers.py",
         "tests/test_integration_cleanup.py",
         "tests/test_integration_cli_controls_present.py",
+        "tests/test_integration_completed_container_recovery.py",
         "tests/test_integration_completion_recovery.py",
         "tests/test_integration_container_completion.py",
         "tests/test_integration_contracts.py",
@@ -8285,6 +8286,37 @@
       ],
       "markers": [],
       "summary": "Ensure the operator integration controls are registered in the CLI."
+    },
+    "tests/test_integration_completed_container_recovery.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:65697564f2b95810949d9cc3d73ea0a8309a6399c1cd069a6eca9671c0467949",
+      "imports": [
+        "src.cli.app",
+        "src.commands",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.event_schemas",
+        "src.git.manager",
+        "src.integration.completed_container_recovery",
+        "src.integration.delivery_truth",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.repository_git",
+        "src.integration.train",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Completed-container recovery with disposable PostgreSQL and real remote Git."
     },
     "tests/test_integration_completion_recovery.py": {
       "areas": [

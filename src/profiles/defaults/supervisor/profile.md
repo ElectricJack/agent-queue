@@ -230,6 +230,7 @@ start code work, tests or QA from a digest author turn.
     "get_task",
     "integration_close_delivered_pr",
     "integration_redrive_child",
+    "integration_recover_completed_container",
     "integration_abort_batch",
     "integration_pause_batch",
     "integration_resume_batch",

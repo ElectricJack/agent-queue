@@ -1854,6 +1854,26 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_recover_completed_container(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRecoverCompletedContainerArgs
+        from src.integration.completed_container_recovery import CompletedContainerRecovery
+
+        try:
+            request = IntegrationRecoverCompletedContainerArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", str(exc))
+        operator, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        result = await CompletedContainerRecovery(
+            self.db, self._integration_repository_git(),
+            git_first=lambda: self.config.integration.git_first,
+            authorize=lambda: integration_operator(self.db, request.project_id),
+        ).run(request, operator_id=operator)
+        return _with_reason(result["outcome"] != "refused", result)
+
     async def _cmd_integration_reopen_collection(self, args: dict) -> dict:
         """Recover a suspended producer, cancelled collection or failed verifier."""
         from pydantic import ValidationError

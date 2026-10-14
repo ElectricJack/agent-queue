@@ -559,6 +559,41 @@ def integration_redrive_child(
     _execute(ctx, "integration_redrive_child", args)
 
 
+@integration.command("recover-completed-container")
+@click.argument("task_id")
+@click.option("--project", "project_id", required=True)
+@click.option("--repository", "repository_id", required=True)
+@click.option("--branch", required=True, help="Exact task branch.")
+@click.option("--apply", is_flag=True, help="Apply the previewed checkpoint repair.")
+@click.option("--head", "expected_head_sha")
+@click.option("--completion", "expected_completion_id")
+@click.option("--generation", "expected_generation", type=click.IntRange(min=0))
+@click.option("--version", "expected_version", type=click.IntRange(min=0))
+@click.option("--origin-sha256", "expected_origin_sha256")
+@click.option("--snapshot-sha256", "expected_snapshot_sha256")
+@click.option("--reason")
+@click.pass_context
+@_handle_errors
+def integration_recover_completed_container(ctx: click.Context, task_id: str, **options) -> None:
+    """Preview a completed container's stale checkpoint repair from exact pass provenance.
+
+    Apply requires every identity printed by the preview and an audit reason.
+    Recovery changes only checkpoint provenance. Exact-source review, hosted CI
+    and normal train admission still control delivery.
+    """
+    apply = options.pop("apply")
+    if apply and any(options.get(key) is None for key in (
+        "expected_head_sha", "expected_completion_id", "expected_generation", "expected_version",
+        "expected_origin_sha256", "expected_snapshot_sha256", "reason",
+    )):
+        raise click.UsageError("--apply requires --head, --completion, --generation, --version, "
+                               "--origin-sha256, --snapshot-sha256 and --reason from preview")
+    _execute(ctx, "integration_recover_completed_container", {
+        "task_id": task_id, "dry_run": not apply,
+        **{key: value for key, value in options.items() if value is not None},
+    })
+
+
 @integration.command("reopen-collection")
 @click.argument("task_id")
 @click.option(

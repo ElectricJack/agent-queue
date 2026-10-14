@@ -106,6 +106,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
 | [`integration_record_root_noop`](integration_record_root_noop.md) | Record verified no-code root completion | Preview or complete an unheld root with exact no-artifact Git provenance. |
+| [`integration_recover_completed_container`](integration_recover_completed_container.md) | Recover a completed container checkpoint | Prove accepted published pass provenance and CAS only its checkpoint; delivery gates remain. |
 | [`integration_redrive_child`](integration_redrive_child.md) | Integration Redrive Child | Authenticated hierarchical integration operational control. |
 | [`integration_redrive_root`](integration_redrive_root.md) | Integration Redrive Root | Authenticated hierarchical integration operational control. |
 | [`integration_reevaluate_repair`](integration_reevaluate_repair.md) | Integration Reevaluate Repair | Authenticated hierarchical integration operational control. |
