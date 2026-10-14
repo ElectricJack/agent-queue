@@ -726,7 +726,7 @@ class AgentWaitQueriesMixin:
                 session["last_claim_epoch"] is None
                 or session["last_claim_epoch"] == row["claim_epoch"]
             )
-            and task["status"] in ("ASSIGNED", "IN_PROGRESS")
+            and task["status"] in ("ASSIGNED", "IN_PROGRESS", "WAITING")
             and task["assigned_agent_id"] == session["agent_id"]
             and (session["lifecycle"] != "pool" or session["claim_phase"] == "active")
         )

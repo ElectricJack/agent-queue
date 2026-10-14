@@ -8683,6 +8683,12 @@
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
       "reason": "Repairs only an idle misplaced agent workspace lock after checking foreign claims, live sessions, retained integration ownership and job pins. Reads integration owners as a refusal fence; changes workspace locks only, never branch ownership, publication or ref replay state."
+    },
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
+    },
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, continuations, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, wait_records, workspaces": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     }
   },
   "exclusions": {
@@ -8783,7 +8789,9 @@
     "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
     "src/database/tables.py::wait_source_events": "Generic wait outbox for all source kinds. Payloads are evidence hints; consumers re-observe authoritative state, never replay integration refs or lifecycle from this table.",
     "src/waits/sources.py::record_batch_event": "Generic wait source evidence bridge for batch transitions. It writes only the universal wait outbox; integration policy and authoritative batch state remain in src/integration.",
-    "src/waits/sources.py::execute_batch_mutation": "Transaction-preserving bridge from existing batch writes to the generic wait source outbox; contains no integration policy, ref replay or duplicate authority."
+    "src/waits/sources.py::execute_batch_mutation": "Transaction-preserving bridge from existing batch writes to the generic wait source outbox; contains no integration policy, ref replay or duplicate authority.",
+    "src/database/tables.py::wait_records": "Verified-wait condition and outcome storage owned by session waits; integration_outcome is a source kind, not an integration delivery journal.",
+    "src/database/tables.py::continuations": "Verified-wait resume checkpoint and admission storage owned by sessions; no Git ref mutation or delivery replay state."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -15339,6 +15347,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Generic bulk audit-log writer used for pool.bounds_rescoped fanout; preserves the existing audit rows and has no integration ref replay authority."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin._emit_task_graph_change::40f1ded3b71fdf05bc239a91f7ea3ab1bd5a43a5dea463aa278b1b31a633b1a5": {
+      "line": 1031,
+      "owner": "TaskCommandsMixin._emit_task_graph_change",
+      "call": "log_event",
+      "owner_fingerprint": "e6468a703af0c7d8c9e685e233ef25b07302fc256c3c728d78398f0b6caf258f",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary dashboard graph audit event carries committed task status for reconnect replay; no branch/ref identity or delivery authority."
     }
   },
   "generic_dependencies": {
@@ -16225,7 +16242,8 @@
     "src/waits/sources.py::record_dependency_source_change": "Generic dependency observation fanout on upstream evidence changes; integration callers remain charged independently.",
     "src/waits/sources.py::execute_task_status_mutation": "Generic task status outbox bridge for guarded bulk/legacy writes; integration-specific callers retain their ownership.",
     "src/waits/source_sql.py::task_transition_statement": "Generic guarded task/dependency source outbox CTE, used by all task status writers; writes only ordinary task state and universal wait evidence, with no integration policy or ref replay authority. Integration-specific callers remain charged.",
-    "src/waits/sources.py::payload_hash": "Generic canonical JSON SHA-256 for universal wait evidence, including resource invalidation authentication; no integration lifecycle, ref identity or replay authority."
+    "src/waits/sources.py::payload_hash": "Generic canonical JSON SHA-256 for universal wait evidence, including resource invalidation authentication; no integration lifecycle, ref identity or replay authority.",
+    "src/models.py::SUSPENDED_TASK_STATUSES": "Generic task lifecycle vocabulary shared with verified waits; contains no delivery state or ref mutation."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

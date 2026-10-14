@@ -57,9 +57,11 @@ LIVE_SESSION_STATES = ("starting", "running", "draining")
 #: The supply counters every profile, project row and provider reports.
 SUPPLY_FIELDS = ("ready", "idle", "busy", "starting", "draining", "unresponsive")
 #: Task statuses in which a pin keeps work on a provider (spec §Backend commands).
-INTENT_TASK_STATUSES = ("READY", "ASSIGNED", "IN_PROGRESS")
+INTENT_TASK_STATUSES = (
+    "READY", "ASSIGNED", "IN_PROGRESS", "WAITING", "HIBERNATED", "RESUME_PENDING",
+)
 #: A manual agent's current task counts only while it is one of these.
-_ACTIVE_TASK_STATUSES = frozenset({"ASSIGNED", "IN_PROGRESS", "WAITING_INPUT"})
+_ACTIVE_TASK_STATUSES = frozenset({"ASSIGNED", "IN_PROGRESS", "WAITING_INPUT", "WAITING"})
 #: Stage profiles no generic worker may stand in for (``routing_commands``).
 _CONTROL_PROFILE_IDS = frozenset(
     {"supervisor", "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest"}
@@ -310,6 +312,12 @@ async def build_allocation_snapshot(orchestrator: Any, *, now: float | None = No
     live_pool_agents = {s.agent_id for s in live if s.agent_id}
     live += await db.list_sessions(lifecycle="task", live_only=True)
     live = [s for s in live if s.profile_id in profiles]
+    statuses = await db.get_task_statuses([s.task_id for s in live if s.task_id])
+    live = [
+        s for s in live
+        if statuses.get(s.task_id) != "HIBERNATED"
+        and (statuses.get(s.task_id) != "RESUME_PENDING" or s.state == "starting")
+    ]
     titles = await db.get_task_titles([s.task_id for s in live if s.task_id])
     task_rows: dict[str, dict[str, dict[str, Any]]] = {}
     for session in sorted(live, key=lambda s: (s.project_id or "", s.id)):

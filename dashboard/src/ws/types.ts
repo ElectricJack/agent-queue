@@ -349,6 +349,7 @@ export interface TaskGraphChangedEvent extends BaseEvent {
   event_type: "task.created" | "task.reparented" | "task.updated" | "task.deleted" | "task.archived" | "task.ready" | "task.claimed";
   task_id: string;
   title?: string;
+  status?: string;
   old_parent?: string | null;
   new_parent?: string | null;
 }

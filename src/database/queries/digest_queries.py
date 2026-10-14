@@ -79,6 +79,9 @@ _IDLE_STATUSES = (
     "ASSIGNED",
     "IN_PROGRESS",
     "WAITING_INPUT",
+    "WAITING",
+    "HIBERNATED",
+    "RESUME_PENDING",
     "PAUSED",
     "BLOCKED",
 )

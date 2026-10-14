@@ -74,6 +74,9 @@ somehow declares none.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_explain",
+    "wait_graph",
+    "wait_lift",
     "artifact_verify",
     "benchmark_stage_record",
     "collaboration_accept",

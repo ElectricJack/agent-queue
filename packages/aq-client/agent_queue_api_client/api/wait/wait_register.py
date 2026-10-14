@@ -5,7 +5,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.wait_register_request import WaitRegisterRequest
+from ...models.wait_register_args import WaitRegisterArgs
 from ...models.wait_register_response_422 import WaitRegisterResponse422
 from ...models.wait_response import WaitResponse
 from ...types import Response
@@ -13,7 +13,7 @@ from ...types import Response
 
 def _get_kwargs(
     *,
-    body: WaitRegisterRequest,
+    body: WaitRegisterArgs,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -63,14 +63,14 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: WaitRegisterRequest,
+    body: WaitRegisterArgs,
 ) -> Response[WaitRegisterResponse422 | WaitResponse]:
     """Register a bounded typed wait and end the turn until its result pointer arrives.
 
      Register a bounded typed wait and end the turn until its result pointer arrives.
 
     Args:
-        body (WaitRegisterRequest):
+        body (WaitRegisterArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -94,14 +94,14 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: WaitRegisterRequest,
+    body: WaitRegisterArgs,
 ) -> WaitRegisterResponse422 | WaitResponse | None:
     """Register a bounded typed wait and end the turn until its result pointer arrives.
 
      Register a bounded typed wait and end the turn until its result pointer arrives.
 
     Args:
-        body (WaitRegisterRequest):
+        body (WaitRegisterArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,14 +120,14 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: WaitRegisterRequest,
+    body: WaitRegisterArgs,
 ) -> Response[WaitRegisterResponse422 | WaitResponse]:
     """Register a bounded typed wait and end the turn until its result pointer arrives.
 
      Register a bounded typed wait and end the turn until its result pointer arrives.
 
     Args:
-        body (WaitRegisterRequest):
+        body (WaitRegisterArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -149,14 +149,14 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: WaitRegisterRequest,
+    body: WaitRegisterArgs,
 ) -> WaitRegisterResponse422 | WaitResponse | None:
     """Register a bounded typed wait and end the turn until its result pointer arrives.
 
      Register a bounded typed wait and end the turn until its result pointer arrives.
 
     Args:
-        body (WaitRegisterRequest):
+        body (WaitRegisterArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

@@ -36,6 +36,7 @@ from src.database.queries.blocked_state import (
 from src.database.tables import (
     agents,
     archived_tasks,
+    continuations,
     events,
     gates,
     integration_branch_owners,
@@ -59,10 +60,12 @@ from src.database.tables import (
     task_tools,
     task_workspace_requirements,
     tasks,
+    wait_records,
     workspaces,
 )
 from src.models import (
     HOLD_LABEL_PREFIX,
+    SUSPENDED_TASK_STATUSES,
     AgentState,
     Task,
     TaskStatus,
@@ -1168,6 +1171,21 @@ class TaskQueryMixin:
         if saved.get("cleanup_pending"):
             raise ValueError("Task is paused but its session has not stopped; retry Resume.")
         prior = TaskStatus(saved.get("status", "READY"))
+        if prior in SUSPENDED_TASK_STATUSES:
+            # Pause stops the old session. Only an uncleared outcome on the
+            # current continuation can authorize a new resume; never restore
+            # WAITING onto a stopped owner or put a continuation in READY.
+            resolved = await conn.scalar(
+                select(wait_records.c.id)
+                .join(continuations, continuations.c.wait_id == wait_records.c.id)
+                .where(
+                    continuations.c.task_id == task_id,
+                    continuations.c.resume_state.notin_(("acknowledged", "failed", "cancelled")),
+                    wait_records.c.outcome != "pending",
+                    wait_records.c.cleared_at.is_(None),
+                ).limit(1)
+            )
+            prior = TaskStatus.RESUME_PENDING if resolved else TaskStatus.HIBERNATED
         if prior in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED):
             prior = (
                 TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
@@ -1635,7 +1653,11 @@ class TaskQueryMixin:
                 # WG-5: enforce raises when the flag is on and the
                 # caller didn't opt out via ``force=True``.  Warn-only
                 # otherwise (unchanged pre-flip behaviour).
-                if getattr(self, "_sm_enforce", False) and not force:
+                if (
+                    getattr(self, "_sm_enforce", False)
+                    or current_status in SUSPENDED_TASK_STATUSES
+                    or new_status in SUSPENDED_TASK_STATUSES
+                ) and not force:
                     from src.state_machine import InvalidTransition
 
                     raise InvalidTransition(

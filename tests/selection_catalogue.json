@@ -40,6 +40,7 @@
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
+        "tests/test_wait_commands.py",
         "tests/test_wait_dispatch.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_queries.py",
@@ -17760,6 +17761,43 @@
       ],
       "summary": "Tests for the internal vibecop plugin."
     },
+    "tests/test_wait_commands.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:57323603d2d6069ea7c036ddc773525c440513d0efcbceb0b3bfbfde9d9b3beb",
+      "imports": [
+        "src.api.codegen",
+        "src.api.models.wait",
+        "src.api.scope",
+        "src.api.target_scope",
+        "src.cli.auto_commands",
+        "src.cli.inventory",
+        "src.cli.waits",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.contracts.wait",
+        "src.commands.contracts.wait_v2",
+        "src.commands.principal",
+        "src.config",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.mcp_registration",
+        "src.profiles.capabilities",
+        "src.profiles.capability_sync",
+        "src.profiles.drift",
+        "src.tools.definitions",
+        "src.waits.conditions",
+        "src.waits.legacy",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified wait surfaces, principal fences and dormant runtime composition."
+    },
     "tests/test_wait_dispatch.py": {
       "areas": [
         "agent-waits"
@@ -17842,15 +17880,23 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:bda862320b5b5ce4d655bef2b123dfffb939a736e8ef1255a8d384502ee0c468",
+      "digest": "sha256:f581ac56616efbce581113c7f0e2a8db267a6a128c7870bbb4e7efc628365a25",
       "imports": [
+        "src.api.models.task",
+        "src.commands.task_commands",
+        "src.database.queries.metrics_queries",
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.events",
+        "src.sessions.obsolete",
+        "src.state_machine",
         "src.waits.conditions",
         "src.waits.registry"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Typed condition boundaries; no source or sleep policy is accepted as prose."
+      "summary": "Verified-wait lifecycle vocabulary (implementation §6; services remain opt-in)."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [
