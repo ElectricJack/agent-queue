@@ -18170,8 +18170,9 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:87f43fbc69ea4e0fd074b21dae6465c52bff02718048ea954573df6171c583aa",
+      "digest": "sha256:a6195d1233a04b517b72db08619cc0d8f34ad222ff4f75b5bce9ff6a0def2ddd",
       "imports": [
+        "src.claim_file",
         "src.config",
         "src.event_schemas",
         "src.git.manager",
