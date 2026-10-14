@@ -752,6 +752,9 @@ class TrustedExecutionMetadata(V2Base):
     security policy remains in the execution contracts, not in author assertions.
     """
 
+    required_capabilities: tuple[QualifiedName, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     state_schema_version: Annotated[int, Field(strict=True, ge=1)] | None = None
     scripts: dict[Identifier, PinnedScript] = Field(
         default_factory=dict, exclude_if=lambda value: not value

@@ -33736,6 +33736,41 @@
         ],
         "title": "ExecuteRequest"
       },
+      "ExecutionRequirementsDTO": {
+        "properties": {
+          "required_features": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Features",
+            "default": []
+          },
+          "required_capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Capabilities",
+            "default": []
+          },
+          "state_schema_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Schema Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ExecutionRequirementsDTO",
+        "description": "Reviewed requirements, never a grant or a resolved principal."
+      },
       "ExplainReason": {
         "properties": {
           "code": {
@@ -47691,6 +47726,11 @@
           "collection": {
             "$ref": "#/components/schemas/ExplanationValueDTO"
           },
+          "max_iterations": {
+            "type": "integer",
+            "title": "Max Iterations",
+            "default": 500
+          },
           "item_binding": {
             "type": "string",
             "title": "Item Binding"
@@ -54742,6 +54782,13 @@
             "type": "string",
             "title": "Purpose",
             "default": "routine"
+          },
+          "execution_requirements": {
+            "$ref": "#/components/schemas/ExecutionRequirementsDTO",
+            "default": {
+              "required_features": [],
+              "required_capabilities": []
+            }
           },
           "event_groups": {
             "items": {

@@ -10,7 +10,7 @@ Some work should happen consistently without putting policy into a daemon branch
 
 * **Source** is the Markdown file in the vault. Its YAML frontmatter states an id, scope and triggers; its body is human-readable policy. See [source parsing](../../src/playbooks/authoring.py).
 * **Semantic body** is the proposed JSON `rules` and `steps` graph. AQ supplies source identity, version and live dependency fingerprints rather than trusting those values from the proposal. See [proposal construction](../../src/playbooks/proposal.py).
-* **Artifact** is the canonical, SHA-256-addressed V2 JSON definition. It has typed rules, seven possible step kinds, and the command/profile contracts it was compiled against. See [the definition model](../../src/playbooks/definition.py).
+* **Artifact** is the canonical, SHA-256-addressed V2 JSON definition. It has typed rules, eight possible step kinds, and the command/profile contracts it was compiled against. See [the definition model](../../src/playbooks/definition.py).
 * **Activation** selects one artifact at a system, project, or agent-type scope and may enable or disable it. An artifact can exist without being active. See [activation health](../../src/playbooks/activation.py).
 * **Run** is one durable execution of one matching rule, pinned to the artifact hash it started with. Its mutable snapshot, receipts and waits are separate from the immutable artifact. See [run state](../../src/playbooks/run_state.py).
 * **Human gate** is a durable, operator-resolved decision checkpoint. It can cause an event or resume a playbook wait; it is not a task dependency. A dependency controls whether a task is ready, whereas a gate waits for a decision and may be attached to several tasks.
@@ -64,11 +64,12 @@ execution contracts; feature support grants no capabilities.
 
 `trusted_execution.state_schema_version` is a strict positive integer derived
 from source frontmatter, defaulting to 1 for state command users. The `state_v1`
-and `script_v1` hooks reserve those requirements, but this engine revision refuses
-them until their executors are implemented. Future state/script owners extend
-the strict metadata model with reviewed execution pins and add support alongside
-their execution acceptance checks. They must not enable a feature merely because
-its name is recognized.
+and `script_v1` requirements now have executors. Scripts run as ordinary processes
+with timeout/output caps, optional strict JSON parsing and protected output.
+Source `required_capabilities` is pinned for review, never used to manufacture
+caller authority. Source `scripts` manifests include program/dependencies and
+requested execution policy; only the server resolves digest pins.
+See [authoring and rollout](../guides/playbook-building-blocks.md).
 
 Empty feature and execution metadata are omitted without removing any legacy
 defaults: existing canonical artifact bytes and hashes remain unchanged. Unknown

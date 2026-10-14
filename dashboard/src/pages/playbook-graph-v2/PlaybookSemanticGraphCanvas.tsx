@@ -259,6 +259,14 @@ export default function PlaybookSemanticGraphCanvas({
           <Controls position="bottom-right" showInteractive={false} />
           {overlayApplied && (
             <Panel position="top-right">
+              {graph?.execution_requirements && (
+                <details className="mb-2 max-w-sm rounded bg-gray-950 p-2 text-xs text-gray-200">
+                  <summary>Execution requirements</summary>
+                  <p>Features: {graph.execution_requirements.required_features?.join(", ") || "None"}</p>
+                  <p>Required capabilities: {graph.execution_requirements.required_capabilities?.join(", ") || "Not declared"} (not grants)</p>
+                  <p>State schema: {graph.execution_requirements.state_schema_version ?? "Not used"}</p>
+                </details>
+              )}
               <section
                 aria-label="Run overlay"
                 className="rounded border border-gray-700 bg-gray-950/95 px-3 py-2 text-[10px] text-gray-300"

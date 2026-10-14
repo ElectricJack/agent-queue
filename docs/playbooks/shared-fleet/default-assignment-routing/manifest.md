@@ -1,6 +1,6 @@
 ---
 playbook_id: default-assignment-routing
-artifact_sha256: sha256:e1ce5a7883f9ae482a5dc7d3ede56d4f1cdd2866e026e5fedafefcb2371b7e75
+artifact_sha256: sha256:0ffa8bf49c603ef61b656854bc9ee5107050567a4db90650a1bb537130e10e5c
 source_sha256: sha256:9e058fb9132d22ddfe610c40fbbe5df33f596c7e36c7b3f10734f830606ab405
 contract_fingerprint: sha256:dd441e7c2e0d7cde7836aed7f1f9526d2cd314a53cc04598f254054f634d7991
 questions_resolved: 0

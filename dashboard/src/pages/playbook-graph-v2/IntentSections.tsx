@@ -1,4 +1,4 @@
-import { COLLECTION_EXPRESSION_LABELS } from "./types";
+import { COLLECTION_EXPRESSION_LABELS, valueDisplay } from "./types";
 import type { ReactNode } from "react";
 import type {
   EffectClauseDTO,
@@ -130,7 +130,7 @@ export function Value({ value }: { value: ExplanationValueDTO }) {
       title={value.type_name ? `${value.type_name} (${value.kind})` : value.kind}
       className={`min-w-0 break-words ${value.redacted ? "font-mono text-rose-300" : "text-gray-200"}`}
     >
-      {value.display}
+      {valueDisplay(value)}
     </span>
   );
 }

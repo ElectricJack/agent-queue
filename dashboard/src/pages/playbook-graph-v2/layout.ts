@@ -4,6 +4,7 @@ import type {
   EdgeOverlayDTO,
   GraphEdgeDTO,
   GraphLayoutDTO,
+  ExecutionRequirementsDTO,
   GraphNodeDTO,
   GridPositionDTO,
   NodeOverlayDTO,
@@ -48,6 +49,7 @@ export interface SemanticGraphLayoutResult {
 }
 
 export interface SemanticGraphInput {
+  execution_requirements?: ExecutionRequirementsDTO;
   /** The artifact this projection is of. An overlay is only ever drawn on the
    *  artifact whose hash matches it. */
   artifact?: { artifact_sha256: string };

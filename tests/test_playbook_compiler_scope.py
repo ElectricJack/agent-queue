@@ -129,3 +129,10 @@ async def test_shadow_compile_remains_operator_only(compiler):
         await check_request_scope("playbook_v2_shadow_compile", {}, scope(), db=compiler)
         == "out of scope: playbook_v2_shadow_compile"
     )
+
+
+@pytest.mark.parametrize("command", ["playbook_commands", "doctor_catalog"])
+async def test_compiler_catalogue_reads_do_not_inject_identity_into_schema(compiler, command):
+    args = {}
+    assert await check_request_scope(command, args, scope(), db=compiler) is None
+    assert args == {}
