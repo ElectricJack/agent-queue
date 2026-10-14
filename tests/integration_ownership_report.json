@@ -9745,6 +9745,30 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Pool workspace-lock repair reads retained integration owners before moving an idle agent lock. Ordered workspace locks, foreign claims, live sessions and job pins fence the repair; no retained owner is erased or reassigned.",
+      "landing_span": [
+        1036,
+        1106
+      ],
+      "baseline_span": null
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only retained integration-owner and job-pin admission guard before reprovisioning a missing pool worktree; attached or handoff-pending ownership forbids recreation.",
+      "landing_span": [
+        634,
+        648
+      ],
+      "baseline_span": null
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Integration ownership and repair tables imported by claim preparation and its workspace-lock recovery guard; includes job pins to preserve retained workspace bindings.",
+      "landing_span": [
+        53,
+        71
+      ],
+      "baseline_span": null
     }
   },
   "shared_state": {

@@ -1,11 +1,10 @@
 # Software-factory policy
 
 **Status: normative.** Approved 2026-09-11 (vault spec
-`projects/agent-queue/specs/software-factory-policy-simplification-2026-09-11.md`). This page is the
-one statement of how AQ admits, delivers and recovers work. Role instructions — shipped profiles
-(`src/profiles/defaults/`), AQ skills (`src/skills/`), prime templates (`src/prime/templates/`) and
-remembered project guidance — reference this page instead of restating workflow. Conflicting instructions
-are bugs. Historical reports, reviews and superseded specs are evidence, not directives.
+`projects/agent-queue/specs/software-factory-policy-simplification-2026-09-11.md`). This is AQ's one
+admission, delivery and recovery policy. Shipped profiles (`src/profiles/defaults/`), skills
+(`src/skills/`), prime templates (`src/prime/templates/`) and remembered guidance reference it.
+Conflicting instructions are bugs; historical reports, reviews and superseded specs are evidence, not directives.
 
 ## A. Admit authorised, executable work
 
@@ -34,13 +33,10 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   based.
 - Publication validates the exact candidate SHA; a changed candidate invalidates earlier checks. The
   project declares its required checks. A check that could not run is *unavailable*, never a pass.
-- Compatible completed sources for one delivery branch collect into one frozen candidate. A base
-  conflict and authenticated absence of the exact PR workflow do not require each author to merge
-  the default branch first. Source identity and configured review authorization still gate
-  admission; genuine red or unavailable observations remain gates. One bounded batch repair carries
-  every frozen source as an ancestor, merges all remaining members, regenerates shared artifacts
-  once, and validates the complete candidate before publication. See [the conflicting-source
-  contract](../specs/design/conflicting-source-batches.md).
+- Compatible completed sources collect into one frozen candidate per delivery branch. Base conflicts and
+  authenticated absence of the exact PR workflow do not require authors to merge the default branch.
+  Source identity, configured review authorization and red or unavailable checks gate admission. One bounded
+  repair retains every frozen source as an ancestor, merges remaining members, regenerates shared artifacts once and validates the candidate before publication; see [the contract](../specs/design/conflicting-source-batches.md).
 - There is **no automatic** per-task reviewer, final reviewer, merge sweep or review-of-review
   chain, and no mandatory multi-pass gate chain. Review is optional and risk-based; when wanted it
   is one explicit task or gate.
@@ -68,12 +64,10 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   and integration ownership remain binding.
 - A known transient failure retries within the existing budget. An unknown cause, an exhausted
   budget or a human-only decision holds with a concrete reason and one durable escalation.
-- Shared preparation faults (`slot_reset_failed`, missing or mismatched worktrees,
-  repeated unproved own-branch handoffs) are infrastructure incidents. Correlate
-  the exact session, claim, workspace path, Git branch and ownership evidence;
-  preserve the daemon's bounded backoff and retained preparations. Escalate one
-  incident with that evidence and the required repair. Do not mass-pause tasks
-  to suppress a system fault or override an explicit human hold during recovery.
+- Shared preparation faults (`slot_reset_failed`, missing/mismatched worktrees, repeated unproved
+  own-branch handoffs) are infrastructure incidents. Correlate exact session, claim, workspace path, Git branch
+  and ownership evidence; preserve bounded backoff and retained preparations. Escalate one incident with
+  evidence and repair. Never mass-pause tasks to suppress faults or override human recovery holds.
 - An explicitly authorized continuous integration policy may replace an exhausted repair session
   with a fresh bounded stage. It preserves previous attempts, dossiers and stopped-writer/fence
   proof; it does not reset the old session's budget. Routine CI/conflict repair continues
