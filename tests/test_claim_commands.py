@@ -232,7 +232,7 @@ async def stopped_slot_reset_claim(handler, db, tmp_path, *, detached=False, sto
     """The retained claim left by a stopped worker after a reset incident."""
     await mktask(db, "t1", profile_id="worker")
     sid, wd = await pool_session(db, tmp_path)
-    assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+    assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
     await db.transition_task("t1", TaskStatus.BLOCKED, force=True)
     await db.update_workspace("ws-agent-1", locked_by_task_id=None, locked_by_agent_id=None)
     if stopped:
@@ -795,7 +795,7 @@ class TestClaim:
         remove_claim_file(wd)
         assert read_claim_file(wd) is None
         assert await db.get_task_meta("t1", "prepare_failure") == evidence
-        assert (await db.get_session(sid)).last_claim_result == "drain_requested"
+        assert (await db.get_session(sid)).last_claim_result == "prepare_failed"
         assert protected.read_text() == "unrelated source must survive\n"
         handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
 
@@ -2164,7 +2164,7 @@ class TestClaim:
 
         result = await settled_claim(scoped(handler, successor), {"next": True})
 
-        assert result["result"] == "prepare_failed", result
+        assert result["result"] == "drain_requested", result
         assert "foreign claim" in result["reason"]
         manager.ensure_slot_checkout.assert_not_awaited()
         manager.reset_slot_for_task.assert_not_awaited()
@@ -2173,7 +2173,7 @@ class TestClaim:
         assert protected.read_text() == "old source\n"
         fresh = await db.get_session(successor)
         assert fresh.last_claim_epoch == (await db.get_task("new")).claim_epoch == 1
-        failure = await db.get_task_meta("new", "claim_preparation_failure")
+        failure = await db.get_task_meta("new", "prepare_failure")
         assert failure["session_id"] == successor
         assert failure["claim_epoch"] == fresh.last_claim_epoch
         assert fresh.last_claim_result == "prepare_failed"

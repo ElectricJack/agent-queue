@@ -15480,7 +15480,15 @@
       "disposition": "ordinary",
       "reason": "Audit event for re-leasing a detached task's own expired origin reservation before its drain cut (sound-willow-55); ordinary audit storage, no ref replay authority."
     },
-    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::2000800a19f07b12dcfd441b364b958149789c935756a56406678e50d5d7e2c8": {},
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_task_close::2000800a19f07b12dcfd441b364b958149789c935756a56406678e50d5d7e2c8": {
+      "line": 1319,
+      "owner": "SessionCommandsMixin._cmd_task_close",
+      "call": "set_task_meta",
+      "owner_fingerprint": "eb5214b9825c8aad11de6ca9ecf9baa56dbaa62ac2d8e7648b147fe054c86164",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'failure_class' Re-reviewed after the feedback-obligation close guard: audit call and payload unchanged."
+    },
     "src/asks/operations.py::ReviewOperations.run_stage::8eb7f5847f71846e2a5b665e5cfb37fd46ad0e184cbe0da1769b716b1506a40a": {
       "line": 876,
       "owner": "ReviewOperations.run_stage",

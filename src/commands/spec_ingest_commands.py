@@ -101,7 +101,7 @@ class SpecIngestCommandsMixin:
                         "Follow docs/templates/spec.md and the Spec supersession checklist in "
                         "docs/guides/reviews.md. Account for every predecessor goal as kept, changed "
                         "or dropped with approved-revision citations, evidence and reasons. Every "
-                        "drop requires Jack's explicit sign-off for that goal and replacement "
+                        "drop requires Jack's explicit sign-off for the goal and replacement "
                         "revision. Report missing accounting or unsigned drops to the supervisor "
                         "and do not commit affected work; general approval alone is insufficient."
                     ),

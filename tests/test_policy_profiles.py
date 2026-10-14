@@ -99,7 +99,7 @@ async def test_builtin_default_uses_preview_placement_review_and_no_activation(e
         revision = await handler.db.get_review_revision(review["review_id"], 1)
         assert revision["playbook"]["playbook_id"].startswith("target.")
         assert not revision["playbook"]["activate_on_approval"]
-        approved = await handler.execute("review_decide", {
+        approved = await decide(handler, {
             "review_id": review["review_id"], "revision": 1, "decision": "approve",
         })
         assert approved["success"], approved

@@ -113,9 +113,8 @@ class TestAddWorkspaceKindId:
         assert "does-not-exist" in result["error"]
 
 
-@pytest.mark.parametrize("stage", ["avalidate_checkout", "aget_current_branch", "ahas_uncommitted_changes"])
 async def test_slow_workspace_annotations_do_not_block_independent_inventory_reads(
-    setup, monkeypatch, stage,
+    setup, monkeypatch,
 ):
     handler, db, tmp_path = setup
     path = tmp_path / "owned-source"
@@ -127,9 +126,7 @@ async def test_slow_workspace_annotations_do_not_block_independent_inventory_rea
         source_type=RepoSourceType.LINK, kind_id="game-repo",
     ))
     git = handler.orchestrator.git
-    git.avalidate_checkout = AsyncMock(return_value=True)
-    git.aget_current_branch = AsyncMock(return_value="sample")
-    git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+    git.aread_status_summary = AsyncMock(return_value=("sample", False))
     entered, cancelled = asyncio.Event(), asyncio.Event()
 
     async def stalled(*args, **kwargs):
@@ -140,7 +137,7 @@ async def test_slow_workspace_annotations_do_not_block_independent_inventory_rea
             cancelled.set()
 
     with monkeypatch.context() as fault:
-        fault.setattr(git, stage, stalled)
+        fault.setattr(git, "aread_status_summary", stalled)
         request = asyncio.create_task(handler._cmd_list_workspaces({"project_id": "p1"}))
         try:
             await asyncio.wait_for(entered.wait(), 10)

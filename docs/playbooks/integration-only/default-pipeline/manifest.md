@@ -6,7 +6,7 @@ contract_fingerprint: sha256:a0f47bce57968a66c1be8eefe5e1f3c6174773fd8d384c34ef4
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
-  - ensure_task
+  - ensure_spec_ingest
   - gate_create
   - task_batch_commit
   harness_tools: []

@@ -1022,10 +1022,11 @@ async def test_pool_revision_submission_keeps_existing_review(
     comment = await handler.execute("review_comment", {
         "review_id": review_id, "revision": 1, "quote": "Draft", "body": "Expand it.",
     })
-    assert (await handler.execute("review_decide", {
+    assert (await decide(handler, {
         "review_id": review_id, "revision": 1, "decision": "request_changes",
     }))["success"]
-    task = await db.find_task_by_dedup_key("p", f"review-revision:{review_id}:1")
+    task = [t for t in await db.list_tasks(project_id="p")
+            if (await db.get_task_meta(t.id, "review_response") or {}).get("review_id") == review_id][0]
     await db.update_task(task.id, status=TaskStatus.IN_PROGRESS)
     await _live_worker(db, "worker", task.id)
     store = SessionTokenStore(db)
@@ -1083,10 +1084,11 @@ async def test_revision_task_cannot_submit_to_another_review(env):
         "task_id": "peer", "kind": "spec", "title": "Other", "content": "# Other\n",
     })
     review_id = assigned["review_id"]
-    assert (await handler.execute("review_decide", {
+    assert (await decide(handler, {
         "review_id": review_id, "revision": 1, "decision": "request_changes",
     }))["success"]
-    task = await db.find_task_by_dedup_key("p", f"review-revision:{review_id}:1")
+    task = [t for t in await db.list_tasks(project_id="p")
+            if (await db.get_task_meta(t.id, "review_response") or {}).get("review_id") == review_id][0]
     await db.update_session("worker", task_id=task.id)
     refused = await _scoped(handler, "review_submit", {
         "review_id": other["review_id"], "content": "# Wrong document\n",
