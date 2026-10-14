@@ -1350,7 +1350,7 @@ class TestClaim:
         release = AsyncMock(return_value=False)
         handler.orchestrator.arelease_integration_writer_for_retry = release
         events = spy_events(handler)
-        failed = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        failed = await settled_claim(scoped(handler, sid), {"next": True})
         assert failed["result"] == "prepare_failed"
         held = await db.get_session(sid)
         record = await db.get_task_meta("child", "prepare_failure")
