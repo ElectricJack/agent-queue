@@ -23,6 +23,10 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   exception.
 - Human approval applies where scope or authority requires it, bound to the exact work it approves.
   Routine in-scope work gets no extra approval gate.
+- A spec that supersedes or overlaps approved specs accounts for every predecessor goal as
+  `kept`, `changed` or `dropped`, with source and replacement evidence. Dropped goals require
+  Jack's explicit sign-off and are flagged in the review; delegated review approval alone
+  cannot authorize them. See the [spec supersession checklist](../guides/reviews.md#spec-supersession-checklist).
 
 ## B. Deliver one exact candidate through one owner
 
