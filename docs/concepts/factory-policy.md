@@ -34,13 +34,11 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   based.
 - Publication validates the exact candidate SHA; a changed candidate invalidates earlier checks. The
   project declares its required checks. A check that could not run is *unavailable*, never a pass.
-- Compatible completed sources for one delivery branch collect into one frozen candidate. A base
-  conflict and authenticated absence of the exact PR workflow do not require each author to merge
-  the default branch first. Source identity and configured review authorization still gate
-  admission; genuine red or unavailable observations remain gates. One bounded batch repair carries
-  every frozen source as an ancestor, merges all remaining members, regenerates shared artifacts
-  once, and validates the complete candidate before publication. See [the conflicting-source
-  contract](../specs/design/conflicting-source-batches.md).
+- Compatible completed sources collect into one frozen candidate per delivery branch. Base conflicts
+  and authenticated absence of the exact PR workflow do not require authors to merge the default branch.
+  Source identity, configured review authorization, genuine red and unavailable observations still gate.
+  One bounded batch repair preserves every frozen source as an ancestor, merges remaining members,
+  regenerates shared artifacts once and validates before publication. See [the contract](../specs/design/conflicting-source-batches.md).
 - There is **no automatic** per-task reviewer, final reviewer, merge sweep or review-of-review
   chain, and no mandatory multi-pass gate chain. Review is optional and risk-based; when wanted it
   is one explicit task or gate.
@@ -61,19 +59,16 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
   reconciliation preserve it; reopening then failing replaces it. Current `FAILED` incidents,
   including aborted daemon-authored promotions, can be held with a recorded diagnosis without changing
   status or counters. Retry requires a stopped attempt on a `BLOCKED` task and all recovery guards.
-- An accepted explicit task restart or reopen supersedes its previous recovery incident in the
-  READY-write transaction, including holds on already-READY tasks; preserve diagnosis, history and
-  recovery budget, and archive the notification. Projection and refused restarts retain holds;
-  repair delegates release them only after branch handoff. Pauses, labels, dependencies, human gates
-  and integration ownership remain binding.
+- An accepted explicit restart or reopen supersedes the previous recovery incident in the READY-write
+  transaction, including already-READY holds; preserve diagnosis, history and budget, and archive the
+  notification. Projection and refused restarts retain holds; repair delegates release them only after
+  branch handoff. Pauses, labels, dependencies, human gates and integration ownership remain binding.
 - A known transient failure retries within the existing budget. An unknown cause, an exhausted
   budget or a human-only decision holds with a concrete reason and one durable escalation.
-- Shared preparation faults (`slot_reset_failed`, missing or mismatched worktrees,
-  repeated unproved own-branch handoffs) are infrastructure incidents. Correlate
-  the exact session, claim, workspace path, Git branch and ownership evidence;
-  preserve the daemon's bounded backoff and retained preparations. Escalate one
-  incident with that evidence and the required repair. Do not mass-pause tasks
-  to suppress a system fault or override an explicit human hold during recovery.
+- Shared preparation faults (`slot_reset_failed`, missing/mismatched worktrees, repeated unproved
+  own-branch handoffs) are infrastructure incidents. Escalate once with the exact session, claim,
+  workspace path, Git branch, ownership evidence and required repair; preserve bounded backoff and
+  retained preparations. Never mass-pause tasks to suppress a system fault or override a human hold.
 - An explicitly authorized continuous integration policy may replace an exhausted repair session
   with a fresh bounded stage. It preserves previous attempts, dossiers and stopped-writer/fence
   proof; it does not reset the old session's budget. Routine CI/conflict repair continues
@@ -84,10 +79,9 @@ are bugs. Historical reports, reviews and superseded specs are evidence, not dir
 
 ## Testing scope
 
-Workers use `aq test` for focused and related area checks, recording exact commands. Full-suite runs belong to CI
-or tasks about the suite. Compare against a recorded known-failing baseline; do not capture one per task.
-A pre-existing failure neither fails the task nor justifies weakening or skipping tests. Task authors specify
-focused and area checks. See [resource gating](../guides/resource-gating.md) for the baseline-note workflow.
+Workers use `aq test` for focused and related area checks, recording exact commands; task authors specify these checks.
+Full-suite runs belong to CI or suite tasks. Compare against a recorded known-failing baseline; do not capture one per task.
+A pre-existing failure neither fails the task nor justifies weaker or skipped tests. See [resource gating](../guides/resource-gating.md).
 
 ## Keeping instructions in line
 

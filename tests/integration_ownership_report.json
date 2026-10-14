@@ -9745,6 +9745,15 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Claim and integration schema imports; job_workspace_pins joins retained branch ownership as a refusal fence for repairing an idle misplaced workspace lock."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Repairs only an idle misplaced agent workspace lock after checking foreign claims, live sessions, retained integration ownership and job pins. Reads integration owners as a refusal fence; changes workspace locks only, never branch ownership, publication or ref replay state."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only attached/handoff-pending integration-owner and job-pin fence. Prevents slot recreation or abandoned-merge recovery from changing retained checkouts; grants no release, delivery or ref replay authority."
     }
   },
   "shared_state": {
