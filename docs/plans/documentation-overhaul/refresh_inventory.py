@@ -420,6 +420,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Smart test selection: test discovery, the selection catalogue, rules and policy."),
     ("src/agent_waits.py", "scheduler", "docs/guides/agent-waits.md", PRODUCTION,
      "Durable agent waits that hold a task open on job, task, message or timer conditions."),
+    ("src/waits/**", "scheduler", "docs/guides/agent-waits.md", PRODUCTION,
+     "Verified wait conditions, source adapters, the wait graph and its explanations."),
     ("src/agent_cron.py", "scheduler", "docs/guides/agent-cron.md", PRODUCTION,
      "Session-owned recurring prompt arithmetic and daemon delivery adapters."),
     ("src/jobs/__init__.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
