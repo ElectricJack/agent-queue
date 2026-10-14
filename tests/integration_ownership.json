@@ -15291,6 +15291,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Deletes the claimed_by_session record a durably stopped writer left on a task the operator closes (azure-beacon-38); ordinary claim lifecycle, no ref replay or duplicate integration lifecycle storage."
+    },
+    "src/sessions/worker_recovery.py::prepare_guarded_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 302,
+      "owner": "prepare_guarded_recovery",
+      "call": "delete",
+      "owner_fingerprint": "001b9fe77f07c2555eec510d1804540fbccf64361f136ef7c2ff1b8ea07dc934",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Removes only the failed worker native resume key under exact task epoch/session instance/failure-record guards; ordinary continuation state, no ref replay or integration lifecycle authority."
     }
   },
   "generic_dependencies": {

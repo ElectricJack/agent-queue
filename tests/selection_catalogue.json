@@ -8436,7 +8436,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:875816204ecd567398786b7fc9266d3fc148faba2b4cd9ff0077a55b061f2df5",
+      "digest": "sha256:98c1a120378334a5de78fb8007cf903c15ef4f40dcffec6a037ffcdf9dadefd6",
       "imports": [
         "src.api.auth",
         "src.commands.handler",
@@ -8456,7 +8456,8 @@
         "src.sessions",
         "src.sessions.fake",
         "src.sessions.provider",
-        "src.sessions.reconciler"
+        "src.sessions.reconciler",
+        "src.sessions.worker_recovery"
       ],
       "markers": [
         "parametrize"
@@ -15544,7 +15545,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:e64c32a3dccd1091457f3c16d3866219907b2a1b75ba66dfd90f6a96438fb725",
+      "digest": "sha256:6d0a4b57368a7dc8ae82b7123ebd9d4b27350adf997a55a73e27bcbf803ae463",
       "imports": [
         "src.agent_waits",
         "src.commands",
@@ -15559,6 +15560,7 @@
         "src.messages.session_lens",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.orchestrator.workspace",
         "src.providers.availability",
         "src.providers.availability_service",

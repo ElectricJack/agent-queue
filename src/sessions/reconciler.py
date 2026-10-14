@@ -1675,15 +1675,18 @@ class SessionReconciler:
 
     async def _recover_guarded_failure(self, provider, row, task, record, now: float) -> None:
         """One retry, then explicit attention, across replacement sessions."""
-        from src.sessions.worker_recovery import MAX_SAME_CAUSE, THRASH_CAUSE
+        from src.sessions.worker_recovery import (
+            MAX_SAME_CAUSE,
+            THRASH_CAUSE,
+            prepare_guarded_recovery,
+        )
 
         cause = record["cause"]
         blocked = record["count"] >= MAX_SAME_CAUSE
-        if cause == THRASH_CAUSE:
-            # A fresh retry must not resume the context that just thrashed.
-            await self.db.delete_task_meta(task.id, "session_resume_key")
-        await self.db.set_task_meta(task.id, META_STALL_NUDGES, "0")
-        await self.db.set_task_meta(task.id, META_STALL_LAST_ACTION, "0")
+        deferred = False
+        unconfirmed = False
+        if not await prepare_guarded_recovery(self.db, row, task, record):
+            return
         if cause == "stalled":
             try:
                 await provider.interrupt(self._handle(row))
@@ -1696,6 +1699,13 @@ class SessionReconciler:
                 row, reason=cause,
                 task_status=TaskStatus.BLOCKED if blocked else TaskStatus.READY,
             )
+            from src.sessions.worker_recovery import pool_recovery_disposition
+
+            disposition = await pool_recovery_disposition(self.db, row, task, record)
+            if disposition is None:
+                return  # No confirmed outcome, duplicate, or a newer claim/decision.
+            deferred = disposition["disposition"] == "handoff_deferred"
+            unconfirmed = disposition["disposition"] == "stop_unconfirmed"
         else:
             await self._stop_session(provider, row, reason=cause)
             if not blocked:
@@ -1710,21 +1720,32 @@ class SessionReconciler:
         await self.db.add_task_comment(
             task.id,
             f"Worker {row.id}: {cause}, consecutive incident {record['count']}. "
-            + ("BLOCKED; automatic relaunch stopped. Supervisor investigation required. "
+            + ("Continuation deferred: writer termination is unconfirmed; "
+               "claim/workspace binding retained. " if unconfirmed else
+               "Continuation deferred: stopped writer retains its claim/workspace binding; "
+               "supervisor investigation and guarded owner handoff required. "
+               if deferred else
+               "BLOCKED; automatic relaunch stopped. Supervisor investigation required. "
                if blocked else "Retrying with a bounded continuation note. ")
             + "Check the branch and recovery note in aq prime before repeating reads.",
             author_kind="supervisor", author_id="session-reconciler",
         )
-        if blocked:
+        if unconfirmed and not blocked:
+            return
+        if blocked or deferred:
             await self.db.notify_task_recovery(task.id, project_id=task.project_id)
             await self._emit(
                 "task.needs_attention", task_id=task.id, project_id=task.project_id,
-                title=task.title, session_id=row.id, reason=f"session_{cause}",
+                title=task.title, session_id=row.id,
+                reason=f"session_{cause}_handoff_deferred" if deferred and not blocked
+                else f"session_{cause}",
             )
             await self._emit(
                 "task.failed", task_id=task.id, project_id=task.project_id,
                 title=task.title, status=TaskStatus.BLOCKED.value, context=f"session_{cause}",
-                error=f"{record['count']} consecutive {cause} incidents; automatic retries stopped",
+                error=("Bounded continuation deferred behind retained stopped-writer binding"
+                       if deferred else
+                       f"{record['count']} consecutive {cause} incidents; automatic retries stopped"),
             )
         else:
             await self._emit(

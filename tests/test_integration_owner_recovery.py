@@ -287,6 +287,60 @@ async def test_stopped_writer_on_a_clean_published_checkout_is_released(env):
     assert remote_sha(env.origin, "aq/preserved/o1") is None
 
 
+async def test_thrash_disposition_and_real_owner_recovery_serialize(env):
+    import asyncio
+
+    from src.models import Agent, AgentState
+    from src.sessions.worker_recovery import (
+        STREAK_KEY,
+        pool_recovery_disposition,
+        record_failure,
+    )
+
+    tip = env.branch("aq/thrash")
+    await env.task("thrash", status=TaskStatus.IN_PROGRESS)
+    await env.db.create_agent(Agent(
+        id="writer-agent", name="Writer", profile_id="worker", state=AgentState.BUSY,
+        current_task_id="thrash",
+    ))
+    await env.db.update_task(
+        "thrash", assigned_agent_id="writer-agent", branch_name="aq/thrash", repo_id="r",
+        claim_epoch=1,
+    )
+    slot = await env.slot(
+        "thrash-slot", "aq/thrash", locked_by_task_id="thrash", locked_by_agent_id="writer-agent",
+    )
+    await env.session(
+        "thrash-writer", work_dir=slot, task_id="thrash", agent_id="writer-agent",
+        state="running", desired_state="running", claim_phase="active", last_claim_epoch=1,
+    )
+    await env.owner(
+        "thrash-owner", "aq/thrash", "thrash", session_id="thrash-writer", workspace_id="ws-slot",
+    )
+    session = await env.db.get_session("thrash-writer")
+    task = await env.db.get_task("thrash")
+    failure = await record_failure(env.db, session, task, "context_thrash", now=time.time())
+    await env.db.update_session(
+        session.id, state="stopped", desired_state="stopped", end_reason="context_thrash",
+    )
+    receipt, released = await asyncio.wait_for(asyncio.gather(
+        pool_recovery_disposition(env.db, session, task, failure),
+        env.service().recover("thrash-owner", principal="sweep"),
+    ), timeout=15)
+    assert released.outcome == "released", released
+    assert released.evidence["origin_sha"] == tip
+    assert released.evidence["stop_proof"]["instance_token"] == session.instance_token
+    assert (await env.row("thrash-owner"))["handoff_state"] == "released"
+    assert (await env.db.get_task_meta("thrash", STREAK_KEY))["count"] == 1
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id is None
+    assert (await env.db.get_session(session.id)).task_id is None
+    # Either serial order is safe. A deferred disposition can precede release;
+    # an owner release that wins first produces an actually ready continuation.
+    assert receipt["disposition"] in {"handoff_deferred", "retry_ready"}
+    expected = TaskStatus.BLOCKED if receipt["disposition"] == "handoff_deferred" else TaskStatus.READY
+    assert (await env.db.get_task("thrash")).status is expected
+
+
 async def test_a_local_branch_ahead_of_origin_is_preserved_then_released(env):
     tip = env.branch("aq/t2", extra=1)
     await env.task("t2")
