@@ -515,3 +515,29 @@ def test_test_selection_promotion_is_local_only():
     assert check_command_scope("test_selection_list", {}, SESSION) == (
         "out of scope: test_selection_list"
     )
+
+
+def test_scoped_global_report_keeps_project_fence_and_never_admits_inbox():
+    supervisor = RequestScope(
+        kind="session", session_id="own-uuid", project_id="p1", elevated=True,
+    )
+    target = {"to_kind": "session", "to_id": "supervisor-global"}
+    args = dict(target)
+    # Handler verification of the named launch/capability is still required.
+    assert check_command_scope("message_send", args, supervisor) is None
+    assert args["project_id"] == "p1"
+    assert "project_id mismatch" in check_command_scope(
+        "message_send", {**target, "project_id": "p2"}, supervisor,
+    )
+    for command, args in (
+        ("message_send", target),
+        ("message_send", {**target, "system_only": True}),
+        ("message_inbox", target),
+    ):
+        assert "global admin" in check_command_scope(command, dict(args), SESSION)
+    for command, args in (
+        ("message_send", {**target, "system_only": True}),
+        ("message_inbox", target),
+        ("message_list", {"system_only": True}),
+    ):
+        assert "global admin" in check_command_scope(command, dict(args), supervisor)

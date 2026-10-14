@@ -24,7 +24,7 @@ import logging
 import time
 
 from src.collaboration import CollaborationError, is_collaboration_thread
-from src.models import MESSAGE_FROM_KINDS, MESSAGE_TO_KINDS, Message
+from src.models import MESSAGE_FROM_KINDS, MESSAGE_TO_KINDS, Message, SessionRecord
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,44 @@ class MessageCommandsMixin:
             if not scope.get("elevated") or scope.get("project_id") is not None:
                 return {"error": "out of scope: system messages require global admin"}
         return None
+
+    async def _project_supervisor_session(self) -> SessionRecord | None:
+        """Bind the narrow communications route to a current persisted launch."""
+        scope = self._current_scope or {}
+        project_id = scope.get("project_id")
+        if (
+            scope.get("kind") != "session" or not scope.get("elevated")
+            or not project_id or project_id == "global" or not scope.get("session_id")
+            or not scope.get("session_instance_token")
+        ):
+            return None
+        session = await self.db.get_session(scope["session_id"])
+        if (
+            session is None or session.project_id != project_id
+            or session.profile_id != "supervisor" or session.lifecycle != "named"
+            or session.name != f"n-supervisor--{project_id}"
+            or session.instance_token != scope["session_instance_token"]
+            or session.state not in {"running", "draining"}
+        ):
+            return None
+        return session
+
+    async def _own_supervisor_addresses(self) -> list[str]:
+        session = await self._project_supervisor_session()
+        if session is None:
+            return []
+        return [session.id, session.name, f"supervisor-{session.project_id}"]
+
+    async def _global_supervisor_address(self, address: str) -> bool:
+        if address == _GLOBAL_SUPERVISOR_ADDRESS:
+            return True
+        session = await self.db.get_session(address)
+        if session is None and address == "n-supervisor--global":
+            session = await self.db.get_session_by_name(address)
+        return bool(
+            session and session.project_id is None and session.profile_id == "supervisor"
+            and session.lifecycle == "named" and session.name == "n-supervisor--global"
+        )
 
     async def _inbox_mailbox_scope_error(self, to_kind: str, to_id: str) -> dict | None:
         """Fence a plain agent session to its own mailboxes.
@@ -278,6 +316,21 @@ class MessageCommandsMixin:
             else await self._recipient_project_id(to_kind, to_id)
         )
         scope = self._current_scope or {}
+        scoped_global_report = False
+        if (
+            to_kind == "session" and scope.get("kind") == "session"
+            and scope.get("project_id") is not None
+            and (to_id == "n-supervisor--global" or await self._global_supervisor_address(to_id))
+        ):
+            if (
+                to_id != _GLOBAL_SUPERVISOR_ADDRESS or args.get("system_only")
+                or await self._project_supervisor_session() is None
+                or args.get("project_id") not in (None, scope["project_id"])
+            ):
+                return {"error": "out of scope: system messages require global admin"}
+            scoped_global_report = True
+            requested_project_id = scope["project_id"]
+            from_kind, from_id = "session", scope["session_id"]
         global_sender = (
             scope.get("kind") == "session"
             and scope.get("elevated")
@@ -285,7 +338,7 @@ class MessageCommandsMixin:
             and not requested_project_id
         )
         system_only = global_sender or bool(args.get("system_only")) or (
-            to_kind == "session" and to_id == "supervisor-global"
+            to_kind == "session" and to_id == "supervisor-global" and not scoped_global_report
         ) or (
             not requested_project_id
             and from_kind == "session"
@@ -330,6 +383,14 @@ class MessageCommandsMixin:
             parent = await self.db.get_message(reply_to_id)
             if parent is None:
                 return {"error": f"Message '{reply_to_id}' not found (reply_to_id)"}
+            if scoped_global_report:
+                if (
+                    parent.to_kind != "session"
+                    or parent.to_id not in await self._own_supervisor_addresses()
+                    or parent.from_kind != "session"
+                    or not await self._global_supervisor_address(parent.from_id)
+                ):
+                    return {"error": "out of scope: reply must address an own global directive"}
             if is_collaboration_thread(parent.thread_id):
                 return {
                     "error": "Collaboration replies must use their collaboration thread",
@@ -487,6 +548,13 @@ class MessageCommandsMixin:
         original = await self.db.get_message(message_id)
         if original is None:
             return {"error": f"Message '{message_id}' not found"}
+        if original.to_kind == "session" and (
+            original.to_id == "n-supervisor--global"
+            or await self._global_supervisor_address(original.to_id)
+        ):
+            scope_error = self._system_message_scope_error()
+            if scope_error:
+                return scope_error
 
         if original.body_kind == "conversation_input":
             item = await self.db.find_conversation_input_by_supervisor_message(message_id)
@@ -532,10 +600,18 @@ class MessageCommandsMixin:
                 "reply": message_to_dict(await self.db.get_message(result["message_id"])),
             }
 
+        scoped_global_reply = False
         if original.project_id is None:
             scope_error = self._system_message_scope_error()
             if scope_error:
-                return scope_error
+                addresses = await self._own_supervisor_addresses()
+                scoped_global_reply = (
+                    original.to_kind == "session" and original.to_id in addresses
+                    and original.from_kind == "session"
+                    and await self._global_supervisor_address(original.from_id)
+                )
+                if not scoped_global_reply:
+                    return scope_error
 
         body = args.get("body")
         if not body or not str(body).strip():
@@ -571,16 +647,22 @@ class MessageCommandsMixin:
                 f"Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}"
             }
         from_id = (args.get("from_id") or "").strip() or original.to_id
+        if scoped_global_reply:
+            from_kind, from_id = "session", self._current_scope["session_id"]
 
         via = args.get("via")
 
-        await self.db.mark_read(message_id)
+        if scoped_global_reply:
+            await self._acknowledge_message_read(original)
+        else:
+            await self.db.mark_read(message_id)
         reply = await self.db.create_message(
-            project_id=original.project_id,
+            project_id=(self._current_scope["project_id"] if scoped_global_reply
+                        else original.project_id),
             from_kind=from_kind,
             from_id=from_id,
             to_kind=original.from_kind,
-            to_id=original.from_id,
+            to_id=(_GLOBAL_SUPERVISOR_ADDRESS if scoped_global_reply else original.from_id),
             body=str(body),
             subject=args.get("subject"),
             thread_id=original.thread_id,
@@ -629,7 +711,9 @@ class MessageCommandsMixin:
         if not to_id:
             return {"error": "to_id is required"}
 
-        if to_kind == "session" and to_id == "supervisor-global":
+        if to_kind == "session" and (
+            to_id == "n-supervisor--global" or await self._global_supervisor_address(to_id)
+        ):
             scope_error = self._system_message_scope_error()
             if scope_error:
                 return scope_error
@@ -655,6 +739,9 @@ class MessageCommandsMixin:
             return {"error": "limit must be a non-negative integer"}
 
         recipients = [to_id]
+        own_addresses = await self._own_supervisor_addresses()
+        if to_kind == "session" and to_id in own_addresses:
+            recipients = own_addresses
         scope = self._current_scope
         profile_filter = {}
         if (
@@ -675,6 +762,7 @@ class MessageCommandsMixin:
                         if scope_error:
                             return scope_error
                     recipients.extend([session.name, f"supervisor-{suffix}"])
+        recipients = list(dict.fromkeys(recipients))
         if supervisor_mailbox:
             await self.db.expire_finished_task_notices()
             await self.db.redirect_disabled_supervisor_messages()
@@ -685,7 +773,11 @@ class MessageCommandsMixin:
             ))
         pending.sort(key=lambda message: (message.priority, message.created_at, message.id))
         pending = pending[:limit]
-        if any(message.project_id is None for message in pending):
+        if any(
+            message.project_id is None
+            and not (message.to_kind == "session" and message.to_id in own_addresses)
+            for message in pending
+        ):
             scope_error = self._system_message_scope_error()
             if scope_error:
                 return scope_error
@@ -706,10 +798,20 @@ class MessageCommandsMixin:
                         claimed_ids.add(msg.id)
             consumed.sort(key=lambda message: (message.priority, message.created_at, message.id))
             consumed = consumed[:limit]
-            if any(message.project_id is None for message in consumed):
+            if any(
+                message.project_id is None
+                and not (message.to_kind == "session" and message.to_id in own_addresses)
+                for message in consumed
+            ):
                 scope_error = self._system_message_scope_error()
                 if scope_error:
                     return scope_error
+
+        scope = self._current_scope or {}
+        if scope.get("elevated") and scope.get("project_id") is not None:
+            for message in [*pending, *consumed]:
+                if not await self._message_in_project(message, scope["project_id"]):
+                    return {"error": "out of scope: recipient mailbox project mismatch"}
 
         if not inject:
             return {
@@ -799,8 +901,17 @@ class MessageCommandsMixin:
             if scope_error:
                 return scope_error
 
+        scope = self._current_scope or {}
+        project_id = None if system_only else args.get("project_id") or self._active_project_id
+        if scope.get("kind") == "session" and scope.get("project_id") is not None:
+            if args.get("project_id") not in (None, scope["project_id"]):
+                return {"error": "out of scope: project_id mismatch"}
+            project_id = scope["project_id"]
+        own_addresses = []
+        if not system_only and project_id == scope.get("project_id"):
+            own_addresses = await self._own_supervisor_addresses()
         rows = await self.db.list_messages(
-            project_id=None if system_only else args.get("project_id") or self._active_project_id,
+            project_id=project_id,
             system_only=system_only,
             thread_id=args.get("thread_id"),
             to_kind=to_kind,
@@ -809,6 +920,9 @@ class MessageCommandsMixin:
             since=since,
             limit=limit,
             session_addresses=args.get("session_addresses"),
+            inbound_session_addresses=own_addresses,
+            recipient_ids=(own_addresses if to_kind == "session"
+                           and args.get("to_id") in own_addresses else None),
         )
         return {
             "count": len(rows),
@@ -875,7 +989,14 @@ class MessageCommandsMixin:
         if message.to_kind == "session" and session.lifecycle == "named":
             addresses = {session.name}
             if session.profile_id == "supervisor":
-                addresses.add(f"supervisor-{session.project_id or 'global'}")
+                suffix = session.project_id or "global"
+                if (
+                    session.project_id != scope.get("project_id")
+                    or session.name != f"n-supervisor--{suffix}"
+                    or (suffix == "global" and self._system_message_scope_error())
+                ):
+                    return False
+                addresses.add(f"supervisor-{suffix}")
             return message.to_id in addresses
         if message.to_kind == "task":
             return message.to_id == (scope.get("task_id") or session.task_id)

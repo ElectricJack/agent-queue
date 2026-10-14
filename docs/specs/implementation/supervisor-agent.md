@@ -282,6 +282,34 @@ sender's project (another project's supervisor escalating to
 `supervisor-agent-queue` pins its own), so without the second half the
 recipient was nudged to a body its own token answered "not found" for
 (clear-zenith-84). The global supervisor's mailbox is no project's.
+
+**Projectless inbound and global reports (clear-meadow-62).** A projectless
+directive addressed to an authenticated project supervisor is inbound mail,
+not ownership of system chat. Its exact recipient may read status, pending and
+consumed inbox, inject its own transport, and find it in history. History retains
+the project fence and adds only inbound rows to that supervisor's server-derived
+mailboxes, before pagination. The immutable session UUID and the canonical
+`supervisor-<project>` / `n-supervisor--<project>` addresses are one mailbox only
+when the persisted named supervisor row matches the authenticated project and
+launch. An arbitrary alias, foreign UUID or project named `global` grants no
+global mailbox ownership. History is read-only; status/inject consume only the
+addressed recipient's transport. Foreign unrelated and global chat stay fenced.
+
+A project supervisor may acknowledge a projectless directive from the global
+supervisor with `aq message reply <id> "..."`, or send a scoped report using
+`aq message send --to session:supervisor-global --body "..."`. This is a narrow
+send route, not global chat access: the caller must be an authenticated elevated
+project session with a matching live named `supervisor` row, canonical name and
+launch instance. The sender is always the authenticated session UUID; caller
+sender labels cannot impersonate a user, system or another supervisor. The row
+and message event retain the originating project, thread and reply linkage.
+Replies require an exact-own original and a global-supervisor sender address
+bound to its persisted named global row (or canonical logical global address).
+An unaddressable system sender cannot be replied to; send a scoped report instead.
+Existing command capability checks and invocation auditing still apply. Explicit
+`system_only`, global inbox/history, unrelated projectless replies, ordinary
+workers and user/local behavior retain their existing authority requirements.
+Source validation of this contract does not establish loaded daemon acceptance.
 `agent_message --reply-to` still threads only onto the target worker's own
 project's messages; a readable row from another project is refused with the
 `aq message reply <id>` that answers it, and an unreadable one stays

@@ -697,10 +697,16 @@ class MessageQueriesMixin:
         since: float | None = None,
         limit: int = 100,
         session_addresses: list[str] | None = None,
+        inbound_session_addresses: list[str] | None = None,
+        recipient_ids: list[str] | None = None,
     ) -> list[Message]:
         """List messages newest-first; system_only selects NULL-project records.
 
         Omitting project_id still means all projects, including system records.
+        ``inbound_session_addresses`` extends a project view only to inbound
+        mail for server-verified recipients. ``recipient_ids`` treats their
+        canonical aliases as one recipient. Both filters apply before LIMIT;
+        neither parameter is an authority derived from client arguments.
 
         ``since`` is an exclusive lower bound on ``created_at`` — the
         polling form ``aq chat --once`` uses it to fetch only what arrived
@@ -710,12 +716,20 @@ class MessageQueriesMixin:
         if system_only:
             conditions.append(messages.c.project_id.is_(None))
         elif project_id:
-            conditions.append(messages.c.project_id == project_id)
+            project_view = messages.c.project_id == project_id
+            if inbound_session_addresses:
+                project_view = or_(project_view, and_(
+                    messages.c.to_kind == "session",
+                    messages.c.to_id.in_(inbound_session_addresses),
+                ))
+            conditions.append(project_view)
         if thread_id:
             conditions.append(messages.c.thread_id == thread_id)
         if to_kind:
             conditions.append(messages.c.to_kind == to_kind)
-        if to_id:
+        if recipient_ids is not None:
+            conditions.append(messages.c.to_id.in_(recipient_ids))
+        elif to_id:
             conditions.append(messages.c.to_id == to_id)
         if not include_archived:
             conditions.append(messages.c.archived_at.is_(None))
