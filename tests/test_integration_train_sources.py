@@ -1839,6 +1839,224 @@ async def test_pr_admission_is_serial_and_preserves_refusals(world):
     assert [b["code"] for b in blockers] == ["awaiting_pr"]
 
 
+async def test_selection_quantum_rotates_past_slow_refusals_and_the_member_cap(world):
+    sources = {tid: await completed(world, tid) for tid in
+               ("a", "b", "c", "d", "e", "f", "g", "independent")}
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches, calls = train.batches, []
+    batches.limit = 2
+    elapsed = 0.0
+    batches._selection_clock = lambda: elapsed
+
+    async def delayed_gate(target, member):
+        nonlocal elapsed
+        calls.append(member.task_id)
+        # Deterministically replay expensive reads, without a machine-time budget.
+        elapsed += 61
+        if member.task_id != "independent":
+            return {"code": "unknown" if member.task_id == "a" else "awaiting_pr_checks",
+                    "task_id": member.task_id, "ref": member.task_id}
+
+    batches.pr_gate = delayed_gate
+    service = (await train.lane_for(MAIN)).service
+    for tid in sources:
+        metrics = SelectionMetrics()
+        with selection_metrics_scope(metrics):
+            selected = await batches.open_batch(MAIN, await snapshot(world), service)
+        assert calls[-1] == tid
+        if tid != "independent":
+            assert selected.batch is None
+            assert any(b["code"] == "selection_deferred" for b in selected.blockers)
+            assert metrics.counts["candidate_work_deferred"] == 1
+        else:
+            assert [(m.task_id, m.source_sha) for m in selected.members] == [
+                (tid, sources[tid])]
+            assert selected.batch is not None
+    assert calls == list(sources)
+
+
+async def test_selection_freezes_eligible_prefix_before_a_stalled_later_pr(world):
+    source = await completed(world, "a-independent")
+    await completed(world, "b-stalled")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches, elapsed, calls = train.batches, 0.0, []
+    batches._selection_clock = lambda: elapsed
+    entered, stopped = asyncio.Event(), asyncio.Event()
+
+    async def gate(target, member):
+        nonlocal elapsed
+        calls.append(member.task_id)
+        if member.task_id == "a-independent":
+            elapsed += 61  # Retained timings show a single proof/PR can spend the quantum.
+            return
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    batches.pr_gate = gate
+    service = (await train.lane_for(MAIN)).service
+    selecting = asyncio.create_task(batches.open_batch(MAIN, await snapshot(world), service))
+    stalled = asyncio.create_task(entered.wait())
+    result = None
+    try:
+        await asyncio.wait_for(asyncio.wait({selecting, stalled},
+            return_when=asyncio.FIRST_COMPLETED), 20)
+        if selecting.done():
+            result = selecting.result()
+    finally:
+        if not selecting.done():
+            selecting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await selecting
+        stalled.cancel()
+        await asyncio.gather(stalled, return_exceptions=True)
+    assert result is not None, f"Eligible prefix lost to stalled PR; calls={calls}, joined={stopped.is_set()}"
+    assert [(m.task_id, m.source_sha) for m in result.members] == [("a-independent", source)]
+    assert calls == ["a-independent"]
+
+
+async def test_cancelled_git_proof_advances_selection_without_reusing_mutable_inputs(
+    world, monkeypatch,
+):
+    first = await completed(world, "a")
+    await completed(world, "b")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches = train.batches
+    elapsed = 0.0
+    batches._selection_clock = lambda: elapsed
+
+    async def delayed_green(target, member):
+        nonlocal elapsed
+        elapsed += 61
+
+    batches.pr_gate = delayed_green
+    service = (await train.lane_for(MAIN)).service
+    entered, stopped = asyncio.Event(), asyncio.Event()
+    run = world.truth.git.arun_git_result
+    writes = []
+
+    async def delayed_git(args, **kwargs):
+        if "push" in args:
+            writes.append(args)
+        if "diff" in args and first in args and not stopped.is_set():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+        return await run(args, **kwargs)
+
+    monkeypatch.setattr(world.truth.git, "arun_git_result", delayed_git)
+    selecting = asyncio.create_task(batches.open_batch(
+        MAIN, await snapshot(world), service,
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), 20)
+    finally:
+        selecting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await selecting
+    assert stopped.is_set() and not writes
+    async with world.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).first()
+    # A new visit reloads the completion and fetches new source/target OIDs.
+    next_head = world.origin.work("b", "revised source")
+    await close(world.db, "b", [next_head], close_id="b-revised", origin=world.origin)
+    selected = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None
+    assert [(m.task_id, m.source_sha) for m in selected.members] == [("b", next_head)]
+    assert git(world.origin.url, "rev-parse", "aq/b") == next_head
+    assert not writes
+
+
+async def test_rotating_admission_windows_retain_exact_source_cadence(world):
+    for tid in ("a", "b"):
+        await completed(world, tid)
+    now = 1000.0
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now, settling=True)
+    batches = train.batches
+    batches.limit = 1
+    service = (await train.lane_for(MAIN)).service
+    for index in range(4):
+        selected = await batches.open_batch(MAIN, await snapshot(world), service)
+        assert selected.batch is None and selected.detail["reason"] == "settling"
+        assert selected.detail["first_admission_at"] == 1000 + (index % 2) * 100
+        now += 100
+    selected = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None and selected.members[0].task_id == "a"
+
+
+async def test_rotating_cadence_resets_evaluated_refusal_and_preserves_unseen_hint(world):
+    for tid in ("a", "b"):
+        await completed(world, tid)
+    now = 1000.0
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now, settling=True)
+    batches = train.batches
+    batches.limit = 1
+    service = (await train.lane_for(MAIN)).service
+    assert (await batches.open_batch(MAIN, await snapshot(world), service)).detail[
+        "first_admission_at"] == 1000
+    now = 1100
+    assert (await batches.open_batch(MAIN, await snapshot(world), service)).detail[
+        "first_admission_at"] == 1100
+    batches.pr_gate = AsyncMock(return_value={"code": "unknown", "ref": "a", "task_id": "a"})
+    now = 1200
+    assert (await batches.open_batch(MAIN, await snapshot(world), service)).batch is None
+    batches.pr_gate = green_pr
+    now = 1300
+    assert (await batches.open_batch(MAIN, await snapshot(world), service)).detail[
+        "first_admission_at"] == 1100  # b was not evaluated during a's refusal.
+    now = 1500
+    selected = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is None and selected.detail["first_admission_at"] == 1500
+
+
+async def test_frozen_batch_selection_does_not_probe_unrelated_completed_roots(world, monkeypatch):
+    await completed(world, "frozen")
+    await completed(world, "missing", done=False)
+    await close(world.db, "missing", [])
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    frozen = await BatchStore(world.db).members(testing.batch_id)
+    await completed(world, "unrelated")
+    scan = AsyncMock(side_effect=AssertionError("new frontier cannot delay the frozen batch"))
+    monkeypatch.setattr(train.batches, "_candidate_ids", scan)
+    selected = await train.batches.open_batch(
+        MAIN, await snapshot(world), (await train.lane_for(MAIN)).service,
+    )
+    assert selected.existing and selected.batch.id == testing.batch_id
+    assert selected.members == frozen
+    [unknown] = [b for b in selected.blockers if b.get("task_id") == "missing"]
+    assert unknown["code"] == "missing_git_provenance"
+    assert unknown["observation"] == "last_selection"
+    assert unknown["observed_target_sha"] == git(world.origin.url, "rev-parse", "main")
+    assert unknown["observed_at"] > 0
+    scan.assert_not_awaited()
+
+
+async def test_selection_quantum_never_admits_a_dependent_without_its_source(world):
+    prerequisite = await completed(world, "z-prerequisite")
+    await completed(world, "a-dependent", needs=("z-prerequisite",))
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches = train.batches
+    elapsed = 0.0
+    batches._selection_clock = lambda: elapsed
+
+    async def gate(target, member):
+        nonlocal elapsed
+        elapsed += 61
+
+    batches.pr_gate = gate
+    service = (await train.lane_for(MAIN)).service
+    first = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert first.batch is None
+    next_visit = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert [(m.task_id, m.source_sha) for m in next_visit.members] == [
+        ("z-prerequisite", prerequisite)]
+
+
 async def test_visit_timeout_cause_is_visible_in_status_without_a_batch(world):
     import asyncio
 
