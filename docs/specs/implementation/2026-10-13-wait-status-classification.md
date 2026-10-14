@@ -81,6 +81,8 @@ wait services must validate supported task statuses rather than silently accept
 the unsupported CANCELLED value. Cancellation/tombstoning and human projections
 remain inactive until those services integrate; the approved artifact is unchanged.
 
-Schema prerequisite ancestry is the canonical completed commit
+The branch descends from canonical completed schema prerequisite
 `b30155ef61dbbc426d1ddc6731398f4be7abcc26`: revision 97 follows revision 96,
-after workspace-kind revision 96 at `69a45b`, with the earlier collision corrected.
+with the earlier collision corrected. That prerequisite incorporates the
+workspace-kind revision 96 file byte-identical to `69a45b`; the latter commit
+itself is not a Git ancestor of this branch.
