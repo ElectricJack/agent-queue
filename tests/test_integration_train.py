@@ -611,9 +611,10 @@ def test_default_branch_sync_conflict_brief_honors_policy_scope(scope):
     assert "src/example.py" in brief
     assert "t-1" in brief and "t-2" in brief and "t-3" in brief
 
+@pytest.mark.parametrize("sync", [False, True])
 @pytest.mark.parametrize("state", ["testing", "unknown"])
 @pytest.mark.parametrize("lost", ["released", "expired"])
-async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, state, lost):
+async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, state, lost, sync):
     from src.database.queries.claim_queries import _frontier_where
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
     from src.database.tables import tasks
@@ -629,8 +630,11 @@ async def test_train_restores_ready_repair_without_waiting_for_red_checks(db, st
     repair = OrdinaryRepairService(db, locks=locks, clock=lambda: now[0])
     ref = candidate_ref("batch-retry")
     target = BranchKey(repository_id="r", branch=ref)
-    filed = await repair.allocate("batch-retry", target_ref=ref, head_sha=CANDIDATE,
-                                  authorize=AsyncMock(return_value=True), ttl_seconds=10)
+    filed = await repair.allocate(
+        "batch-retry", target_ref=ref, head_sha=CANDIDATE,
+        authorize=AsyncMock(return_value=True), ttl_seconds=10,
+        sync_default_branch={"ref": "refs/heads/main", "sha": "e" * 40} if sync else None,
+    )
     task_id = filed["task_id"]
     original = await repair.input(task_id)
     await db.update_task(task_id, status=TaskStatus.READY)
