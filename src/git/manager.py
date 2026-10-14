@@ -147,6 +147,14 @@ class ChildPreparationConflict(GitError):
         super().__init__(reason)
 
 
+class ForeignSlotClaim(GitError):
+    """A slot still bound to another task: a workspace fault, not the claimant's."""
+
+    def __init__(self, reason, *, workspace_id="", path="", holder_task_id=None):
+        self.workspace_id, self.path, self.holder_task_id = workspace_id, path, holder_task_id
+        super().__init__(reason)
+
+
 # ---------------------------------------------------------------------------
 # Commit identity (docs/specs/git-identity.md)
 # ---------------------------------------------------------------------------

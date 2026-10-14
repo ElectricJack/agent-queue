@@ -3291,7 +3291,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:c8dbb1fda38bcad9cda7b2855be87b32f81c9b059bd24b0a1adcbb36ca105587",
+      "digest": "sha256:7717ac81c07fb3795312511cb8c5ec3436fe765e5a47861de26abbe1d6fbf9bd",
       "imports": [
         "src.claim_file",
         "src.commands.claim_commands",
@@ -3328,7 +3328,8 @@
         "src.orchestrator.worktree_manager",
         "src.scheduler",
         "src.sessions",
-        "src.sessions.reconciler"
+        "src.sessions.reconciler",
+        "src.workspace_disable"
       ],
       "markers": [
         "parametrize"

@@ -705,10 +705,52 @@ class TestClaim:
 
         result = await scoped(handler, sid)._cmd_task_claim({"next": True})
 
-        assert result["result"] == "prepare_failed"
-        assert "retains a foreign claim" in result["reason"]
+        assert result["result"] == "drain_requested"
+        assert "retains a foreign claim of task foreign" in result["reason"]
         assert read_claim_file(wd) == foreign
         handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
+    async def test_foreign_slot_claim_hands_the_task_to_a_free_slot_without_a_hold(
+        self, handler, db, tmp_path,
+    ):
+        """fleet-ridge-94 (2026-10-13): a slot still bound to a paused task is
+        the slot's fault.  The claimant prepares in another slot instead of
+        climbing the slot_reset_failed ladder into a recovery hold."""
+        from src.claim_file import read_claim_file, write_claim_file
+        from src.workspace_disable import CLAIM_FAILURES, reason_code
+
+        await mktask(db, "t1", profile_id="worker")
+        stale_sid, stale_wd = await pool_session(db, tmp_path)
+        free_sid, free_wd = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+        foreign = {"task_id": "paused-holder", "claim_epoch": 3, "session_id": "gone"}
+        write_claim_file(stale_wd, foreign)
+
+        refused = await scoped(handler, stale_sid)._cmd_task_claim({"next": True})
+
+        assert refused["result"] == "drain_requested"
+        assert "paused-holder" in refused["reason"]
+        assert "drain-ack" in refused["reason"]
+
+        task = await db.get_task("t1")
+        assert task.status == TaskStatus.READY
+        for key in ("slot_reset_failure", "needs_attention", "claim_prepare_backoff_until",
+                    "claim_prepare_backoff_attempts", "supervisor_recovery_incident"):
+            assert not await db.get_task_meta("t1", key), key
+        assert (await db.get_task_meta("t1", "prepare_failure"))["disposition"] == "released"
+        stale_ws = await db.get_workspace("ws-agent-1")
+        assert not stale_ws.enabled
+        assert reason_code(stale_ws.disabled_reason) == CLAIM_FAILURES
+        assert "paused-holder" in stale_ws.disabled_reason
+        assert read_claim_file(stale_wd) == foreign
+        assert (await db.get_session(stale_sid)).desired_state == "stopped"
+
+        claimed = await scoped(handler, free_sid)._cmd_task_claim({"next": True})
+
+        assert claimed["result"] == "claimed"
+        assert claimed["task"]["id"] == "t1"
+        assert read_claim_file(free_wd)["task_id"] == "t1"
+        assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+        assert not await db.get_task_meta("t1", "needs_attention")
 
     @pytest.mark.parametrize("error", [TimeoutError(), RuntimeError(), RuntimeError("  ")])
     async def test_empty_preparation_exception_has_one_persisted_diagnosis(

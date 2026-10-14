@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.config import WorktreesConfig
-from src.git.manager import GitError, GitManager
+from src.git.manager import ForeignSlotClaim, GitError, GitManager
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -1051,6 +1051,28 @@ class TestResetSlot:
         assert _git(["branch", "--show-current"], slot.workspace_path) == branch
         assert _git(["status", "--porcelain"], slot.workspace_path) == ""
         assert str(foreign) in _git(["worktree", "list", "--porcelain"], base_ws.workspace_path)
+
+    @pytest.mark.parametrize("binding", ["claim_file", "task_lock"])
+    async def test_slot_bound_to_another_task_is_a_foreign_slot_claim(
+        self, mgr, base_ws, kind, binding,
+    ):
+        """A typed refusal, so the claim path releases the task for another slot."""
+        from src.claim_file import read_claim_file, write_claim_file
+
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        foreign = {"task_id": "paused-holder", "claim_epoch": 3, "session_id": "gone"}
+        if binding == "claim_file":
+            write_claim_file(slot.workspace_path, foreign)
+        else:
+            slot.locked_by_task_id = "paused-holder"
+
+        with pytest.raises(ForeignSlotClaim) as refused:
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+
+        assert refused.value.holder_task_id == "paused-holder"
+        assert refused.value.workspace_id == slot.id
+        if binding == "claim_file":
+            assert read_claim_file(slot.workspace_path) == foreign
 
     async def test_missing_live_slot_is_preserved(self, mgr, base_ws, kind, monkeypatch):
         slot = await mgr.create_slot(base_ws, kind, 0)
