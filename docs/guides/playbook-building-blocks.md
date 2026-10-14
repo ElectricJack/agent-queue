@@ -47,6 +47,9 @@ scripts:
 ```
 
 `required_capabilities` is a unique list of command names for review, not a grant.
+The one exception is a declared dependency of a step's own command: a
+`playbook_state_notify` step's artifact grants `message_send` only when the pinned
+declaration names it (`DECLARED_COMMAND_DEPENDENCIES` in `src/playbooks/definition.py`).
 State versions are strict positive integers (default 1 for state users). Script
 manifests are strict `ScriptProgram` objects: exactly one script/argv/shell form,
 literal runtime/interpreter/source identity, declared supporting files, typed data

@@ -12593,9 +12593,10 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:c15275941d5c1ce3556e3a8e341fe076443ca16060ca6dddd1cc115f527d6445",
+      "digest": "sha256:0c8ac1e1d6003961ba9f24c51902c7a6c44c0b0538fbc86b6fff2288a0c18834",
       "imports": [
         "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.config",
         "src.database",

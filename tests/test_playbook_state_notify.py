@@ -478,3 +478,127 @@ async def test_preview_kv_cas_expiry_and_immutable_snapshot(context, db):
     assert await call("playbook_state_set", key="k", expected_revision=0, operation_key="one",
                       value={"private": "preview-only"}, ttl_seconds=1) == first
     assert await counts(db) == [0, 0, 0, 0, 0]
+
+
+PURE_SOURCE = ("---\nid: state-test\nscope: project:p\ntriggers: [task.completed]\n"
+               "required_capabilities: [message_send, playbook_state_notify]\n---\nNotify.\n")
+
+
+def pure_notify(command_context, source=PURE_SOURCE, *, declared=("message_send",
+                                                                   "playbook_state_notify")):
+    """One rule, one ``playbook_state_notify`` step and terminals: no other effect step."""
+    from src.playbooks.definition import source_digest
+
+    _handler, ctx, principal, _store = command_context
+    raw = ctx.artifact.model_dump(mode="json")
+    base = raw["steps"]["playbook_state_notify"]
+    raw["rules"][0]["entry_step"] = "notify"
+    raw["steps"] = {
+        "notify": {**base, "save_result_as": None,
+                   "inputs": {k: {"type": "literal", "value": v} for k, v in inputs().items()},
+                   "transitions": {"success": "done", "failure": "bad"}},
+        "done": raw["steps"]["done"], "bad": raw["steps"]["bad"],
+    }
+    raw.update(source_hash=source_digest(source), trusted_execution={
+        "state_schema_version": 1, "required_capabilities": list(declared)})
+    context = repin(command_context, raw, source)
+    ctx.step_id = "notify"
+    return context[:2] + (replace(principal, policy=CapabilityPolicy(aq_commands=frozenset(
+        {"playbook_state_notify", "message_send"}))),) + context[3:]
+
+
+@pytest.fixture
+async def pure(command_context, db):
+    handler, *_ = command_context
+    await db.create_project(Project(id="p", name="p", supervisor_enabled=True))
+    await db.create_project(Project(id="other", name="other", supervisor_enabled=True))
+    handler.config.messages = MessagesConfig(enabled=True)
+    handler.orchestrator.bus = SimpleNamespace(emit=AsyncMock())
+    return pure_notify(command_context)
+
+
+async def run_live(context):
+    from src.commands.contracts.builtin import set_handler_provider
+    from src.playbooks.engine import PlaybookEngine
+    from tests.playbook_v2_engine_helpers import RecordingRunRepository
+
+    handler, ctx, principal, store = context
+    engine = PlaybookEngine(services=EngineServices(
+        contracts=CONTRACTS, clock=lambda: 1000, artifact_store=store,
+        private_values=ctx.services.private_values), runs=RecordingRunRepository())
+    set_handler_provider(lambda: handler)
+    try:
+        return await engine.run_rule(ctx.artifact_ref, "r", {
+            "event_type": "task.completed", "event_id": "live", "project_id": "p"}, principal)
+    finally:
+        set_handler_provider(None)
+
+
+def test_declared_notify_dependency_is_the_only_inferred_grant(command_context):
+    from src.playbooks.definition import granted_aq_commands
+
+    _, ctx, _, _ = pure_notify(command_context)
+    assert granted_aq_commands(ctx.artifact) == {"playbook_state_notify", "message_send"}
+    raw = ctx.artifact.model_dump(mode="json")
+    raw["trusted_execution"]["required_capabilities"] = ["playbook_state_notify"]
+    assert granted_aq_commands(PlaybookDefinition.model_validate(raw)) == {"playbook_state_notify"}
+    # A declaration grants nothing without a step that depends on it.
+    raw["trusted_execution"]["required_capabilities"] = ["message_send", "task_delete"]
+    raw["steps"]["notify"]["command"] = "playbook_state_set"
+    assert granted_aq_commands(PlaybookDefinition.model_validate(raw)) == {"playbook_state_set"}
+    # Tool use names its commands explicitly; no dependency is inferred there.
+    assert granted_aq_commands(SimpleNamespace(trusted_execution=SimpleNamespace(
+        required_capabilities=("message_send",)), steps={"agent": SimpleNamespace(
+            tool_use=SimpleNamespace(aq_commands=("playbook_state_notify",)))})) == {
+        "playbook_state_notify"}
+
+
+async def test_pure_notify_graph_sends_through_live_engine_and_handler(pure, db):
+    outcome = await run_live(pure)
+    assert outcome.outcome == "completed", outcome
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(t.messages))).mappings().all()
+    assert len(rows) == 1 and rows[0]["to_id"] == "supervisor-p", rows
+    assert rows[0]["from_kind"] == "system" and rows[0]["from_id"] == "playbook:state-test"
+    assert (await counts(db))[1:4] == [1, 1, 1]
+
+
+async def test_pure_notify_denials_never_write(pure, db):
+    from src.playbooks.definition import source_digest
+
+    handler, ctx, principal, store = pure
+    original = ctx.artifact.model_dump(mode="json")
+    # The original principal must hold message_send itself.
+    caller = replace(principal, policy=CapabilityPolicy(
+        aq_commands=frozenset({"playbook_state_notify"})))
+    assert (await execute(pure, "playbook_state_notify", inputs(), caller=caller))[
+        "error_code"] == "unauthorized"
+    assert (await run_live((handler, ctx, caller, store))).outcome == "contract_violation"
+    # Undeclared dependency: the reviewed source omits message_send.
+    undeclared = PURE_SOURCE.replace("message_send, ", "")
+    context = repin(pure, dict(original, source_hash=source_digest(undeclared), trusted_execution={
+        "state_schema_version": 1, "required_capabilities": ["playbook_state_notify"]}), undeclared)
+    assert (await execute(context, "playbook_state_notify", inputs()))["error_code"] == "unauthorized"
+    assert (await run_live(context)).outcome == "contract_violation"
+    # Spoofed dependency: the artifact pin declares it, the reviewed source does not.
+    raw = dict(original, source_hash=source_digest(undeclared))
+    context = repin(pure, raw, undeclared)
+    assert (await execute(context, "playbook_state_notify", inputs()))[
+        "error_code"] == "state.invalid_pin"
+    assert (await run_live(context)).outcome == "failed"
+    # Invalid declaration: the source cannot even be pinned.
+    invalid = PURE_SOURCE.replace("message_send,", "Message_Send,")
+    raw = dict(original, source_hash=source_digest(invalid))
+    context = repin(pure, raw, invalid)
+    assert (await execute(context, "playbook_state_notify", inputs()))[
+        "error_code"] == "state.invalid_pin"
+    # Unauthorized recipients, with both grants held.
+    await db.create_task(Task(id="elsewhere", project_id="other", title="x", description="x"))
+    context = repin(pure, original, PURE_SOURCE)
+    for message in ({"to_kind": "session", "to_id": "supervisor-other", "body": "x"},
+                    {"to_kind": "task", "to_id": "elsewhere", "body": "x"}):
+        args = inputs()
+        args["message"] = message
+        result = await execute(context, "playbook_state_notify", args)
+        assert result["error_code"] == "unauthorized", result
+    assert await counts(db) == [0, 0, 0, 0, 0]
