@@ -10515,7 +10515,65 @@
       "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050",
       "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d"
     ],
-    "reason": "Reviewed the pool preparation reconciliation merged into the failed PR candidate. Three adapters remain charged to integration; six current metadata writes are ordinary preparation diagnostics/attention. Two replaced call AST identities were removed. Immutable baseline, landing measurements, allowance, caps and ratchet assertions remain unchanged."
+    "reason": "Reviewed the pool preparation reconciliation merged into the failed PR candidate. Three adapters remain charged to integration; six current metadata writes are ordinary preparation diagnostics/attention. Two replaced call AST identities were removed. Immutable baseline, landing measurements, allowance, caps and ratchet assertions remain unchanged.",
+    "source_revision": "fb4ba211b356811a95ac76fee7bf77a034c55d05",
+    "task": "prime-ridge-12",
+    "storage_writers": {
+      "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::aa66b0c4bf394b454a55b04b3048c4ae854edc5b7c2e7dcc2bdeb6a61fa2e5b1": {
+        "line": 1094,
+        "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+        "call": "set_task_meta",
+        "owner_fingerprint": "5320f339dd4403a0b643d4cd1d80c453fcd0e62e4f25d3ae07da6ef69c3a5f35",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) before release_claim to READY; cleared by successful activation. The reason helper preserves exception diagnostics without adding remote OIDs, publication intent or ref replay authority."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::5f457951c70bf9a85748058a4541961a976c9d242448650882070b61af58ba61": {
+        "line": 1354,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary claim_preparation_failure diagnostics (reason, exception type, workspace identity/path, session, claim epoch, failed_at) retained before failure cleanup, including safe slot and foreign-claim checks. This is failure evidence, not publication intent, authoritative delivery state or ref replay authority."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::64d9070466d052e67a1a96dd3a40b4a768057d1acb08c0c4e390c117e3eb58e7": {
+        "line": 1473,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary slot_reset_failure diagnostics (reason, attempt, workspace, session, failed_at, retry mode) after non-transient preparation errors; retryable database conflicts bypass the write. The reason helper preserves exception evidence without publication intent or ref replay authority."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
+        "line": 1374,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Records a named preparation hold when a retained attachment cannot be safely released; ordinary claim diagnostic, never Git publication or ref replay authority."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
+        "line": 1412,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
+      },
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
+        "line": 1459,
+        "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+        "call": "set_task_meta",
+        "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+        "integration_signal": true,
+        "disposition": "ordinary",
+        "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
+      }
+    }
   },
   "frozen_batch_repair": {
     "starting_sha": "1e41a7288f0398149e0ef00bd0db486b594cedda",

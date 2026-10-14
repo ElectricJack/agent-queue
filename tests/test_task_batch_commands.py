@@ -1288,6 +1288,13 @@ async def test_design_ingestion_only_files_implementation_spec_for_review(handle
     assert "spec_kind: implementation" in child.description
     assert "aq review submit" in child.description
     assert str(path) in child.description
+    # Design ingestion replaces the caller's graph with a server-authored child;
+    # that child must carry the supersession instructions independently of the role.
+    assert "docs/templates/spec.md" in child.description
+    assert "including this design" in child.description
+    assert "goal as kept, changed or dropped" in child.description
+    assert "Jack's explicit sign-off" in child.description
+    assert "pending drops block approval and affected implementation work" in child.description
     assert len(await handler.db.list_tasks(project_id="p1")) == 3
 
 

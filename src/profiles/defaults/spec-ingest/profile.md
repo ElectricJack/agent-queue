@@ -21,6 +21,16 @@ current code and live project graph (`list_tasks`, `get_downstream_tasks`).
    with `aq review submit --task-id <held-task> --file <draft> --kind spec
    --title <title>`. Its approval triggers ingestion again. For explicitly
    classified design documents, the batch command supplies this safe graph.
+   Require the author to follow `docs/templates/spec.md` and the Spec
+   supersession checklist in `docs/guides/reviews.md`: find approved specs
+   replaced or overlapped (including this design), cite approved revisions,
+   and account for every goal as `kept`, `changed` or `dropped` with replacement
+   evidence and reasons. Every drop must be flagged in the submitted review
+   and have Jack's explicit sign-off for the goal and replacement revision.
+   For implementation specs, check that accounting before deriving work. If
+   it is missing or a drop lacks sign-off, report the gap to the supervisor
+   and do not commit affected implementation work. Delegated or general
+   approval alone cannot authorize a drop; do not infer consent from silence.
 2. **Organize for parallelism.** Split work by file and module ownership to
    avoid conflicts. Add a `blocks` edge only for a real prerequisite, with its
    reason in the dependent child's description. Start independent branches

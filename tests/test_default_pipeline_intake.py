@@ -269,6 +269,11 @@ async def test_review_approval_ingests_once_at_deep_high(handler, pipeline, kind
     assert task.dedup_key == f"spec-ingest:{path}"
     assert f"spec_path: {path}" in task.description
     assert "spec_kind" in task.description
+    # The executable recording must deliver the policy, not just its source Markdown.
+    assert "docs/guides/reviews.md" in task.description
+    assert "every predecessor goal as kept, changed or dropped" in task.description
+    assert "Jack's explicit sign-off for the goal and replacement revision" in task.description
+    assert "do not commit affected work" in task.description
 
 
 async def test_a_refused_gate_create_ends_the_proposal_run_failed(handler, pipeline):
