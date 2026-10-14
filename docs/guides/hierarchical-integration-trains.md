@@ -591,6 +591,31 @@ Existing origins, checkpoints and retired completion history are preserved.
 An unknown remote state or conflicting branch ownership refuses the edit and
 rolls back its database changes.
 
+A reservation is cut by the branch materialization drain
+(`src/integration/branch_materialization.py`), ten origins per pass, so a
+large backfill reaches its last origins minutes later; until then those tasks
+are honestly `origin_not_materialized` and `reserve-owner` refuses them because
+the origin is not yet materialized. Backfill keeps a pre-existing managed owner row and leases
+it to the task with the finite ref-lease TTL, which a long backlog can outlive.
+The drain then re-leases that row before cutting the ref, but only under all of
+these, checked under the project hierarchy lock and the ref lease lock:
+
+* the origin is live, reserved, unmaterialized, and names the task's exact
+  branch in the project's designated integration repository;
+* the owner row is a managed `worker` lease held by that same task, expired,
+  and attached to no session or workspace;
+* the task has no assigned agent, no attached session and no locked workspace.
+
+Re-leasing bumps the fence (`BranchLock.acquire_on`), so any older grant is
+fenced out, and records an `integration.origin_lease_reacquired` event with the
+previous and new fence. The cut itself is unchanged: an absent ref is created
+at the pinned base, an exact one is accepted, a ref published at any other
+commit is refused (`delivery_target_fixed`) and kept, and an unreadable remote
+stays unknown. A foreign or unexpired holder, a live writer, or legacy
+ownership is never re-leased. Task status, holds, routes and budgets are left
+as they are; only a DEFINED, unblocked task becomes READY. No operator step is
+needed. The drain retries the origin on its next pass.
+
 For projects enabled before this backfill existed, run `aq doctor --check
 integration.branch_origins`, then add `--fix` to repair through a generation-fenced
 project mode edit. App verification, functional preflight and cutover all report

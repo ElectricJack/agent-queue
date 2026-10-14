@@ -41,6 +41,17 @@ def git(path, *args) -> str:
     ).strip()
 
 
+def _disable_auto_maintenance(repo) -> None:
+    # Keep the shared seed immutable during copytree, including receive-pack:
+    # local transport does not propagate command-line -c to the bare origin.
+    for key, value in (
+        ("maintenance.auto", "false"),
+        ("gc.auto", "0"),
+        ("receive.autogc", "false"),
+    ):
+        git(repo, "config", key, value)
+
+
 class Origin:
     def __init__(self, tmp_path, *, template=None):
         self.url = str(tmp_path / "origin.git")
