@@ -32,6 +32,7 @@ from src.playbooks.definition import (
     RUNTIME_ERROR_KEY,
     AgentTaskStep,
     CommandStep,
+    ScriptStep,
     ForEachStep,
     LlmStep,
     PlaybookDefinition,
@@ -891,6 +892,15 @@ def validate_definition(
     for feature in unsupported_features(definition, contracts=context.contracts):
         context.emit("unsupported_feature", unsupported_feature_message(feature),
                      field="/required_features")
+    scripts = {key: step for key, step in definition.steps.items() if isinstance(step, ScriptStep)}
+    pins = definition.trusted_execution.scripts if definition.trusted_execution else {}
+    if set(scripts) != set(pins):
+        context.emit("script_pin_invalid", "Every script requires exactly one trusted source pin",
+                     field="/trusted_execution/scripts")
+    for step_id, step in scripts.items():
+        if step_id in pins and pins[step_id].program != step.program:
+            context.emit("script_pin_invalid", "Script program differs from its trusted source pin",
+                         step_id=step_id, field=f"/steps/{step_id}/program")
     _structure_and_closure(context)
     _loops(context)
     _definite_assignment(context)
@@ -1581,6 +1591,17 @@ def _contracts_and_outcomes(context: _Context) -> None:
         scope = context.scopes.get(step.rule)
         info: ContractInfo | None = None
         resolved = True
+
+        if isinstance(step, ScriptStep) and scope is not None:
+            nodes = [*(step.program.argv[1:] if step.program.argv else step.program.arguments),
+                     *step.environment.values()]
+            if step.program.stdin is not None:
+                nodes.append(step.program.stdin)
+            for node in nodes:
+                kind = _value_type(context, scope, node)
+                if not kind.is_unknown and (kind.kind != "string" or kind.nullable):
+                    context.emit("type_mismatch", "script inputs must resolve to strings",
+                                 rule_id=step.rule, step_id=step_id, field="/program")
 
         if isinstance(step, CommandStep):
             from src.commands.descriptors import PLAYBOOK_DENIALS

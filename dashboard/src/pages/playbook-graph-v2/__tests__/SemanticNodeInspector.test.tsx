@@ -23,6 +23,20 @@ const overlayFor = (stepId: string) => runOverlay.nodes!.find((node) => node.ste
 afterEach(cleanup);
 
 describe("SemanticNodeInspector", () => {
+  it("shows the reviewed script program, runtime and supporting input pins", () => {
+    render(<SemanticNodeInspector node={{ ...ensureReviewTask, step_kind: "script", script: {
+      program: { shell: "printf approved", runtime: "python", limits: { wall_seconds: 10 } },
+      program_sha256: "program-digest", runtime_sha256: "runtime-digest",
+      executable_sha256: "executable-digest", source_revision: "reviewed-revision",
+      environment_names: ["LABEL"], input_pins: [{ path: "support.json", sha256: "input-digest" }],
+    } }} />);
+    const program = within(screen.getByRole("region", { name: "Script program" }));
+    for (const text of ["printf approved", "program-digest", "runtime-digest", "executable-digest",
+      "reviewed-revision", "LABEL", "support.json", "input-digest"]) {
+      expect(program.getByText(new RegExp(text))).toBeInTheDocument();
+    }
+  });
+
   it("renders every collection expression with its full projected semantics", () => {
     render(<SemanticNodeInspector node={collectionNode} />);
     const inputs = within(screen.getByRole("group", { name: "Inputs" }));

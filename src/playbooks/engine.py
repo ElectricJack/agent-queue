@@ -42,6 +42,7 @@ from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import (
     AgentTaskStep,
     CommandStep,
+    ScriptStep,
     ForEachStep,
     LlmStep,
     PlaybookDefinition,
@@ -58,6 +59,7 @@ from src.playbooks.executors.agent_task import (
     narrow_for_child,
 )
 from src.playbooks.executors.llm import resolve_profile_principal
+from src.playbooks.executors.script import ScriptSubmissionInterrupted
 from src.playbooks.executors.base import (
     ENGINE_RESERVED_OUTCOMES,
     GOTO_CAPABLE_STEP_KINDS,
@@ -142,7 +144,7 @@ EVENT_STEP_COMPLETED = "playbook.v2.step.completed"
 
 #: The step types whose attempts reach outside the engine, and are therefore
 #: fenced by a receipted ``attempt_start`` boundary before they execute.
-EXTERNAL_STEP_TYPES = (CommandStep, LlmStep, AgentTaskStep)
+EXTERNAL_STEP_TYPES = (CommandStep, LlmStep, AgentTaskStep, ScriptStep)
 EVENT_RUN_FINISHED = "playbook.v2.run.finished"
 
 _TERMINAL_LIFECYCLE: dict[str, RunLifecycle] = {
@@ -1558,6 +1560,9 @@ class PlaybookEngine:
         return await repository.commit_boundary(paused, operator_receipt), "operator_decision_required"
 
     def _retry_safe_after_interruption(self, step: Any) -> bool:
+        if isinstance(step, ScriptStep):
+            # Replay submission with the same durable operation key, never execution.
+            return True
         if not isinstance(step, CommandStep):
             return False
         registration = self.services.contracts.get(step.command)
@@ -1870,7 +1875,7 @@ class PlaybookEngine:
             completed = await persist_intent()
             if completed is not None:
                 if completed.snapshot is not None:
-                    await self._cancel_children(completed.snapshot, principal, cancel_children)
+                    await self._cancel_children(snapshot, principal, cancel_children)
                 return completed
             # No walk here.  Whichever process owns the run reads the intent
             # off the snapshot at its next boundary.
@@ -1883,7 +1888,7 @@ class PlaybookEngine:
                 if completed is not None:
                     if completed.snapshot is not None:
                         await self._cancel_children(
-                            completed.snapshot, principal, cancel_children
+                            snapshot, principal, cancel_children
                         )
                     return completed
                 control.cancel_snapshot = snapshot
@@ -2106,6 +2111,32 @@ class PlaybookEngine:
         whose authority has since shrunk cannot reach the child through the
         cancel path.
         """
+        artifact_ref = await self._ref_for(snapshot)
+        artifact = self._load(artifact_ref)
+        script_step = artifact.steps.get(snapshot.current_step_id or "")
+        if isinstance(script_step, ScriptStep):
+            from src.playbooks.executors.script import dispatch
+
+            step_id = snapshot.current_step_id
+            number = snapshot.attempts.get(attempt_key(
+                step_id, self._iteration_of(snapshot, step_id), snapshot.iteration_path), 1)
+            job_id = (snapshot.wait.match.get("job_id") if snapshot.wait else None)
+            if not isinstance(job_id, str):
+                # Stored snapshots may protect wait matches; durable identity is public.
+                job = await self.services.db.find_script_job(
+                    snapshot.run_id, step_id, snapshot.iteration_path, number)
+                job_id = job["id"] if job else None
+            ctx = StepContext(
+                run_id=snapshot.run_id, dispatch_id=snapshot.dispatch_id or "",
+                artifact_ref=artifact_ref, artifact=artifact, rule_id=snapshot.rule_id,
+                step_id=step_id, principal=principal, attempt=number,
+                scope=ResolutionScope(), services=self.services,
+                iteration_path=snapshot.iteration_path,
+            )
+            if job_id:
+                result = await dispatch(ctx, "job_cancel", {"job_id": job_id})
+                if not result.get("success"):
+                    logger.warning("Script cancellation refused for run %s", snapshot.run_id)
         if not snapshot.agent_task_ids:
             return
         step = None
@@ -2200,6 +2231,9 @@ class PlaybookEngine:
                 receipts.append(receipt)
                 if receipt.receipt_kind == "step":
                     await self._emit(EVENT_STEP_COMPLETED, snapshot, step_id=receipt.step_id)
+            if outcome == "script_submission_interrupted":
+                # The durable start fence remains RUNNING for recovery to rejoin.
+                break
             if snapshot.lifecycle is RunLifecycle.PAUSED and snapshot.pending_wait_claims:
                 # Registration and inbox ingestion serialize per playbook, so
                 # an event that arrived first is consumed *inside* the same
@@ -2336,6 +2370,10 @@ class PlaybookEngine:
         # re-executing would compute a second correlation key and open a
         # second wait for one suspension.  The resumption is durable state
         # on the snapshot, so this branch is identical after a restart.
+        if isinstance(step, ScriptStep) and snapshot.wait is not None:
+            return await finish(
+                self._resume_script_wait(attempt, artifact, artifact_ref, repository)
+            )
         if isinstance(step, WaitStep) and snapshot.wait is not None:
             return await finish(
                 self._resume_wait(attempt, step, artifact, artifact_ref, repository)
@@ -2385,7 +2423,7 @@ class PlaybookEngine:
         # Wait/child results have no audited public result contract. Mark
         # their future binding before opening the wait or spawning the child,
         # so an event racing registration also enters the protected inbox.
-        if isinstance(step, (WaitStep, AgentTaskStep)) and step.save_result_as:
+        if isinstance(step, (WaitStep, AgentTaskStep, ScriptStep)) and step.save_result_as:
             from src.playbooks.private_values import PrivateValueError
 
             try:
@@ -2628,6 +2666,8 @@ class PlaybookEngine:
                 control=StepControl.ADVANCE, outcome="input_resolution_failed",
                 diagnostics=(exc.reason,),
             )
+        except ScriptSubmissionInterrupted:
+            return attempt.snapshot, tuple(attempt.boundary_receipts), "script_submission_interrupted"
         except Exception as exc:  # noqa: BLE001 - §3.4 step 6
             result = ExecutorResult(
                 control=StepControl.ADVANCE,
@@ -3297,6 +3337,43 @@ class PlaybookEngine:
     # §4.6 — the suspension's other half
     # ------------------------------------------------------------------
 
+    async def _resume_script_wait(self, attempt, artifact, artifact_ref, repository):
+        from src.playbooks.executors.script import settled_result
+
+        snapshot = attempt.snapshot
+        wait = snapshot.wait
+        ctx = StepContext(
+            run_id=snapshot.run_id, dispatch_id=snapshot.dispatch_id or "",
+            artifact_ref=artifact_ref, artifact=artifact, rule_id=snapshot.rule_id,
+            step_id=attempt.step_id, principal=attempt.principal,
+            scope=self._scope(snapshot, artifact), services=self.services,
+            iteration_path=snapshot.iteration_path,
+            attempt=snapshot.attempts[attempt_key(attempt.step_id, attempt.iteration,
+                                                   snapshot.iteration_path)],
+        )
+        result = await settled_result(attempt.step, ctx, wait.match["job_id"])
+        if result is None:
+            return replace(snapshot, lifecycle=RunLifecycle.PAUSED,
+                           pending_wait_claims=()), None, "awaiting_job"
+        attempt.wait_id = wait.wait_id
+        attempt.wait_changes = WaitChangeSet(clear_wait_ids=(wait.wait_id,))
+        attempt.snapshot = replace(snapshot, pending_wait_claims=())
+        attempt.outcome = result.outcome
+        attempt.receipt_inputs = result.receipt_inputs
+        attempt.receipt_result = result.receipt_result
+        attempt.principal = result.effective_principal or attempt.principal
+        if result.value is not None:
+            try:
+                attempt.snapshot = bind_step_output(
+                    attempt.snapshot, step_id=attempt.step.save_result_as,
+                    value=result.value, declared=result.value.keys(),
+                    private_fields=result.private_fields,
+                )
+            except StateLimitExceeded:
+                attempt.outcome = "state_limit_exceeded"
+                attempt.error = "script result exceeds the state limit"
+        return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+
     async def _resume_wait(
         self,
         attempt: _Attempt,
@@ -3869,6 +3946,8 @@ class PlaybookEngine:
             return "skipped"
         if attempt.outcome in ENGINE_RESERVED_OUTCOMES:
             return "failure"
+        if isinstance(attempt.step, ScriptStep) and attempt.outcome != "succeeded":
+            return "failure"
         if attempt.lifecycle in (RunLifecycle.FAILED, RunLifecycle.BLOCKED):
             return "failure"
         if self._declared_classification(attempt.step, attempt.outcome) is OutcomeClass.FAILURE:
@@ -3960,11 +4039,19 @@ class WaitScheduler:
         self._principal = principal
 
     async def tick(self, now: float | None = None, *, limit: int = 100) -> tuple[str, ...]:
-        """Resume every run whose wait deadline has passed.  Returns the ids."""
+        """Resume expired waits and settled script jobs. Returns the run ids."""
         if self._waits is None:
             return ()
         moment = self._engine.services.clock() if now is None else now
         resumed: list[str] = []
+        scan = getattr(self._waits, "settled_script_waits", None)
+        if scan is not None:
+            for wait in await scan(limit=limit):
+                try:
+                    await self._engine.resume(wait.run_id, EventArrived(wait.wait_id), self._principal)
+                    resumed.append(wait.run_id)
+                except Exception:
+                    logger.exception("Script wait %s could not resume", wait.wait_id)
         for claim in await self._waits.expire_due(moment, limit=limit):
             try:
                 await self._engine.resume(

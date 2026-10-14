@@ -39778,6 +39778,16 @@
       },
       "GraphNodeDTO": {
         "properties": {
+          "script": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScriptNodeDetailDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -39795,7 +39805,8 @@
               "decision",
               "wait",
               "foreach",
-              "terminal"
+              "terminal",
+              "script"
             ],
             "title": "Step Kind"
           },
@@ -62961,7 +62972,8 @@
               "decision",
               "wait",
               "foreach",
-              "terminal"
+              "terminal",
+              "script"
             ],
             "title": "Step Kind"
           },
@@ -62980,6 +62992,21 @@
               }
             ],
             "title": "Iteration Index"
+          },
+          "iteration_path": {
+            "type": "string",
+            "title": "Iteration Path",
+            "default": ""
+          },
+          "script": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScriptExecutionDTO"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "outcome": {
             "type": "string",
@@ -67412,6 +67439,204 @@
         ],
         "title": "ScopedConftest"
       },
+      "ScriptExecutionDTO": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "execution_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Id"
+          },
+          "terminal_cause": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Cause"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "signal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "json_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Status"
+          },
+          "capture_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capture Complete"
+          },
+          "cleanup_complete": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleanup Complete"
+          },
+          "output_refs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Output Refs",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "title": "ScriptExecutionDTO",
+        "description": "Public execution facts and opaque handles, never process output or inputs."
+      },
+      "ScriptNodeDetailDTO": {
+        "properties": {
+          "program": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Program"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision"
+          },
+          "program_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Program Sha256"
+          },
+          "runtime_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Sha256"
+          },
+          "executable_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executable Sha256"
+          },
+          "input_pins": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Input Pins",
+            "default": []
+          },
+          "environment_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Environment Names",
+            "default": []
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "program"
+        ],
+        "title": "ScriptNodeDetailDTO"
+      },
       "SearchFilesRequest": {
         "properties": {
           "pattern": {
@@ -70435,7 +70660,8 @@
                   "decision",
                   "wait",
                   "foreach",
-                  "terminal"
+                  "terminal",
+                  "script"
                 ]
               },
               {

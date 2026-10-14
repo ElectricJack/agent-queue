@@ -180,7 +180,7 @@ def test_generated_requirements_come_from_server_contracts(tmp_path):
 
 
 @pytest.mark.parametrize("name,expected,supported", [
-    ("playbook_state_get", "state_v1", True), ("playbook_script_run", "script_v1", False),
+    ("playbook_state_get", "state_v1", True), ("playbook_script_run", "script_v1", True),
 ])
 def test_command_hooks_require_complete_feature_support(name, expected, supported):
     raw = twin()

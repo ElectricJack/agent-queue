@@ -28,6 +28,7 @@ const EDGE_KINDS: SemanticEdgeKind[] = [
 ];
 
 const STEP_KINDS: SemanticStepKind[] = [
+  "script",
   "command",
   "llm",
   "agent_task",

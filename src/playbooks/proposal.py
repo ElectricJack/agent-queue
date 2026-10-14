@@ -320,6 +320,7 @@ def propose(
     events: EventSchemaLookup,
     version: int,
     enforce_inventory: bool = True,
+    script_pins: Mapping[str, Any] | None = None,
 ) -> CompileProposal:
     """Build a review-only proposal from trusted source and untrusted body."""
     diagnostics: list[Diagnostic] = []
@@ -379,9 +380,24 @@ def propose(
         )
         from src.playbooks.features import execution_metadata_from_source, infer_required_features
 
-        artifact = artifact.model_copy(update={
-            "trusted_execution": execution_metadata_from_source(source.frontmatter, artifact),
-        })
+        from src.playbooks.definition import ScriptStep, TrustedExecutionMetadata
+        from src.playbooks.script_policy import ScriptProgram
+
+        metadata = execution_metadata_from_source(source.frontmatter, artifact)
+        scripts = {key: step for key, step in artifact.steps.items() if isinstance(step, ScriptStep)}
+        source_programs = source.frontmatter.get("scripts", {})
+        if not isinstance(source_programs, dict) or set(source_programs) != set(scripts):
+            raise ValueError("script source and compiled step identities differ")
+        if set(script_pins or {}) != set(scripts):
+            raise ValueError("scripts require server-resolved source pins")
+        for step_id, step in scripts.items():
+            authored = ScriptProgram.model_validate(source_programs[step_id])
+            if authored != step.program or script_pins[step_id].program != authored:
+                raise ValueError("compiled script differs from its authored program")
+        if scripts:
+            metadata = (metadata or TrustedExecutionMetadata()).model_copy(
+                update={"scripts": dict(script_pins)})
+        artifact = artifact.model_copy(update={"trusted_execution": metadata})
         artifact = artifact.model_copy(update={
             "required_features": infer_required_features(artifact, contracts=contracts),
         })

@@ -394,7 +394,19 @@ class JobService:
                 await self.cancel(job)
                 return
             if run.lifecycle.value != "running":
-                return
+                # E3 suspends the engine before ordinary process admission.
+                # Only this job's durable script wait authorizes a paused run;
+                # an ambiguity/operator pause must never permit another launch.
+                from src.playbooks.receipts import attempt_key
+
+                wait = run.wait
+                if (run.lifecycle.value != "paused" or run.error_code or wait is None
+                        or wait.event_type != "job.completed"
+                        or wait.step_id != job["playbook_step_id"]
+                        or wait.iteration_path != job["iteration_path"]
+                        or run.attempts.get(attempt_key(wait.step_id, wait.iteration,
+                                                       wait.iteration_path)) != job["attempt"]):
+                    return
         changed = await self.db.transition_job(
             job["id"], job["state_version"], "starting", launch_at=time.time()
         )

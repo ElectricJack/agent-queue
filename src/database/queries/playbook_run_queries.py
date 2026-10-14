@@ -1359,7 +1359,8 @@ class PlaybookRunQueryMixin:
                     # finds the run through it, and the snapshot's
                     # agent_task_ids already records it in plain text.
                     values["match"] = _dumps({
-                        name: value if wait.kind == "agent_task" and name == "task_id"
+                        name: value if (wait.kind == "agent_task" and name == "task_id")
+                        or (wait.event_type == "job.completed" and name == "job_id")
                         else batch.protect(value)
                         for name, value in wait.match.items()
                     })
@@ -1573,6 +1574,33 @@ class PlaybookRunQueryMixin:
                     continue
                 claims.append(_row_to_claim(row, None, now, expired=True))
         return claims
+
+    async def settled_script_waits(self, *, limit: int = 100) -> list[WaitSpec]:
+        """Terminal job truth survives missed events and registration races."""
+        from src.database.tables import jobs
+        from src.jobs.policy import TERMINAL
+
+        job_ref = func.jsonb_extract_path_text(cast(playbook_waits.c.match, JSONB), "job_id")
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(
+                select(playbook_waits).join(jobs, jobs.c.id == job_ref).join(
+                    playbook_v2_runs, playbook_v2_runs.c.run_id == playbook_waits.c.run_id,
+                ).where(
+                    playbook_v2_runs.c.lifecycle == "paused",
+                    playbook_v2_runs.c.error_code.is_(None),
+                    func.jsonb_extract_path_text(
+                        cast(playbook_v2_runs.c.snapshot, JSONB), "wait", "wait_id"
+                    ) == playbook_waits.c.wait_id,
+                    playbook_waits.c.state.in_(("active", "claimed")),
+                    playbook_waits.c.event_type == "job.completed",
+                    jobs.c.owner_kind == "playbook",
+                    jobs.c.playbook_run_id == playbook_waits.c.run_id,
+                    jobs.c.playbook_step_id == playbook_waits.c.step_id,
+                    jobs.c.iteration_path == playbook_waits.c.iteration_path,
+                    jobs.c.state.in_(TERMINAL), jobs.c.cleanup_blocked.is_(False),
+                ).order_by(playbook_waits.c.created_at).limit(max(0, limit))
+            )).mappings().all()
+        return [WaitSpec.from_dict({**row, "match": json.loads(row["match"])}) for row in rows]
 
     async def settled_child_waits(self, *, limit: int = 100) -> list[SettledChildWait]:
         """Every active ``agent_task`` wait whose awaited task has settled.

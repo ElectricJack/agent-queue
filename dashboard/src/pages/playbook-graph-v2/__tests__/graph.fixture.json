@@ -100,6 +100,7 @@
   ],
   "nodes": [
     {
+      "script": null,
       "id": "ensure-review-task",
       "rule_id": "review-on-task-completed",
       "step_kind": "command",
@@ -438,6 +439,7 @@
       }
     },
     {
+      "script": null,
       "id": "classify-risk",
       "rule_id": "review-on-task-completed",
       "step_kind": "llm",
@@ -755,6 +757,7 @@
       }
     },
     {
+      "script": null,
       "id": "escalate",
       "rule_id": "review-on-task-completed",
       "step_kind": "agent_task",
@@ -1014,6 +1017,7 @@
       }
     },
     {
+      "script": null,
       "id": "await-approval",
       "rule_id": "review-on-task-completed",
       "step_kind": "wait",
@@ -1274,6 +1278,7 @@
       }
     },
     {
+      "script": null,
       "id": "review-unavailable",
       "rule_id": "review-on-task-completed",
       "step_kind": "terminal",
@@ -1351,6 +1356,7 @@
       }
     },
     {
+      "script": null,
       "id": "cancelled-end",
       "rule_id": "review-on-task-completed",
       "step_kind": "terminal",
@@ -1428,6 +1434,7 @@
       }
     },
     {
+      "script": null,
       "id": "done",
       "rule_id": "review-on-task-completed",
       "step_kind": "terminal",
@@ -1505,6 +1512,7 @@
       }
     },
     {
+      "script": null,
       "id": "list-downstream",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "command",
@@ -1708,6 +1716,7 @@
       }
     },
     {
+      "script": null,
       "id": "for-each-task",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "foreach",
@@ -1932,6 +1941,7 @@
       }
     },
     {
+      "script": null,
       "id": "open-gate",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "command",
@@ -2319,6 +2329,7 @@
       }
     },
     {
+      "script": null,
       "id": "check-gate",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "decision",
@@ -2481,6 +2492,7 @@
       }
     },
     {
+      "script": null,
       "id": "sweep-done",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "terminal",
@@ -2558,6 +2570,7 @@
       }
     },
     {
+      "script": null,
       "id": "sweep-failed",
       "rule_id": "sweep-on-spec-approved",
       "step_kind": "terminal",
@@ -3146,6 +3159,7 @@
   ],
   "legend": {
     "step_kinds": {
+      "script": "Script",
       "command": "Command",
       "llm": "AI",
       "agent_task": "Delegated task",

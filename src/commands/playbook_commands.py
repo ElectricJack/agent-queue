@@ -572,9 +572,11 @@ class PlaybookCommandsMixin:
                     "errors": [f"active V2 artifact could not be loaded: {exc}"],
                     "retries_used": 0,
                 }
+        script_pins = await self._v2_script_pins(loaded)
         proposal = propose(
             loaded,
             body,
+            script_pins=script_pins,
             baseline=baseline,
             contracts=contracts,
             profiles=profiles,

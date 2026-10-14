@@ -613,9 +613,11 @@ class ReviewCommandsMixin:
 
         version = source.frontmatter.get("version")
         contracts, profiles, events = await self._v2_lookups()
+        script_pins = await self._v2_script_pins(source)
         proposal = propose(
             source,
             body,
+            script_pins=script_pins,
             contracts=contracts,
             profiles=profiles,
             events=events,

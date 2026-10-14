@@ -287,6 +287,22 @@ export default function SemanticNodeInspector({
         </Block>
       )}
 
+      {node.script && (
+        <section aria-label="Script program" className="space-y-2">
+          <h3 className="text-xs font-semibold">Script program</h3>
+          <p className="text-xs text-gray-400">Ordinary process. Output is protected; ambiguous execution requires an operator decision.</p>
+          <pre className="overflow-auto whitespace-pre-wrap rounded bg-black/20 p-2 text-xs">{JSON.stringify(node.script.program, null, 2)}</pre>
+          <dl className="space-y-1 break-all text-xs">
+            <dt>Program digest</dt><dd>{node.script.program_sha256 ?? "Unresolved"}</dd>
+            <dt>Runtime digest</dt><dd>{node.script.runtime_sha256 ?? "Unresolved"}</dd>
+            <dt>Executable digest</dt><dd>{node.script.executable_sha256 ?? "Unresolved"}</dd>
+            <dt>Source revision</dt><dd>{node.script.source_revision ?? "Unresolved"}</dd>
+            <dt>Environment names</dt><dd>{node.script.environment_names?.join(", ") || "None"}</dd>
+          </dl>
+          <pre className="overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(node.script.input_pins, null, 2)}</pre>
+        </section>
+      )}
+
       {node.loop && (
         <Block name="Loop">
           <Pairs

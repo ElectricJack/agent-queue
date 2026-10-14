@@ -955,6 +955,7 @@
         "tests/test_playbook_receipts.py",
         "tests/test_playbook_run_overlay.py",
         "tests/test_playbook_run_repository.py",
+        "tests/test_playbook_script.py",
         "tests/test_playbook_script_recovery.py",
         "tests/test_playbook_script_sandbox.py",
         "tests/test_playbook_services.py",
@@ -12457,6 +12458,38 @@
         "parametrize"
       ],
       "summary": "Playbook V2 run state — snapshots, boundaries, receipts, cancellation."
+    },
+    "tests/test_playbook_script.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f56d5e23ccf583cd96f8e96250e432bae34e37b0e66d57c136e26c9c028ee1be",
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.jobs.service",
+        "src.playbooks.artifact_diff",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors",
+        "src.playbooks.executors.base",
+        "src.playbooks.invocation",
+        "src.playbooks.private_values",
+        "src.playbooks.proposal",
+        "src.playbooks.run_overlay",
+        "src.playbooks.run_state",
+        "src.playbooks.script_policy",
+        "src.playbooks.semantic_diff",
+        "src.playbooks.validation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Script engine boundaries, source authority, safe projections and real job settlement."
     },
     "tests/test_playbook_script_recovery.py": {
       "areas": [
