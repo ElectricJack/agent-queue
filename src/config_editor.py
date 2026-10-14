@@ -303,10 +303,19 @@ def _field_default(f: dataclasses.Field) -> Any:
             value = f.default_factory()  # type: ignore[misc]
         except Exception:
             return dataclasses.MISSING
-        if dataclasses.is_dataclass(value):
-            return dataclasses.asdict(value)
-        return value
+        return _schema_default(value)
     return dataclasses.MISSING
+
+
+def _schema_default(value: Any) -> Any:
+    """Defaults may contain dataclasses inside a map (e.g. wait kind policies)."""
+    if dataclasses.is_dataclass(value):
+        return dataclasses.asdict(value)
+    if isinstance(value, dict):
+        return {key: _schema_default(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_schema_default(item) for item in value]
+    return value
 
 
 def build_config_schema() -> dict[str, Any]:
