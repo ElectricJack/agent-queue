@@ -3202,9 +3202,14 @@ async def test_train_recovers_empty_loose_object_and_delivers_sealed_batch(world
     assert git(world.origin.url, "rev-parse", "main") == testing.candidate_sha != before
     git(world.origin.url, "merge-base", "--is-ancestor", source, testing.candidate_sha)
     git(retained.store, "fsck", "--full", "--no-dangling")
-    backups = list((retained.store / ".git" / "aq-empty-object-backups").glob(f"*/{source}"))
-    assert len(backups) == 1 and backups[0].stat().st_size == 0
-    assert not (backups[0].parent.parent / "pending").exists()
+    recovery = retained.store / ".git" / "aq-empty-object-backups"
+    incident = json.loads((recovery / "incident.json").read_text())
+    [move] = incident["moves"]
+    assert move["oid"] == source and move["original"] == str(obj)
+    assert move["status"] == "moved" and Path(move["backup"]).read_bytes() == b""
+    assert incident["status"] == "recovered" and incident["attempts"] == 1
+    assert json.loads((Path(incident["backup"]) / "manifest.json").read_text()) == incident
+    assert not (recovery / "pending").exists()
 
 
 @pytest.mark.parametrize("scenario", ("clean", "revert"))

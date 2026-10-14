@@ -2057,6 +2057,11 @@ class Orchestrator(
         )
         from src.integration.repository_git import RepositoryGit
 
+        async def retained_recovery_state(state, *, load=False):
+            return await self._command_handler.retained_repository_recovery(state, load=load)
+
+        self.git.retained_recovery_state = retained_recovery_state
+
         self.repository_git = RepositoryGit(
             self.db, data_dir=self.config.data_dir, git_manager=self.git,
         )

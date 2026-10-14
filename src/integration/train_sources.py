@@ -730,6 +730,16 @@ class DatabaseBatches:
         admission_blockers = []
         delivered_ids = set()
         current = await self.current(target)
+        if current is None:
+            from src.integration.repository_incidents import admission_holds
+
+            incidents = await admission_holds(self.db, target.project_id)
+            if incidents:
+                return BatchSelection(blockers=({
+                    "code": "retained_repository_recovery", "ref": target.project_id,
+                    "detail": "New project batches wait for retained Git cache recovery",
+                    "incident_ids": [item["id"] for item in incidents],
+                },))
         frozen_members = await service.store.members(current.id) if current is not None else ()
         # A frozen batch already owns this target. New candidates must not delay
         # its checks or its existing repair; publication revalidates its members.

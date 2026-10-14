@@ -1,112 +1,57 @@
-# Diagnosing retained Git corruption
+# Retained Git corruption
 
-This procedure diagnoses an incident and defines prerequisites for recovery.
-There is currently no supported live retained-cache object repair command.
-Do not remove/reclone a live store, delete loose objects, repoint refs, or use a
-shell restoration to bypass CommandHandler and writer authority.
+Retained integration repositories cache origin and AQ's own branches. The existing
+integration owner automatically attempts bounded recovery of confirmed corruption,
+following approved review `rev-swift-flare` revision 2. This source change is not
+evidence that a particular live cache has recovered.
 
-The `crisp-crest-36` incident recorded 51 zero-byte loose objects in the managed
-development repository. Nine hash-verified compressed bodies were recovered from
-the designated local repository; 42 were unavailable there. These counts describe
-the captured evidence, not current live state or complete required reachability.
-The incident evidence is under the operator vault's project notes:
-`notes/evidence/retained-git-corruption-1791988496819898674/`.
+The actual failing cache may be the retained development repository, its separate
+delivery observer, or a bare repository reader. Recovery uses that cache's normal
+repository transaction; it does not repair a worker checkout or replace a clone
+that holds unpublished history.
 
-## Source diagnosis
+On an integrity failure, new batches pause for the affected project. Existing
+frozen inputs, owners, checkpoints and operator pauses remain intact. Other
+projects continue. Regular empty or Git-diagnosed corrupt loose objects move to
+a timestamped backup inside the Git directory's `aq-empty-object-backups`, outside
+active `objects`. Bytes are preserved. The backup's `manifest.json` and current
+`incident.json` record every move, attempt and scrubbed before/after fsck result.
+The pending marker and incident survive interruption and daemon restart.
 
-The old `DevelopmentRepository` name is now `DevelopmentPrimitives.store` in
-`src/integration/development.py`. It creates and fetches the retained checkout.
-`DeliveryObserver` normally has its own `observer` checkout and fetch lock;
-the train also resolves retained repositories through `repository_git.py` and
-`development_repository`. Confirm the actual path in each failing observation.
-Candidate construction, cleanup, exact imports and attached worktrees can write
-objects or refs independently of an observer fetch.
+Origin is fully refetched using the configured authenticated transport without
+negotiating against damaged tips. Readable local-only AQ heads are published
+through the guarded absent-head publication path. Existing remote heads are not
+forced, and non-AQ branches are not published. Full `fsck` verifies content;
+connectivity-only checking is insufficient. Zero exit with integrity diagnostics
+still fails.
 
-Authenticated clone staging is renamed into place only after acquisition.
-Incremental fetch staging lends the destination's objects through a read-only
-alternate and creates negotiation refs in the temporary repository. It imports
-objects back through Git, rather than truncating destination loose files in
-Python. No inspected Python path establishes which writer created the empty
-objects. Cancellation gaps and discarded diagnostics are confirmed software
-defects, not proof of the incident's cause. An accompanying credential-broker
-`requested=False` is not evidence that a credential expired.
+On success the incident's admission hold clears and the existing owner retries
+its normal batch flow. It still needs its ordinary validation and publication
+gates to deliver. On failure the backup and hold remain, and the project supervisor
+receives one coalesced incident notice with diagnostics and backup location. At
+most two attempts are allowed, including interrupted/cancelled attempts. Restart
+or another visit does not reset an exhausted incident.
 
-The native lender gate now runs full `fsck` and refuses any integrity diagnostic,
-including a contradictory zero exit. It checks blobs as well as connectivity,
-and retains unavailable sources. It never repairs the original store. Full checks
-share the existing acquisition deadline; an oversized or slow store can remain
-unavailable on timeout without extending writer budgets.
+An ordinary authentication/network error with a clean cache does not move objects.
+Pack corruption, unsafe or unidentified object paths, unreadable local-only history,
+failed publication, timeout or failed final checking require intervention. Read
+the notice and manifest; preserve them and all original bytes. Do not delete the
+journal to reset the cap, re-clone away unpublished refs, remove packs, or rewrite
+source refs to make verification pass.
 
-## Preserve and inspect
+After the source is delivered, the operator uses the normal deployment/restart
+procedure to activate it. Workers do not deploy, restart the operator daemon,
+migrate its database or mutate a live cache. There is no new live repair command.
+An exhausted incident remains held for supervisor/operator handling; it is not
+cleared by a deployment or by approval of the implementation.
 
-Through the incident's authorized read-only evidence capture, record the exact
-project/designated repository binding, managed path/common directory identity,
-target and generation, root/repair owners and fence tokens, and pending frozen
-inputs. Capture all refs (not only remote branches), symbolic HEAD, packed refs,
-attached worktrees and relevant reflogs. Preserve the entire original store,
-including unreachable/nonremote objects and audit material. A directory copy
-made while writers are active is evidence, not a consistent recovery image.
+Historical evidence for `crisp-crest-36` recorded 51 empty loose objects; the
+operator reported that setting those objects aside and refetching produced clean
+fsck. The evidence is in the operator vault under
+`notes/evidence/retained-git-corruption-1791988496819898674/`. Neither these counts
+nor that report establish current live health or the writer responsible for the
+corruption.
 
-For an already isolated disposable copy, these Git probes are useful:
-
-```bash
-git --no-replace-objects -C COPY for-each-ref --format='%(refname) %(objectname)'
-git --no-replace-objects -C COPY fsck --full --no-dangling --no-reflogs --no-progress
-```
-
-Record exit status **and** stdout/stderr. `--connectivity-only` does not validate
-blob bodies. A zero exit with error evidence does not pass. Never include network
-credentials, environment dumps or authenticated transport configuration in the
-artifact. Evidence must distinguish expected missing objects from unreadable,
-corrupt or otherwise unknown objects.
-
-## Stage recovery, then prove authority
-
-1. Retain the source inventory and original compressed bytes. For each candidate
-   body, decompress its Git header and body; verify the declared type and size,
-   and hash the complete `type size\0body` against the exact expected Git OID.
-   A filename or a successful `rev-parse` does not verify content.
-2. Restore only into a separate disposable copy. Preserve every captured ref and
-   every unique local/unpublished source, plus the explicit pending source/base
-   OIDs, provenance, receipts and checkpoint history. A remote-only clone cannot
-   prove this. Keep unresolved objects and unknown reachability explicitly listed;
-   the nine recovered bodies alone do not establish recovery.
-3. Fully verify the staged object graph, every required ref's reachability and
-   its expected OID, and all explicit pending roots. Remove no evidence to make
-   the check pass. Prove the stage has no dependency on temporary alternates.
-   Restarting an interrupted staging attempt uses the same captured source
-   identity; changed refs or missing proof require a new inventory.
-4. Before any live application, require a supported CommandHandler operation
-   with durable intent/audit and **all-writer** exclusion. Neither the existing
-   publisher advisory/engine guard, the manager's in-process repository lock nor
-   `DeliveryObserver._fetch_lock` covers every actual writer. Merely holding all
-   three has not proved exclusion of external/attached writers. No current
-   command supplies this authority, so this step remains refused.
-5. A future applying operation must re-read project/designated-repo/binding,
-   generation/snapshot, owner/fence, directory identity and ref/input inventory
-   under that exclusion, before and after application. Any drift refuses the
-   operation. It must preserve original evidence, recover interruption using its
-   durable operation identity, and invalidate only observations of the affected
-   store after verified readback. Failed or ambiguous recovery remains unknown.
-
-The owning incident escalation handles live execution and its runtime receipts.
-Leave the existing merge owner, frozen inputs, repair budget and target intact;
-independent healthy repositories continue their existing work. Do not create a
-second merge coordinator or manufacture a delivery receipt to clear this fault.
-
-## Regression evidence
-
-`tests/test_git_app_auth.py` exercises empty, truncated and missing bodies in a
-local-only retained source, origin and exact fetch refusal without destination
-changes, contradictory zero-exit diagnostics, an unreferenced corrupt blob,
-and complete versus incomplete restoration in a disposable staging copy.
-`tests/test_git_manager_async.py` cancels both local runners during startup and
-execution, and admits the next writer only after the cancelled child is reaped.
-`tests/test_development_integration.py` uses disposable Git and PostgreSQL to
-verify unknown delivery, unchanged frozen source/checkpoint/owner/repair and
-completion records, and independent healthy-store progress. Existing snapshot
-tests cover project/repository/target/generation and freshness checks.
-
-These are source-level regressions, not evidence of live cache recovery or
-runtime writer exclusion. Claims, hierarchy and publication policy are unchanged;
-the swarm end-to-end reset is outside this change's validation scope.
+Disposable Git/PostgreSQL acceptance cases live in
+`tests/test_development_integration.py`. Detection and child lifetime regressions
+remain in `tests/test_git_app_auth.py` and `tests/test_git_manager_async.py`.
