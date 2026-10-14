@@ -1091,10 +1091,19 @@ async def record_ready(observed, entries):
 
 @pytest.mark.parametrize("command", ["restart_task", "reopen_with_feedback"])
 @pytest.mark.parametrize("held", [False, True])
-async def test_restart_incident_supersession_rolls_back_with_ready_write(env, command, held):
-    current = await incident(env)
+@pytest.mark.parametrize("has_attempt", [False, True])
+async def test_restart_incident_supersession_rolls_back_with_ready_write(
+    env, command, held, has_attempt,
+):
+    if has_attempt:
+        current = await incident(env)
+    else:
+        await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+        await notify(env)
+        current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
     if held:
         assert "error" not in await decide(env, current, "hold")
+    status = (await env.db.get_task("t")).status
     before = await env.db.get_task_meta("t", "supervisor_recovery_incident")
     message_id = "msg-" + current["id"]
     archived_at = (await env.db.get_message(message_id)).archived_at
@@ -1106,7 +1115,7 @@ async def test_restart_incident_supersession_rolls_back_with_ready_write(env, co
             )
             raise RuntimeError("abort restart")
 
-    assert (await env.db.get_task("t")).status is TaskStatus.BLOCKED
+    assert (await env.db.get_task("t")).status is status
     assert await env.db.get_task_meta("t", "supervisor_recovery_incident") == before
     assert (await env.db.get_message(message_id)).archived_at == archived_at
 
@@ -1497,6 +1506,61 @@ async def test_failed_without_attempt_hold_preserves_failure_and_archives_notice
     assert len(comments) == 1 and "no worker attempt" in comments[0]["body"]
     assert "error" in await decide(env, current, "hold")
     assert await env.db.queue_task_recovery_notifications() == 0
+    assert len(await queued_messages(env)) == 1
+
+
+@pytest.mark.parametrize("command", ["restart_task", "reopen_with_feedback"])
+@pytest.mark.parametrize("failure_source", ["created", "transitioned"])
+async def test_restart_supersedes_no_attempt_recovery_hold(env, command, failure_source):
+    """swift-impact-20: a pre-claim failure must not hold the fresh attempt."""
+    task_id = "preclaim"
+    await env.db.create_task(Task(
+        id=task_id, project_id="p", title="Pre-claim failure", description="Keep requirements",
+        status=TaskStatus.FAILED if failure_source == "created" else TaskStatus.READY,
+        profile_id="worker", route_source="override", branch_name="aq/preclaim", retry_count=2,
+    ))
+    if failure_source == "transitioned":
+        await env.db.transition_task(task_id, TaskStatus.FAILED, context="validation_failed")
+    first = await env.handler.execute("task_recovery_notify", {"task_id": task_id})
+    current = await env.db.get_task_meta(task_id, "supervisor_recovery_incident")
+    assert first["outcome"] == "queued" and current["attempt_id"] is None
+    recovery_args = {
+        "task_id": task_id, "incident_id": current["id"], "decision": "hold",
+        "reason": "Preserve pre-claim failure for diagnosis.",
+    }
+    held = await env.handler.execute("task_recover", recovery_args)
+    assert "error" not in held, held
+    recorded = await env.db.get_task_meta(task_id, "supervisor_recovery_incident")
+    assert recorded["decision"] == "hold"
+    before = await env.db.get_task(task_id)
+    await env.db.set_task_meta(task_id, "supervisor_recovery_attempts", 1)
+    ready = []
+    env.db.set_ready_listener(lambda entries: record_ready(ready, entries))
+
+    result = await env.handler.execute(command, {"task_id": task_id, "feedback": "Fix diagnosed"})
+
+    assert "error" not in result, result
+    after = await env.db.get_task(task_id)
+    assert after.status is TaskStatus.READY and after.retry_count == 0
+    assert after.claim_epoch == before.claim_epoch
+    assert after.branch_name == before.branch_name
+    assert await env.db.claim_frontier_exclusions(task_id) == []
+    assert await env.db.count_ready_by_profile("p") == {"worker": 1}
+    assert (task_id, "restarted") in ready
+    superseded = await env.db.get_task_meta(task_id, "supervisor_recovery_incident")
+    assert superseded["id"] == current["id"] and superseded["attempt_id"] is None
+    assert superseded["decision"] == "superseded"
+    assert superseded["decided_by"] == f"system:{command}"
+    assert superseded["decision_history"][-1] == {
+        key: recorded[key]
+        for key in ("decision", "decision_reason", "decided_at", "decided_by")
+    }
+    assert await env.db.get_task_meta(task_id, "supervisor_recovery_attempts") == 1
+    assert (await env.db.get_message("msg-" + current["id"])).archived_at is not None
+    stale = await env.handler.execute("task_recover", recovery_args)
+    assert "error" in stale, stale
+    await env.db.queue_task_recovery_notifications()
+    assert await env.db.get_task_meta(task_id, "supervisor_recovery_incident") == superseded
     assert len(await queued_messages(env)) == 1
 
 
