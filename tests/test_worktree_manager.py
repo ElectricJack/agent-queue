@@ -767,6 +767,45 @@ class TestOperatorHandoffCheckpoint:
 
 
 class TestResetSlot:
+    @pytest.mark.parametrize("invalid_identity", ["detached", "task", "branch"])
+    async def test_refused_checkpoint_preserves_git_lock_and_dirty_layers(
+        self, mgr, base_ws, kind, invalid_identity,
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
+
+        slot = await mgr.create_slot(base_ws, kind, 0)
+        await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+        path = Path(slot.workspace_path)
+        (path / "README.md").write_text("staged progress\n")
+        _git(["add", "README.md"], path)
+        (path / "README.md").write_text("unstaged progress\n")
+        await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+        saved = dict(await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META))
+        if invalid_identity == "detached":
+            saved["branch"] = None
+        elif invalid_identity == "task":
+            saved["task_id"] = "foreign-task"
+        else:
+            saved["branch"] = "aq/foreign-task"
+        await mgr.db.set_task_meta("tsk-1", CHECKPOINT_META, saved)
+        index = Path(await mgr.git.aget_git_path(str(path), "index"))
+        index_before = index.read_bytes()
+        lock = Path(str(index) + ".lock")
+        lock.write_text("retained lock\n")
+        head = _git(["rev-parse", "HEAD"], path)
+        status = _git(["status", "--porcelain"], path)
+
+        with pytest.raises(GitError, match="checkpoint.*(detached|identity|ownership)"):
+            await mgr.reset_slot_for_task(slot, FakeTask(), kind=kind)
+
+        assert lock.read_text() == "retained lock\n"
+        assert index.read_bytes() == index_before
+        assert (path / "README.md").read_text() == "unstaged progress\n"
+        assert _git(["rev-parse", "HEAD"], path) == head
+        assert _git(["branch", "--show-current"], path) == "aq/tsk-1"
+        assert _git(["status", "--porcelain"], path) == status
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+
     async def test_exclusive_clone_can_be_prepared_again(self, mgr, base_ws, kind):
         await mgr.reset_slot_for_task(base_ws, FakeTask(), kind=kind)
 
