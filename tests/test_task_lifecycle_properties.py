@@ -218,18 +218,13 @@ async def test_generated_lifecycle_histories(handler, db, tmp_path, history):
 
 
 class RecoveryHoldPersists(AssertionError):
-    """The confirmed swift-impact-20 failure, distinct from fixture failures."""
+    """The swift-impact-20 regression (fixed), distinct from fixture failures."""
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=RecoveryHoldPersists,
-    reason="swift-impact-20: new attempts retain supervisor recovery holds",
-)
 @pytest.mark.parametrize("operation", ["restart_task", "reopen_with_feedback"])
 @PROPERTY_SETTINGS
 @given(rounds=st.integers(min_value=1, max_value=4))
-@example(rounds=1)  # Minimized real failure; avoids repeatedly shrinking a known bug.
+@example(rounds=1)  # Minimized swift-impact-20 reproduction.
 @pytest.mark.asyncio
 async def test_generated_new_attempts_supersede_recovery_holds(env, operation, rounds):
     for _ in range(rounds):
