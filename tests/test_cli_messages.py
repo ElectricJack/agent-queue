@@ -202,6 +202,28 @@ class TestReplyAlias:
 
 
 class TestInboxAndList:
+    def test_own_history_and_scoped_report_do_not_request_system_authority(self, runner):
+        client = _mock_client({
+            "message_list": {"count": 0, "messages": []},
+            "message_send": {"message_id": "report", "state": "queued"},
+        })
+        history = _invoke(runner, [
+            "--json", "message", "list", "--to-kind", "session", "--to-id", "own-uuid",
+            "--since", "1", "--limit", "500",
+        ], client)
+        assert history.exit_code == 0, history.output
+        args = client.execute.await_args.args[1]
+        assert args["to_id"] == "own-uuid" and args["limit"] == 500
+        assert "project_id" not in args and "system_only" not in args
+        report = _invoke(runner, [
+            "--json", "message", "send", "--to", "session:supervisor-global", "--body", "ack",
+        ], client)
+        assert report.exit_code == 0, report.output
+        args = client.execute.await_args.args[1]
+        assert args["to_id"] == "supervisor-global" and "system_only" not in args
+        # Legacy CLI defaults are labels; the server binds this route's sender.
+        assert (args["from_kind"], args["from_id"]) == ("user", "cli")
+
     def test_inbox_json_envelope(self, runner):
         client = _mock_client(
             {

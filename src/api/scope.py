@@ -341,6 +341,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         command in {"message_send", "message_inbox"}
         and args.get("to_kind") == "session"
         and args.get("to_id") == "supervisor-global"
+        # A report retains the sender's project. The handler verifies the
+        # persisted named supervisor launch and derives its sender identity;
+        # this preliminary gate never admits reading the global mailbox.
+        and not (command == "message_send" and scope.elevated and scope.project_id is not None)
     )
     if system_message and not (scope.elevated and scope.project_id is None):
         return "out of scope: system messages require global admin"

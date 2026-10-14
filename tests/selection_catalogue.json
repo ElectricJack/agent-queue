@@ -2653,12 +2653,13 @@
         "messages"
       ],
       "default_arm": true,
-      "digest": "sha256:da997a8becdd5f5d4491b6a472ad14c6c5961d7896e3539edca08a7e49b2079e",
+      "digest": "sha256:c485fcbafcdcde66a8c1e00e8d58f723daae2eaa012da610ab9e9c16cb276f1c",
       "imports": [
         "src.api",
         "src.api.app",
         "src.api.auth",
         "src.api.dependencies",
+        "src.api.execute",
         "src.api.messages",
         "src.api.middleware",
         "src.commands.handler",
