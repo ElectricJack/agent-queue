@@ -4860,7 +4860,7 @@
     },
     {
       "name": "message_send",
-      "description": "Queue a message to a session, task, profile, or user.  Messages are the single transport for user<->agent and agent<->agent traffic; delivery is asynchronous. For an accepted collaboration thread, omit the recipient to send to every other member; sender identity is server-derived.",
+      "description": "Queue a message to a session, task, profile, or user.  Messages are the single transport for user<->agent and agent<->agent traffic; delivery is asynchronous. Omitted sender identity is derived from the authenticated live session, or user:cli for local callers. For an accepted collaboration thread, omit the recipient to send to every other member; sender identity is server-derived.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -4897,11 +4897,11 @@
               "user",
               "system"
             ],
-            "description": "Sender kind (default: user)"
+            "description": "Explicit sender kind; session callers must own the identity"
           },
           "from_id": {
             "type": "string",
-            "description": "Sender id"
+            "description": "Explicit authorized sender id"
           },
           "thread_id": {
             "type": "string",
