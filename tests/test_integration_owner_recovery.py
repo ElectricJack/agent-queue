@@ -37,7 +37,8 @@ from src.integration.owner_recovery import (
     RecoveryOutcome,
     owner_recovery_for,
 )
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, WorktreeSentinel
+from src.orchestrator.worktree_manager import WorktreeSlotManager
 
 
 def git(path, *args) -> str:
@@ -109,6 +110,16 @@ class Env:
     async def slot(self, name: str, branch: str, *, workspace_id: str = "ws-slot", **values):
         path = self.tmp / name
         git(self.base, "worktree", "add", "-q", str(path), branch)
+        # Model the identity and control-file exclusion written by slot provisioning.
+        WorktreeSlotManager.ensure_git_exclude_path(
+            WorktreeSlotManager.resolve_exclude_path(path)
+        )
+        WorktreeSlotManager.write_sentinel(path, WorktreeSentinel(
+            slot="slot-0", slot_index=0, base_workspace_id="ws-base",
+            project_id="p", workspace_id=workspace_id, branch=branch,
+            task_id=branch.removeprefix("aq/"), created_at=1.0, assigned_at=1.0,
+            daemon_epoch="e", setup_hash="",
+        ))
         async with self.db.immediate() as conn:
             await conn.execute(
                 insert(workspaces).values(
@@ -1169,6 +1180,11 @@ async def _unprepared_writer(env, tmp_path, *, mode="train", phase="preparing"):
         "writer", work_dir=slot, task_id="producer", agent_id="worker",
         state="running", desired_state="running", claim_phase=phase, last_claim_epoch=7,
     )
+    # A retained preparation carries the transaction's acquisition receipt.
+    await env.db.set_task_meta("producer", "claim_workspace", {
+        "workspace_id": "ws-slot", "generation": 0, "session_id": "writer",
+        "instance_token": "tok-writer", "claim_epoch": 7,
+    })
     await env.owner(
         "owner", "aq/producer", "producer", session_id="writer", workspace_id="ws-slot",
     )
