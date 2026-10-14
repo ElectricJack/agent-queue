@@ -40,6 +40,7 @@ from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
 from src.commands.job_commands import JobCommandsMixin
+from src.commands.playbook_script_commands import PlaybookScriptCommandsMixin
 from src.commands.object_loop_commands import ObjectLoopCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
@@ -394,6 +395,7 @@ class CommandHandler(
     OpsCommandsMixin,
     DoctorObservationCommandsMixin,
     PlaybookStateCommandsMixin,
+    PlaybookScriptCommandsMixin,
     WorktreeCommandsMixin,
     # -- dv2 phase 2 mixins -----------------------------------------------
     GitCommandsMixin,
@@ -1036,7 +1038,8 @@ class CommandHandler(
                 }
             if name.startswith("operator_"):
                 log_args = {"command": args.get("command"), "arguments": "<operator inputs>"}
-            private_call = principal.kind.value == "playbook" or name in STATE_SCHEMAS
+            private_call = (principal.kind.value == "playbook" or name in STATE_SCHEMAS
+                            or name in {"job_logs", "playbook_script_run"})
             if private_call:
                 log_args = {key: "(redacted)" for key in args}
             if mutating:

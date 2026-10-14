@@ -41377,6 +41377,15 @@
             "minLength": 1,
             "title": "Job Id"
           },
+          "stream": {
+            "type": "string",
+            "enum": [
+              "stdout",
+              "stderr"
+            ],
+            "title": "Stream",
+            "default": "stdout"
+          },
           "after": {
             "type": "integer",
             "minimum": 0.0,

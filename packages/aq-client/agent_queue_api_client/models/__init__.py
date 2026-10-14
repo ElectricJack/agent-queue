@@ -691,6 +691,7 @@ from .job_list_args import JobListArgs
 from .job_list_response import JobListResponse
 from .job_list_response_jobs_item import JobListResponseJobsItem
 from .job_logs_args import JobLogsArgs
+from .job_logs_args_stream import JobLogsArgsStream
 from .job_logs_response import JobLogsResponse
 from .job_logs_response_chunks_item import JobLogsResponseChunksItem
 from .job_logs_response_gaps_item import JobLogsResponseGapsItem
@@ -2632,6 +2633,7 @@ __all__ = (
     "JobListResponse",
     "JobListResponseJobsItem",
     "JobLogsArgs",
+    "JobLogsArgsStream",
     "JobLogsResponse",
     "JobLogsResponseChunksItem",
     "JobLogsResponseGapsItem",

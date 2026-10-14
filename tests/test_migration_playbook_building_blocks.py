@@ -210,3 +210,36 @@ async def test_message_provenance_upgrade_preserves_legacy_messages_and_readback
         assert new.created_seq > original.created_seq
     finally:
         await db.close()
+
+
+async def test_playbook_jobs_upgrade_prior_and_current_metadata():
+    revision = importlib.import_module("migrations.versions.a00000000100_playbook_jobs")
+    db = Database(lease_dsn("playbook_jobs_migration"))
+    await db.initialize()
+    try:
+        async with db.immediate() as conn:
+            await conn.exec_driver_sql("DROP TABLE job_input_pins")
+            await conn.exec_driver_sql("ALTER TABLE jobs DROP CONSTRAINT ck_jobs_owner_fields")
+            await conn.exec_driver_sql("ALTER TABLE jobs DROP CONSTRAINT ck_jobs_owner_kind")
+            for name in ("playbook_run_id", "playbook_step_id", "iteration_path", "attempt",
+                         "artifact_digest", "input_root"):
+                await conn.exec_driver_sql(f"ALTER TABLE jobs DROP COLUMN {name} CASCADE")
+            for name in ("project_id", "workspace_id", "workspace_generation"):
+                await conn.exec_driver_sql(f"ALTER TABLE jobs ALTER COLUMN {name} SET NOT NULL")
+            await conn.exec_driver_sql("ALTER TABLE jobs ADD CONSTRAINT ck_jobs_owner_kind "
+                                      "CHECK (owner_kind IN ('task','integration'))")
+
+            def verify(bind):
+                context = MigrationContext.configure(bind, opts={
+                    "include_object": lambda obj, name, kind, reflected, compare_to: (
+                        name in {"jobs", "job_input_pins"} if kind == "table" else True),
+                })
+                with Operations.context(context):
+                    revision.upgrade()
+                    revision.upgrade()
+                    assert not compare_metadata(context, metadata)
+                    revision.downgrade()
+                    assert inspect(bind).has_table("job_input_pins")
+            await conn.run_sync(verify)
+    finally:
+        await db.close()

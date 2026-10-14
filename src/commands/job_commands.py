@@ -171,6 +171,17 @@ class JobCommandsMixin:
     async def _job_for_scope(self, job_id):
         job = await self.db.get_job(job_id)
         scope = self._job_scope()
+        if job and job["owner_kind"] == "playbook":
+            from src.jobs.playbook import authorize_job
+            from src.playbooks.private_values import PrivateValueError
+
+            try:
+                await authorize_job(self._jobs(), job, current_principal())
+                return job
+            except PrivateValueError:
+                return None
+        if current_principal() and current_principal().kind is PrincipalKind.PLAYBOOK:
+            return None
         if not job:
             return None
         if scope.get("project_id") and scope["project_id"] != job["project_id"]:
@@ -272,18 +283,24 @@ class JobCommandsMixin:
         visible = []
         for row in rows:
             if await self._job_for_scope(row["id"]):
-                visible.append(row)
+                visible.append(self._public_job(row))
         return {"success": True, "jobs": visible}
+
+    @staticmethod
+    def _public_job(job):
+        from src.jobs.playbook import public_job
+
+        return public_job(job) if job and job["owner_kind"] == "playbook" else job
 
     async def _cmd_job_get(self, args):
         job = await self._job_for_scope(args["job_id"])
-        return {"success": True, "job": job} if job else {"success": False, "error": "not_found"}
+        return {"success": True, "job": self._public_job(job)} if job else {"success": False, "error": "not_found"}
 
     async def _cmd_job_cancel(self, args):
         job = await self._job_for_scope(args["job_id"])
         if not job:
             return {"success": False, "error": "not_found"}
-        return {"success": True, "job": await self._jobs().cancel(job)}
+        return {"success": True, "job": self._public_job(await self._jobs().cancel(job))}
 
     async def _cmd_job_result(self, args):
         job = await self._job_for_scope(args["job_id"])
@@ -294,7 +311,7 @@ class JobCommandsMixin:
             message = await self.db.get_message(f"job:{job['id']}:terminal")
             if message is not None:
                 await self._acknowledge_message_read(message)
-        if result and "max_bytes" in args:
+        if result and "max_bytes" in args and job["owner_kind"] != "playbook":
             from src.jobs.result import bounded
 
             result = {
@@ -310,6 +327,17 @@ class JobCommandsMixin:
         if job["output_retention"] == "expired":
             return {"success": False, "error": "logs_expired", "result": job["result"]}
 
+        if job["owner_kind"] == "playbook":
+            from src.jobs.playbook import read_stream
+            from src.playbooks.private_values import PrivateValueError
+
+            try:
+                response = await read_stream(self._jobs(), job, current_principal(),
+                    stream=args.get("stream", "stdout"), after=args.get("after", 0),
+                    limit=args.get("limit", 65536))
+                return {"success": True, **response}
+            except PrivateValueError as exc:
+                return {"success": False, "error": exc.code}
         try:
             response = await asyncio.to_thread(
                 read_output, Path(self.config.data_dir), job,

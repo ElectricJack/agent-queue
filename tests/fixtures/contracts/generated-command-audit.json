@@ -8184,7 +8184,7 @@
   "job_cancel": {
     "mode": "typed",
     "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_cancel",
-    "source_digest": "sha256:774d567235c43d8ddf0e841c27d2d1118f54225876e0959f426e0b8ed71226e1",
+    "source_digest": "sha256:dbced2e25cffe1d5e233943fc17e179bebe2b5a2b400147d89f9361cd6efc293",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -8200,24 +8200,25 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "{'success': False, 'error': 'not_found'}",
-        "protocol": "explicit_boolean: False"
+        "return": "{'success': True, 'job': self._public_job(await self._jobs().cancel(job))}",
+        "protocol": "explicit success boolean or existing job projection"
       },
       {
-        "return": "{'success': True, 'job': await self._jobs().cancel(job)}",
-        "protocol": "explicit_boolean: True"
+        "return": "{'success': False, 'error': 'not_found'}",
+        "protocol": "explicit success boolean or existing job projection"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
     ]
   },
   "job_get": {
     "mode": "typed",
     "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_get",
-    "source_digest": "sha256:4e77c4f947ada85fa8e9139b9e4d8344a925f3a40c929e3bf0769de78cbb13ba",
+    "source_digest": "sha256:51086251fcae777e8683524db2cd1183b2ad746b8d6fdff644aa2de4d65ffb87",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -8233,20 +8234,21 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "{'success': True, 'job': job} if job else {'success': False, 'error': 'not_found'}",
-        "protocol": "delegated_producer"
+        "return": "{'success': True, 'job': self._public_job(job)} if job else {'success': False, 'error': 'not_found'}",
+        "protocol": "explicit success boolean or existing job projection"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
     ]
   },
   "job_list": {
     "mode": "typed",
     "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_list",
-    "source_digest": "sha256:a2d1a87f13bf4455b3edc66fb84989f629482798b9129ac8ac129c32135a5892",
+    "source_digest": "sha256:fe6938688cfe995f20d9eb42ee242580078c523b7af4bd5137993348315125cc",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -8264,24 +8266,25 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "{'success': False, 'error': 'jobs.project_required'}",
-        "protocol": "explicit_boolean: False"
+        "return": "{'success': True, 'jobs': visible}",
+        "protocol": "explicit success boolean or existing job projection"
       },
       {
-        "return": "{'success': True, 'jobs': visible}",
-        "protocol": "explicit_boolean: True"
+        "return": "{'success': False, 'error': 'jobs.project_required'}",
+        "protocol": "explicit success boolean or existing job projection"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
     ]
   },
   "job_logs": {
     "mode": "typed",
     "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_logs",
-    "source_digest": "sha256:5c611fccbea98e8dfe597186f6dc16d835657c81997d9db7383908929db7602f",
+    "source_digest": "sha256:53185aacffbc0e1a43c4c936f904f107cdb7f348508de35dcc65809bc6b859d9",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -8300,29 +8303,38 @@
     "return_branches": [
       {
         "return": "{'success': False, 'error': 'not_found'}",
-        "protocol": "explicit_boolean: False"
+        "protocol": "explicit success boolean or existing job projection"
       },
       {
         "return": "{'success': False, 'error': 'logs_expired', 'result': job['result']}",
-        "protocol": "explicit_boolean: False"
+        "protocol": "explicit success boolean or existing job projection"
       },
       {
         "return": "{'success': True, **response}",
-        "protocol": "explicit_boolean: True"
+        "protocol": "explicit success boolean or existing job projection"
+      },
+      {
+        "return": "{'success': True, **response}",
+        "protocol": "explicit success boolean or existing job projection"
       },
       {
         "return": "{'success': False, 'error': 'logs_not_ready'}",
-        "protocol": "explicit_boolean: False"
+        "protocol": "explicit success boolean or existing job projection"
       },
       {
         "return": "{'success': False, 'error': 'output_unavailable'}",
-        "protocol": "explicit_boolean: False"
+        "protocol": "explicit success boolean or existing job projection"
+      },
+      {
+        "return": "{'success': False, 'error': exc.code}",
+        "protocol": "explicit success boolean or existing job projection"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
     ]
   },
   "job_reconcile": {
@@ -8358,7 +8370,7 @@
   "job_result": {
     "mode": "typed",
     "producer": "src/commands/job_commands.py:JobCommandsMixin._cmd_job_result",
-    "source_digest": "sha256:cf3d2b8dbc2335a5f2c552a9757e9a6f10d811e4f48d7c85a88961bbc8212149",
+    "source_digest": "sha256:2db1f0ae3455de88f1e3471d33bac34181ac430ca9bc9f169d095fd939735428",
     "input_schema_source": "typed_contract",
     "schema_quality": "typed",
     "argument_reads_diagnostic_only": [
@@ -8375,18 +8387,19 @@
     "result_policy": "retained typed adapter",
     "return_branches": [
       {
-        "return": "{'success': False, 'error': 'not_found'}",
-        "protocol": "explicit_boolean: False"
+        "return": "{'success': True, 'result': result}",
+        "protocol": "explicit success boolean or existing job projection"
       },
       {
-        "return": "{'success': True, 'result': result}",
-        "protocol": "explicit_boolean: True"
+        "return": "{'success': False, 'error': 'not_found'}",
+        "protocol": "explicit success boolean or existing job projection"
       }
     ],
     "tests": [
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
-      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints"
+      "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
+      "tests/test_playbook_script_recovery.py"
     ]
   },
   "job_retain": {
@@ -21815,5 +21828,46 @@
     ],
     "helper_producers": {},
     "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+  },
+  "playbook_script_run": {
+    "mode": "json_object",
+    "producer": "src/commands/playbook_script_commands.py:PlaybookScriptCommandsMixin._cmd_playbook_script_run",
+    "argument_reads_diagnostic_only": [],
+    "retry_safe": false,
+    "principal_requirement": "original_principal",
+    "denial_reason": null,
+    "result_policy": "metadata only; protected output references",
+    "source_digest": "sha256:02b7be905be5965a6a0e498396ff84e16f954abe5cc40b3b069a2a93783d728d",
+    "input_schema_source": "opaque",
+    "schema_quality": "opaque",
+    "effect": "destructive",
+    "resource_gates": [
+      "pinned_script_invocation"
+    ],
+    "return_branches": [
+      {
+        "return": "{'success': False, 'error_code': 'unauthorized', 'error': 'unauthorized'}",
+        "protocol": "explicit success boolean or existing job projection"
+      },
+      {
+        "return": "{'success': True, 'job': public_job(job)}",
+        "protocol": "explicit success boolean or existing job projection"
+      },
+      {
+        "return": "{'success': False, 'error_code': str(exc), 'error': str(exc)}",
+        "protocol": "explicit success boolean or existing job projection"
+      },
+      {
+        "return": "{'success': False, 'error_code': 'jobs.script_input_invalid', 'error': 'jobs.script_input_invalid'}",
+        "protocol": "explicit success boolean or existing job projection"
+      },
+      {
+        "return": "{'success': False, 'error_code': 'jobs.storage_unavailable', 'error': 'jobs.storage_unavailable'}",
+        "protocol": "explicit success boolean or existing job projection"
+      }
+    ],
+    "tests": [
+      "tests/test_playbook_script_recovery.py"
+    ]
   }
 }

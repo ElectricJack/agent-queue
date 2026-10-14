@@ -355,6 +355,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`playbook_pending_event_action`](playbook_pending_event_action.md) | Playbook Pending Event Action | Dispatch or discard held pending events. |
 | [`playbook_pending_events`](playbook_pending_events.md) | Playbook Pending Events | List events held because no artifact could run them. |
 | [`playbook_run_overlay`](playbook_run_overlay.md) | Playbook Run Overlay | Return one run's execution overlay, pinned to the artifact it ran. |
+| [`playbook_script_run`](playbook_script_run.md) | Playbook Script Run | Submit/rejoin a pinned ScriptStep. Inputs are resolved data only. |
 | [`playbook_state_delete`](playbook_state_delete.md) | Playbook State Delete | Create a versioned KV tombstone with replay-safe CAS. |
 | [`playbook_state_get`](playbook_state_get.md) | Playbook State Get | Read an invocation-owned typed key, including its retained revision. |
 | [`playbook_state_inspect`](playbook_state_inspect.md) | Playbook State Inspect | Inspect an explicit namespace only under independent operator authority. |

@@ -14879,6 +14879,14 @@
         "properties": {}
       }
     },
+    "playbook_script_run": {
+      "name": "playbook_script_run",
+      "description": "Submit/rejoin a pinned ScriptStep. Inputs are resolved data only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
     "playbook_state_delete": {
       "name": "playbook_state_delete",
       "description": "Create a versioned KV tombstone with replay-safe CAS.",

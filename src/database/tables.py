@@ -5741,21 +5741,27 @@ jobs = Table(
     "jobs",
     metadata,
     Column("id", Text, primary_key=True),
-    Column("project_id", Text, nullable=False),
+    Column("project_id", Text, nullable=True),
     Column("task_id", Text, nullable=True),
     Column("owner_kind", Text, nullable=False),
     Column("owner_id", Text, nullable=False),
     Column("submitter_session_id", Text, nullable=True),
     Column("claim_epoch", Integer, nullable=True),
     Column("integration_operation_id", Text, nullable=True),
+    Column("playbook_run_id", Text, ForeignKey("playbook_v2_runs.run_id", ondelete="RESTRICT")),
+    Column("playbook_step_id", Text),
+    Column("iteration_path", Text),
+    Column("attempt", Integer),
+    Column("artifact_digest", Text),
+    Column("input_root", Text),
     Column("idempotency_key", Text, nullable=False),
     Column("request_hash", Text, nullable=False),
     Column("preset", Text, nullable=False),
     Column("preset_version", Integer, nullable=False),
     Column("argv", JSON, nullable=False),
     Column("contract", JSON, nullable=False),
-    Column("workspace_id", Text, nullable=False),
-    Column("workspace_generation", Integer, nullable=False),
+    Column("workspace_id", Text, nullable=True),
+    Column("workspace_generation", Integer, nullable=True),
     Column("input_mode", Text, nullable=False),
     Column("input_ref", Text, nullable=True),
     Column("input_fingerprint", Text, nullable=True),
@@ -5790,7 +5796,20 @@ jobs = Table(
     UniqueConstraint(
         "project_id", "owner_kind", "owner_id", "idempotency_key", name="uq_jobs_owner_key"
     ),
-    CheckConstraint("owner_kind IN ('task','integration')", name="ck_jobs_owner_kind"),
+    CheckConstraint("owner_kind IN ('task','integration','playbook')", name="ck_jobs_owner_kind"),
+    CheckConstraint(
+        "(owner_kind = 'playbook' AND playbook_run_id IS NOT NULL "
+        "AND owner_id = playbook_run_id AND playbook_step_id IS NOT NULL "
+        "AND iteration_path IS NOT NULL AND attempt IS NOT NULL AND attempt > 0 "
+        "AND artifact_digest IS NOT NULL AND input_root IS NOT NULL "
+        "AND task_id IS NULL AND workspace_id IS NULL AND workspace_generation IS NULL) OR "
+        "(owner_kind IN ('task','integration') AND project_id IS NOT NULL "
+        "AND workspace_id IS NOT NULL AND workspace_generation IS NOT NULL "
+        "AND playbook_run_id IS NULL)", name="ck_jobs_owner_fields",
+    ),
+    Index("uq_jobs_playbook_operation", "playbook_run_id", "playbook_step_id",
+          "iteration_path", "attempt", unique=True,
+          postgresql_where=text("owner_kind = 'playbook'")),
     CheckConstraint("input_mode IN ('live','snapshot')", name="ck_jobs_input_mode"),
     CheckConstraint("job_class IN ('shared','exclusive')", name="ck_jobs_class"),
     CheckConstraint("weight > 0 AND priority_band BETWEEN 0 AND 2", name="ck_jobs_capacity"),
@@ -5800,6 +5819,14 @@ jobs = Table(
     ),
     Index("idx_jobs_state_submitted", "state", "submitted_at"),
     Index("idx_jobs_task_submitted", "task_id", "submitted_at"),
+)
+
+job_input_pins = Table(
+    "job_input_pins", metadata,
+    Column("job_id", Text, ForeignKey("jobs.id", ondelete="RESTRICT"), primary_key=True),
+    Column("input_root", Text, nullable=False),
+    Column("input_digest", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
 )
 
 job_workspace_pins = Table(

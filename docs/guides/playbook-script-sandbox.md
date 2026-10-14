@@ -133,3 +133,31 @@ aq test tests/test_playbook_script_sandbox.py
 aq test --aq-all-markers tests/test_playbook_script_sandbox.py
 aq test tests/test_playbook_private_values.py tests/test_doctor.py tests/test_jobs_runner.py
 ```
+
+## Durable jobs and protected output
+
+The script job boundary derives its owner from the actual pinned `ScriptStep`
+invocation. It records the run, step, full iteration path, attempt, artifact and
+input digest in the existing jobs queue. Repeated submission rejoins that job;
+a changed program or input under the same operation key conflicts. System and
+profile runs need no project, task or workspace. Dedicated input pins and a
+restricting run foreign key retain ownership through result retirement.
+
+The detached runner receives its encrypted input's plaintext and encryption key
+through a closed stdin pipe. Request/intent files contain identity and protected
+references; completion files contain authenticated encrypted stdout, stderr and
+binding rows. Job inspection returns metadata and references. Authorized
+`job_logs` calls accept `stream=stdout|stderr` and return bounded base64 ranges;
+A3 run authorization also applies to these reads. Script streams, bindings and
+input pins share the configured job result retention period.
+
+Recovery uses the existing job tick and runner nonce. A live runner is rejoined;
+a completed receipt is authenticated and imported atomically with the terminal
+job result. Missing, mismatched, unreadable or unclean completion evidence pauses
+the owning run and retains the active job and pins. It never authorizes another
+launch. Cancellation requests use the existing durable cancellation file. The
+ordinary-process backend's cleanup limitations still apply as described above.
+
+`script_v1` remains unsupported until the engine integration lands. This boundary
+provides the `ScriptStep` and trusted script pin types, but does not install an
+executor, add scripts to the accepted step union, or enable activation.

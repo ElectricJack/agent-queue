@@ -955,6 +955,7 @@
         "tests/test_playbook_receipts.py",
         "tests/test_playbook_run_overlay.py",
         "tests/test_playbook_run_repository.py",
+        "tests/test_playbook_script_recovery.py",
         "tests/test_playbook_script_sandbox.py",
         "tests/test_playbook_services.py",
         "tests/test_playbook_state.py",
@@ -12456,6 +12457,34 @@
         "parametrize"
       ],
       "summary": "Playbook V2 run state — snapshots, boundaries, receipts, cancellation."
+    },
+    "tests/test_playbook_script_recovery.py": {
+      "areas": [
+        "playbook-engine"
+      ],
+      "default_arm": true,
+      "digest": "sha256:6c3a4379222ca8fb76cd2b5767d38431cfd659ab437cce603417115b3767b893",
+      "imports": [
+        "src.commands.playbook_script_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.jobs.artifacts",
+        "src.jobs.playbook",
+        "src.jobs.policy",
+        "src.jobs.script_sandbox",
+        "src.jobs.service",
+        "src.playbooks.definition",
+        "src.playbooks.invocation",
+        "src.playbooks.private_values",
+        "src.playbooks.run_state",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real playbook owners, protected detached capture and no-replay recovery."
     },
     "tests/test_playbook_script_sandbox.py": {
       "areas": [
