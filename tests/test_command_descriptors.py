@@ -33,11 +33,32 @@ from src.tools.command_catalogue import render_command_catalogue
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "tests/fixtures/contracts/legacy-command-descriptors.json"
 C2_CHANGES = ROOT / "tests/fixtures/contracts/observation-contract-changes.json"
+SCRIPT_CHANGES = ROOT / "tests/fixtures/contracts/script-contract-changes.json"
+
+
+@pytest.fixture(autouse=True)
+def isolated_handler_provider():
+    # Golden evidence describes offline discovery. Earlier daemon tests can
+    # leave a live provider whose plugin definitions include runtime metadata.
+    set_handler_provider(None)
+    try:
+        yield
+    finally:
+        set_handler_provider(None)
 
 
 def _observation_changes():
     changes = json.loads(C2_CHANGES.read_text())
     assert set(changes["contracts"]) == {"list_projects", "list_tasks", "get_stuck_tasks"}
+    return changes
+
+
+def _script_changes():
+    changes = json.loads(SCRIPT_CHANGES.read_text())
+    assert set(changes["contracts"]) == {"job_logs"}
+    assert set(changes["playbook_fixtures"]) == {
+        "tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json",
+    }
     return changes
 
 
@@ -56,7 +77,7 @@ def _snapshot(*, handlers=(), explicit=(), fallback=None, typed=None, plugins=()
 
 def test_legacy_execution_documents_and_fingerprints():
     fixture = json.loads(GOLDEN.read_text())
-    changes = _observation_changes()["contracts"]
+    changes = {**_observation_changes()["contracts"], **_script_changes()["contracts"]}
     for name, old in fixture["legacy_contracts"].items():
         expected = changes.get(name, old)
         if name in changes:
@@ -79,16 +100,19 @@ def test_legacy_execution_documents_and_fingerprints():
 def test_transport_views_and_cli_serialization_preserve_golden_evidence():
     fixture = json.loads(GOLDEN.read_text())
     changes = _observation_changes()
+    scripts = _script_changes()
+    contracts = {**changes["contracts"], **scripts["contracts"]}
     snapshot = command_snapshot()
     for name, digest in fixture["transport_definitions"].items():
-        if name in changes["contracts"]:
-            approved = changes["contracts"][name]
+        if name in contracts:
+            approved = contracts[name]
             assert approved["previous_transport_sha256"] == digest
             digest = approved["transport_sha256"]
         assert _digest(snapshot.commands[name].tool_definition()) == digest, name
     actual = hashlib.sha256(render_command_catalogue().encode()).hexdigest()
     assert changes["previous_cli_catalogue_sha256"] == fixture["cli_catalogue_sha256"]
-    assert actual == changes["cli_catalogue_sha256"]
+    assert scripts["previous_cli_catalogue_sha256"] == changes["cli_catalogue_sha256"]
+    assert actual == scripts["cli_catalogue_sha256"]
     definitions = {d["name"]: d for d in effective_tool_definitions()}
     for name, definition in _discover_all_commands().items():
         assert definition == snapshot.commands[name].tool_definition()
@@ -103,11 +127,20 @@ def test_legacy_playbook_fixtures_are_unchanged():
         "tests/fixtures/playbooks/v2/review-pipeline.artifact.json",
         "tests/fixtures/playbooks/v2/review-pipeline.v6.artifact.json",
     }
+    changes = {**changes, **_script_changes()["playbook_fixtures"]}
     for path, digest in json.loads(GOLDEN.read_text())["playbook_fixtures"].items():
         if path in changes:
             assert changes[path]["previous_sha256"] == digest
             digest = changes[path]["sha256"]
         assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == digest, path
+
+
+def test_script_log_contract_only_adds_stream_selection():
+    old = json.loads(GOLDEN.read_text())["legacy_contracts"]["job_logs"]["execution"]
+    old["args_schema"]["properties"]["stream"] = {
+        "default": "stdout", "enum": ["stdout", "stderr"], "type": "string",
+    }
+    assert _script_changes()["contracts"]["job_logs"]["execution"] == old
 
 
 def test_inventory_coverage_is_derived_with_exact_denials():

@@ -12501,7 +12501,7 @@
   "playbook_v2_propose": {
     "mode": "json_object",
     "producer": "src/commands/playbook_v2_commands.py:PlaybookV2CommandsMixin._cmd_playbook_v2_propose",
-    "source_digest": "sha256:818aa1ad4d214faa05ba162779392e3bd9df0b68c5fb3cba61222fa3f220fb49",
+    "source_digest": "sha256:381fb86eac262ebab3fa615216c4c6b1b40a4137e51ebb04344d6ae4a9114c95",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -12554,10 +12554,13 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_playbook_v2_commands.py"
+      "tests/test_playbook_v2_commands.py",
+      "tests/test_playbook_script.py"
     ],
-    "helper_producers": {},
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+    "helper_producers": {
+      "_v2_script_pins": "sha256:c37016b964d6eb5cbb3ea5c2e3b618d15a8f294a0f036d402efa8cdc4bf39939"
+    },
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged."
   },
   "playbook_v2_shadow_compile": {
     "mode": "json_object",
@@ -17143,15 +17146,17 @@
       "tests/test_github_issue_triage.py",
       "tests/test_object_loop_playbook.py",
       "tests/test_review_commands.py",
-      "tests/test_task_attachments_api.py"
+      "tests/test_task_attachments_api.py",
+      "tests/test_playbook_script.py"
     ],
     "helper_producers": {
       "_review_for_caller": "sha256:6d132ccf82c17228386ac88c75331d38c085e1cad0487591ca6046c64c842d20",
-      "_review_playbook_pin": "sha256:ebcb283ce330f0150e41a1f54d6c3d418150ab42cf221b7c2f8727a231df0e04",
+      "_review_playbook_pin": "sha256:e0fb56414704076cfdd63e56da6972761b6702d14eeb054772b0162cd06e294a",
       "_submit_project": "sha256:a7139bc097b09acbd47f2ce432970a9f84829e7d8e0df592a03c930b669d3684",
-      "_worker_held_task": "sha256:6d48bbeae1cdd530fb341d40b13c643d33f094fed0b66cb502e64605c4a76c6b"
+      "_worker_held_task": "sha256:6d48bbeae1cdd530fb341d40b13c643d33f094fed0b66cb502e64605c4a76c6b",
+      "_v2_script_pins": "sha256:c37016b964d6eb5cbb3ea5c2e3b618d15a8f294a0f036d402efa8cdc4bf39939"
     },
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged."
   },
   "review_withdraw": {
     "mode": "json_object",
@@ -21394,7 +21399,7 @@
   "update_playbook_source": {
     "mode": "json_object",
     "producer": "src/commands/playbook_commands.py:PlaybookCommandsMixin._cmd_update_playbook_source",
-    "source_digest": "sha256:512d3e9ed9e9db34d0f9d321a5977ee6852ad75e399c03cd086d93a455350ee3",
+    "source_digest": "sha256:619e213d28c0670337f022dec14c3935b7b78b0613f44de8e14d517b646f6ce2",
     "input_schema_source": "explicit_tool",
     "schema_quality": "declared",
     "argument_reads_diagnostic_only": [
@@ -21492,10 +21497,13 @@
       "tests/test_generated_command_contracts.py::test_builtin_audit_is_complete",
       "tests/test_generated_command_contracts.py::test_generic_result_protocol",
       "tests/test_command_descriptors.py::test_legacy_execution_documents_and_fingerprints",
-      "tests/test_update_playbook_source_v2.py"
+      "tests/test_update_playbook_source_v2.py",
+      "tests/test_playbook_script.py"
     ],
-    "helper_producers": {},
-    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys."
+    "helper_producers": {
+      "_v2_script_pins": "sha256:c37016b964d6eb5cbb3ea5c2e3b618d15a8f294a0f036d402efa8cdc4bf39939"
+    },
+    "review_notes": "Every return branch is pinned above; delegated command envelopes retain their producer success flag. Intermediate identity/bundle/session dictionaries are not command results: only their refusal paths propagate. Diagnostic reads report successful observation even when the observed resource is unhealthy. Mutation refusals and blocked effects report false; transport and executor never infer success from error keys. E3 resolves source-declared script pins from scoped repository/vault roots and server-configured runtime/storage before proposal validation; command return branches and their boolean envelopes are unchanged."
   },
   "vault_rebuild_index": {
     "mode": "json_object",
@@ -21838,8 +21846,8 @@
     "denial_reason": null,
     "result_policy": "metadata only; protected output references",
     "source_digest": "sha256:02b7be905be5965a6a0e498396ff84e16f954abe5cc40b3b069a2a93783d728d",
-    "input_schema_source": "opaque",
-    "schema_quality": "opaque",
+    "input_schema_source": "explicit_tool",
+    "schema_quality": "declared",
     "effect": "destructive",
     "resource_gates": [
       "pinned_script_invocation"

@@ -92,8 +92,10 @@ Both streams drain concurrently into separate bounded private buffers. Overflow
 records `output_limit_exceeded` before signaling, and its prefix is incomplete.
 Wall timeout and event cancellation likewise record their cause before cleanup.
 The backend starts a new process group, sends TERM, allows two seconds, then KILLs
-remaining members and reaps its direct child. It also cleans up group members when
-the leader exits. This is ordinary process cleanup: a program can escape with
+remaining members, reaps its direct child and waits up to two more seconds for
+the group to stop before releasing capacity. On Linux, exited zombies count as
+stopped; a live member past that deadline makes cleanup uncertain. It also cleans
+up group members when the leader exits. This is ordinary process cleanup: a program can escape with
 `setsid`; no double-fork containment guarantee remains. Pipe/cleanup uncertainty
 returns `runtime_error` with `script_cleanup_uncertain`, not successful settlement.
 

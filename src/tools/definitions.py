@@ -8945,3 +8945,18 @@ for _definition in _ALL_TOOL_DEFINITIONS:
         )
 
 _FALLBACK_INPUT_SCHEMAS.update(STATE_SCHEMAS)
+
+# Data-only inputs; run, owner, artifact and program come from the live invocation.
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "playbook_script_run",
+    "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "arguments": {"type": "array", "items": {"type": "string"}, "maxItems": 256},
+            "environment": {"type": "object", "additionalProperties": {"type": "string"}},
+            "stdin_base64": {"type": "string", "maxLength": 87384},
+        },
+        "additionalProperties": False,
+    },
+})

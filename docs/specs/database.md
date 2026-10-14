@@ -3462,21 +3462,27 @@ output-reservation contract visible on the row.
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
 | `id` | TEXT | PRIMARY KEY | Job id |
-| `project_id` | TEXT | NOT NULL | Project (soft reference, no foreign key) |
+| `project_id` | TEXT | nullable for system/profile playbook jobs | Project (soft reference, no foreign key) |
 | `task_id` | TEXT | nullable | Owning task when `owner_kind = 'task'` |
-| `owner_kind` | TEXT | NOT NULL, CHECK: task, integration | Submission owner |
-| `owner_id` | TEXT | NOT NULL | Owner's task or integration operation id |
+| `owner_kind` | TEXT | NOT NULL, CHECK: task, integration, playbook | Submission owner |
+| `owner_id` | TEXT | NOT NULL | Owner's task, integration operation or playbook run id |
 | `submitter_session_id` | TEXT | nullable | Session that submitted, if any |
 | `claim_epoch` | INTEGER | nullable | Claim epoch the submission belonged to |
 | `integration_operation_id` | TEXT | nullable | Integration operation for `owner_kind = 'integration'` |
+| `playbook_run_id` | TEXT | nullable, FK → playbook_v2_runs (RESTRICT) | Actual script run owner |
+| `playbook_step_id` | TEXT | nullable | Pinned script step |
+| `iteration_path` | TEXT | nullable | Full nested iteration identity |
+| `attempt` | INTEGER | nullable, positive for playbook jobs | Original script attempt |
+| `artifact_digest` | TEXT | nullable | Reviewed script artifact digest |
+| `input_root` | TEXT | nullable | Retained immutable input storage |
 | `idempotency_key` | TEXT | NOT NULL | Submission key (`uq_jobs_owner_key`) |
 | `request_hash` | TEXT | NOT NULL | Digest of the exact submission request |
 | `preset` | TEXT | NOT NULL | Preset id the job runs under |
 | `preset_version` | INTEGER | NOT NULL | Preset generation at submission |
 | `argv` | JSON | NOT NULL | The command to run |
 | `contract` | JSON | NOT NULL | Admission contract (budgets, limits, expectations) |
-| `workspace_id` | TEXT | NOT NULL | Workspace the job runs in |
-| `workspace_generation` | INTEGER | NOT NULL | Workspace generation pinned for the run |
+| `workspace_id` | TEXT | nullable for playbook jobs | Workspace the job runs in |
+| `workspace_generation` | INTEGER | nullable for playbook jobs | Workspace generation pinned for the run |
 | `input_mode` | TEXT | NOT NULL, CHECK: live, snapshot | Whether inputs are live or a pinned snapshot |
 | `input_ref` | TEXT | nullable | Snapshot reference in `snapshot` mode |
 | `input_fingerprint` | TEXT | nullable | Fingerprint of the pinned inputs |
@@ -3508,6 +3514,21 @@ output-reservation contract visible on the row.
 | `output_reservation_bytes` | BIGINT | NOT NULL DEFAULT 67108864 | Reserved output budget (default 64 MiB) |
 | `cleanup_blocked` | BOOLEAN | NOT NULL DEFAULT false | Cleanup blocked on an unresolved receipt |
 | `retry_of` | TEXT | nullable | Job id this job is a retry of |
+
+### Table: `job_input_pins`
+
+One retention pin per script job. `job_id` restricts job deletion until the
+immutable input pin is retired with its protected outputs. These are playbook
+execution inputs, not integration ref history or workspace leases. Script job
+ownership fields satisfy `ck_jobs_owner_fields`; the partial unique index
+`uq_jobs_playbook_operation` binds run, step, full iteration path and attempt.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `job_id` | TEXT | PRIMARY KEY, FK → jobs (RESTRICT) | Script job retaining inputs |
+| `input_root` | TEXT | NOT NULL | Immutable input storage root |
+| `input_digest` | TEXT | NOT NULL | Pinned input digest |
+| `created_at` | REAL | NOT NULL | Admission time |
 
 ### Table: `job_workspace_pins`
 

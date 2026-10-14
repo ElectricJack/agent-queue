@@ -491,6 +491,12 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         await conn.execute(text("UPDATE alembic_version SET version_num = :rev"), {"rev": older})
         await conn.execute(text("CREATE TABLE integration_batches (id text PRIMARY KEY)"))
         await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
+        # Real revision-84 archives contain the managed jobs and V2 run tables.
+        # Retain these antecedents so later upgrades can alter jobs after restore.
+        from src.database.tables import jobs, playbook_artifacts, playbook_v2_runs
+
+        for table in (playbook_artifacts, playbook_v2_runs, jobs):
+            await conn.run_sync(lambda bind, table=table: table.create(bind, checkfirst=True))
         # Migration a00000000085 adds promotion_flow to this restored table.
         await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
     dump = tmp_path / "older.dump"

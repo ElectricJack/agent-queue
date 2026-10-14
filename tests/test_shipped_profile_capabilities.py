@@ -62,7 +62,10 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "worker-opencode": {"pr_merge"},
 }
 
-REACHABLE = AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
+# These catalogues have an existing empty-argument, capability-gated exception
+# in check_command_scope, before the role-specific command sets.
+REACHABLE = (AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
+             | {"doctor_catalog", "playbook_commands"})
 #: An operator template's setup grants are dispatched through ``operator_execute``
 #: under a request-local grant, never by its session token directly.
 OPERATOR_REACHABLE = REACHABLE | OPERATOR_READS | OPERATOR_WRITES
