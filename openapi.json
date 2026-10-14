@@ -13025,7 +13025,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceCutoverResponse"
+                }
               }
             }
           },
@@ -77432,6 +77434,140 @@
           "target_id"
         ],
         "title": "WorkspaceCutoverRequest"
+      },
+      "WorkspaceCutoverResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "applied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proof"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceCutoverSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retained": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Retained",
+            "default": []
+          },
+          "retirement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retirement"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "WorkspaceCutoverResponse"
+      },
+      "WorkspaceCutoverSnapshot": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id"
+          },
+          "workspaces": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Workspaces"
+          },
+          "sessions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Sessions"
+          },
+          "owners": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Owners"
+          },
+          "source": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "source_id",
+          "target_id",
+          "workspaces",
+          "sessions",
+          "owners",
+          "source"
+        ],
+        "title": "WorkspaceCutoverSnapshot"
       },
       "WorkspaceDoctorRequest": {
         "properties": {

@@ -68,7 +68,9 @@ def test_playbook_config_has_no_runtime_selector_or_v1_admission() -> None:
 
 def test_no_cutover_or_migration_tools_exist() -> None:
     names = set(_TOOL_CATEGORIES)
-    assert not any("cutover" in name for name in names)
+    # The generic repository-base admission switch is unrelated to V1
+    # playbook migration. Every other cutover control remains forbidden.
+    assert {name for name in names if "cutover" in name} == {"workspace_cutover"}
     assert not any("v1_admission" in name for name in names)
     assert not any("migration_ack" in name for name in names)
     assert not any("migration_unack" in name for name in names)

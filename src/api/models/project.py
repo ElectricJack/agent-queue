@@ -168,6 +168,26 @@ class FindMergeConflictWorkspacesResponse(BaseModel):
     conflicts: list[dict[str, Any]] = []
 
 
+class WorkspaceCutoverSnapshot(BaseModel):
+    project_id: str
+    source_id: str
+    target_id: str
+    workspaces: list[dict[str, Any]]
+    sessions: list[dict[str, Any]]
+    owners: list[dict[str, Any]]
+    source: dict[str, dict[str, Any]]
+
+
+class WorkspaceCutoverResponse(BaseModel):
+    success: bool
+    error: str | None = None
+    applied: bool | None = None
+    proof: str | None = None
+    snapshot: WorkspaceCutoverSnapshot | None = None
+    retained: list[str] = []
+    retirement: str | None = None
+
+
 class QueueSyncWorkspacesResponse(BaseModel):
     queued: str
     project_id: str
@@ -214,6 +234,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "remove_workspace": RemoveWorkspaceResponse,
     "release_workspace": ReleaseWorkspaceResponse,
     "edit_workspace": EditWorkspaceResponse,
+    "workspace_cutover": WorkspaceCutoverResponse,
     "find_merge_conflict_workspaces": FindMergeConflictWorkspacesResponse,
     "queue_sync_workspaces": QueueSyncWorkspacesResponse,
     "set_project_constraint": SetProjectConstraintResponse,

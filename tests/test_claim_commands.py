@@ -5339,3 +5339,49 @@ async def test_disabled_idle_workspace_drains_without_taking_task(handler, db, t
     result = await scoped(handler, sid)._cmd_task_claim({"next": True})
     assert result["result"] == "drain_requested", result
     assert (await db.get_task("kind-task")).claim_epoch == 0
+
+
+async def test_holder_proof_cannot_be_reused_after_its_transaction(handler, db, tmp_path):
+    """A proof confers no authority once its session/workspace locks end."""
+    await mktask(db, "proof-task", profile_id="worker")
+    sid, _wd = await pool_session(db, tmp_path)
+    handler._prepare_and_activate = AsyncMock(return_value={"result": "preparing"})
+    await scoped(handler, sid)._cmd_task_claim({"next": True})
+    task = await db.get_task("proof-task")
+    async with db.immediate() as conn:
+        proof = await db.lock_claim_workspace_proof(
+            conn, sid, task.id, epoch=task.claim_epoch, lock_task_status=False,
+        )
+        assert proof is not None
+    async with db.immediate() as conn:
+        assert await db.activate_claim(
+            sid, task.id, epoch=task.claim_epoch, now=NOW, conn=conn, workspace_proof=proof,
+        ) is None
+    assert (await db.get_session(sid)).claim_phase == "preparing"
+    assert await db.activate_claim(sid, task.id, epoch=task.claim_epoch, now=NOW) is not None
+
+
+@pytest.mark.parametrize("changed", ["receipt", "assignment", "cleanup"])
+async def test_activation_rechecks_mutable_holder_evidence(handler, db, tmp_path, changed):
+    """Reset's key-share task lock cannot freeze later admission evidence."""
+    await mktask(db, "proof-task", profile_id="worker")
+    sid, _wd = await pool_session(db, tmp_path)
+    handler._prepare_and_activate = AsyncMock(return_value={"result": "preparing"})
+    await scoped(handler, sid)._cmd_task_claim({"next": True})
+    task = await db.get_task("proof-task")
+    async with db.immediate() as conn:
+        proof = await db.lock_claim_workspace_proof(
+            conn, sid, task.id, epoch=task.claim_epoch, lock_task_status=False,
+        )
+        assert proof is not None
+        if changed == "receipt":
+            await db.set_task_meta(task.id, "claim_workspace", {"superseded": True})
+        elif changed == "cleanup":
+            await db.set_task_meta(task.id, "prepare_cleanup_unproved", {"writer": "unknown"})
+        else:
+            await db.update_task(task.id, assigned_agent_id=None)
+        activated = await db.activate_claim(
+            sid, task.id, epoch=task.claim_epoch, now=NOW, conn=conn, workspace_proof=proof,
+        )
+        assert activated is None
+    assert (await db.get_session(sid)).claim_phase == "preparing"

@@ -671,7 +671,9 @@ class ClaimCommandsMixin:
         new_claim: tuple | None = None  # (row, task) — a fresh "slot" claim
         conflict_task_id: str | None = None  # a specific task_id held by someone else
         async with self.db.immediate() as conn:
-            kind, row = await self.db.take_claim_slot(conn, session.id, now=now, cap=cap)
+            kind, row, workspace_binding = await self.db.take_claim_slot(
+                conn, session.id, now=now, cap=cap
+            )
             if kind == "claim_refusal":
                 return self._refusal_response(row, cap)
             if kind == "active":
@@ -741,33 +743,26 @@ class ClaimCommandsMixin:
                 from sqlalchemy import select
                 from src.database.tables import workspaces
 
-                workspace_binding = (await conn.execute(select(
-                    workspaces.c.kind_id, workspaces.c.enabled,
-                    workspaces.c.slot_index, workspaces.c.base_workspace_id,
-                ).where(
-                    workspaces.c.project_id == session.project_id,
-                    workspaces.c.workspace_path == row.work_dir,
-                ))).one_or_none()
                 if workspace_binding is None:
                     await self.db.release_claim_slot(conn, session.id)
                     return self._simple(
                         ClaimResult.PREPARE_FAILED, "workspace binding missing at session work_dir", row, cap
                     )
-                retired = not workspace_binding.enabled
-                if workspace_binding.slot_index is not None:
+                retired = not workspace_binding["enabled"]
+                if workspace_binding["slot_index"] is not None:
                     from src.database.tables import workspace_kinds
 
                     limit = await conn.scalar(select(workspace_kinds.c.max_slots).where(
                         workspace_kinds.c.project_id.in_((session.project_id, "__system__")),
-                        workspace_kinds.c.id == (workspace_binding.kind_id or "project-repo"),
+                        workspace_kinds.c.id == (workspace_binding["kind_id"] or "project-repo"),
                     ).order_by((workspace_kinds.c.project_id == session.project_id).desc()).limit(1))
                     cap_slots = max(1, project.max_concurrent_agents or 1)
                     if limit is not None:
                         cap_slots = min(cap_slots, limit)
                     base_enabled = await conn.scalar(select(workspaces.c.enabled).where(
-                        workspaces.c.id == workspace_binding.base_workspace_id,
+                        workspaces.c.id == workspace_binding["base_workspace_id"],
                     ))
-                    retired = retired or base_enabled is False or workspace_binding.slot_index >= cap_slots
+                    retired = retired or base_enabled is False or workspace_binding["slot_index"] >= cap_slots
                 if retired:
                     await self.db.release_claim_slot(conn, session.id)
                     await self.db.update_session(session.id, conn=conn, desired_state="stopped")
@@ -824,7 +819,7 @@ class ClaimCommandsMixin:
                     operator=routing[3] if routing else None,
                     allowed_task_ids=admission.allowed if admission is not None else None,
                     excluded_task_ids=withheld_source_repairs or None,
-                    workspace_kind=workspace_binding.kind_id or "project-repo",
+                    workspace_kind=workspace_binding["kind_id"] or "project-repo",
                 )
                 task = None
                 if tid is not None and admission is not None and not await admission.matches(
@@ -1241,40 +1236,6 @@ class ClaimCommandsMixin:
         # failure description names it (src/preparation_failure.py).
         stage = "workspace_lookup"
         try:
-            if await self.db.get_task_meta(task.id, PREPARE_CLEANUP_HOLD) is not None:
-                raise ProcessCleanupError("prior preparation writer cleanup remains unproved")
-            stage = "workspace_binding"
-            async with self.db.immediate() as identity_conn:
-                registered = await self.db.lock_claim_workspace(
-                    identity_conn, session.id, task.id, epoch=epoch,
-                    instance_token=session.instance_token, expected_workspace=slot,
-                )
-            if registered is None:
-                raise RuntimeError(
-                    f"workspace binding mismatch: session {session.id}, task {task.id}, "
-                    f"registered path {row.work_dir}; checkout left unchanged"
-                )
-            slot = registered
-            stage = "claim_file_check"
-            on_disk = read_claim_file(row.work_dir)
-            if on_disk is None and Path(row.work_dir, ".aq", "claim.json").exists():
-                raise RuntimeError(f"workspace {slot.id} retains an unreadable claim; checkout unchanged")
-            if (on_disk is not None and on_disk.get("task_id") == task.id
-                    and on_disk.get("session_id") == session.id
-                    and isinstance(on_disk.get("claim_epoch"), int)
-                    and 0 < on_disk["claim_epoch"] < epoch):
-                # This session has atomically acquired a newer epoch of the
-                # same task. Retire its own superseded marker, never a peer's.
-                remove_claim_file_if_matches(row.work_dir, task.id, on_disk["claim_epoch"])
-                on_disk = read_claim_file(row.work_dir)
-            if on_disk is not None and (
-                on_disk.get("task_id") != task.id or on_disk.get("claim_epoch") != epoch
-                or on_disk.get("session_id") != session.id
-            ):
-                raise RuntimeError(f"workspace {slot.id} at {row.work_dir} retains a foreign claim")
-            if slot.is_slot:
-                stage = "ensure_slot_checkout"
-                await self.orchestrator._worktree_slots().ensure_slot_checkout(slot, task)
             stage = "project_lookup"
             if project is _UNSET:
                 project = await self.db.get_project(task.project_id)
@@ -1289,10 +1250,49 @@ class ClaimCommandsMixin:
                 "train",
             }
 
+            async def check_checkout():
+                nonlocal stage
+                stage = "claim_file_check"
+                on_disk = read_claim_file(row.work_dir)
+                if on_disk is None and Path(row.work_dir, ".aq", "claim.json").exists():
+                    raise RuntimeError(f"workspace {slot.id} retains an unreadable claim; checkout unchanged")
+                if (on_disk is not None and on_disk.get("task_id") == task.id
+                        and on_disk.get("session_id") == session.id
+                        and isinstance(on_disk.get("claim_epoch"), int)
+                        and 0 < on_disk["claim_epoch"] < epoch):
+                    # This session has atomically acquired a newer epoch of the
+                    # same task. Retire its own superseded marker, never a peer's.
+                    remove_claim_file_if_matches(row.work_dir, task.id, on_disk["claim_epoch"])
+                    on_disk = read_claim_file(row.work_dir)
+                if on_disk is not None and (
+                    on_disk.get("task_id") != task.id or on_disk.get("claim_epoch") != epoch
+                    or on_disk.get("session_id") != session.id
+                ):
+                    raise RuntimeError(f"workspace {slot.id} at {row.work_dir} retains a foreign claim")
+                if slot.is_slot:
+                    stage = "ensure_slot_checkout"
+                    await self.orchestrator._worktree_slots().ensure_slot_checkout(slot, task)
+            if hierarchy_enabled:
+                if await self.db.get_task_meta(task.id, PREPARE_CLEANUP_HOLD) is not None:
+                    raise ProcessCleanupError("prior preparation writer cleanup remains unproved")
+                stage = "workspace_binding"
+                async with self.db.immediate() as identity_conn:
+                    registered = await self.db.lock_claim_workspace(
+                        identity_conn, session.id, task.id, epoch=epoch,
+                        instance_token=session.instance_token, expected_workspace=slot,
+                    )
+                if registered is None:
+                    raise RuntimeError(
+                        f"workspace binding mismatch: session {session.id}, task {task.id}, "
+                        f"registered path {row.work_dir}; checkout left unchanged"
+                    )
+                slot = registered
+                await check_checkout()
+
             async def prepare_and_activate(
                 *, conn=None, base_branch=None, target_branch=None, preserve_branch=False
             ):
-                nonlocal prepared_branch, stage
+                nonlocal prepared_branch, stage, slot
                 if conn is None:
                     async with self.db.immediate() as prepare_conn:
                         return await prepare_and_activate(
@@ -1300,13 +1300,18 @@ class ClaimCommandsMixin:
                             target_branch=target_branch, preserve_branch=preserve_branch,
                         )
                 stage = "workspace_binding"
-                registered = await self.db.lock_claim_workspace(
+                proof = await self.db.lock_claim_workspace_proof(
                     conn, session.id, task.id, epoch=epoch,
                     instance_token=session.instance_token, expected_workspace=slot,
                     lock_task_status=False,
                 )
-                if registered is None:
-                    raise RuntimeError("workspace binding changed before reset; checkout left unchanged")
+                if proof is None:
+                    if await self.db.get_task_meta(task.id, PREPARE_CLEANUP_HOLD) is not None:
+                        raise ProcessCleanupError("prior preparation writer cleanup remains unproved")
+                    raise RuntimeError("workspace binding mismatch before reset; checkout left unchanged")
+                slot = proof.workspace
+                if not hierarchy_enabled:
+                    await check_checkout()
                 stage = "stack_fetch"
                 reset_kwargs = {"base_branch": base_branch} if base_branch else {}
                 if target_branch is not None:
@@ -1377,6 +1382,7 @@ class ClaimCommandsMixin:
                     admission=admission,
                     instance_token=session.instance_token,
                     expected_workspace=slot,
+                    workspace_proof=proof,
                 )
                 if activated and hierarchy_enabled:
                     stage = "finalize_preparation"

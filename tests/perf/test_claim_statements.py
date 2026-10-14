@@ -46,6 +46,7 @@ import pytest
 from sqlalchemy import event, text
 from sqlalchemy.dialects import postgresql
 
+from src.claim_file import remove_claim_file_if_matches
 from src.models import (
     Agent,
     AgentProfile,
@@ -824,9 +825,13 @@ class TestClaimLatency:
             started = time.perf_counter()
             res = await h._cmd_task_claim({"next": True})
             assert res["result"] == "claimed"
-            await any_db.release_claim(
+            released = await any_db.release_claim(
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
+            # The command layer normally retires the exact released marker.
+            # This benchmark calls the database transition directly.
+            assert released.released
+            remove_claim_file_if_matches(_wd, res["task"]["id"], res["claim_epoch"])
             times.append(time.perf_counter() - started)
         after = await measure_wire_floor(any_db)
 

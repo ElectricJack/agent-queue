@@ -1927,7 +1927,14 @@ from .wait_register_response_422 import WaitRegisterResponse422
 from .wait_response import WaitResponse
 from .withheld_task import WithheldTask
 from .workspace_cutover_request import WorkspaceCutoverRequest
+from .workspace_cutover_response import WorkspaceCutoverResponse
 from .workspace_cutover_response_422 import WorkspaceCutoverResponse422
+from .workspace_cutover_snapshot import WorkspaceCutoverSnapshot
+from .workspace_cutover_snapshot_owners_item import WorkspaceCutoverSnapshotOwnersItem
+from .workspace_cutover_snapshot_sessions_item import WorkspaceCutoverSnapshotSessionsItem
+from .workspace_cutover_snapshot_source import WorkspaceCutoverSnapshotSource
+from .workspace_cutover_snapshot_source_additional_property import WorkspaceCutoverSnapshotSourceAdditionalProperty
+from .workspace_cutover_snapshot_workspaces_item import WorkspaceCutoverSnapshotWorkspacesItem
 from .workspace_doctor_request import WorkspaceDoctorRequest
 from .workspace_doctor_response_422 import WorkspaceDoctorResponse422
 from .workspace_reap_request import WorkspaceReapRequest
@@ -3854,7 +3861,14 @@ __all__ = (
     "WaitResponse",
     "WithheldTask",
     "WorkspaceCutoverRequest",
+    "WorkspaceCutoverResponse",
     "WorkspaceCutoverResponse422",
+    "WorkspaceCutoverSnapshot",
+    "WorkspaceCutoverSnapshotOwnersItem",
+    "WorkspaceCutoverSnapshotSessionsItem",
+    "WorkspaceCutoverSnapshotSource",
+    "WorkspaceCutoverSnapshotSourceAdditionalProperty",
+    "WorkspaceCutoverSnapshotWorkspacesItem",
     "WorkspaceDoctorRequest",
     "WorkspaceDoctorResponse422",
     "WorkspaceReapRequest",

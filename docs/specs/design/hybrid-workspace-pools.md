@@ -78,6 +78,25 @@ and Git-common-directory checks; it never follows a cutover receipt blindly.
 
 ## Operator handoff v1 (fleet-vault-71)
 
+### CI invariants
+
+The cutover command has a typed API response, including its observation snapshot.
+Pool kind proof must preserve the existing claim/release/reconcile statement
+budgets and index-ordered frontier. Read consolidation may reuse proof only
+while the same transaction holds the relevant session, task and workspace locks;
+activation still rechecks mutable admission after checkout preparation. Fixtures
+must establish real holder receipts before exercising preparation or activation.
+The ordinary workspace cutover does not restore any retired playbook V1 controls.
+New process and metadata sites retain explicit reviewed ownership in the existing
+inventories; no baseline or safety budget changes are part of this correction.
+
+A repair handoff may reserve a checkout for its successor task without an agent
+lock. Acquisition of that reservation requires the exact active repair stage,
+current reserved branch-owner fence, assigned successor and preferred workspace,
+and the predecessor session's stopped state and instance token. Other task locks
+remain unavailable. Preparation still verifies the retained branch and head
+before attaching the successor writer.
+
 The delivery receipt on the AQ task supplies the full commit SHA containing this
 document. It preserves wise-stone-87 ancestry through
 `116134665b82d7d2f4551f9d3e91dd14ce2c8555`. A pushed branch or open PR is not a

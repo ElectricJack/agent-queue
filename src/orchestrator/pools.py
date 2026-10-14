@@ -289,6 +289,11 @@ class PoolsMixin:
             if session.project_id is not None:
                 sessions_by_project.setdefault(session.project_id, []).append(session)
 
+        # One ordered workspace inventory and one kind catalogue per tick.
+        # These are capacity observations; launch/claim still recheck ownership.
+        workspace_snapshot = await self.db.list_workspaces()
+        kind_snapshot = await self.db.list_all_workspace_kinds()
+        system_kinds = {k.id: k for k in kind_snapshot if k.project_id == "__system__"}
         for project in await self.db.list_projects():
             if project.status != ProjectStatus.ACTIVE:
                 continue
@@ -316,13 +321,16 @@ class PoolsMixin:
                 hierarchy_mode=hierarchy_modes.get(project.id) or ProjectIntegrationMode.of(project),
                 pool_profiles=pool_profiles, include_repair_counts=True, by_workspace_kind=True,
             )
-            workspaces = await self.db.list_workspaces(project.id)
+            workspaces = [w for w in workspace_snapshot if w.project_id == project.id]
             kinds_by_path = {w.workspace_path: w.kind_id or "project-repo" for w in workspaces}
             sessions = sessions_by_project.get(project.id, [])
             session_ids = {s.id for s in sessions}
             pending = [launch for launch in pending_launches
                        if launch.project_id == project.id and launch.session_id not in session_ids]
-            execution_kinds = {k.id for k in await self.db.list_workspace_kinds_for_project(project.id)
+            project_kinds = system_kinds | {
+                k.id: k for k in kind_snapshot if k.project_id == project.id
+            }
+            execution_kinds = {k.id for k in project_kinds.values()
                                if k.writable and k.lockable and k.is_git_repo
                                and k.mode in ("worktree", "exclusive-clone")}
             kind_ids = execution_kinds | {"project-repo"} | {
@@ -332,6 +340,7 @@ class PoolsMixin:
             for kind_id in kind_ids:
                 capacity = await self.db.count_available_workspaces(
                     project.id, kind_id=kind_id,
+                    workspace_snapshot=workspaces, kind_snapshot=project_kinds,
                     worktree_slot_cap=(self._project_slot_cap(project) if worktrees_enabled else None),
                 ) if kind_id in execution_kinds else 0
                 capacities[kind_id] = max(0, capacity - sum(
