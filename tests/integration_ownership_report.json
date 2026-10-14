@@ -10395,49 +10395,49 @@
         "reason": "Existing ordinary session-exit attention metadata; reviewed the owner change introducing claim-fenced worker recovery, without adding integration lifecycle state or replay authority."
       },
       "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
-        "line": 2342,
+        "line": 2396,
         "owner": "SessionReconciler._step_stall_ladder",
         "call": "set_task_meta",
-        "owner_fingerprint": "00c67a558666ca127ecb760313afbc8b5fce2628de23fd6744f2f66905723634",
+        "owner_fingerprint": "cb98e6b7b5ecdeaa17a96ad6bf612e407476c4c8dcc8fdbcd8a6875e69ef6f74",
         "integration_signal": false,
         "disposition": "ordinary",
-        "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+        "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
       },
       "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::6732ef9f714e4fd40a44bc09eb86d98df200c62ed9943329ff0c3deb8ca6103f": {
-        "line": 2306,
+        "line": 2360,
         "owner": "SessionReconciler._step_stall_ladder",
         "call": "set_task_meta",
-        "owner_fingerprint": "00c67a558666ca127ecb760313afbc8b5fce2628de23fd6744f2f66905723634",
+        "owner_fingerprint": "cb98e6b7b5ecdeaa17a96ad6bf612e407476c4c8dcc8fdbcd8a6875e69ef6f74",
         "integration_signal": false,
         "disposition": "ordinary",
-        "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+        "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
       },
       "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::675fd05fe0efd918ede8974d1c8788d12fe7f5b20d28d4ef5e184db913b1f27e": {
-        "line": 2305,
+        "line": 2359,
         "owner": "SessionReconciler._step_stall_ladder",
         "call": "set_task_meta",
-        "owner_fingerprint": "00c67a558666ca127ecb760313afbc8b5fce2628de23fd6744f2f66905723634",
+        "owner_fingerprint": "cb98e6b7b5ecdeaa17a96ad6bf612e407476c4c8dcc8fdbcd8a6875e69ef6f74",
         "integration_signal": false,
         "disposition": "ordinary",
-        "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+        "reason": "Existing ordinary worker stall-nudge and last-action metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
       },
       "src/sessions/reconciler.py::SessionReconciler._step_backstop::213c372048797b24b8404f77b4a725611b628d2c507388c007a182869507e1b5": {
-        "line": 3006,
+        "line": 3184,
         "owner": "SessionReconciler._step_backstop",
         "call": "set_task_meta",
-        "owner_fingerprint": "47b2242f30f1851a8999956df7a749d52808bf658097484e5625c314f3bd7244",
+        "owner_fingerprint": "011d1ae5dfe6c721be3a8472f845e090903b296e4ebd63b00259b22abd947429",
         "integration_signal": false,
         "disposition": "ordinary",
-        "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+        "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
       },
       "src/sessions/reconciler.py::SessionReconciler._step_backstop::520a5d4212b5ec30a7dd206187632959436230a62055bda95fec1b7292be78c7": {
-        "line": 2988,
+        "line": 3166,
         "owner": "SessionReconciler._step_backstop",
         "call": "set_task_meta",
-        "owner_fingerprint": "47b2242f30f1851a8999956df7a749d52808bf658097484e5625c314f3bd7244",
+        "owner_fingerprint": "011d1ae5dfe6c721be3a8472f845e090903b296e4ebd63b00259b22abd947429",
         "integration_signal": false,
         "disposition": "ordinary",
-        "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
+        "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority. Idle pool-claim bound reviewed: a completed pool turn now feeds the same stall and backstop inactivity timers (sessions.idle_claim_timeout_seconds); the metadata write is unchanged."
       }
     },
     "owned_total": 155468,
