@@ -553,7 +553,7 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `title` | TEXT | NOT NULL | Short display name |
 | `description` | TEXT | NOT NULL | Full prompt/instructions for the agent |
 | `priority` | INTEGER | NOT NULL DEFAULT 100 | Lower number = higher priority |
-| `effective_priority` | INTEGER | NOT NULL DEFAULT 100 | Derived wait-graph priority; revision a00000000096 backfills existing rows from priority once |
+| `effective_priority` | INTEGER | NOT NULL DEFAULT 100 | Derived wait-graph priority; revision a00000000097 backfills existing rows from priority once |
 | `status` | TEXT | NOT NULL DEFAULT 'DEFINED' | See task state machine |
 | `verification_type` | TEXT | NOT NULL DEFAULT 'auto_test' | One of: auto_test, qa_agent, human |
 | `retry_count` | INTEGER | NOT NULL DEFAULT 0 | How many times this task has been retried |
@@ -1315,6 +1315,7 @@ sentinel for system-wide kinds.
 | `auto_attach` | BOOLEAN | NOT NULL DEFAULT false | Attached without being declared |
 | `mode` | TEXT | NOT NULL DEFAULT 'worktree' | Git provisioning strategy: worktree, exclusive-clone, or directory-isolated |
 | `worktree_setup` | TEXT | NOT NULL DEFAULT '[]' | JSON array of setup commands — **operator-authored, trusted** |
+| `max_slots` | INTEGER | nullable, CHECK max_slots > 0 | Additive revision a00000000096 prerequisite; limit enforcement is outside this schema leaf |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
@@ -3445,7 +3446,7 @@ updates against the epoch.
 
 Verified typed conditions, their source watermark, evidence, sleep decision and immutable outcome. Agent commentary lives in claimed separately from verified evidence. Partial unique indexes admit one pending non-scheduler wait per owner, deduplicate registrations and legacy translations, and allow multiple distinct scheduler blockers.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -3488,7 +3489,7 @@ Added by revision `a00000000096`; schema only until the verified-waits cutover.
 
 Semantic and resource edges in the wait graph. Waiter and blocker keys identify tasks, batches, slots, branches or sessions; only active edges participate in priority inheritance.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -3508,7 +3509,7 @@ Added by revision `a00000000096`; schema only until the verified-waits cutover.
 
 Transactional source outbox. The identity sequence is the registration watermark; the unique source key, generation and revision make repeated source writes idempotent. The undispatched partial index drives recovery after a listener restart.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -3528,7 +3529,7 @@ Added by revision `a00000000096`; schema only until the verified-waits cutover.
 
 Durable source and timer listener cursors. Lease owner and expiry elect one dispatcher; last_seq records the dispatched watermark.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -3542,7 +3543,7 @@ Added by revision `a00000000096`; schema only until the verified-waits cutover.
 
 Generation-fenced due, escalation, ceiling, transition and reservation deadlines. The due index excludes fired or cancelled rows; the wait/type/generation unique key prevents duplicate firing intents.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -3558,7 +3559,7 @@ Added by revision `a00000000096`; schema only until the verified-waits cutover.
 
 Wait-specific supervisor decisions linked to the authoritative escalation. Original age and prior escalation identity preserve history when a deadline is extended; nullable decision fields represent an unanswered incident.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -3578,7 +3579,7 @@ Added by revision `a00000000096`; schema only until the verified-waits cutover.
 
 Saved hibernation state and fresh-session resume intents. Summary size is bounded to 8 KiB of UTF-8 bytes. One active continuation per task and one intent per wait/suspension generation prevent duplicate writable resumes. A failed transition preserves branch, facts and hold reason.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -3609,7 +3610,7 @@ Added by revision `a00000000096`; schema only until the verified-waits cutover.
 
 Priority and FIFO admission intent for branch blockers, resumes and train repairs. An identity sequence orders arrivals. A partial unique expression index on COALESCE(task_id, continuation_id) admits one pending, overdue or granted reservation per subject.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -3634,7 +3635,7 @@ Added by revision `a00000000096`; schema only until the verified-waits cutover.
 
 Recorded wait durations and hibernation costs, bucketed by project, condition kind and source class. Nullable token and timing measurements preserve missing observations instead of reporting zero.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -3658,7 +3659,7 @@ Added by revision `a00000000096`; schema only until the verified-waits cutover.
 
 Derived-priority provenance per task: donor identity, donor path, graph version and computation time. Base priority remains operator input on tasks.
 
-Added by revision `a00000000096`; schema only until the verified-waits cutover.
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
 
 | Column | Type | Constraints |
 |---|---|---|

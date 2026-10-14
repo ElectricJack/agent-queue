@@ -1,7 +1,7 @@
 """Add verified waits, continuations, reservations and priority projection.
 
-Revision ID: a00000000096
-Revises: a00000000095
+Revision ID: a00000000097
+Revises: a00000000096
 
 Definitions are frozen here rather than imported from live table metadata.
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "a00000000096"
-down_revision = "a00000000095"
+revision = "a00000000097"
+down_revision = "a00000000096"
 branch_labels = None
 depends_on = None
 

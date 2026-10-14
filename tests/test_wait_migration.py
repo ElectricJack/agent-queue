@@ -20,7 +20,7 @@ from tests.alembic_revisions import previous_revision
 from tests.pg_dsn import create_scratch_database
 
 ROOT = Path(__file__).resolve().parent.parent
-REVISION = "a00000000096"
+REVISION = "a00000000097"
 TABLES = (
     "wait_records",
     "wait_edges",
@@ -222,11 +222,16 @@ def assert_unique_semantics(bind):
 @pytest.mark.parametrize("legacy", [True, False], ids=["pre-v2", "fresh-baseline"])
 async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrade(legacy):
     engine = create_async_engine(await create_scratch_database("waitmigration"))
-    revision = import_module("migrations.versions.a00000000096_wait_records")
+    revision = import_module("migrations.versions.a00000000097_wait_records")
+    predecessor = import_module("migrations.versions.a00000000096_workspace_kind_limits")
     try:
-        await migrate(engine, previous_revision(REVISION))
+        await migrate(engine, previous_revision(previous_revision(REVISION)))
         async with engine.begin() as conn:
             if legacy:
+                await conn.execute(
+                    sa.text("ALTER TABLE workspace_kinds DROP CONSTRAINT ck_workspace_kinds_max_slots")
+                )
+                await conn.execute(sa.text("ALTER TABLE workspace_kinds DROP COLUMN max_slots"))
                 for name in reversed(TABLES):
                     await conn.execute(sa.text(f'DROP TABLE "{name}"'))
                 await conn.execute(sa.text("ALTER TABLE tasks DROP COLUMN effective_priority"))
@@ -255,11 +260,29 @@ async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrad
                     "VALUES ('t','p','Keep','Keep',20,0,0)"
                 )
             )
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO workspace_kinds (project_id,id,description,created_at,updated_at) "
+                    "VALUES ('p','keep-kind','Keep kind',0,0)"
+                )
+            )
         await migrate(engine, "head")
         await migrate(engine, "head")
 
         def verify(bind):
             assert_schema(bind)
+            assert bind.execute(
+                sa.text("SELECT description, max_slots FROM workspace_kinds WHERE id='keep-kind'")
+            ).one() == ("Keep kind", None)
+            with pytest.raises(sa.exc.IntegrityError), bind.begin_nested():
+                bind.execute(sa.text("UPDATE workspace_kinds SET max_slots=0"))
+            bind.execute(sa.text("UPDATE workspace_kinds SET max_slots=3"))
+            with Operations.context(MigrationContext.configure(bind)):
+                predecessor.upgrade()
+                predecessor.upgrade()
+            assert bind.execute(
+                sa.text("SELECT max_slots FROM workspace_kinds WHERE id='keep-kind'")
+            ).scalar_one() == 3
             assert bind.execute(
                 sa.text("SELECT title, priority, effective_priority FROM tasks")
             ).one() == ("Keep", 20, 20 if legacy else 100)

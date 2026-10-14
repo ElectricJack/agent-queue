@@ -1312,6 +1312,8 @@ workspace_kinds = Table(
     # JSON-encoded list[str] of shell commands run after a slot is created.
     # Text for SQLite/PG parity, matching the existing JSON-in-Text usage.
     Column("worktree_setup", Text, nullable=False, server_default="[]"),
+    Column("max_slots", Integer, nullable=True),
+    CheckConstraint("max_slots > 0", name="ck_workspace_kinds_max_slots"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
