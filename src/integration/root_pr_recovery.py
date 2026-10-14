@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.task_templates import render_task_template
 from src.database.tables import (
     archived_tasks,
@@ -131,7 +132,7 @@ async def recover_root_pr_checks(handler, observation: RootPRCheckFailure) -> di
         if reason:
             identity = hashlib.sha256(repr((request.task_id, request.completion_id,
                 observation.source_sha, reason)).encode()).hexdigest()
-            await conn.execute(pg_insert(messages).values(
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id=f"root-pr-checks-{identity}", project_id=request.project_id,
                 from_kind="system", from_id="integration-admission", to_kind="session",
                 to_id=f"supervisor-{request.project_id}",

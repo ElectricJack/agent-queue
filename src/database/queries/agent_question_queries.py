@@ -9,6 +9,7 @@ from sqlalchemy import insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.tables import (
     agent_questions as questions,
     escalations,
@@ -130,7 +131,7 @@ class AgentQuestionQueriesMixin:
             )
             if result.rowcount != 1:
                 return
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 insert(messages).values(
                     id="msg-" + question_id,
                     project_id=(
@@ -160,7 +161,7 @@ class AgentQuestionQueriesMixin:
         second time.  Idempotent, because a retried delivery reaches it again.
         """
         async with self._engine.begin() as conn:
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 pg_insert(messages)
                 .values(
                     id=message_id,

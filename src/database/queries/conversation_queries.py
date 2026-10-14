@@ -31,6 +31,7 @@ from sqlalchemy import and_, case, delete, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+from src.waits.sources import insert_message_with_source_event
 from src.conversations.intake import KIND_CHANNEL, KIND_THREAD
 from src.conversations.limits import AUTHOR_WINDOW_LIMIT, CHANNEL_WINDOW_LIMIT, WINDOW_SECONDS
 from src.conversations.outbox import STATUS_LINE_ACTION
@@ -468,7 +469,7 @@ class ConversationQueriesMixin:
             rendered_brief = brief(conversation["id"], input_id) if callable(brief) else brief
             if not isinstance(rendered_brief, str) or not rendered_brief:
                 raise ValueError("brief must render non-empty text")
-            await conn.execute(
+            await insert_message_with_source_event(conn,
                 pg_insert(messages).values(
                     id=supervisor_message_id,
                     project_id=supervisor_project_id,
@@ -1063,7 +1064,7 @@ class ConversationQueriesMixin:
             sender = notice["to_id"] if notice is not None else SUPERVISOR_RECIPIENT
             reply = (
                 (
-                    await conn.execute(
+                    await insert_message_with_source_event(conn,
                         pg_insert(messages)
                         .values(
                             id=reply_message_id,

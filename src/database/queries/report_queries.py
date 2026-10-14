@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.tables import digest_windows, messages, supervisor_report_requests
 from src.database.queries.morning_report_queries import MorningReportQueriesMixin
 
@@ -168,7 +169,7 @@ class ReportQueriesMixin(MorningReportQueriesMixin):
                         f"Hourly report {request_id} is ready. Read the brief with "
                         f"`aq report brief {request_id}` and submit before the deadline."
                     )
-                await conn.execute(
+                await insert_message_with_source_event(conn,
                     pg_insert(messages)
                     .values(
                         id=message_id,
