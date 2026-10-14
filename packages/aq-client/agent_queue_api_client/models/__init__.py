@@ -155,6 +155,7 @@ from .ci_repair_adopt_response import CiRepairAdoptResponse
 from .ci_repair_adopt_response_422 import CiRepairAdoptResponse422
 from .ci_test_policy import CITestPolicy
 from .claim_session_summary import ClaimSessionSummary
+from .claim_session_summary_failed_preparation_type_0 import ClaimSessionSummaryFailedPreparationType0
 from .claim_timing_detail import ClaimTimingDetail
 from .claim_timing_detail_phases import ClaimTimingDetailPhases
 from .claimed_by import ClaimedBy
@@ -1692,6 +1693,7 @@ from .session_sleep_request import SessionSleepRequest
 from .session_sleep_response_422 import SessionSleepResponse422
 from .session_subagents import SessionSubagents
 from .session_summary import SessionSummary
+from .session_summary_failed_preparation_type_0 import SessionSummaryFailedPreparationType0
 from .session_token_request import SessionTokenRequest
 from .session_token_response import SessionTokenResponse
 from .session_token_response_422 import SessionTokenResponse422
@@ -2178,6 +2180,7 @@ __all__ = (
     "CITestPolicy",
     "ClaimedBy",
     "ClaimSessionSummary",
+    "ClaimSessionSummaryFailedPreparationType0",
     "ClaimTimingDetail",
     "ClaimTimingDetailPhases",
     "ClaudeUsageRequest",
@@ -3704,6 +3707,7 @@ __all__ = (
     "SessionSleepResponse422",
     "SessionSubagents",
     "SessionSummary",
+    "SessionSummaryFailedPreparationType0",
     "SessionTokenRequest",
     "SessionTokenResponse",
     "SessionTokenResponse422",

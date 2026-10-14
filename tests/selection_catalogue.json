@@ -3476,8 +3476,10 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:a350b28d386918e8b47f7840036db1553d42a4b44b013b9d669af3a454c24797",
+      "digest": "sha256:46efb5bf20f09e7ecc12aa3fc43d532791f2248ab907d7338d03b5d8e97c7f07",
       "imports": [
+        "src.api.models.session",
+        "src.api.models.task",
         "src.claim_file",
         "src.claim_timing",
         "src.commands.claim_commands",
@@ -11470,14 +11472,15 @@
         "migrations"
       ],
       "default_arm": false,
-      "digest": "sha256:bfcc8a56af95c810ffc28946fa2ca01415b1a239d385ffa445df437db5e1bd52",
+      "digest": "sha256:b7ddbb9e588bb8c999188c1ca310e4dd1979feeb23ef5f98db6fccc0cccbab1e",
       "imports": [
         "src.database",
         "src.database.tables",
         "src.models"
       ],
       "markers": [
-        "migration"
+        "migration",
+        "parametrize"
       ],
       "summary": "Pool claim cooldown migration is additive and safe to replay on PostgreSQL."
     },
