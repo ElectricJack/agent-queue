@@ -78,7 +78,7 @@ import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
@@ -123,15 +123,24 @@ def _zeroized_credential(buffer: bytearray):
         zeroize(buffer)
 
 
-def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int = 512) -> str:
+def safe_git_detail(value: str, token: str | None = None, *, limit: int = 512) -> str:
     """Keep useful failure text without returning a credential to callers or logs."""
     from src.projects.github import scrub_secrets
 
     if token:
         value = value.replace(token, "***")
+    # Results can cross more than one diagnostic boundary. Recover escaped
+    # line separators so a second scrub does not swallow text after a header.
+    value = value.replace("\\r", "\r").replace("\\n", "\n")
     value = re.sub(r"(?im)(authorization\s*:\s*)[^\r\n]*", r"\1***", value)
     safe = scrub_secrets(value)
-    return safe[-limit:].replace("\r", "\\r").replace("\n", "\\n")
+    # Escape control characters before bounding the rendered diagnostic.
+    safe = re.sub(r"[\x00-\x1f\x7f]", lambda m: repr(m[0])[1:-1], safe)
+    return safe[-limit:]
+
+
+def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int = 512) -> str:
+    return safe_git_detail(value, token, limit=limit)
 
 
 class GitError(Exception):
@@ -225,6 +234,7 @@ class RemoteRefResult:
     state: RemoteRefState
     oid: str | None = None
     error: str | None = None
+    publication_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -3507,6 +3517,8 @@ class GitManager:
         push is not atomic, so the returned post-transfer read settles each
         head, not the exit status: a head the transfer failed to create
         reports that failure as an error. Callers compare heads with *tips*.
+        Failed transfers retain a safe publication_error when readback does
+        not prove the expected tip, including read errors and conflicting tips.
         """
         updates = []
         for branch, tip in tips.items():
@@ -3518,6 +3530,7 @@ class GitManager:
         if not updates:
             return {}
         failure = None
+        token = None
         try:
             destination_url, token = await self._apush_destination(
                 checkout_path, remote, repository_url=repository_url
@@ -3548,9 +3561,12 @@ class GitManager:
             repository_url=repository_url,
         )
         if failure is not None:
+            failure = safe_git_detail(failure, token)
             for branch, result in observed.items():
                 if result.state is RemoteRefState.ABSENT:
-                    observed[branch] = RemoteRefResult(RemoteRefState.ERROR, error=failure)
+                    result = RemoteRefResult(RemoteRefState.ERROR, error=failure)
+                if result.state is not RemoteRefState.PRESENT or result.oid != tips[branch]:
+                    observed[branch] = replace(result, publication_error=failure)
         return observed
 
     async def afetch_repository_oid(
