@@ -109,7 +109,7 @@ def test_inventory_covers_named_shared_surfaces(report, manifest):
         "src/tools/definitions.py", "dashboard/src/components/EpicDelivery.tsx",
         "dashboard/src/components/epicDeliveryFormat.ts",
         "dashboard/src/pages/TaskDetail.tsx",
-        "src/prompts/reviewed_playbooks/root-train/source.md",
+        "src/prompts/integration_playbooks/root-train.md",
     }
     assert required <= report["spans"].keys()
     assert all(manifest["exclusions"].values())

@@ -57,10 +57,6 @@ SHIPPED_SOURCES: dict[str, str] = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
-    "agent-queue-parent-integration": (
-        "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
-    ),
-    "agent-queue-root-train": "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md",
     "blocked-task-escalation": "src/prompts/reviewed_playbooks/blocked-task-escalation/source.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
@@ -68,13 +64,14 @@ SHIPPED_SOURCES: dict[str, str] = {
     "supervisor-digest": "src/prompts/reviewed_playbooks/supervisor-digest/source.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
-    "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
-    "root-train": "src/prompts/integration_playbooks/root-train.md",
     "promotion-request": "src/prompts/integration_playbooks/promotion-request.md",
     "promotion-continuous": "src/prompts/integration_playbooks/promotion-continuous.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)
+HISTORICAL_TRAIN_IDS = (
+    "agent-queue-parent-integration", "agent-queue-root-train", "parent-integration", "root-train",
+)
 
 #: §3.4, locked.
 REQUIRED_REVIEW_KEYS = frozenset(
@@ -127,7 +124,11 @@ def playbook_id_for(source: Path) -> str:
 
 
 def _fixture(playbook_id: str) -> Path:
-    return FIXTURE_ROOT / playbook_id
+    root = (
+        FIXTURE_ROOT.parent / "historical-v2"
+        if playbook_id in HISTORICAL_TRAIN_IDS else FIXTURE_ROOT
+    )
+    return root / playbook_id
 
 
 def _read_review(playbook_id: str) -> tuple[dict[str, Any], str]:
@@ -855,3 +856,19 @@ def test_capabilities_granted_unused_by_src() -> None:
         "capabilities_granted is read by production code; a reviewed fixture would "
         "become an authority claim:\n" + "\n".join(offenders)
     )
+
+
+@pytest.mark.parametrize("playbook_id", HISTORICAL_TRAIN_IDS)
+def test_retired_train_policy_is_archived_and_cannot_validate_for_install(playbook_id):
+    """Retain the reviewed bytes without offering a policy for deleted engines."""
+    archived = REPO_ROOT / "docs/history/legacy-train-policies" / playbook_id
+    assert playbook_id not in shipped_reviewed_playbook_ids()
+    for name in ("source.md", "artifact.json", "artifact.sha256", "manifest.md", "diagnostics.json"):
+        assert (archived / name).read_bytes() == (_fixture(playbook_id) / name).read_bytes()
+    raw = (archived / "artifact.json").read_bytes()
+    assert canonical_bytes(_artifact(playbook_id)) == raw
+    assert (archived / "artifact.sha256").read_text().strip() == (
+        "sha256:" + hashlib.sha256(raw).hexdigest()
+    )
+    diagnostics = validate_definition(_artifact(playbook_id), contracts=RegistryContractLookup())
+    assert any(d.code == "unknown_command" and d.severity == "error" for d in diagnostics)

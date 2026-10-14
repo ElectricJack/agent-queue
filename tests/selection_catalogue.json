@@ -4347,11 +4347,12 @@
         "command-dispatch"
       ],
       "default_arm": true,
-      "digest": "sha256:0820006439ba52c2e32ebc7b15b98856c6bbd35b73b5f7bece501e9c804c3260",
+      "digest": "sha256:1981509a032f20cf879acfee1ae4b7a45c9c3b1ae3b3bf7fc0ffa42341bc7e81",
       "imports": [
         "src.api.codegen",
         "src.api.execute",
         "src.cli.auto_commands",
+        "src.commands.contracts",
         "src.commands.handler",
         "src.mcp_registration",
         "src.tools.definitions"

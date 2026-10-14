@@ -2466,7 +2466,7 @@ def _pin_train_validation(project_id: str, home: Path) -> dict:
     settings = DevelopmentPolicy(validation="none", commands=[], interval_seconds=86400)
     source = render_development_policy(project_id, settings)
     definition = load_definition_json(Path(
-        REPO_ROOT, "src/prompts/reviewed_playbooks/root-train/artifact.json",
+        REPO_ROOT, "docs/history/legacy-train-policies/root-train/artifact.json",
     ).read_text()).model_copy(update={
         "id": f"{project_id}-development", "scope": ProjectScope(project_id=project_id),
         "source_hash": source_digest(source), "integration_policy": policy_from_markdown(source),
