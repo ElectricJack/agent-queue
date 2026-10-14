@@ -3753,7 +3753,7 @@ async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world
         )
         assert task.route == route
         assert await world.db.get_task_meta("red-root", "routing_failed_attempts") is None
-    assert task.integration_mode == "pull_request" and task.pr_url is None
+    assert task.integration_mode == "pull_request" and task.pr_url == before.pr_url
     assert "unit: failure" in task.description
     assert "FAILED tests/test_registry.py::test_new_command" in task.description
     assert "https://github.com/acme/widgets/actions/runs/131/job/151" in task.description
@@ -3835,6 +3835,39 @@ async def test_root_pr_recovery_escalates_once_after_restart(world, unchanged):
         ))).mappings().all()
     assert len(notices) == 1 and notices[0]["to_id"] == "supervisor-p"
     assert (await world.db.get_task("root")).status is TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("earlier", ["source_ci", "legacy_delegate", "root_pr"])
+async def test_root_pr_recovery_cannot_restart_a_source_ci_repair_chain(world, earlier):
+    from src.database.tables import messages
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    source = await completed(world, "root")
+    original = await world.db.get_task("root")
+    if earlier == "source_ci":
+        await world.db.add_task_context("root", type="reopen_feedback",
+            label="Source CI Repair", content="prior changed head")
+    elif earlier == "legacy_delegate":
+        await world.db.update_task("root", created_by_kind="source_ci_repair")
+    else:
+        await world.db.set_task_meta("root", RECOVERY_KEY, {"heads": ["f" * 40]})
+        async with world.db._engine.begin() as conn:
+            policy = await conn.scalar(select(projects.c.hierarchical_integration_policy))
+            policy["root"]["repair"] = {"source_ci": True, "on_exhausted": "continue",
+                                       "debug_intelligence_class": "standard-high"}
+            await conn.execute(update(projects).values(hierarchical_integration_policy=policy))
+    github.pr_runs[source] = "failure"
+    for _ in range(2):
+        blocked = await train.visit(MAIN, seal_now=True)
+        assert blocked.detail["blockers"][0]["code"] == "source_ci_repair_exhausted"
+    task = await world.db.get_task("root")
+    assert task.status is TaskStatus.COMPLETED
+    assert task.pr_url == original.pr_url and task.branch_name == original.branch_name
+    async with world.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.id == "msg-source-ci-budget-root"))).mappings().all()
+    assert len(notices) == 1
 
 
 async def test_root_pr_recovery_preserves_existing_bound_source_repair(world):

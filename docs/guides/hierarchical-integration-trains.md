@@ -487,7 +487,15 @@ An unchanged failing head, exhausted recovery or a container root instead
 notifies the supervisor with a named blocker. Existing source-CI repairs keep
 their paired admission path. See [root PR check recovery](../specs/design/root-pr-check-recovery.md).
 
-Source CI observation of a train root's exact PR head files a repair only when
+New source-CI recovery retains the original branch and PR and reopens a leaf task
+once. The budget persists across repaired heads and checkpoint generations.
+A further genuine failure, including failure on a historical repair delegate,
+notifies the supervisor once; it never creates another task, repair PR or chain.
+Existing historical delegates retain their ownership and delivery protections.
+Containers notify the supervisor to coordinate repair on the original branch.
+After the original source lands, the supervisor closes its obsolete repair PRs.
+
+Source CI observation of a train root's exact PR head reopens the original task only when
 at least one required check genuinely failed (`failure`, `timed_out`,
 `action_required`). A run whose non-success required checks are *all* cancelled
 is infrastructure — typically a GitHub Actions outage, annotated "The job was
