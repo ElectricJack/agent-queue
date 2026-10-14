@@ -8456,7 +8456,7 @@
         "integration-ownership"
       ],
       "default_arm": true,
-      "digest": "sha256:3ea826e75bd2eb775c26d050d2dd464ee1dd6ad40ba4bd07d269787660a13d6a",
+      "digest": "sha256:98d0bc5c4c78575999e17bf295f27580b263fa6db0b215cafcee4cebc89de99e",
       "imports": [
         "src.api.auth",
         "src.claim_file",
@@ -8477,7 +8477,8 @@
         "src.sessions",
         "src.sessions.fake",
         "src.sessions.provider",
-        "src.sessions.reconciler"
+        "src.sessions.reconciler",
+        "src.sessions.worker_recovery"
       ],
       "markers": [
         "parametrize"
@@ -9170,7 +9171,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:fadabbd97be47095fcbc4591ecc82b4e4df39f576f7d7f574f323b745ffc583c",
+      "digest": "sha256:0f4e59bb4f15ff93dab51c5d3184152c17adb9a88e8a494ab077e789959c2a25",
       "imports": [
         "src.commands",
         "src.commands.integration_commands",
@@ -9194,6 +9195,7 @@
         "src.integration.cleanup",
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
+        "src.integration.epics",
         "src.integration.git_truth",
         "src.integration.gitops",
         "src.integration.hierarchy",
@@ -15587,7 +15589,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:e64c32a3dccd1091457f3c16d3866219907b2a1b75ba66dfd90f6a96438fb725",
+      "digest": "sha256:6d0a4b57368a7dc8ae82b7123ebd9d4b27350adf997a55a73e27bcbf803ae463",
       "imports": [
         "src.agent_waits",
         "src.commands",
@@ -15602,6 +15604,7 @@
         "src.messages.session_lens",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.orchestrator.workspace",
         "src.providers.availability",
         "src.providers.availability_service",
