@@ -1154,7 +1154,7 @@ class DatabaseBatches:
             if request is None or not is_valid_git_oid(base or ""):
                 continue
             with selection_stage("target_delivery", items=1):
-                evidence = await snapshot.is_delivered(request, source_base=base)
+                evidence = await snapshot.strict_is_delivered(request, source_base=base)
             if evidence.satisfied:
                 delivered.add(task_id)
                 continue
@@ -1198,7 +1198,7 @@ class DatabaseBatches:
                 })
             source = evidence.source_oid
             if (evidence.state is not DeliveryState.PENDING
-                    or evidence.reason != "source_not_delivered"
+                    or evidence.reason != "source_not_contained"
                     or not is_valid_git_oid(source or "") or (task_id, source) in withheld):
                 continue
             with selection_stage("stack_source", items=1):
@@ -1536,7 +1536,8 @@ class DatabaseBatches:
             sources = {member.task_id: member.source_sha for member in members}
             for task_id in await _epic_branches_on(conn, ids):
                 if not await self._epic_current_on(conn, task_id, requests[task_id].completion_id,
-                                                   source=sources[task_id]):
+                        source=sources[task_id], snapshot=self._refresh_snapshots.get(
+                            (batch.project_id, batch.repository_id, batch.target_ref))):
                     return False
         return True
 
@@ -1550,7 +1551,7 @@ class DatabaseBatches:
             ))).scalars().all()
             if len(ids) != 1:
                 return None
-            graph = await EpicGraphReader(policy_on=epic_policy_on,
+            graph = await EpicGraphReader(self.db, policy_on=epic_policy_on,
                 source_base_on=epic_source_base_on).read_on(conn, ids[0])
         if (not graph.node(graph.epic_id).container
                 or graph.repository_id != target.repository_id or graph.project_holds
@@ -1570,8 +1571,8 @@ class DatabaseBatches:
         members, requests = [], {}
         for child in graph.children(graph.epic_id):
             request = replace(child.request, target_ref=target.target_ref)
-            proof = await snapshot.is_delivered(request, source_base=child.source_base)
-            if proof.state in {DeliveryState.NO_CHANGE, DeliveryState.NO_ARTIFACT}:
+            proof = await snapshot.strict_is_delivered(request, source_base=child.source_base)
+            if proof.state is DeliveryState.NOT_APPLICABLE:
                 continue
             if proof.state is not DeliveryState.CONTAINED or not is_valid_git_oid(proof.source_oid):
                 return None
@@ -1592,8 +1593,13 @@ class DatabaseBatches:
         if record is None or record["outcome"] != "pass":
             return False
         try:
-            graph = await EpicGraphReader(policy_on=epic_policy_on,
+            graph = await EpicGraphReader(self.db, policy_on=epic_policy_on,
                 source_base_on=epic_source_base_on).read_on(conn, task_id)
+            notes = json.loads(record["notes"])
+            if source is not None and json.loads(record["commits"]) != [source]:
+                return False
+            if notes["graph_sha256"] != epic_graph_digest(graph):
+                return False
             if snapshot is not None:
                 # The completion row describes a decision; it cannot prove
                 # today's children are in today's epic branch.
@@ -1611,15 +1617,16 @@ class DatabaseBatches:
                     return HeadChecks(repository_id, head, policy.check_names, policy.check_trust,
                                       "green" if set(policy.check_names) <= green else "unknown")
 
-                readiness = await EpicReadinessEvaluator(self.db, EpicGraphReader(
+                readiness = await EpicReadinessEvaluator(self.db, EpicGraphReader(self.db,
                     policy_on=epic_policy_on, source_base_on=epic_source_base_on,
                 ), TreeReviews(self.db), checks=cached_checks).evaluate(graph, snapshot)
-                return readiness.ready and readiness.head_sha == source
-            notes = json.loads(record["notes"])
-            if source is not None and json.loads(record["commits"]) != [source]:
-                return False
-            if notes["graph_sha256"] != epic_graph_digest(graph):
-                return False
+                if not readiness.ready or readiness.head_sha != source:
+                    return False
+                for subject_id, _, _ in epic_heads(readiness):
+                    if not await snapshot.for_target(graph.node(subject_id).branch_ref
+                                                      ).observation.is_fresh():
+                        return False
+                return True
             for subject_id, head, tree in notes["heads"]:
                 policy = graph.node(subject_id).policy
                 if policy.check_names:
@@ -1741,6 +1748,9 @@ def epic_graph_digest(graph) -> str:
         if node["request"]["task_id"] in {graph.epic_id, graph.node(graph.epic_id).parent_id}:
             node["request"]["completion_id"] = None
             node["request"]["completed_at"] = None
+            for field in ("reported_source", "completion_outcome", "completion_commits"):
+                node["request"][field] = None
+            node["request"]["has_recorded_source"] = False
     return hashlib.sha256(json.dumps(data, sort_keys=True, default=sorted).encode()).hexdigest()
 
 
@@ -1845,6 +1855,9 @@ class EpicCompletions:
                 opened = {"outcome": "unknown", "reason": str(exc)}
             return ({"code": "epic_pr", "task_id": node.task_id, "ref": node.task_id,
                      "head_sha": readiness.head_sha, "blocking": False, **opened},)
+        if first:
+            return ({"code": "epic_completed", "task_id": node.task_id, "ref": node.task_id,
+                     "head_sha": readiness.head_sha, "blocking": False},)
         return ()
 
 
@@ -2003,6 +2016,17 @@ class DaemonLanes:
             self.batches.repaired_source_gate = hosted_pr_gate.admit_repaired_source
         #: batch id -> (key, expires_at, trust, client); see _promotion_trust.
         self._promotion_trust_cache: dict[str, tuple[str, float, Any, Any]] = {}
+
+    async def _checks_changed(self, head):
+        """Wake readiness only after changed exact-head evidence is committed."""
+        bus = getattr(self.orchestrator, "bus", None)
+        if bus is not None:
+            repo = await self.db.get_repo(head.repository_id)
+            if repo is not None:
+                await bus.emit("integration.readiness_changed", {
+                    "project_id": repo.project_id, "repository_id": head.repository_id,
+                    "head_sha": head.sha, "reason": "checks_changed",
+                })
 
     async def __call__(self, target: TrainTarget) -> TrainLane:
         from src.integration.repository_git import development_repository
@@ -2311,7 +2335,7 @@ class DaemonLanes:
             return HeadChecks(repository_id, head, tuple(result.required.names),
                               result.required.producer_id, state)
 
-        evaluator = EpicReadinessEvaluator(self.db, EpicGraphReader(
+        evaluator = EpicReadinessEvaluator(self.db, EpicGraphReader(self.db,
             policy_on=epic_policy_on, source_base_on=epic_source_base_on,
         ), TreeReviews(self.db), checks=head_checks)
         from src.integration.root_pull_requests import EpicPullRequestService
@@ -2384,7 +2408,8 @@ class DaemonLanes:
             required = frozen_required_checks(meta)
             resolved[batch.id] = trust, client, StepPullRequestGate(client, binding)
             selected = trust.model_copy(update={"required_checks": required})
-            return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, selected)))
+            return ExactChecks(self.db, HostedChecks(HostedCIProducer(client, selected)),
+                               on_change=self._checks_changed)
 
         checks = PromotionChecks(admission, resolve, pull_request=lambda batch: resolved[batch.id][2])
 
@@ -2616,7 +2641,8 @@ class DaemonLanes:
                                            names=names, version=version,
                                            scope=("promotion:" + str(target.step_id)
                                                   if target.kind == "promotion"
-                                                  else _ci_kind(target))), clock=self.clock)
+                                                  else _ci_kind(target))), clock=self.clock,
+                      on_change=self._checks_changed)
 
     async def _local(self, target, retained, settings, version, batch, candidate_sha):
         from src.integration.checks import ExactChecks, LocalChecks
@@ -2635,7 +2661,8 @@ class DaemonLanes:
             self.db, PublisherJobs(lambda: self.orchestrator._command_handler),
             store=retained.store, plan=plan, clock=self.clock,
         )
-        return ExactChecks(self.db, LocalChecks(producer, project_id=target.project_id))
+        return ExactChecks(self.db, LocalChecks(producer, project_id=target.project_id),
+                           on_change=self._checks_changed)
 
     async def _hosted(self, policy, binding, target, batch, candidate_sha, *, retained=None,
                       expected_event="push"):
@@ -2666,7 +2693,7 @@ class DaemonLanes:
         return ExactChecks(self.db, HostedChecks(
             HostedCIProducer(client, trust, expected_event=expected_event),
             diagnose=diagnose if retained is not None else None,
-        ), clock=self.clock)
+        ), clock=self.clock, on_change=self._checks_changed)
 
     async def _workflow_diagnostic(self, retained, head):
         """Read workflow filters from the candidate's tree, never the daemon checkout."""
@@ -2729,6 +2756,12 @@ class TrainCommandDriver:
     def __init__(self, train: IntegrationTrain, commands: Callable[[], Any]):
         self.train, self._commands = train, commands
 
+    def wake(self, project_id, repository_id=None):
+        return self.train.wake(project_id, repository_id)
+
+    def set_wake_callback(self, callback):
+        self.train.on_wake = callback
+
     async def tick(self, now: float | None = None) -> dict[str, Any]:
         from src.commands.principal import ExecutionPrincipal, principal_context
 
@@ -2761,5 +2794,6 @@ def train_for(orchestrator, *, clock: Callable[[], float] = time.time) -> Integr
         lane_for=DaemonLanes(orchestrator, batches=batches, clock=clock),
         repair=OrdinaryRepairService(orchestrator.db, clock=clock),
         baseline=CandidateBaselineService(orchestrator.db, clock=clock),
+        event_driven=True,
         clock=clock,
     )

@@ -39,6 +39,17 @@ DEFAULT_ITEM_TIMEOUT_SECONDS = 60.0
 #: pass stops waiting for it.
 CANCEL_GRACE_SECONDS = 5.0
 
+# Ordinary state changes invalidate readiness. Events are hints only: each
+# lane reloads completions, holds, authorization and exact Git/check evidence.
+READINESS_EVENTS = (
+    "task.completed", "task.closed", "task.created", "task.updated", "task.restarted",
+    "task.ready", "task.child_added", "task.reparented", "task.paused", "task.unblocked",
+    "dependency.added", "dependency.removed", "label.added", "label.removed",
+    "gate.created", "gate.resolved", "gate.expired", "project.paused", "project.resumed",
+    "git.push", "git.pr.created", "integration.ci_completed", "integration.batch_promoted",
+    "integration.root_delivered", "integration.readiness_changed",
+)
+
 
 class _CallTimedOut(Exception):
     """One bounded callback exceeded its budget and was cancelled."""
@@ -60,6 +71,7 @@ class IntegrationService:
         parent_subject_runtime=None,
         development_subject_runtime=None,
         train=None,
+        bus=None,
         maintenance=None,
         interval_seconds=5.0,
         source_timeout_seconds=DEFAULT_SOURCE_TIMEOUT_SECONDS,
@@ -85,6 +97,9 @@ class IntegrationService:
         self._parent_subject_runtime = parent_subject_runtime
         self._development_subject_runtime = development_subject_runtime
         self._train = train
+        self._bus = bus
+        self._unsubscribers = []
+        self._wake_event = asyncio.Event()
         self._maintenance = dict(maintenance or {})
         self._source_timeout_seconds = float(source_timeout_seconds)
         self._item_timeout_seconds = float(item_timeout_seconds)
@@ -115,6 +130,10 @@ class IntegrationService:
         if self._tick_lock.locked():
             return
         async with self._tick_lock:
+            if self._train is not None and not self._stop_event.is_set():
+                # A readiness event must not wait behind a slow maintenance
+                # pass (for example a GitHub review listing).
+                await self._source("integration train", self._train.tick, self._clock())
             if not self._stop_event.is_set() and (
                 self._reconciliation_task is None or self._reconciliation_task.done()
             ):
@@ -132,9 +151,6 @@ class IntegrationService:
                                self._clock(), **filters)
 
     async def _reconcile(self):
-        if self._train is not None:
-            # Starts one isolated visit per idle target and returns at once.
-            await self._source("integration train", self._train.tick, self._clock())
         for name, runtime in (
             ("root subjects", self._subject_runtime),
             ("parent subjects", self._parent_subject_runtime),
@@ -245,13 +261,30 @@ class IntegrationService:
         if self._task is not None and not self._task.done():
             return
         self._stop_event.clear()
+        if self._train is not None and hasattr(self._train, "set_wake_callback"):
+            self._train.set_wake_callback(self._wake_event.set)
+        if self._train is not None and self._bus is not None:
+            self._unsubscribers = [self._bus.subscribe(event, self._on_readiness)
+                                   for event in READINESS_EVENTS]
         self._task = asyncio.create_task(
             self._run(), name="integration-reconciliation-service"
         )
 
+    async def _on_readiness(self, event) -> None:
+        project_id = event.get("project_id")
+        if project_id:
+            self._train.wake(project_id, event.get("repository_id"))
+            self._wake_event.set()
+
     async def stop(self) -> None:
         task = self._task
         self._stop_event.set()
+        self._wake_event.set()
+        for unsubscribe in self._unsubscribers:
+            unsubscribe()
+        self._unsubscribers.clear()
+        if self._train is not None and hasattr(self._train, "set_wake_callback"):
+            self._train.set_wake_callback(None)
         if self._subject_runtime is not None:
             await self._subject_runtime.stop()
         if self._parent_subject_runtime is not None:
@@ -274,6 +307,7 @@ class IntegrationService:
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
+            self._wake_event.clear()
             try:
                 await self.tick(self._clock(), background=True)
             except asyncio.CancelledError:
@@ -282,7 +316,7 @@ class IntegrationService:
                 logger.exception("unexpected integration reconciliation tick failure")
             try:
                 await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=self._interval_seconds
+                    self._wake_event.wait(), timeout=self._interval_seconds
                 )
             except TimeoutError:
                 pass

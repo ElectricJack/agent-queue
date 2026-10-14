@@ -101,7 +101,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -3444,7 +3444,7 @@ async def test_failed_delivery_probe_projects_safe_step_detail_in_active_status(
     from src.git.manager import GitError
 
     await completed(world, "unknown")
-    monkeypatch.setattr("src.integration.git_truth._whole_patch", AsyncMock(side_effect=GitError(
+    monkeypatch.setattr("src.integration.git_truth.strict_source_ancestry", AsyncMock(side_effect=GitError(
         "git command stdin exceeds the bounded input limit",
     )))
     train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
@@ -3457,7 +3457,7 @@ async def test_failed_delivery_probe_projects_safe_step_detail_in_active_status(
     [blocker] = project["blockers"]
     assert blocker["code"] == "missing_or_ambiguous_source"
     assert blocker["detail"].endswith(
-        "whole_source_patch: GitError: git command stdin exceeds the bounded input limit"
+        "git command stdin exceeds the bounded input limit"
     )
     assert (await status.task_blockers("unknown"))["blockers"] == [blocker]
 
@@ -4163,7 +4163,8 @@ async def test_uncollected_epic_checkpoint_cannot_enter_root_batch(collected_epi
 
 @pytest.mark.parametrize("notes", ["", '{"graph_sha256": "stale", "heads": []}'],
                          ids=["legacy", "stale"])
-async def test_delivered_epic_with_stale_completion_does_not_block_root(collected_epic, notes):
+@pytest.mark.parametrize("delivery", ["contained", "squashed"])
+async def test_epic_readiness_cannot_override_strict_delivery_truth(collected_epic, notes, delivery):
     from src.database.tables import task_completion_records
     from src.integration.delivery_truth import load_delivery_requests
 
@@ -4174,20 +4175,27 @@ async def test_delivered_epic_with_stale_completion_does_not_block_root(collecte
         await conn.execute(update(task_completion_records).where(
             task_completion_records.c.task_id == "epic",
         ).values(notes=notes))
-    # The retained source reached main under another commit, without its ancestry.
+    # Stale readiness cannot undo ancestry or turn an equivalent patch into it.
     git(case.origin.clone, "checkout", "-q", "-B", "main", "origin/main")
-    git(case.origin.clone, "merge", "--squash", "origin/aq/epic")
-    git(case.origin.clone, "commit", "-qm", "squashed epic delivery")
+    if delivery == "squashed":
+        git(case.origin.clone, "merge", "--squash", "origin/aq/epic")
+        git(case.origin.clone, "commit", "-qm", "squashed epic delivery")
+    else:
+        git(case.origin.clone, "merge", "--no-ff", "-qm", "contained epic", "origin/aq/epic")
     git(case.origin.clone, "push", "-q", "origin", "main")
     observed = await snapshot(case.world)
     request = (await load_delivery_requests(case.db, ["epic"], repository_id="r",
                                            target_ref=MAIN.target_ref, reduced=True))["epic"]
-    evidence = await observed.is_delivered(request, source_base=case.base)
-    assert evidence.satisfied
-    assert evidence.reason in {"whole_source_patch", "full_tree", "merge_noop"}
+    evidence = await observed.strict_is_delivered(request, source_base=case.base)
     blockers = []
     batches = fixture_batches(case.db)
     assert await batches.pending(MAIN, observed, blockers=blockers) is None
+    if delivery == "squashed":
+        assert not evidence.satisfied and evidence.reason == "source_not_contained"
+        assert [item["code"] for item in blockers] == ["epic_completion_pending"]
+        assert (await case.train.visit(MAIN)).state == "blocked"
+        return
+    assert evidence.satisfied and evidence.reason == "ancestor"
     assert blockers == []
     assert (await case.train.visit(MAIN)).state == "idle"
 
@@ -6520,3 +6528,97 @@ async def test_hybrid_epic_hosted_requirement_changes_completion_trust(collected
     exact = await lane.checks.for_candidate(batch, case.base)
     assert isinstance(exact, HybridChecks)
     assert after.check_trust == exact.required.producer_id
+
+
+async def test_root_leaf_close_wakes_idle_lane_without_synthetic_epic(world):
+    from src.event_bus import EventBus
+    from src.integration.service import IntegrationService
+    from src.integration.train_sources import TrainCommandDriver
+
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)))
+    train.event_driven = True
+    assert (await train.tick())["started"]
+    await train.drain()
+    assert train.status()[0]["state"] == "idle"
+    await completed(world, "standalone")
+    # Periodic maintenance does not poll an idle readiness decision.
+    assert (await train.tick())["started"] == []
+    bus = EventBus(validate_events=False)
+    driver = TrainCommandDriver(train, lambda: None)
+    service = IntegrationService(world.db, SimpleNamespace(dispatch_due=AsyncMock()),
+                                 train=driver, bus=bus, interval_seconds=3600)
+    # Subscribe through the production lifecycle, then explicitly join the visit.
+    service.start()
+    try:
+        await bus.emit("task.closed", {"project_id": "p", "task_id": "standalone"})
+        await train.tick()
+        await train.drain()
+        testing = train.status()[0]
+        assert testing["state"] == "testing"
+        members = await BatchStore(world.db).members(testing["batch_id"])
+        assert [member.task_id for member in members] == ["standalone"]
+        async with world.db._engine.connect() as conn:
+            assert (await conn.execute(select(tasks.c.id))).scalars().all() == ["standalone"]
+        assert git(world.origin.clone, "ls-remote", "origin", "refs/heads/main").split()[0] != testing["candidate_sha"]
+        checks.green.add(testing["candidate_sha"])
+        visit = await train.request_visit(MAIN)
+        assert visit.state == "delivered"
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("event", ["task.closed", "git.push", "label.removed",
+                                  "integration.ci_completed", "integration.readiness_changed"])
+async def test_readiness_events_wake_service_without_waiting_for_interval(event):
+    from src.event_bus import EventBus
+    from src.integration.service import IntegrationService
+
+    ticked = asyncio.Queue()
+
+    async def tick(now):
+        ticked.put_nowait(now)
+
+    driver = SimpleNamespace(tick=tick, wake=Mock(), stop=AsyncMock())
+    bus = EventBus(validate_events=False)
+    service = IntegrationService(None, SimpleNamespace(dispatch_due=AsyncMock()), train=driver,
+                                 bus=bus, interval_seconds=3600)
+    service.start()
+    try:
+        await asyncio.wait_for(ticked.get(), 2)
+        await bus.emit(event, {"project_id": "p", "repository_id": "r"})
+        await asyncio.wait_for(ticked.get(), 2)
+        driver.wake.assert_called_once_with("p", "r")
+    finally:
+        await service.stop()
+    await bus.emit(event, {"project_id": "p", "repository_id": "r"})
+    driver.wake.assert_called_once()
+
+
+async def test_readiness_wake_runs_while_maintenance_is_still_waiting():
+    from src.event_bus import EventBus
+    from src.integration.service import IntegrationService
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    ticked = asyncio.Queue()
+
+    async def maintenance(now):
+        entered.set()
+        await release.wait()
+
+    async def tick(now):
+        ticked.put_nowait(now)
+
+    driver = SimpleNamespace(tick=tick, wake=Mock(), stop=AsyncMock())
+    bus = EventBus(validate_events=False)
+    service = IntegrationService(None, SimpleNamespace(dispatch_due=AsyncMock()), train=driver,
+        bus=bus, interval_seconds=3600, maintenance={"blocked observation": maintenance})
+    service.start()
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(ticked.get(), 2)
+        await bus.emit("task.closed", {"project_id": "p"})
+        await asyncio.wait_for(ticked.get(), 2)
+        assert not release.is_set()
+    finally:
+        release.set()
+        await service.stop()

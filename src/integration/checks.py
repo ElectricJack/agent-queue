@@ -449,12 +449,14 @@ class ExactChecks:
         retry_seconds: float = 300,
         missing_push_seconds: float = 300,
         clock: Callable[[], float] = time.time,
+        on_change: Callable[[HeadIdentity], Awaitable[None]] | None = None,
     ) -> None:
         if missing_push_seconds <= 0:
             raise ValueError("missing push grace period must be positive")
         self.db, self.provider, self.clock = db, provider, clock
         self.poll_seconds, self.retry_seconds = poll_seconds, retry_seconds
         self.missing_push_seconds = missing_push_seconds
+        self.on_change = on_change
 
     @property
     def required(self) -> RequiredChecks:
@@ -511,7 +513,7 @@ class ExactChecks:
         now = self.clock()
         previous = (
             {check.name: check for check in (await self.read(head)).checks}
-            if isinstance(self.provider, HostedChecks) else {}
+            if isinstance(self.provider, HostedChecks) or self.on_change is not None else {}
         )
         observed = await self.provider.observe(head, now=now)
         if isinstance(self.provider, HostedChecks):
@@ -526,6 +528,14 @@ class ExactChecks:
             async with self.db._engine.begin() as conn:
                 for check in rows:
                     await conn.execute(_upsert(check))
+            if self.on_change is not None and any(
+                check.name not in previous or
+                (check.conclusion, check.run_id, check.attempt) !=
+                (previous[check.name].conclusion, previous[check.name].run_id,
+                 previous[check.name].attempt)
+                for check in rows
+            ):
+                await self.on_change(head)
         return await self.read(head)
 
     async def refresh_if_due(self, head: HeadIdentity) -> ChecksResult:

@@ -1731,6 +1731,12 @@ _INTEGRATION_SCHEMAS: dict[str, EventSchema] = {
 # New sealed events identify both the lifecycle batch and its distinct repair
 # operation. Keep batch_id optional at validation so durable pre-Task-8b events
 # remain readable during replay/upgrades.
+_INTEGRATION_SCHEMAS["integration.readiness_changed"] = {
+    "required": ["project_id", "repository_id", "reason"],
+    "optional": ["head_sha"],
+    "types": {"project_id": str},
+    "fields": {"project_id": {"type": "string", "description": "project"}},
+}
 _INTEGRATION_SCHEMAS["integration.sealed"] = {
     "required": ["project_id", "operation_id"],
     "optional": ["batch_id"],
@@ -1766,6 +1772,11 @@ _FENCE_EVENT_FIELD: EventFieldSpec = {
 _INTEGRATION_PAYLOAD_FIELDS: dict[
     str, dict[str, tuple[type | tuple[type, ...], EventFieldSpec]]
 ] = {
+    "integration.readiness_changed": {
+        "repository_id": (str, {"type": "string", "description": "repository"}),
+        "head_sha": (str, {"type": "string", "description": "observed exact head"}),
+        "reason": (str, {"type": "string", "description": "readiness invalidation"}),
+    },
     "task.child_added": {
         "parent_id": (str, {"type": "string", "description": "immediate parent task"}),
         "children": (

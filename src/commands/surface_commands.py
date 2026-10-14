@@ -382,6 +382,10 @@ class SurfaceCommandsMixin:
 
         if "description" in fields_changed:
             await self._emit_task_findings_updated(task)
+        else:
+            # Closed work can lose a hold or gain its PR/source metadata without
+            # re-entering the ready frontier. Wake its integration lane too.
+            await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         result = await self._cmd_task_show({"task_id": task_id})
         result["fields_changed"] = fields_changed
         return result

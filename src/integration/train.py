@@ -443,6 +443,7 @@ class _Lane:
     #: The in-flight visit's progress facts (stage, batch); shown before its first result.
     progress: dict | None = None
     timing: _VisitTiming | None = None
+    requested: bool = True
 
 
 @dataclass
@@ -475,6 +476,7 @@ class IntegrationTrain:
         baseline: CandidateBaselineService | None = None,
         visit_timeout_seconds: float = 900.0,
         repository_concurrency: int = REPOSITORY_CONCURRENCY,
+        event_driven: bool = False,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if visit_timeout_seconds <= 0:
@@ -488,6 +490,8 @@ class IntegrationTrain:
         self.baseline = baseline or UnrecordedBaseline()
         self.visit_timeout_seconds = visit_timeout_seconds
         self.repository_concurrency = repository_concurrency
+        self.event_driven = event_driven
+        self.on_wake: Callable[[], None] | None = None
         self._lanes: dict[tuple[str, str, str], _Lane] = {}
         self._pauses: dict[tuple[str, str], _RateLimitPause] = {}
         self._starts = 0
@@ -516,6 +520,11 @@ class IntegrationTrain:
                 if lane.task is not None and not lane.task.done():
                     running.append(label)
                     continue
+                if (self.event_driven and not lane.requested and lane.last is not None
+                        and lane.last.batch_id is None
+                        and lane.last.state in {"idle", "held"}
+                        and (lane.last.detail or {}).get("reason") != "settling"):
+                    continue
                 if (lane.not_before > now
                         or occupied.get(target.repository_id, 0) >= self.repository_concurrency
                         or not self._admit(target.key, now)):
@@ -524,15 +533,18 @@ class IntegrationTrain:
                 occupied[target.repository_id] = occupied.get(target.repository_id, 0) + 1
                 self._starts += 1
                 lane.started_at, lane.start = now, self._starts
+                lane.requested = False
                 lane.task = asyncio.create_task(
                     self._bounded(target, lane), name=f"integration-train:{label}"
                 )
+                lane.task.add_done_callback(lambda _done: self._notify_requested())
                 started.append(label)
             return {"started": started, "running": running, "skipped": [],
                     "deferred": deferred}
 
     async def request_visit(self, target: TrainTarget) -> TrainVisit | None:
         """Request a bounded visit through the same admission as the daemon tick."""
+        self.wake(*target.key)
         scheduled = await self.tick(target=target)
         label = "/".join(target.key)
         lane = self._lanes.get(target.key)
@@ -591,14 +603,19 @@ class IntegrationTrain:
 
     def wake(self, project_id: str, repository_id: str | None = None,
              target_ref: str | None = None) -> int:
-        """Let the matching targets' next tick start a visit; returns how many waited."""
+        """Request readiness reconciliation, retaining events received during a visit."""
         woken = 0
         for key, lane in self._lanes.items():
             if (key[0] == project_id and repository_id in (None, key[1])
-                    and target_ref in (None, key[2]) and lane.not_before):
-                lane.not_before, woken = 0.0, woken + 1
+                    and target_ref in (None, key[2])):
+                woken += bool(lane.not_before)
+                lane.not_before, lane.requested = 0.0, True
                 lane.wait, lane.waits = None, 0
         return woken
+
+    def _notify_requested(self) -> None:
+        if self.on_wake is not None and any(lane.requested for lane in self._lanes.values()):
+            self.on_wake()
 
     def _wait(self, target: TrainTarget, lane: _Lane, visit: TrainVisit) -> TrainVisit:
         """Delay repeated refusals, without using the result as evidence on retry."""
@@ -667,6 +684,15 @@ class IntegrationTrain:
             del self._pauses[target.key[:2]]
         lane.visits += 1
         lane.last = self._wait(target, lane, visit)
+        if lane.requested:
+            # A state change while this visit awaited Git/checks belongs to
+            # another observation, not the backoff of the stale one.
+            lane.not_before, lane.wait, lane.waits = 0.0, None, 0
+        if self.event_driven and (visit.state == "delivered"
+                or (visit.detail or {}).get("epic_completions")):
+            # Parent publication and a newly retained aggregate can make the
+            # next ancestor ready. Reconcile bottom-up, including the root lane.
+            self.wake(target.project_id, target.repository_id)
 
     def _admit(self, key: tuple[str, str, str], now: float) -> bool:
         """Whether the repository's rate-limit pause lets *key* start a visit."""

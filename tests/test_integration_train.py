@@ -1885,3 +1885,31 @@ for module in (
         capture_output=True, text=True, timeout=20,
     )
     assert result.returncode == 0, result.stderr
+
+
+async def test_event_during_visit_survives_stale_refusal_backoff():
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    notified = asyncio.Event()
+
+    async def visit(target):
+        calls.append(target)
+        entered.set()
+        await release.wait()
+        from src.integration.train import TrainVisit
+        return TrainVisit(target, "blocked" if len(calls) == 1 else "idle",
+                          detail={"reason": "held"})
+
+    runtime = train(Targets(ROOT), Batches(), {}, event_driven=True)
+    runtime.visit = visit
+    runtime.on_wake = notified.set
+    await runtime.tick()
+    await entered.wait()
+    runtime.wake("p", "r")
+    release.set()
+    await runtime.drain()
+    await asyncio.wait_for(notified.wait(), 2)
+    assert (await runtime.tick())["started"]
+    await runtime.drain()
+    assert len(calls) == 2
+    assert (await runtime.tick())["started"] == []

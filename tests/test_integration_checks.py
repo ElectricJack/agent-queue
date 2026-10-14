@@ -703,3 +703,22 @@ async def test_pr_checks_are_separate_from_push_cache_and_share_one_listing_per_
     with hosted_observation_scope():
         await push.refresh(head())
     assert listed.count("check_runs") == 2
+
+
+async def test_exact_check_changes_wake_readiness_once_per_conclusion_or_attempt(db):
+    client, trust = github(app=False)
+    changed = AsyncMock()
+    checks = ExactChecks(db, HostedChecks(HostedCIProducer(client, trust)),
+                         clock=Clock(), on_change=changed)
+    assert (await checks.refresh(head())).green
+    changed.assert_awaited_once_with(head())
+    changed.reset_mock()
+    await checks.refresh(head())
+    changed.assert_not_awaited()
+    rerun(client, status="in_progress", conclusion=None)
+    assert not (await checks.refresh(head())).green
+    changed.assert_awaited_once_with(head())
+    changed.reset_mock()
+    rerun(client, status="completed", conclusion="success")
+    assert (await checks.refresh(head())).green
+    changed.assert_awaited_once_with(head())

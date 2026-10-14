@@ -11,7 +11,7 @@ from sqlalchemy import insert, select, update
 
 from src.database.tables import (
     archived_tasks, integration_outbox, integration_parent_episodes, integration_parent_verifications,
-    integration_review_evidence, task_completion_records,
+    integration_review_evidence, task_completion_records, task_dependencies,
     tasks,
 )
 from src.integration.epics import (
@@ -22,10 +22,10 @@ from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from tests.test_integration_git_truth import repository  # noqa: F401 - shared real Git fixture
 
 
-async def completion(db, task_id, *, close_id=None):
+async def completion(db, task_id, *, close_id=None, completed_at=1.0):
     async with db.immediate() as conn:
         await conn.execute(insert(task_completion_records).values(
-            id=close_id or "close-" + task_id, task_id=task_id, outcome="pass", completed_at=1.0,
+            id=close_id or "close-" + task_id, task_id=task_id, outcome="pass", completed_at=completed_at,
         ))
 
 
@@ -51,7 +51,7 @@ async def epic_case(repository, reuse_database):
     await completion(db, "child")
     policy = EpicPolicy(("Tests",), "trusted-ci")
     policy_reader = AsyncMock(return_value=policy)
-    reader = EpicGraphReader(policy_on=policy_reader)
+    reader = EpicGraphReader(db, policy_on=policy_reader)
     reviews = TreeReviews(db)
 
     async def green(repository_id, oid, policy):
@@ -324,7 +324,7 @@ async def test_empty_or_fully_waived_nested_container_keeps_its_own_tree_review(
     assert readiness.ready and readiness.nested[0].ready
 
 
-async def test_source_base_provenance_proves_external_squash_and_is_rechecked(epic_case):
+async def test_patch_equivalent_squash_does_not_complete_an_epic(epic_case):
     case = epic_case
     await case.repo.run("checkout", "-b", "external-epic", case.repo.base)
     await case.repo.commit("unrelated")
@@ -334,14 +334,63 @@ async def test_source_base_provenance_proves_external_squash_and_is_rechecked(ep
     case.reader.source_base_on = AsyncMock(side_effect=lambda conn, row:
                                           case.repo.base if row["id"] == "child" else None)
     readiness, snapshot = await evaluate(case)
-    assert readiness.ready and readiness.sources[0].reason == "whole_source_patch"
-    case.reader.source_base_on.return_value = None
-    case.reader.source_base_on.side_effect = None
+    assert readiness.state == "waiting"
+    assert readiness.sources[0].reason == "source_not_contained"
     complete = AsyncMock()
     async with case.db.immediate() as conn:
         assert not (await case.evaluator.complete_on(conn, readiness, snapshot,
                                                    complete=complete))["success"]
     complete.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mutation", ["hold", "reopened", "generation", "dependency"])
+async def test_transitive_authorization_closure_is_frozen(epic_case, mutation):
+    case = epic_case
+    for task_id in ("upstream", "transitive"):
+        await case.db.create_task(Task(id=task_id, project_id="p", repo_id="r", title=task_id,
+            description="", status=TaskStatus.COMPLETED, branch_name="source"))
+        await completion(case.db, task_id)
+        await case.repo.retain(case.head, task=task_id, completion="close-" + task_id)
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(task_dependencies), [
+            {"task_id": "child", "depends_on_task_id": "upstream", "dep_type": "blocks"},
+            {"task_id": "upstream", "depends_on_task_id": "transitive", "dep_type": "waits-for"},
+        ])
+    readiness, snapshot = await evaluate(case)
+    assert readiness.ready
+    assert readiness.graph.authorization("epic") == ("transitive", "upstream")
+    if mutation == "hold":
+        await case.db.add_task_label("transitive", "hold:operator")
+    elif mutation == "reopened":
+        async with case.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "transitive").values(status="READY"))
+    elif mutation == "generation":
+        await completion(case.db, "transitive", close_id="new-close", completed_at=10.0)
+    else:
+        async with case.db.immediate() as conn:
+            await conn.execute(task_dependencies.delete().where(task_dependencies.c.task_id == "upstream"))
+    complete = AsyncMock()
+    async with case.db.immediate() as conn:
+        result = await case.evaluator.complete_on(conn, readiness, snapshot, complete=complete)
+    assert result["outcome"] == "changed"
+    complete.assert_not_awaited()
+
+
+async def test_completed_child_requires_passing_outcome_or_authorized_code_free(epic_case):
+    case = epic_case
+    async with case.db.immediate() as conn:
+        await conn.execute(update(task_completion_records).values(outcome="fail"))
+    readiness, _ = await evaluate(case)
+    assert not readiness.ready
+    assert ("child", "completion_not_passing") in readiness.blockers
+    async with case.db.immediate() as conn:
+        await conn.execute(update(task_completion_records).values(outcome="pass"))
+    # A provenance record explicitly stating no artifact is authorized code-free
+    # evidence; a missing branch by itself never qualifies.
+    await completion(case.db, "child", close_id="code-free", completed_at=10.0)
+    await case.repo.retain(case.head, task="child", completion="code-free", artifact=False)
+    readiness, _ = await evaluate(case)
+    assert readiness.ready and readiness.sources[0].reason == "git_no_artifact"
 
 
 async def test_collection_rechecks_new_review_rejection_before_submitting(epic_case):
@@ -372,3 +421,49 @@ async def test_readiness_never_overrides_ordinary_completion_owner_rejection(epi
         result = await case.evaluator.complete_on(conn, readiness, snapshot, complete=complete)
     assert result == {"success": False, "code": "hierarchy.open_children"}
     complete.assert_awaited_once()
+
+
+async def test_external_prerequisite_membership_is_an_authorization_input(epic_case):
+    case = epic_case
+    await case.db.create_task(Task(id="upstream", project_id="p", repo_id="r", title="upstream",
+        description="", status=TaskStatus.COMPLETED, branch_name="aq/upstream"))
+    await completion(case.db, "upstream")
+    await case.repo.retain(case.head, task="upstream", completion="close-upstream")
+    await case.repo.run("push", "origin", "HEAD:refs/heads/aq/upstream")
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(task_dependencies).values(task_id="child",
+            depends_on_task_id="upstream", dep_type="blocks"))
+    readiness, snapshot = await evaluate(case)
+    assert readiness.ready
+    await case.db.create_task(Task(id="upstream-new", project_id="p", repo_id="r", title="new",
+        description="", status=TaskStatus.READY, parent_task_id="upstream"))
+    complete = AsyncMock()
+    async with case.db.immediate() as conn:
+        assert (await case.evaluator.complete_on(conn, readiness, snapshot,
+                                                complete=complete))["outcome"] == "changed"
+    current, _ = await evaluate(case)
+    assert current.state == "waiting"
+    assert ("upstream", "prerequisite_waiting") in current.blockers
+
+
+async def test_external_epic_head_is_rechecked_before_completion(epic_case):
+    case = epic_case
+    for task_id, parent in (("upstream", None), ("upstream-child", "upstream")):
+        await case.db.create_task(Task(id=task_id, project_id="p", repo_id="r", title=task_id,
+            description="", status=TaskStatus.COMPLETED, parent_task_id=parent,
+            branch_name="aq/upstream" if parent is None else "source"))
+        await completion(case.db, task_id)
+        await case.repo.retain(case.head, task=task_id, completion="close-" + task_id)
+    await case.repo.run("push", "origin", "HEAD:refs/heads/aq/upstream")
+    async with case.db.immediate() as conn:
+        await conn.execute(insert(task_dependencies).values(task_id="child",
+            depends_on_task_id="upstream", dep_type="blocks"))
+    readiness, snapshot = await evaluate(case)
+    assert readiness.ready and readiness.nested[0].task_id == "upstream"
+    await case.repo.commit("upstream-later")
+    await case.repo.run("push", "origin", "HEAD:refs/heads/aq/upstream")
+    complete = AsyncMock()
+    async with case.db.immediate() as conn:
+        assert (await case.evaluator.complete_on(conn, readiness, snapshot,
+                                                complete=complete))["outcome"] == "changed"
+    complete.assert_not_awaited()

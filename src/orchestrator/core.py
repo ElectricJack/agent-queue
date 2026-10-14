@@ -2108,6 +2108,7 @@ class Orchestrator(
         self.development_subject_runtime = None
         self.integration_service = IntegrationService(
             self.db, self.integration_outbox,
+            bus=self.bus,
             # The service drives the train through integration_train_tick.
             train=TrainCommandDriver(self.integration_train, lambda: self._command_handler)
             if train_active else None,
