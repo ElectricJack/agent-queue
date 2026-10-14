@@ -1505,9 +1505,9 @@ def _retired_playbook_kind(path: str) -> bool:
 def ensure_default_playbooks(data_dir: str) -> dict:
     """Install default playbook files into ``vault/system/playbooks/`` if absent.
 
-    Copies bundled playbook markdown files from ``src/prompts/default_playbooks/``
-    into the vault's system playbook directory.  These playbooks are compiled at
-    first use by the :class:`~src.playbooks.compiler.PlaybookCompiler`.
+    Legacy explicit seeding helper; startup uses ``install_initial_playbooks``.
+    The default directory supplies the inventory, but Markdown is copied from
+    the reviewed bundle so a second packaged source cannot reinstall stale text.
 
     The bundled set includes the default pipeline and assignment policies,
     supervisor failure triage, provider failover, and the provider-usage probe.
@@ -1542,7 +1542,16 @@ def ensure_default_playbooks(data_dir: str) -> dict:
     for filename in sorted(os.listdir(defaults_dir)):
         if not filename.endswith(".md"):
             continue
-        src_path = os.path.join(defaults_dir, filename)
+        src_path = os.path.join(
+            os.path.dirname(__file__),
+            "prompts",
+            "reviewed_playbooks",
+            filename[:-3],
+            "source.md",
+        )
+        if not os.path.isfile(src_path):
+            logger.warning("Default playbook has no reviewed source, skipping: %s", filename)
+            continue
         dst_path = os.path.join(playbooks_dir, filename)
 
         if os.path.exists(dst_path):

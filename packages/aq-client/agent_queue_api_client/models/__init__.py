@@ -1110,6 +1110,9 @@ from .playbook_run_overlay_response_lifecycle import PlaybookRunOverlayResponseL
 from .playbook_run_overlay_response_trigger_event import PlaybookRunOverlayResponseTriggerEvent
 from .playbook_run_path_entry import PlaybookRunPathEntry
 from .playbook_run_summary import PlaybookRunSummary
+from .playbook_source_resync_request import PlaybookSourceResyncRequest
+from .playbook_source_resync_response import PlaybookSourceResyncResponse
+from .playbook_source_resync_response_422 import PlaybookSourceResyncResponse422
 from .playbook_summary import PlaybookSummary
 from .playbook_transition_detail import PlaybookTransitionDetail
 from .playbook_transition_detail_when_type_1 import PlaybookTransitionDetailWhenType1
@@ -3041,6 +3044,9 @@ __all__ = (
     "PlaybookRunOverlayResponseTriggerEvent",
     "PlaybookRunPathEntry",
     "PlaybookRunSummary",
+    "PlaybookSourceResyncRequest",
+    "PlaybookSourceResyncResponse",
+    "PlaybookSourceResyncResponse422",
     "PlaybookSummary",
     "PlaybookTransitionDetail",
     "PlaybookTransitionDetailWhenType1",

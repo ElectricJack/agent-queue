@@ -10330,6 +10330,53 @@
         }
       }
     },
+    "/api/playbook/source-resync": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "Supervisor control: restore system Markdown from the digest-verified source retained with its active reviewed artifact, preserving the old bytes in a backup. Requires the active artifact hash and current source hash; never compiles or activates.",
+        "description": "Supervisor control: restore system Markdown from the digest-verified source retained with its active reviewed artifact, preserving the old bytes in a backup. Requires the active artifact hash and current source hash; never compiles or activates.",
+        "operationId": "playbook_source_resync",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookSourceResyncRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookSourceResyncResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/v2-graph": {
       "post": {
         "tags": [
@@ -53504,6 +53551,87 @@
           "status"
         ],
         "title": "PlaybookRunSummary"
+      },
+      "PlaybookSourceResyncRequest": {
+        "properties": {
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id",
+            "description": ""
+          },
+          "artifact_sha256": {
+            "type": "string",
+            "title": "Artifact Sha256",
+            "description": ""
+          },
+          "expected_source_hash": {
+            "type": "string",
+            "title": "Expected Source Hash",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "artifact_sha256",
+          "expected_source_hash"
+        ],
+        "title": "PlaybookSourceResyncRequest"
+      },
+      "PlaybookSourceResyncResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "playbook_id": {
+            "type": "string",
+            "title": "Playbook Id"
+          },
+          "artifact_sha256": {
+            "type": "string",
+            "title": "Artifact Sha256"
+          },
+          "source_hash": {
+            "type": "string",
+            "title": "Source Hash"
+          },
+          "previous_source_hash": {
+            "type": "string",
+            "title": "Previous Source Hash"
+          },
+          "source_path": {
+            "type": "string",
+            "title": "Source Path"
+          },
+          "backup_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup Path"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "playbook_id",
+          "artifact_sha256",
+          "source_hash",
+          "previous_source_hash",
+          "source_path",
+          "changed"
+        ],
+        "title": "PlaybookSourceResyncResponse"
       },
       "PlaybookSummary": {
         "properties": {
