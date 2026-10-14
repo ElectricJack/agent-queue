@@ -2004,6 +2004,41 @@ _DASHBOARD_STATE_SCHEMAS: dict[str, EventSchema] = {
     }
 }
 
+# Verified waits and continuation events are declared before runtime activation.
+_WAIT_EVENT_NAMES = (
+    "wait.registered", "wait.satisfied", "wait.cancelled", "wait.escalated",
+    "wait.decided", "wait.lifted", "wait.evicted", "wait.loop_detected",
+)
+_CONTINUATION_EVENT_NAMES = (
+    "continuation.suspended", "continuation.queued", "continuation.launched",
+    "continuation.acknowledged", "continuation.held", "continuation.loop_detected",
+)
+_WAIT_SCHEMAS: dict[str, EventSchema] = {
+    name: {
+        "required": ["wait_id", "project_id"],
+        "optional": ["task_id", "owner_kind", "owner_id", "session_id", "claim_epoch",
+                     "generation", "condition_kind", "condition", "source_key",
+                     "source_generation", "source_revision", "evidence_ref", "verified_at",
+                     "claimed", "decision", "decision_reason", "decision_inputs", "outcome",
+                     "result_ref", "escalation_id", "continuation_id", "escalate_at",
+                     "ceiling_at", "reason", "supervisor_session_id", "message_id",
+                     "registrations", "occurred_at"],
+        "types": {"wait_id": str, "project_id": str, "generation": int,
+                  "source_generation": int, "condition": dict, "decision_inputs": dict},
+    }
+    for name in _WAIT_EVENT_NAMES
+}
+_CONTINUATION_SCHEMAS: dict[str, EventSchema] = {
+    name: {
+        "required": ["continuation_id", "project_id", "task_id", "generation"],
+        "optional": ["wait_id", "session_id", "claim_epoch", "state", "reason",
+                     "outcome", "result_ref", "head_sha", "registrations", "occurred_at"],
+        "types": {"continuation_id": str, "project_id": str, "task_id": str,
+                  "generation": int},
+    }
+    for name in _CONTINUATION_EVENT_NAMES
+}
+
 EVENT_SCHEMAS: dict[str, EventSchema] = {
     "conversation.reply_queued.v1": {
         "required": ["conversation_id", "input_id", "reply_message_id", "delivery_dedup_key", "created"],
@@ -2021,6 +2056,8 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     "agent.updated": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.deleted": {"required": ["agent_id"], "optional": ["event_type"]},
     **_TASK_SCHEMAS,
+    **_WAIT_SCHEMAS,
+    **_CONTINUATION_SCHEMAS,
     **_REPORT_SCHEMAS,
     **_ASSIGNMENT_SCHEMAS,
     **_WORK_GRAPH_SCHEMAS,

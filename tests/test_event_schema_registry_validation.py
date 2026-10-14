@@ -1877,6 +1877,23 @@ class TestAllEventTypesHaveSchemas:
             assert f"timer.{interval}" in EVENT_SCHEMAS
 
 
+# Independent canonical payloads for implementation §7.5 (not generated from schemas).
+_CANONICAL_PAYLOADS.update({
+    name: {"wait_id": "wait-1", "project_id": "p-1", "generation": 1}
+    for name in (
+        "wait.registered", "wait.satisfied", "wait.cancelled", "wait.escalated",
+        "wait.decided", "wait.lifted", "wait.evicted", "wait.loop_detected",
+    )
+})
+_CANONICAL_PAYLOADS.update({
+    name: {"continuation_id": "cont-1", "project_id": "p-1", "task_id": "t-1", "generation": 1}
+    for name in (
+        "continuation.suspended", "continuation.queued", "continuation.launched",
+        "continuation.acknowledged", "continuation.held", "continuation.loop_detected",
+    )
+})
+
+
 class TestAllCanonicalPayloadsPassValidation:
     """Every canonical payload for every registered event type passes validation."""
 

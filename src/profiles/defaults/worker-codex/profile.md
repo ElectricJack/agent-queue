@@ -77,6 +77,9 @@ worker template.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
     "artifact_verify",
     "object_checkpoint_read",
     "job_retain",

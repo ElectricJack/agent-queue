@@ -462,6 +462,8 @@ class EscalationCommandsMixin:
         if error:
             return error
         outcome = args.get("outcome")
+        if incident["source_kind"] == "wait":
+            return _error("wait.decide_required", "resolve a wait escalation through wait_decide")
         if not isinstance(outcome, str) or not outcome.strip() or len(outcome) > 4000:
             return _error("invalid_request", "outcome must contain 1 to 4000 characters")
         expected = args.get("expected_revision")
