@@ -608,6 +608,7 @@ class GitManager:
         # same bare cache at once.
         self._pr_diff_cache_locks: dict[str, asyncio.Lock] = {}
         self._repository_operation_locks: dict[str, asyncio.Lock] = {}
+        self._retained_fsync_stores: set[tuple[str, int]] = set()
         self.github_access = github_access
         # The daemon installs ``project -> resolved identity`` here
         # (``src.git.identity.resolve_git_identity`` over its live config), so
@@ -856,12 +857,14 @@ class GitManager:
                     proc.communicate(None if stdin is None else stdin.encode("utf-8")),
                     timeout=effective_timeout,
                 )
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
                 try:
                     proc.kill()
                 except ProcessLookupError:
                     pass
                 await proc.wait()
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 raise GitError(
                     f"git {' '.join(args)} timed out after {effective_timeout}s"
                 )
@@ -1977,6 +1980,7 @@ class GitManager:
         repository_url: str,
         lock_held: bool = False,
         all_heads: bool = False,
+        refetch: bool = False,
     ) -> None:
         """Fetch an explicitly authorized origin without credentials in the checkout."""
         fetch_args = (
@@ -1987,6 +1991,9 @@ class GitManager:
                               "+refs/heads/*:refs/remotes/origin/*",
                               "+refs/aq/provenance/*:refs/aq/provenance/*"]
         )
+        if refetch:
+            fetch_args.insert(1, "--refetch")
+            fetch_args.append("+refs/tags/*:refs/tags/*")
         if self._uses_existing_ssh(repository_url):
             from src.projects.github import GitHubError, parse_github_repository
 
@@ -2029,7 +2036,8 @@ class GitManager:
         async def acquire() -> None:
             token = await self._atoken_for_repository(binding)
             await self._afetch_origin_with_auth_to_url(
-                checkout_path, source_url=source_url, token=token
+                checkout_path, source_url=source_url, token=token,
+                **({"refetch": True} if refetch else {}),
             )
 
         if lock_held:
@@ -2044,6 +2052,7 @@ class GitManager:
         *,
         source_url: str,
         token: str | None,
+        refetch: bool = False,
     ) -> _OriginFetchTransfer:
         """Private file-URL seam for a staged branch/tag fetch and local import.
 
@@ -2064,6 +2073,9 @@ class GitManager:
         destination_git_dir, borrowable_objects = await self._aorigin_fetch_destination(
             checkout_path
         )
+        if refetch:
+            # Damaged tips must not tell the server their objects are held.
+            borrowable_objects = None
         with tempfile.TemporaryDirectory(prefix="aq-app-origin-fetch-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
@@ -2109,18 +2121,21 @@ class GitManager:
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
                  f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force", "--prune",
+                 *(["--refetch"] if refetch else []),
                  str(imported), "+refs/heads/*:refs/remotes/origin/*",
-                 "+refs/aq/provenance/*:refs/aq/provenance/*"],
+                 "+refs/aq/provenance/*:refs/aq/provenance/*",
+                 *(["+refs/tags/*:refs/tags/*"] if refetch else [])],
                 home=home,
                 deadline=deadline,
             )
-            await self._run_isolated_import_git(
-                ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
-                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
-                 str(imported), "+refs/tags/*:refs/tags/*"],
-                home=home,
-                deadline=deadline,
-            )
+            if not refetch:
+                await self._run_isolated_import_git(
+                    ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                     f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
+                     str(imported), "+refs/tags/*:refs/tags/*"],
+                    home=home,
+                    deadline=deadline,
+                )
             imported_refs = await self._run_isolated_import_git(
                 [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
                  "refs/heads", "refs/tags", "refs/aq/provenance"],

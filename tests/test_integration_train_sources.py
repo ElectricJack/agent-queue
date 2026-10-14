@@ -2953,6 +2953,42 @@ async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
     assert (await train.visit(MAIN)).state == "idle"
 
 
+@pytest.mark.parametrize("staged_auth", [False, True])
+async def test_train_recovers_empty_loose_object_and_delivers_sealed_batch(world, staged_auth):
+    source = await completed(world, "empty-object-source")
+    transport = LocalGit(Path(world.origin.url))
+    train, checks, retained = lane(world, transport)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing"
+    checks.green.add(testing.candidate_sha)
+
+    # Replace a reachable source commit in the retained store, after freezing
+    # its batch. Unlink first: local fixture clones may hardlink origin objects.
+    obj = retained.store / ".git" / "objects" / source[:2] / source[2:]
+    obj.unlink(missing_ok=True)
+    obj.parent.mkdir(exist_ok=True)
+    obj.write_bytes(b"")
+    before = git(world.origin.url, "rev-parse", "main")
+    if staged_auth:
+        # Exercise the real credential-isolated import through its file seam;
+        # both source negotiation and destination import must bypass bad tips.
+        async def fetch(store, *, repository_url, all_heads=False, lock_held=False,
+                        refetch=False):
+            await transport._afetch_origin_with_auth_to_url(
+                store, source_url=Path(repository_url).as_uri(), token=None, refetch=refetch)
+        transport.afetch_origin = fetch
+
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    assert delivered.batch_id == testing.batch_id
+    assert git(world.origin.url, "rev-parse", "main") == testing.candidate_sha != before
+    git(world.origin.url, "merge-base", "--is-ancestor", source, testing.candidate_sha)
+    git(retained.store, "fsck", "--full", "--no-dangling")
+    backups = list((retained.store / ".git" / "aq-empty-object-backups").glob(f"*/{source}"))
+    assert len(backups) == 1 and backups[0].stat().st_size == 0
+    assert not (backups[0].parent.parent / "pending").exists()
+
+
 @pytest.mark.parametrize("scenario", ("clean", "revert"))
 async def test_train_member_with_stale_origin_and_inherited_target_needs_no_repair(world, scenario):
     db, origin = world.db, world.origin
