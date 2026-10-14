@@ -65,6 +65,12 @@ rechecks live references, unreleased owners, configured flow targets and attache
 worktrees. Unknown repository identities are skipped. Unique unmerged refs and
 stashes remain intact.
 
+Repository selection is scoped to the project's registrations. A linked repository
+with no configured URL derives its origin from its registered source path, which
+is also included in the sweep. If multiple registrations match a checkout's origin,
+the project's integration repository binding selects among those matches. A binding
+never overrides an origin mismatch; missing or still ambiguous identities are skipped.
+
 Legacy provenance branches use the existing verified copy-before-delete migration
 under those same live-reference guards, with a pre-delete audit entry. Invalid or
 conflicting provenance remains blocked. The operator cleanup script shares the
