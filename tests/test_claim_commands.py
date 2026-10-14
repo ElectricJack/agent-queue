@@ -1278,11 +1278,18 @@ class TestClaim:
         assert await db.get_task_meta("child", "needs_attention") is None
         assert await db.get_task_meta("child", "claim_prepare_backoff_attempts") is None
 
+    @pytest.mark.parametrize("response", ["settled", "deferred"])
     @pytest.mark.parametrize("owner_state", ["missing", "foreign", "unknown_attachment"])
     async def test_canonical_refusals_retain_selected_identity_after_cleanup_and_drain(
-        self, handler, db, tmp_path, owner_state,
+        self, handler, db, tmp_path, owner_state, response,
     ):
-        """Real origin/fence preparation errors on disposable PostgreSQL, no error stub."""
+        """Real origin/fence preparation errors on disposable PostgreSQL, no error stub.
+
+        Preparation is asynchronous: a response may be ``claim_in_progress``
+        before the real refusal settles, so every attempt awaits its own
+        preparation. ``deferred`` holds the real preparation behind a gate so
+        that the first response is always ``claim_in_progress``.
+        """
         ownership, fence = await self._hierarchy_task(db, tmp_path)
         sid, wd = await pool_session(db, tmp_path)
         if owner_state == "missing":
@@ -1299,7 +1306,20 @@ class TestClaim:
                 ).values(handoff_state="attached", session_id="unknown", workspace_id="unknown"))
         for attempt in range(1, 3):
             restarted = CommandHandler(handler.orchestrator, handler.config)
-            result = await scoped(restarted, sid)._cmd_task_claim({"next": True})
+            if response == "deferred":
+                release, prepare = asyncio.Event(), restarted._prepare_and_activate
+
+                async def gated(*args, _release=release, _prepare=prepare, **kwargs):
+                    await _release.wait()
+                    return await _prepare(*args, **kwargs)
+
+                restarted._prepare_and_activate = gated
+                with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
+                    progress = await scoped(restarted, sid)._cmd_task_claim({"next": True})
+                assert progress["result"] == "claim_in_progress", progress
+                assert progress["task_id"] == "child" and progress["claim_epoch"] == attempt
+                release.set()
+            result = await settled_claim(scoped(restarted, sid), {"next": True})
             assert result["result"] == ("prepare_failed" if attempt == 1 else "drain_requested")
             assert "BranchBusy: canonical branch is not reserved by this task" in result["reason"]
             assert result["task"] is None and result["claim_epoch"] is None
