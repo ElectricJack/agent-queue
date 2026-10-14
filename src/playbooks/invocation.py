@@ -8,6 +8,7 @@ or caller-controlled command arguments.
 from __future__ import annotations
 
 import contextvars
+import math
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterator
@@ -33,6 +34,11 @@ class PlaybookInvocation:
     #: restricted to one kind of playbook can check the artifact without
     #: reloading it from the store.
     aq_commands: frozenset[str] = frozenset()
+    #: The run's frozen ``context.observed_at`` / ``context.observation_id``.
+    #: ``None`` for runs persisted before the engine froze them, which keep
+    #: the producers' live clock.
+    observed_at: float | None = None
+    observation_id: str | None = None
     private_values: Any = field(default=None, repr=False, compare=False)
 
 
@@ -52,6 +58,12 @@ def _invocation_context(ctx: StepContext) -> Iterator[PlaybookInvocation]:
     """Bind a snapshot constructed only from the engine's ``StepContext``."""
     from src.playbooks.definition import granted_aq_commands
 
+    context = getattr(getattr(ctx, "scope", None), "context", None) or {}
+    observed_at = context.get("observed_at")
+    if (isinstance(observed_at, bool) or not isinstance(observed_at, (int, float))
+            or not math.isfinite(observed_at)):
+        observed_at = None
+    observation_id = context.get("observation_id")
     invocation = PlaybookInvocation(
         run_id=ctx.run_id,
         dispatch_id=ctx.dispatch_id,
@@ -61,6 +73,8 @@ def _invocation_context(ctx: StepContext) -> Iterator[PlaybookInvocation]:
         attempt=ctx.attempt,
         iteration_path=ctx.iteration_path,
         aq_commands=granted_aq_commands(getattr(ctx, "artifact", None)),
+        observed_at=None if observed_at is None else float(observed_at),
+        observation_id=observation_id if isinstance(observation_id, str) else None,
         private_values=ctx.services.private_values,
     )
     token = _invocation_var.set(invocation)
