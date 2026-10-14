@@ -17816,15 +17816,23 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:bda862320b5b5ce4d655bef2b123dfffb939a736e8ef1255a8d384502ee0c468",
+      "digest": "sha256:abc92e2b1af1ea5ce548ade44595af32596f63c3e687268fe9ad858f7935b535",
       "imports": [
+        "src.api.models.task",
+        "src.commands.task_commands",
+        "src.database.queries.metrics_queries",
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.events",
+        "src.sessions.obsolete",
+        "src.state_machine",
         "src.waits.conditions",
         "src.waits.registry"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Typed condition boundaries; no source or sleep policy is accepted as prose."
+      "summary": "Verified-wait lifecycle vocabulary and typed condition boundaries."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [
