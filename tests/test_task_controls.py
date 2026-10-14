@@ -507,6 +507,51 @@ async def test_status_override_cannot_fake_pause_without_stopping_execution(env,
     assert (await env.db.get_task("t")).status == TaskStatus.READY
 
 
+@pytest.mark.parametrize("name", ["edit_task", "set_task_status"])
+@pytest.mark.parametrize("status", ["BLOCKED", "FAILED"])
+async def test_stop_finishes_retained_workspace_after_status_change(env, tmp_path, name, status):
+    """A status edit must leave a supported way to reclaim an exact stopped slot."""
+    import json
+    from unittest.mock import AsyncMock
+
+    repo, git = make_git_repo(tmp_path, "retained")
+    git("checkout", "--detach")
+    head = git("rev-parse", "HEAD")
+    provider, task = await running_session(env, repo)
+    provider.confirm_stopped = AsyncMock(return_value=True)
+    provider.running.discard("task-session")
+    await env.db.update_session("s", state="stopped", desired_state="stopped")
+    workspace = await env.db.get_workspace("workspace")
+    receipt = {
+        "workspace_id": workspace.id, "generation": workspace.generation,
+        "session_id": "s", "instance_token": "instance", "claim_epoch": task.claim_epoch,
+    }
+    await env.db.set_task_meta("t", "claim_workspace", receipt)
+    claim = repo / ".aq" / "claim.json"
+    claim.parent.mkdir()
+    claim.write_text(json.dumps({
+        "task_id": "t", "session_id": "s", "claim_epoch": task.claim_epoch,
+    }))
+    with (repo / ".git" / "info" / "exclude").open("a") as exclude:
+        exclude.write("\n/.aq/\n")
+    assert git("status", "--porcelain") == ""
+    assert await env.db.count_available_workspaces("p") == 0
+
+    changed = await command(env, name, status=status)
+    assert "error" not in changed, changed
+    assert (await env.db.get_task("t")).status.value == status
+    assert git("rev-parse", "HEAD") == head
+    assert claim.exists()
+    # Baseline reaches this assertion with resources intact, then refuses
+    # solely because status is no longer IN_PROGRESS, before checking evidence.
+    stopped = await command(env, "stop_task")
+    assert "error" not in stopped, stopped
+    assert (await env.db.get_task("t")).status.value == status
+    assert (await env.db.get_task("t")).retry_count == task.retry_count
+    assert await env.db.count_available_workspaces("p") == 1
+    assert git("rev-parse", "HEAD") == head
+
+
 async def test_reserved_parent_pause_marker_cannot_be_forged(env):
     result = await command(env, "task_set", meta={"manual_pause_withholds_children": True})
     assert "reserved" in result.get("error", "")
