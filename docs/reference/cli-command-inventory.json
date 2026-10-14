@@ -18404,6 +18404,7 @@
           "--reason"
         ],
         "optional": [
+          "--operator-release",
           "--expected-hold-at",
           "--json",
           "--brief",

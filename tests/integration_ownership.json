@@ -8689,6 +8689,15 @@
     },
     "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
       "reason": "Read-only integration owner and managed job pin probe fences missing-slot recreation. Attached/pending ownership prevents removal of its Git registration; no lifecycle, storage or ref write."
+    },
+    "src/commands/supervisor_authority.py::operator_or_global_supervisor": {
+      "reason": "Authority gate for audited recovery-hold release, including train delegates; checks local operator or live global supervisor identity without granting publication authority."
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._recovery_hold_deadline": {
+      "reason": "Identifies active train repair ownership from immutable filing input and durable batch/stage rows to bound silent supervisor holds; deadline escalates without authorizing execution or publication."
+    },
+    "src/database/queries/task_recovery_queries.py::import from src.database.tables import agent_questions, agents, integration_branch_owners, integration_batches, integration_owner_recoveries, integration_repair_operations, integration_repair_stages, messages, projects, project_constraints, sessions, task_branch_origins, task_comments, task_context, task_metadata, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "reason": "Imports integration ownership and repair tables for pool workspace reconciliation or recovery-hold deadline guards; all shared import lines remain charged to integration ownership."
     }
   },
   "exclusions": {
@@ -13589,13 +13598,13 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin.decide_task_recovery::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 937,
+      "line": 1132,
       "owner": "TaskRecoveryQueryMixin.decide_task_recovery",
       "call": "delete",
-      "owner_fingerprint": "99405443a989482f4c3152912b24d02a92cb71c7e6727046d24e932a8809d9ba",
+      "owner_fingerprint": "b85ba098e1d860d83cf574aeed1fe288355b3bf3fcd9331a3b4e9c16bfe10515",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary task recovery cleanup of needs_attention before a guarded retry. Current FAILED incidents may now be held without an attempt; retry guards, storage payloads and transaction boundaries remain intact, with no ref replay authority."
+      "reason": "Clears only needs_attention metadata after a guarded retry transitions the task to READY and consumes recovery budget. Hold release remains fenced by incident, timestamp and principal; no Git ref replay or duplicate delivery lifecycle."
     },
     "src/database/queries/triage_queries.py::_write_seen::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
       "line": 77,

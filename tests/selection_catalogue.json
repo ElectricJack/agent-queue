@@ -16064,12 +16064,14 @@
         "supervisor"
       ],
       "default_arm": true,
-      "digest": "sha256:2d93684d683458dfb45ab0d4224ac91bebfd928d9991f9cdd5aad275f1fb7bdb",
+      "digest": "sha256:b83969eb8600d65233c95cfd0a1760c87ad6643fe6bd08bed5fbd60e02475c84",
       "imports": [
         "src.api.auth",
         "src.commands.handler",
+        "src.commands.principal",
         "src.config",
         "src.database",
+        "src.database.queries.task_recovery_queries",
         "src.database.tables",
         "src.escalations",
         "src.git.manager",

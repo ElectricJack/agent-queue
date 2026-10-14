@@ -54,3 +54,22 @@ async def operator_or_supervisor(
 async def integration_operator(db, project_id: str | None) -> tuple[str | None, str | None]:
     """:func:`operator_or_supervisor` for an integration control."""
     return await operator_or_supervisor(db, project_id, subject="integration control")
+
+
+async def operator_or_global_supervisor(db) -> tuple[str | None, str | None]:
+    """A recovery hold release needs operator authority, not project elevation."""
+    from src.commands.principal import matches_session_instance
+
+    principal = current_principal() or TRUSTED_LOCAL
+    if principal.kind is PrincipalKind.LOCAL:
+        return "human:local-operator", None
+    if (principal.kind is not PrincipalKind.SESSION or not principal.elevated
+            or principal.project_id is not None):
+        return None, "a local operator or live global supervisor is required"
+    row = await db.get_session(principal.session_id) if principal.session_id else None
+    if (row is None or row.project_id is not None or row.profile_id != "supervisor"
+            or row.lifecycle != "named" or row.state not in LIVE_SESSION_STATES
+            or row.desired_state != "running"
+            or not matches_session_instance(principal, row.instance_token)):
+        return None, "a live global supervisor with matching session identity is required"
+    return f"supervisor session:{row.id}", None

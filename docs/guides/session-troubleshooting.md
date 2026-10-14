@@ -576,6 +576,20 @@ status edit, branch reset, new incident or gate bypass. If an attachment cannot
 be proved released, resolve it through the supported ownership recovery flow
 before retrying, retaining its checkout and commits.
 
+If a reviewed hold cannot pass automatic failure/end-reason checks, the local
+operator or live global supervisor can use `aq task recover --operator-release
+--decision retry --task-id TASK --incident-id INCIDENT --expected-hold-at DECIDED_AT
+--reason WHY`. It retains stop proof, routing, gates, ownership and all remaining
+budgets. For integration-owned repairs, use `--decision release` to lift only
+the hold, then continue through the integration operation's controls. This form
+also clears an exact stale hold on a READY task without resetting counters or
+changing its state. Project supervisors cannot authorize operator release.
+
+Supervisor holds on train repairs and `slot_reset_failed` escalate after
+15 minutes to project and global supervisors. The execution hold stays effective;
+the deadline prevents a silent wait, not an unsafe retry. Explicit human holds
+do not expire. Never delete recovery metadata by hand.
+
 The next normal preparation reserves the repair and withholds E3. Let the
 ordinary router and worker publish and close that repair. AQ verifies its exact
 head and ancestry, then retries E3 with its original review feedback and filing

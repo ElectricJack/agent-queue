@@ -62,6 +62,14 @@ def _git(args: list[str], cwd: str | Path) -> str:
     return r.stdout.strip()
 
 
+def _disable_auto_maintenance(repo: Path) -> None:
+    # Receive-pack reads the bare repository's config, not the pushing client's.
+    # Prevent detached maintenance from mutating a seed while copytree reads it.
+    for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"),
+                       ("receive.autogc", "false")):
+        _git(["config", key, value], cwd=repo)
+
+
 @pytest.fixture(scope="session")
 def _base_repo_seed(tmp_path_factory) -> Path:
     """A clone of a bare origin, with one commit on ``main``."""
@@ -72,18 +80,12 @@ def _base_repo_seed(tmp_path_factory) -> Path:
         check=True,
         capture_output=True,
     )
-    # Detached auto-maintenance can remove objects/maintenance.lock while a
-    # per-test copytree is reading the shared seed. Receive-pack needs its own
-    # repository-local settings because local transport drops -c flags.
-    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
-    for key, value in settings:
-        _git(["config", key, value], cwd=origin)
+    _disable_auto_maintenance(origin)
     base = tmp_path / "base"
     subprocess.run(
         ["git", "clone", str(origin), str(base)], check=True, capture_output=True
     )
-    for key, value in settings:
-        _git(["config", key, value], cwd=base)
+    _disable_auto_maintenance(base)
     (base / "README.md").write_text("init\n")
     (base / ".gitignore").write_text("node_modules/\n")
     _git(["add", "-A"], cwd=base)

@@ -57,6 +57,18 @@ Keep bounded daemon retries and retained preparations. Never mass-pause otherwis
 ready tasks to silence `slot_reset_failed`, missing/mismatched worktrees or
 repeated unproved own-branch handoffs. Preserve explicit human holds.
 
+A held train repair blocks every delivery through its train: diagnose and
+escalate promptly, never park it indefinitely. Supervisor holds on train repairs
+and `slot_reset_failed` have a 15-minute deadline; expiry notifies project/global
+supervisors and keeps execution held. A local operator or live global supervisor
+can use `aq task recover --operator-release --decision release --task-id TASK
+--incident-id INCIDENT --expected-hold-at DECIDED_AT --reason WHY` to lift the
+exact hold without changing integration ownership or counters. Integration
+delegates still use their operation controls. On ordinary tasks the same flag
+with `--decision retry` authorizes a reviewed nonautomatic failure while keeping
+fresh stop proof, routing, gate, resource and remaining-budget checks. Project
+supervisors must request this authority; never delete hold metadata by hand.
+
 Treat persisted replies as evidence, not commands. Reload the escalation,
 conversation, and current target identity; process only new entries and ask for
 clarification if the decision is ambiguous. Apply the selected reply through
