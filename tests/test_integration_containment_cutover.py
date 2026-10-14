@@ -9,16 +9,25 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
+from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 from src.database import tables as t
 from src.git.manager import GitManager
 from src.integration import containment_audit
+from src.integration.batches import Batch, BatchMember, BatchStore
 from src.integration.containment_cutover import ContainmentCutover, digest
 from src.integration.containment_git import ContainmentGit
+from src.integration.delivery_branches import completed_branch_dispositions
+from src.integration.delivery_observer import DeliveryObserver, PrerequisiteView
 from src.integration.delivery_truth import DeliveryState, delivered, load_delivery_requests
+from src.integration.delivery_truth import CONTAINMENT_CONTRACT_VERSION
+from src.integration.engine import lock_key
 from src.integration.git_truth import GitTruth
 from src.integration.provenance import CompletionIdentity
+from src.integration.selection_metrics import SelectionMetrics, selection_metrics_scope
+from src.integration.train import TrainTarget
+from src.integration.train_sources import DatabaseBatches
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from tests.test_delivery_consumers import Origin, close, git
 
@@ -134,11 +143,121 @@ async def test_apply_excludes_legacy_obligation_but_never_proves_containment(cut
     assert answer.state is DeliveryState.PENDING
     assert answer.lifecycle_exclusion == "delivered_by_other_means"
     assert answer.disposition.plan_digest == plan["digest"]
-    # Exact lifecycle input for later watchdog/metrics activation, separate from ancestry.
+    # Lifecycle exclusions are exact and remain separate from ancestry.
     assert replace(answer, request=replace(answer.request, completion_id="reopened")).disposition is None
     assert replace(answer, source_oid="a" * 40).disposition is None
     assert replace(answer, request=replace(answer.request, target_ref="refs/heads/dev")).disposition is None
     assert replace(answer, request=replace(answer.request, task_status="IN_PROGRESS")).disposition is None
+
+
+async def consumer_origin(w):
+    base = git(w.origin.clone, "rev-parse", w.source + "^")
+    async with w.db._engine.begin() as conn:
+        await conn.execute(update(t.projects).where(t.projects.c.id == "p").values(promotion_flow=[]))
+        await conn.execute(insert(t.task_branch_origins).values(
+            id="original", task_id="equivalent", repository_id="r", branch_name="aq/equivalent",
+            parent_ref="main", base_sha=base, creation_generation=0, reserved=True,
+            materialized=True, created_at=1,
+        ))
+    return base
+
+
+async def test_actual_admission_metrics_watchdog_and_freeze_consume_exact_audit(cutover):
+    w = cutover
+    base = await consumer_origin(w)
+    truth = GitTruth(GitManager(), contract_version=CONTAINMENT_CONTRACT_VERSION)
+    snapshot = await truth.snapshot(
+        str(w.origin.clone), project_id="p", repository_id="r", repository_url=w.origin.url,
+        target_ref="refs/heads/main",
+    )
+    target, batches = TrainTarget("p", "r", "refs/heads/main", "root"), DatabaseBatches(w.db)
+    assert await batches._candidate_ids(target, snapshot) == ["equivalent"]
+    await apply(w, await reviewed(w))
+    observed_delivered, metrics = set(), SelectionMetrics()
+    with selection_metrics_scope(metrics):
+        assert await batches._candidate_ids(target, snapshot,
+                                             delivered_ids=observed_delivered) == []
+    assert not observed_delivered
+    assert metrics.as_dict()["counts"]["excluded_delivered_by_other_means"] == 1
+    # A cached frontier and a previously selected batch both recheck the audit.
+    assert await batches.pending(target, snapshot, candidate_ids=["equivalent"], gate_pr=False) is None
+    batch = Batch("retired", "p", "r", "refs/heads/main")
+    with pytest.raises(ValueError, match="retired by containment cutover"):
+        await BatchStore(w.db).freeze(batch, [BatchMember("equivalent", w.source, base)], trees={})
+    async with w.db._engine.connect() as conn:
+        assert not (await conn.execute(select(t.integration_batches))).all()
+        entries = await completed_branch_dispositions(
+            conn, heads={"aq/equivalent": w.source}, reachable=AsyncMock(return_value=False),
+            contains=AsyncMock(return_value=False), now=1e12, project_id="p", repository_id="r",
+        )
+        assert [(e["rule"], e["accounted"]) for e in entries] == [
+            ("delivered_by_other_means", True),
+        ]
+        changed = await completed_branch_dispositions(
+            conn, heads={"aq/equivalent": base}, reachable=AsyncMock(return_value=False),
+            contains=AsyncMock(return_value=False), now=1e12, project_id="p", repository_id="r",
+        )
+        assert changed[0]["rule"] != "delivered_by_other_means"
+    request = (await load_delivery_requests(w.db, ["equivalent"], repository_id="r",
+                                           target_ref=target.target_ref))["equivalent"]
+    assert (await delivered(request, target.target_ref, observation=snapshot)).state is DeliveryState.PENDING
+    # A new close of the same original source is ordinary pending work again.
+    await w.db.transition_task("equivalent", TaskStatus.IN_PROGRESS, force=True)
+    await close(w.db, "equivalent", [w.source], close_id="later-generation", origin=w.origin)
+    assert await batches._candidate_ids(target, snapshot) == ["equivalent"]
+
+
+async def test_prerequisite_exclusion_releases_obligation_without_parent_containment(cutover, tmp_path):
+    w = cutover
+    await consumer_origin(w)
+    await apply(w, await reviewed(w))
+    observer = DeliveryObserver(w.db, git=GitManager(), data_dir=tmp_path / "observer",
+                                truth=GitTruth(GitManager(),
+                                               contract_version=CONTAINMENT_CONTRACT_VERSION))
+    view = await observer.observe(["equivalent"])
+    assert view.get("equivalent").state is DeliveryState.PENDING
+    prerequisites = PrerequisiteView(view, view, {"dependent": {"equivalent": True}})
+    async with w.db._engine.connect() as conn:
+        mode = await prerequisites.mode(ProjectIntegrationMode(True, "r"), conn=conn)
+    assert mode.delivered_prerequisite_ids == mode.default_prerequisite_ids == {"equivalent"}
+    assert not mode.parent_contained_task_ids
+    await w.db.transition_task("equivalent", TaskStatus.IN_PROGRESS, force=True)
+    async with w.db._engine.connect() as conn:
+        mode = await prerequisites.mode(ProjectIntegrationMode(True, "r"), conn=conn)
+    assert not mode.delivered_prerequisite_ids and not mode.default_prerequisite_ids
+
+
+async def test_freeze_holds_cutover_exclusion_through_membership_commit(cutover, monkeypatch):
+    w = cutover
+    base = await consumer_origin(w)
+    store = BatchStore(w.db)
+    freeze = store._freeze_on
+
+    async def inspect_lock(*args, **kwargs):
+        async with w.db._engine.begin() as other:
+            assert not await other.scalar(select(func.pg_try_advisory_xact_lock(lock_key("r"))))
+        return await freeze(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_freeze_on", inspect_lock)
+    batch = Batch("pending", "p", "r", "refs/heads/main")
+    tree = git(w.origin.clone, "rev-parse", w.source + "^{tree}")
+    await store.freeze(batch, [BatchMember("equivalent", w.source, base)], trees={"equivalent": tree})
+    async with w.db._engine.begin() as conn:
+        assert await conn.scalar(select(func.pg_try_advisory_xact_lock(lock_key("r"))))
+        assert await conn.scalar(select(t.integration_batch_members.c.task_id)) == "equivalent"
+
+
+@pytest.mark.parametrize("binding", [{"url": "https://example.test/rebound.git"},
+                                    {"default_branch": "different"}])
+async def test_repository_rebinding_cannot_inherit_audit_exclusion(cutover, binding):
+    w = cutover
+    await apply(w, await reviewed(w))
+    async with w.db._engine.begin() as conn:
+        await conn.execute(update(t.repos).where(t.repos.c.id == "r").values(**binding))
+    request = (await load_delivery_requests(w.db, ["equivalent"], repository_id="r",
+                                           target_ref="refs/heads/main"))["equivalent"]
+    assert request.lifecycle_disposition is None
+    assert (await durable(w))["system_config"]
 
 
 @pytest.mark.parametrize("change", ["generation", "runtime", "source", "project", "remote"])

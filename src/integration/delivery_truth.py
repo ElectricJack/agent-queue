@@ -187,6 +187,14 @@ class DeliveryRequest:
     disposition: DeliveryDisposition | None = None
 
     @property
+    def lifecycle_disposition(self) -> DeliveryDisposition | None:
+        """Current audit-bound obligation retirement, never a source/ancestry proof."""
+        value = self.disposition
+        return value if value is not None and self.task_status == "COMPLETED" and (
+            value.matches(self) and self.reported_source in {None, value.source_oid}
+        ) else None
+
+    @property
     def settles(self):
         """Whether the recorded settlement covers this target and generation."""
         return bool(
@@ -221,6 +229,11 @@ class DeliveryEvidence:
     reason: str
 
     @property
+    def lifecycle_exclusion(self) -> str | None:
+        value = self.request.lifecycle_disposition
+        return value.kind if value is not None and self.source_oid == value.source_oid else None
+
+    @property
     def satisfied(self):
         return self.state in {
             DeliveryState.CONTAINED, DeliveryState.NO_CHANGE,
@@ -253,9 +266,9 @@ class DeliveryAnswer:
 
     @property
     def disposition(self) -> DeliveryDisposition | None:
-        value = self.request.disposition
-        return value if value is not None and value.matches(self.request) and (
-            self.request.task_status == "COMPLETED" and self.source_oid == value.source_oid
+        value = self.request.lifecycle_disposition
+        return value if value is not None and (
+            self.source_oid == value.source_oid
         ) else None
 
     @property
@@ -468,7 +481,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
     from src.database.queries.task_queries import (
         DEVELOPMENT_COMPLETION_ID_KEY, INTEGRATION_REWORK_AT_KEY,
     )
-    from src.database.tables import archived_tasks, task_completion_records, task_metadata, tasks
+    from src.database.tables import archived_tasks, repos, task_completion_records, task_metadata, tasks
     from src.integration.containment_audit import load_audits
     from src.integration.publishable_artifact import legacy_artifact
 
@@ -518,7 +531,14 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
             (row["project_id"], repository_id) for row in [*live, *archived]
             if row["repo_id"] in {None, repository_id}
         })
+        repository = (await reader.execute(select(repos).where(
+            repos.c.id == repository_id,
+        ))).mappings().one_or_none() if cutovers else None
         for audit in cutovers:
+            bound = audit["manifest"]["facts"]["repository"]
+            if repository is None or any(repository[field] != bound[field]
+                                         for field in ("project_id", "url", "default_branch")):
+                continue
             for record in audit["dispositions"]:
                 if isinstance(record, dict) and record.get("task_id") in task_ids:
                     dispositions[record["task_id"]] = record

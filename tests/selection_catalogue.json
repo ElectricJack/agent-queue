@@ -8068,7 +8068,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:0d212eb026df2eb7acea7e664a4a4d9670a206401ff7ed8f1e73935f3a36592b",
+      "digest": "sha256:bd0db945a482118465e4893855b4d7fab5909a039f865856f641be4ea1b24833",
       "imports": [
         "src.cli.app",
         "src.commands.integration_commands",
@@ -8076,15 +8076,23 @@
         "src.commands.system_commands",
         "src.config",
         "src.database",
+        "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration",
+        "src.integration.batches",
         "src.integration.containment_audit",
         "src.integration.containment_cutover",
         "src.integration.containment_git",
+        "src.integration.delivery_branches",
+        "src.integration.delivery_observer",
         "src.integration.delivery_truth",
+        "src.integration.engine",
         "src.integration.git_truth",
         "src.integration.provenance",
+        "src.integration.selection_metrics",
+        "src.integration.train",
+        "src.integration.train_sources",
         "src.models"
       ],
       "markers": [

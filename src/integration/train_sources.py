@@ -323,7 +323,8 @@ async def project_delivered(db, ids, *, project_id, repository_id, target_ref, s
     delivered = set()
     for row in legacy:
         request = requests.get(row["task_id"])
-        if request is None or request.task_status != "COMPLETED":
+        if (request is None or request.task_status != "COMPLETED"
+            or request.lifecycle_disposition is not None):
             continue
         if (request.completed_at is not None and request.completed_at <= row["created_at"]
                 or request.completion_id == request.legacy_generation
@@ -1020,6 +1021,13 @@ class DatabaseBatches:
                    (routed[task_id].repository_id, routed[task_id].target_ref) ==
                    (target.repository_id, target.target_ref)]
         selection_count("routed_ids", len(ids))
+        requests = await load_delivery_requests(
+            self.db, ids, repository_id=target.repository_id, target_ref=target.target_ref,
+            reduced=True,
+        )
+        excluded = {tid for tid, request in requests.items() if request.lifecycle_disposition}
+        selection_count("excluded_delivered_by_other_means", len(excluded))
+        ids = [tid for tid in ids if tid not in excluded]
         async with self.db._engine.connect() as conn:
             superseded = await superseded_source_repairs_on(
                 self.db, conn, ids, repository_id=target.repository_id,
@@ -1141,6 +1149,7 @@ class DatabaseBatches:
             reduced=True,
         )
         members: dict[str, BatchMember] = {}
+        retired = {tid for tid, request in requests.items() if request.lifecycle_disposition}
         refused_sources = {}
         paired_sources = {}
         delivered: set[str] = set()
@@ -1149,6 +1158,10 @@ class DatabaseBatches:
         stacks = StackedBranches(self.db)
         for task_id in ids:
             request, base = requests.get(task_id), bases.get(task_id)
+            if request is not None and request.lifecycle_disposition is not None:
+                # A reused candidate window must recheck this decision too.
+                selection_count("excluded_delivered_by_other_means")
+                continue
             if task_id in repairs:
                 continue
             if request is None or not is_valid_git_oid(base or ""):
@@ -1259,6 +1272,9 @@ class DatabaseBatches:
             ).where(task_branch_origins.c.task_id.in_(absent),
                     task_branch_origins.c.retired_at.is_(None)))).all())
         for task_id, request in outside.items():
+            if request.lifecycle_disposition:
+                retired.add(task_id)
+                continue
             with selection_stage("prerequisite_delivery", items=1):
                 if request.task_status == "COMPLETED" and (await snapshot.is_delivered(
                         request, source_base=outside_bases.get(task_id))).satisfied:
@@ -1271,11 +1287,11 @@ class DatabaseBatches:
             needs, remaining = set(), list(direct_edges.get(task_id, ()))
             while remaining:
                 need = remaining.pop()
-                if need not in needs and need not in delivered:
+                if need not in needs and need not in delivered and need not in retired:
                     needs.add(need)
                     remaining.extend(direct_edges.get(need, ()))
             admission_edges[task_id] = needs
-        blocked = (set(ids) | required) - members.keys() - delivered
+        blocked = (set(ids) | required) - members.keys() - delivered - retired
         changed = True
         while changed:
             changed = False
@@ -1508,6 +1524,8 @@ class DatabaseBatches:
             self.db, ids, repository_id=batch.repository_id, target_ref=batch.target_ref,
             reduced=True,
         )
+        if any(request.lifecycle_disposition for request in requests.values()):
+            return False
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)

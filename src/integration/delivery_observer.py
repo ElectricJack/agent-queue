@@ -369,10 +369,15 @@ class PrerequisiteView:
         if conn is not None:
             siblings = await self.siblings.verified_on(conn, self.all_ids)
             default = await self.default.verified_on(conn, self.all_ids)
-        default_ids = frozenset(tid for tid, p in default.items() if p.satisfied)
+        default_ids = frozenset(tid for tid, p in default.items()
+                                if p.satisfied and not p.lifecycle_exclusion)
+        retired_ids = frozenset(tid for tid, p in default.items() if p.lifecycle_exclusion)
         return replace(mode,
-            delivered_prerequisite_ids=frozenset(tid for tid, p in siblings.items() if p.satisfied),
-            default_prerequisite_ids=default_ids,
+            # These sets release obligation gates; parent containment below still
+            # requires actual proof and cannot borrow a retired obligation.
+            delivered_prerequisite_ids=frozenset(tid for tid, p in siblings.items() if p.satisfied)
+                                       | retired_ids,
+            default_prerequisite_ids=default_ids | retired_ids,
             parent_contained_task_ids=frozenset(
                 dependent for dependent, sources in self.parent_containment.items()
                 if sources and all(contained and tid in default_ids

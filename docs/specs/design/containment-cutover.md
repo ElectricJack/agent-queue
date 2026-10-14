@@ -8,7 +8,7 @@ manifest. `--choices FILE` supplies per-completion choices; a new preview binds
 them into the digest. Apply requires `--plan FILE --digest SHA256 --apply`.
 Only the local operator can preview or apply. The command never activates the
 fast flow, resumes writers, changes delivery targets, or changes deployment.
-Stage 1 prepares history; consumer/publisher activation is a later rollout gate.
+Stage 1 prepares history; strict publisher activation is a later rollout gate.
 
 The manifest binds configuration generation, project/repository settings,
 runtime integration/deploy settings, claims, preparations, branch owners,
@@ -45,12 +45,17 @@ closed. There is no update/delete or progress/replay-journal port; conflicting
 content or later generations are refused. The ordinary YAML config editor never
 reads or writes this table; metrics and provider probes have disjoint keyspaces.
 The audit preserves the full manifest, prior configuration, operator, plan digest
-and dispositions across archive/reopen. Lifecycle consumers call
-`DeliveryAnswer.lifecycle_exclusion` for an exact project/repository/generation/target/source
-disposition. Later consumer activation uses it for telemetry exclusions and to
-withhold watchdog/admission redrive; this preparation does not activate consumers.
-`delivered()` continues to return the actual ancestry result. These are separate
-contracts; retirement cannot manufacture containment.
+and dispositions across archive/reopen. Existing admission, prerequisite gates,
+branch watchdog and unadmitted-parent checks honor the exact approved
+project/repository/generation/target/source exclusion. Selection metrics count
+`excluded_delivered_by_other_means` separately from delivered work. Cached
+candidate windows and batch freezing recheck the audit; a reopened task, later
+completion or rebound repository cannot inherit it. Prerequisite gates release
+the retired obligation without asserting containment in a dependent parent.
+`DeliveryAnswer.lifecycle_exclusion` and the corresponding evidence/request
+properties expose that decision, while `delivered()` continues to return the
+actual ancestry result. Retirement cannot manufacture containment, and no
+project mode, publisher or strict-contract rollout switch is changed.
 
 Rollback keeps this ledger and every source/candidate ref. Pause writes, retain
 new heads, and restore only a compatible configuration/publisher that understands

@@ -85,7 +85,9 @@ needed, inserts one bounded audit into the reserved
 the project's integration configuration generation. An identical applied plan
 is repeatable while its database facts remain current. The audit survives archive
 and restart; later completion generations cannot inherit the exclusion. This
-command prepares history and leaves publisher/consumer activation to later gates.
+command prepares history and leaves strict publisher activation to later gates.
+Existing admission and watchdog paths honor only the exact approved exclusions;
+selection metrics count them separately from delivered work.
 
 ## Failure modes and diagnostics
 
