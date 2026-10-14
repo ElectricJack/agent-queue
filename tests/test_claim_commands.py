@@ -216,6 +216,15 @@ async def pool_session(db, tmp_path, sid="s1", agent_id="agent-1"):
     return sid, work_dir
 
 
+async def bind_successor_to_slot(db, tmp_path, slot_dir, sid="s2", agent_id="agent-2"):
+    """What the pool does to a free slot: a new worker session owns its path."""
+    successor, _ = await pool_session(db, tmp_path, sid=sid, agent_id=agent_id)
+    await db.update_workspace(f"ws-{agent_id}", locked_by_agent_id=None)
+    await db.update_session(successor, work_dir=str(slot_dir))
+    await db.update_workspace("ws-agent-1", locked_by_agent_id=agent_id)
+    return successor
+
+
 async def expire_claim_refusal(db, sid, task_id=None):
     session = await db.get_session(sid)
     await db.update_session(
@@ -2035,6 +2044,272 @@ class TestClaim:
         assert read_claim_file(wd) is not None
         assert await retire_stopped_slot_claim(db, str(wd)) is (proof == "ended")
         assert (read_claim_file(wd) is None) is (proof == "ended")
+
+    async def test_native_pause_retires_its_marker_before_the_slot_is_reused(
+        self, handler, db, tmp_path,
+    ):
+        """crisp-quest-80: Pause retires its own exact marker while the slot is
+        still locked to the paused task, so the next native claim in that slot
+        prepares instead of meeting a foreign claim."""
+        from src.claim_file import read_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        assert read_claim_file(wd)["session_id"] == sid
+        protected = wd / "protected-source.txt"
+        protected.write_text("paused source\n")
+        provider = MagicMock(stop=AsyncMock())
+        orch = handler.orchestrator
+        orch.session_providers.create = MagicMock(return_value=provider)
+        orch.git.avalidate_checkout = AsyncMock(return_value=False)  # nothing for Git to keep
+        at_unlock = []
+        finish = db.finish_task_pause
+
+        async def finish_task_pause(task_id, snapshot):
+            slot = await db.get_workspace("ws-agent-1")
+            at_unlock.append((read_claim_file(wd), slot.locked_by_task_id))
+            await finish(task_id, snapshot)
+
+        db.finish_task_pause = finish_task_pause
+        handler._current_scope = None  # the fixture's operator invokes supported Pause
+
+        result = await handler._cmd_pause_task({"task_id": "t1"})
+
+        assert result == {"task_id": "t1", "status": "PAUSED"}
+        assert provider.stop.call_args.args[0].instance_token == "t"
+        assert at_unlock == [(None, "t1")]  # retired before capacity was announced
+        slot = await db.get_workspace("ws-agent-1")
+        assert (slot.locked_by_task_id, slot.locked_by_agent_id, slot.enabled) == (
+            None, None, True)
+        assert protected.read_text() == "paused source\n"
+
+        successor = await bind_successor_to_slot(db, tmp_path, wd)
+        await mktask(db, "new", profile_id="worker")
+        manager = orch._worktree_slots.return_value
+        manager.reset_slot_for_task.reset_mock()
+
+        claimed = await scoped(handler, successor)._cmd_task_claim({"next": True})
+
+        assert claimed["result"] == "claimed", claimed
+        assert claimed["task"]["id"] == "new"
+        manager.reset_slot_for_task.assert_awaited_once()
+        marker = read_claim_file(wd)
+        assert (marker["task_id"], marker["session_id"]) == ("new", successor)
+        assert protected.read_text() == "paused source\n"
+        assert (await db.get_task("t1")).status == TaskStatus.PAUSED
+        assert not await db.get_task_meta("new", "prepare_failure")
+        assert (await db.get_workspace("ws-agent-1")).enabled
+
+    async def test_pause_without_a_checkpoint_keeps_the_marker_and_hands_off_without_a_hold(
+        self, handler, db, tmp_path,
+    ):
+        """An unpreserved pause keeps its evidence; the successor that meets it
+        still prepares in another free slot (sound-summit-51) with no HOLD."""
+        from src.claim_file import read_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        marker = read_claim_file(wd)
+        orch = handler.orchestrator
+        orch.session_providers.create = MagicMock(return_value=MagicMock(stop=AsyncMock()))
+        orch._checkpoint_paused_workspace = AsyncMock(return_value=True)  # converged, no checkpoint
+        handler._current_scope = None
+
+        assert (await handler._cmd_pause_task({"task_id": "t1"}))["status"] == "PAUSED"
+
+        assert read_claim_file(wd) == marker
+        successor = await bind_successor_to_slot(db, tmp_path, wd)
+        free_sid, free_wd = await pool_session(db, tmp_path, sid="s3", agent_id="agent-3")
+        await mktask(db, "new", profile_id="worker")
+
+        refused = await scoped(handler, successor)._cmd_task_claim({"next": True})
+
+        assert refused["result"] == "drain_requested", refused
+        assert "foreign claim of task t1" in refused["reason"]
+        assert read_claim_file(wd) == marker
+        task = await db.get_task("new")
+        assert task.status == TaskStatus.READY
+        for key in ("slot_reset_failure", "needs_attention", "supervisor_recovery_incident"):
+            assert not await db.get_task_meta("new", key), key
+        claimed = await scoped(handler, free_sid)._cmd_task_claim({"next": True})
+        assert claimed["result"] == "claimed" and claimed["task"]["id"] == "new"
+        assert read_claim_file(free_wd)["task_id"] == "new"
+
+    async def test_concurrent_pool_acquisition_cannot_bind_the_slot_before_retirement(
+        self, handler, db, tmp_path,
+    ):
+        from src.claim_file import read_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        await db.create_agent(
+            Agent(id="agent-2", name="agent-2", profile_id="worker", state=AgentState.IDLE)
+        )
+        orch = handler.orchestrator
+        orch.session_providers.create = MagicMock(return_value=MagicMock(stop=AsyncMock()))
+        checkpointing, release = asyncio.Event(), asyncio.Event()
+
+        async def checkpoint(*_args, **_kwargs):
+            checkpointing.set()
+            await release.wait()
+            return "captured"
+
+        orch._checkpoint_paused_workspace = checkpoint
+        handler._current_scope = None
+        pause = asyncio.create_task(handler._cmd_pause_task({"task_id": "t1"}))
+        await asyncio.wait_for(checkpointing.wait(), 10)
+
+        async def acquire():
+            return await db.acquire_one_unlocked(
+                project_id=PROJECT_ID, kind_id="project-repo", mode="exclusive",
+                locked_by_task_id=None, locked_by_agent_id="agent-2",
+            )
+
+        # The paused session is stopped, but the slot is still the paused
+        # task's: the pool cannot hand it to a successor yet.
+        assert (await db.get_session(sid)).state == "stopped"
+        assert await acquire() is None
+        assert read_claim_file(wd)["task_id"] == "t1"
+        racing_pause = asyncio.create_task(handler._cmd_pause_task({"task_id": "t1"}))
+        release.set()
+        assert (await pause)["status"] == "PAUSED"
+        assert (await racing_pause)["status"] == "PAUSED"
+
+        assert read_claim_file(wd) is None
+        acquired = await acquire()
+        assert acquired is not None and acquired.id == "ws-agent-1"
+
+    @pytest.mark.parametrize("mismatch", [
+        "instance", "process", "desired", "session_task", "session_epoch", "result",
+        "unknown_session", "marker_task", "marker_epoch", "unfenced_task", "project",
+        "session_path", "workspace_path", "unlocked", "foreign_agent", "live_successor",
+        "open_attempt", "missing_attempt", "replaced", "aba",
+    ])
+    async def test_paused_marker_retirement_requires_every_exact_proof(
+        self, handler, db, tmp_path, mismatch,
+    ):
+        from contextlib import asynccontextmanager
+
+        from sqlalchemy import delete
+
+        from src.claim_file import read_claim_file, write_claim_file
+        from src.database.tables import task_session_attempts, workspaces
+        from src.orchestrator.workspace_claim_recovery import retire_paused_slot_claim
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        protected = wd / "protected-source.txt"
+        protected.write_text("dirty unpublished work\n")
+        snapshot = await db.pause_task("t1")
+        args = {"task_id": "t1", "claim_epoch": snapshot["claim_epoch"], "agent_id": "agent-1",
+                "captured": snapshot["sessions"]}
+        path = str(wd)
+        marker = read_claim_file(wd)
+        session_update, slot_update = {}, {}
+        if mismatch == "instance":
+            args["captured"] = [{"id": sid, "instance_token": "a-later-instance"}]
+        elif mismatch == "process":  # the stop was never confirmed
+            session_update = {"state": "running"}
+        elif mismatch == "desired":
+            session_update = {"desired_state": "running"}
+        elif mismatch == "session_task":
+            session_update = {"task_id": "t1"}
+        elif mismatch == "session_epoch":
+            session_update = {"last_claim_epoch": snapshot["claim_epoch"] + 1}
+        elif mismatch == "result":
+            session_update = {"last_claim_result": "claimed"}
+        elif mismatch == "unknown_session":
+            marker = {**marker, "session_id": "unknown"}
+            write_claim_file(wd, marker)
+        elif mismatch == "marker_task":
+            marker = {**marker, "task_id": "other"}
+            write_claim_file(wd, marker)
+        elif mismatch == "marker_epoch":
+            args["claim_epoch"] += 1
+        elif mismatch == "unfenced_task":
+            async with db.immediate() as conn:
+                await conn.execute(update(tasks).where(tasks.c.id == "t1").values(
+                    claim_epoch=snapshot["claim_epoch"]))
+        elif mismatch == "project":
+            await db.create_project(Project(id="other", name="o"))
+            slot_update = {"project_id": "other"}
+        elif mismatch == "session_path":
+            elsewhere = tmp_path / "elsewhere"
+            elsewhere.mkdir()
+            session_update = {"work_dir": str(elsewhere)}
+        elif mismatch == "workspace_path":
+            path = str(tmp_path)
+        elif mismatch == "unlocked":
+            slot_update = {"locked_by_task_id": None, "locked_by_agent_id": None}
+        elif mismatch == "foreign_agent":
+            await db.create_agent(Agent(id="agent-2", name="agent-2", profile_id="worker"))
+            slot_update = {"locked_by_agent_id": "agent-2"}
+        elif mismatch == "live_successor":
+            other, _ = await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+            await db.update_session(other, work_dir=str(wd))
+        await db.update_session(sid, **{
+            "state": "stopped", "desired_state": "stopped", "task_id": None, "claim_phase": None,
+            "claim_phase_at": None, "last_claim_result": "manually_paused", **session_update,
+        })
+        # Releasing the session ends its attempt, so attempt proofs are broken after.
+        if mismatch == "open_attempt":
+            async with db.immediate() as conn:
+                await conn.execute(update(task_session_attempts).where(
+                    task_session_attempts.c.session_id == sid).values(ended_at=None))
+        elif mismatch == "missing_attempt":
+            async with db.immediate() as conn:
+                await conn.execute(delete(task_session_attempts).where(
+                    task_session_attempts.c.session_id == sid))
+        if slot_update:
+            async with db.immediate() as conn:
+                await conn.execute(update(workspaces).where(
+                    workspaces.c.id == "ws-agent-1").values(**slot_update))
+        if mismatch in {"replaced", "aba"}:
+            # The marker is rewritten after it was read, before the row locks.
+            replacement = marker if mismatch == "aba" else {
+                "task_id": "successor", "claim_epoch": 1, "session_id": "s2"}
+            immediate = db.immediate
+
+            @asynccontextmanager
+            async def rewriting_immediate():
+                write_claim_file(wd, replacement)
+                async with immediate() as conn:
+                    yield conn
+
+            db.immediate = rewriting_immediate
+            marker = replacement
+
+        assert not await retire_paused_slot_claim(db, "ws-agent-1", path, **args)
+
+        assert read_claim_file(wd) == marker
+        assert protected.read_text() == "dirty unpublished work\n"
+
+    async def test_paused_marker_retirement_retires_the_exact_proved_marker(
+        self, handler, db, tmp_path,
+    ):
+        from src.claim_file import read_claim_file
+        from src.orchestrator.workspace_claim_recovery import retire_paused_slot_claim
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "claimed"
+        snapshot = await db.pause_task("t1")
+        await db.update_session(
+            sid, state="stopped", desired_state="stopped", task_id=None, claim_phase=None,
+            claim_phase_at=None, last_claim_result="manually_paused",
+        )
+
+        assert await retire_paused_slot_claim(
+            db, "ws-agent-1", str(wd), task_id="t1", claim_epoch=snapshot["claim_epoch"],
+            agent_id="agent-1", captured=snapshot["sessions"],
+        )
+        assert read_claim_file(wd) is None
+        slot = await db.get_workspace("ws-agent-1")
+        assert (slot.locked_by_task_id, slot.locked_by_agent_id) == ("t1", "agent-1")
 
     async def test_slot_reset_retry_preserves_unrelated_attention(self, db):
         await mktask(db, "t1", profile_id="worker")
