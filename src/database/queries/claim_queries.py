@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Collection, Mapping
+from functools import lru_cache
 
 from sqlalchemy import (
     Float,
@@ -112,8 +113,12 @@ def active_train_repair(task_id=tasks.c.id):
     return task_id.in_(active_train_repair_tasks())
 
 
+@lru_cache(maxsize=32)
 def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
     """Named acceptance predicates shared by claiming and diagnostics."""
+    # Cache SQL syntax only. The frozen mode (including all Git-proof sets)
+    # is the complete key; each execution still reads current source rows.
+    # Dynamic preparation/backoff predicates are built separately below.
     recovery = task_metadata.alias("frontier_recovery")
     # Metadata is JSON-encoded text. Keep the cast inside a key-guarded
     # CASE so unrelated legacy text values cannot break frontier reads.
