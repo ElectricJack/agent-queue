@@ -298,6 +298,15 @@ Concurrent engine passes are skipped while one is in flight.
    whose subject identifies a completed or missing task in the notice's project.
    Preserve user mail and notices for failed or otherwise unfinished tasks;
    expiry is archival, never a recipient acknowledgment.
+   Apply the same archival policy to supervisor escalation notices, replies and
+   owner reminders whose durable thread identifies a terminal escalation or a
+   completed source task. Worker question notices identified by `msg-<question-id>`
+   expire when the question leaves supervisor handling or its source task completes.
+   Preserve unrelated user conversations and failed-task recovery. Pending selection
+   excludes acknowledged and obsolete notices; notification reservation rechecks
+   these conditions before starting or nudging a recipient, so a source settled
+   after selection cannot trigger another wake. Archival preserves the original body
+   and existing delivery receipts without inventing a read acknowledgment.
    More than 50 unread, unarchived messages across the global supervisor's logical
    addresses also queues a durable alert to `user:dashboard`, even if the session
    is busy or absent. Anchor its identity to the oldest unread message so delivery

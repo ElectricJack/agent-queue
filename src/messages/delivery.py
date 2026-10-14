@@ -204,14 +204,6 @@ class MessageDeliveryEngine:
                 return result
             if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
                 return result
-            if not await self._sessions.ensure_started(
-                kind=kind, target_id=target_id, project_id=resolved_project
-            ):
-                logger.warning(
-                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
-                    pending[0].id, to_kind, to_id,
-                )
-                return result
 
         if activity == "absent":
             if pending[0].body_kind == "schedule_prompt":
@@ -234,6 +226,20 @@ class MessageDeliveryEngine:
             if scheduled:
                 await self.cron_service.finish_delivery(msg.id, delivered=False)
             return result
+        # Recheck durable eligibility before a cold start as well as a nudge.
+        if activity == "sleeping":
+            if not await self._sessions.ensure_started(
+                kind=kind, target_id=target_id, project_id=resolved_project
+            ):
+                if scheduled:
+                    await self.cron_service.finish_delivery(msg.id, delivered=False)
+                logger.warning(
+                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
+                    msg.id, to_kind, to_id,
+                )
+                return result
+            if not await self._db.message_notification_is_pending(msg.id):
+                return result
         try:
             ok = await self._sessions.nudge(
                 kind=kind, target_id=target_id, project_id=resolved_project,
