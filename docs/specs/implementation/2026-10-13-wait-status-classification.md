@@ -72,6 +72,15 @@ The integration ownership inventory charges the shared lifecycle imports and
 retained workspace guards. Verified-wait records and continuations are session
 storage, not delivery journals; the fixed integration baseline and limits remain
 unchanged, with 45 integration tables.
-The baseline TaskStatus has no CANCELLED value: this leaf implements its three
-assigned additions and the existing COMPLETED/FAILED terminal dispositions; the
-spec's CANCELLED wording was raised once with the supervisor for clarification.
+The supervisor confirmed that section 6's CANCELLED transition row and section
+4's task settlement set reference a status absent from the baseline TaskStatus.
+That discrepancy does not authorize a fourth status in this leaf. Acceptance
+covers the three assigned additions and existing COMPLETED/FAILED one-shot
+dispositions; CANCELLED transitions are neither implemented nor tested. Owning
+wait services must validate supported task statuses rather than silently accept
+the unsupported CANCELLED value. Cancellation/tombstoning and human projections
+remain inactive until those services integrate; the approved artifact is unchanged.
+
+Schema prerequisite ancestry is the canonical completed commit
+`b30155ef61dbbc426d1ddc6731398f4be7abcc26`: revision 97 follows revision 96,
+after workspace-kind revision 96 at `69a45b`, with the earlier collision corrected.
