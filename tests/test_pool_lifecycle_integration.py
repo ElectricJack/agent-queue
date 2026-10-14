@@ -19,6 +19,7 @@ otherwise, matching ``tests/test_claim_queries.py``'s ``any_db`` shape.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -222,6 +223,20 @@ def scoped(handler, sid):
     return handler
 
 
+async def settled_claim(handler, args):
+    """Wait for this attempt's preparation before asserting its lifecycle outcome."""
+    result = await handler._cmd_task_claim(args)
+    if result.get("result") != "claim_in_progress":
+        return result
+    scope = handler._current_scope or {}
+    key = (scope.get("session_id") or args.get("session_id"),
+           result["task_id"], result["claim_epoch"])
+    preparation = handler.orchestrator.claim_preparations.get(key)
+    if preparation is not None:
+        await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+    return await handler._cmd_task_claim(args)
+
+
 async def only_pool_session(db):
     """The single live pool session, asserting the pool really is size one.
 
@@ -259,7 +274,7 @@ class TestFullPullLoop:
         assert slot is not None and slot.locked_by_task_id is None
 
         # -- claim ----------------------------------------------------------
-        res = await scoped(handler, session.id)._cmd_task_claim({"next": True, "wait": 2})
+        res = await settled_claim(scoped(handler, session.id), {"next": True, "wait": 2})
         assert (res["result"], res["task"]["id"]) == ("claimed", "t1")
         epoch = res["claim_epoch"]
         held = await db.get_session(session.id)
@@ -320,7 +335,7 @@ class TestFullPullLoop:
         await orch.wait_for_pool_launches()
         first = await only_pool_session(db)
 
-        res = await scoped(handler, first.id)._cmd_task_claim({"next": True})
+        res = await settled_claim(scoped(handler, first.id), {"next": True})
         assert res["result"] == "claimed"
         claimed_first = res["task"]["id"]
         await handler._cmd_task_close(
@@ -339,14 +354,18 @@ class TestFullPullLoop:
         # drained session released rather than minting a second one.
         assert second.agent_id == first.agent_id
         assert len(await db.list_agents()) == 1
-        res2 = await scoped(handler, second.id)._cmd_task_claim({"next": True})
+        res2 = await settled_claim(scoped(handler, second.id), {"next": True})
         assert res2["result"] == "claimed"
         assert res2["task"]["id"] != claimed_first
 
+    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["warm", "deferred"])
     async def test_prepare_failure_abandoned_loop_is_recycled_for_next_ready_task(
-        self, orch, db, handler
+        self, orch, db, handler, response_seconds, monkeypatch,
     ):
         """A failed prepare cannot consume the sole idle worker indefinitely."""
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
+        )
         await single_worker_pool(db)
         await ready(db, "broken", priority=1)
         await ready(db, "next", priority=100)
@@ -356,7 +375,7 @@ class TestFullPullLoop:
         reset = orch._worktree_slots.return_value.reset_slot_for_task
         reset.side_effect = [RuntimeError("repair checkout cannot be prepared"), "aq/next"]
 
-        failed = await scoped(handler, first.id)._cmd_task_claim({"next": True})
+        failed = await settled_claim(scoped(handler, first.id), {"next": True})
         assert failed["result"] == "prepare_failed"
         assert await db.get_task_meta("broken", "needs_attention") == "slot_reset_failed"
         assert await db.get_task_meta("broken", "claim_prepare_backoff_until") > time.time()
@@ -375,7 +394,7 @@ class TestFullPullLoop:
         await orch.wait_for_pool_launches()
         second = await only_pool_session(db)
         assert second.id != first.id
-        claimed = await scoped(handler, second.id)._cmd_task_claim({"next": True})
+        claimed = await settled_claim(scoped(handler, second.id), {"next": True})
         assert (claimed["result"], claimed["task"]["id"]) == ("claimed", "next")
 
     async def test_no_ready_work_then_scale_down_after_grace(self, orch, db, handler):
@@ -388,14 +407,14 @@ class TestFullPullLoop:
         await orch._reconcile_pools()
         await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
-        res = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        res = await settled_claim(scoped(handler, session.id), {"next": True})
         assert res["result"] == "claimed"
         await handler._cmd_task_close(
             {"outcome": "pass", "summary": "s", "claim_epoch": res["claim_epoch"]}
         )
         assert (await db.get_session(session.id)).desired_state == "running"
 
-        empty = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        empty = await settled_claim(scoped(handler, session.id), {"next": True})
         assert empty["result"] == "no_ready_work"
 
         orch.config.swarm.scale_down_grace = 3600
@@ -465,7 +484,7 @@ class TestPublicPoolSleep:
         reconciler = SessionReconciler(
             db, orch.config, orch.session_providers, bus=orch.bus, orchestrator=orch
         )
-        claim = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        claim = await settled_claim(scoped(handler, session.id), {"next": True})
         assert claim["result"] == "claimed"
 
         slept = await handler.execute("session_sleep", {"session_id": session.id})
@@ -500,7 +519,7 @@ class TestClaimAdmissibility:
         session = await only_pool_session(db)
         assert session.intelligence_class == "standard-medium"
 
-        res = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        res = await settled_claim(scoped(handler, session.id), {"next": True})
         assert res["result"] == "no_ready_work"
         assert (await db.get_task("deep")).status == TaskStatus.READY
 
@@ -511,7 +530,7 @@ class TestClaimAdmissibility:
         await orch._reconcile_pools()
         await orch.wait_for_pool_launches()
         session = await only_pool_session(db)
-        res = await scoped(handler, session.id)._cmd_task_claim({"next": True})
+        res = await settled_claim(scoped(handler, session.id), {"next": True})
         # ``deep`` sorts first by priority but is inadmissible for this worker.
         assert (res["result"], res["task"]["id"]) == ("claimed", "std")
 
@@ -522,7 +541,7 @@ class TestClaimAdmissibility:
         await db.transition_task("std", TaskStatus.COMPLETED, context="test")
         await ready(db, "deep", intelligence_class="deep-high")
         session = await only_pool_session(db)
-        res = await scoped(handler, session.id)._cmd_task_claim({"task_id": "deep"})
+        res = await settled_claim(scoped(handler, session.id), {"task_id": "deep"})
         assert res["result"] != "claimed"
         assert (await db.get_task("deep")).status == TaskStatus.READY
 

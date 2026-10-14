@@ -1365,16 +1365,20 @@ class TestClaim:
         assert (await db.get_workspace("ws-agent-1")).enabled
         handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
 
+    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["warm", "deferred"])
     @pytest.mark.parametrize("changed", [
         "instance", "epoch", "task", "active", "released", "preparation", "task_creation",
     ])
     async def test_failed_preparation_observation_refuses_stale_or_successor_claim(
-        self, handler, db, tmp_path, changed,
+        self, handler, db, tmp_path, changed, response_seconds, monkeypatch,
     ):
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
+        )
         await mktask(db, "t", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
         h = scoped(handler, sid)
-        claimed = await h._cmd_task_claim({"next": True})
+        claimed = await settled_claim(h, {"next": True})
         assert claimed["result"] == "claimed"
         await db.update_session(sid, claim_phase="preparing")
         observed = await db.get_session(sid)
@@ -1399,15 +1403,20 @@ class TestClaim:
         )
         assert (await db.get_session(sid)).failed_preparation is None
 
+    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["warm", "deferred"])
     async def test_successful_retry_clears_failed_preparation_diagnostic(
-        self, handler, db, tmp_path,
+        self, handler, db, tmp_path, response_seconds, monkeypatch,
     ):
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
+        )
         await mktask(db, "t", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         reset.side_effect = RuntimeError("Bearer secret-token-value; password=secret-value")
         h = scoped(handler, sid)
-        failed = await h._cmd_task_claim({"next": True})
+        failed = await settled_claim(h, {"next": True})
+        assert failed["result"] == "prepare_failed", failed
         diagnostic = failed["session"]["failed_preparation"]
         assert diagnostic["task_id"] == "t"
         assert diagnostic["origin"] is None and diagnostic["checkpoint"] is None
@@ -1415,7 +1424,7 @@ class TestClaim:
         assert "secret-value" not in json.dumps(diagnostic)
         await expire_claim_refusal(db, sid, "t")
         reset.side_effect = None
-        claimed = await h._cmd_task_claim({"next": True})
+        claimed = await settled_claim(h, {"next": True})
         assert claimed["result"] == "claimed"
         assert (await db.get_session(sid)).failed_preparation is None
 
