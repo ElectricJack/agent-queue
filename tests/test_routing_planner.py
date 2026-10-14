@@ -1174,13 +1174,15 @@ def test_routine_preference_preserves_local_design_art_and_operator_rules():
                         policy_sha256=digest, classification={**NARROW_YES, "risk": "low"})
     assert narrow.value["provider"] == "opencode"
     assert narrow.value["decision"]["mode"] == "lane_preference"
-    # The shipped narrow lanes take only work classified low risk: narrow and
-    # test-verified alone no longer qualifies.  No risk answer is a medium one.
+    # Narrow, test-verified medium-risk work (an assumed medium included) may
+    # run on local OpenCode through narrow-medium; high risk never does.
     for classification in (NARROW_YES, {**NARROW_YES, "risk": "medium"}):
-        hosted = plan_route(_task(task_type="feature"), policy, _snapshot(),
+        medium = plan_route(_task(task_type="feature"), policy, _snapshot(),
                             policy_sha256=digest, classification=classification)
-        assert hosted.value["provider"] == "codex", classification
-        assert {c["harness"] for c in hosted.value["candidates"]} <= {"claude", "codex"}
+        assert medium.value["provider"] == "opencode", classification
+    hosted = plan_route(_task(task_type="feature"), policy, _snapshot(),
+                        policy_sha256=digest, classification={**NARROW_YES, "risk": "high"})
+    assert {c["harness"] for c in hosted.value["candidates"]} <= {"claude", "codex"}
     assert routine_plan(task_type="design").value["profile_id"] == "deep-high-claude"
     assert routine_plan(task_type="art").value["provider_intent"] == "pinned"
     assert routine_plan(_snapshot(out={"codex"}), task_type="art").outcome == "held"
