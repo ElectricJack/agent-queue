@@ -69,6 +69,12 @@ aq wait register --kind message --ref "request-$AQ_SESSION_ID" \
 The reply must stay on that thread, for example through
 `aq message reply <message-id>` or
 `aq agent message <task-id> BODY --reply-to <message-id>`.
+A project supervisor's guidance is signed by its mailbox
+`session:supervisor-<project>`, so the worker's `aq message reply` to it
+returns there on the same thread and satisfies the supervisor's own message
+wait on that thread. Guidance from callers with no project-supervisor session
+(the operator CLI, automation, the global supervisor) stays
+`system:supervisor`, which `aq message reply` refuses.
 For a collaboration thread, use its `collab-*` ID and the last seen thread
 sequence instead. Omitting `--after-seq` is a usage error for message waits.
 

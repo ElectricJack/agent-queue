@@ -62,6 +62,15 @@ is what a worker's durable message wait (`aq wait register --kind message
 aq agent message <task-id> "Filed: fresh-ember and .1-.9." --reply-to <message-id>
 ```
 
+Guidance from a project supervisor's own session is signed
+`session:supervisor-<project>`, so the worker answers it with
+`aq message reply <guidance-id>` and the reply lands back in that mailbox on
+the same thread. Guidance from the operator CLI, automation or the global
+supervisor is signed `system:supervisor` and cannot be replied to; a worker
+answers those with `aq message send --to session:supervisor-<project>`.
+A worker can reply only to messages addressed to its own mailboxes, and the
+reply's sender is always that mailbox.
+
 Use `aq session nudge` only for low-level diagnostics; it is not a reliable
 supervisor-to-worker delivery surface.
 

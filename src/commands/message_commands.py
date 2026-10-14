@@ -600,6 +600,18 @@ class MessageCommandsMixin:
                 "reply": message_to_dict(await self.db.get_message(result["message_id"])),
             }
 
+        # A plain session answers only what was addressed to one of its own
+        # mailboxes in its own project — the fence ``message_status`` applies —
+        # so it cannot consume, or reply into, another recipient's thread.
+        # "not found" keeps the refusal from confirming a foreign id exists.
+        scope = self._current_scope or {}
+        plain_session = scope.get("kind") == "session" and not scope.get("elevated")
+        if plain_session and (
+            await self._inbox_mailbox_scope_error(original.to_kind, original.to_id)
+            or (scope.get("project_id") and original.project_id != scope["project_id"])
+        ):
+            return {"error": f"Message '{message_id}' not found"}
+
         scoped_global_reply = False
         if original.project_id is None:
             scope_error = self._system_message_scope_error()
@@ -638,15 +650,18 @@ class MessageCommandsMixin:
         # and ``profile`` recipients have no from_kind of their own, so a
         # reply on their behalf is attributed to the session that read it;
         # callers override with from_kind/from_id when they know better.
-        from_kind = (args.get("from_kind") or "").strip()
-        if not from_kind:
-            from_kind = original.to_kind if original.to_kind in MESSAGE_FROM_KINDS else "session"
+        derived_kind = original.to_kind if original.to_kind in MESSAGE_FROM_KINDS else "session"
+        from_kind = (args.get("from_kind") or "").strip() or derived_kind
         if from_kind not in MESSAGE_FROM_KINDS:
             return {
                 "error": f"Invalid from_kind '{from_kind}'. "
                 f"Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}"
             }
         from_id = (args.get("from_id") or "").strip() or original.to_id
+        # A plain session signs as the mailbox it was addressed at, never as
+        # an identity it names.
+        if plain_session and (from_kind, from_id) != (derived_kind, original.to_id):
+            return {"error": "reply identity is server-derived"}
         if scoped_global_reply:
             from_kind, from_id = "session", self._current_scope["session_id"]
 
