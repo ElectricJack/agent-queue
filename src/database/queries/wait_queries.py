@@ -331,15 +331,17 @@ async def register_wait(
         ("ceiling", ceiling_at),
     ):
         if at is not None:
+            deadline_id = str(uuid.uuid4())
             await conn.execute(
                 insert(wait_deadlines).values(
-                    id=str(uuid.uuid4()),
+                    id=deadline_id,
                     wait_id=wait_id,
                     deadline_type=deadline_type,
                     due_at=at,
                     generation=1,
                 )
             )
+            await conn.execute(select(func.pg_notify("aq_wait_deadline", deadline_id)))
     for edge in edges:
         await conn.execute(
             insert(wait_edges).values(

@@ -113,3 +113,52 @@ effective-priority indexes. This preserves current claim ordering, repair priori
 and all admission predicates without activating priority propagation or reservations.
 The priority/admission owner can retire these compatibility indexes only after its
 runtime adopts and maintains effective priority and verifies the same strict guards.
+
+## Listener and deadline consumer composition
+
+`WaitService` in `src/waits/service.py` is installed next to the review notifier in
+`main.py`, cancelled on shutdown, and recovery-ticked by the orchestrator. It never
+connects, leases, dispatches or fires while `wait_policy.v2_enabled` is false. No
+activation defaults change here. v1 reconciliation remains intact until cutover.
+
+The dedicated asyncpg listener subscribes to both channels before taking the fenced
+watermark. The `source` cursor's 30-second lease elects **both** source and timer
+work, renewed every ten seconds. Each batch locks that cursor, commits dispatch and
+progress together, and checks the unexpired lease before commit. A competing daemon
+cannot take over a locked batch; a failed or expired batch rolls back. A sixty-second
+safety drain and recovery tick recover missing notifications. Disconnects rebuild the
+connection with exponential backoff capped at thirty seconds. Releasing a lease is
+conditional on its unique owner, so a retiring instance cannot release its replacement.
+Source retention keeps the persisted cursor floor even after every old row is purged.
+
+The dispatcher owner installs `orch.wait_dispatcher`, whose async
+`commit(conn, wait_row, committed_event, *, evidence=None)` returns a success dictionary
+for both a committed outcome and an unsatisfied no-op. It must use the supplied batch
+transaction, repeat owner/source fences and fresh predicate observation, and own outcome
+CAS and delivery. A refusal or exception rolls back the batch; missing dispatchers leave
+matching rows unread. Resource invalidations use the canonical paged bridge and fresh
+`registry.verify` with the configured admission reader. The resource generation remains
+zero and revisions remain opaque; producer events never establish satisfaction.
+
+`WaitTimerDriver` rebuilds its heap from unfired, uncancelled rows on startup, notification
+and recovery. It invokes the contracted, service-only `wait_deadline_fire` command.
+The command locks the leader cursor, graph, task, wait, continuation, reservation and
+deadline, and rejects fired,
+cancelled, resolved, not-yet-due or superseded generations. Firing a `due` deadline writes
+its timer source event in the same transaction. Only the dispatcher can resolve/wake it.
+Registration emits `aq_wait_deadline` transactionally after inserting each deadline;
+future deadline writers must do the same (a missed hint is recovered by heap rebuild).
+
+The downstream lifecycle owners supply `orch.wait_deadline_handlers[deadline_type]`
+for `escalation`, `ceiling`, `transition` and `reservation`. Each async callback receives
+`(conn, deadline_row, wait_row, *, now, handler)` and returns a success dictionary;
+all effects must use that transaction. The callback implements the approved effect:
+escalate without a wake; invoke the sleep decision with ceiling reason; hold an overdue
+stop/launch; or mark a reservation overdue. It must fence its continuation/reservation
+and owner before mutation. Escalation callbacks must reobserve the authoritative source
+first: completion at or before the deadline, even when processed late, takes precedence
+over escalation. The driver marks `fired_at` only after the effect succeeds.
+Missing handlers leave deadlines unfired; failed effects roll back their writes and the
+fire together. These seams enable the downstream leaves without activating unfinished
+hibernation, escalation, admission or delivery behavior. The absence of a `CANCELLED`
+task status is unchanged; downstream handlers must use actual settlement states.

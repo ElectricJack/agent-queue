@@ -23,7 +23,12 @@ from src.commands.contracts.wait_v2 import (
     caller_allowed,
     operator_wait_grant,
 )
-from src.commands.principal import PrincipalKind, current_principal
+from src.commands.principal import (
+    ExecutionPrincipal,
+    PrincipalKind,
+    current_principal,
+    principal_context,
+)
 from src.database.tables import wait_records
 from src.waits.conditions import Scope, WaitError
 
@@ -33,6 +38,37 @@ def refusal(code, message, **details):
 
 
 class WaitV2CommandsMixin:
+    async def wait_service_command(self, name, args):
+        """Bind service authority here, keeping the waits package independent."""
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            return await self.execute(name, args)
+
+    async def wait_service_lease(self, listener, *, release=False):
+        with principal_context(ExecutionPrincipal.service("waits-listener")):
+            return await self.wait_listener_lease(listener, release=release)
+
+    async def wait_service_drain(self, listener, watermark):
+        with principal_context(ExecutionPrincipal.service("waits-listener")):
+            return await self.wait_listener_drain(listener, watermark)
+
+    def _wait_listener_authorize(self, listener, *, release=False):
+        principal = current_principal()
+        if (principal is None or principal.kind != PrincipalKind.SERVICE
+                or listener.service.orch is not self.orchestrator):
+            raise WaitError("wait.out_of_scope", "listener requires its service principal")
+        if not release and not self._wait_v2_enabled():
+            raise WaitError("wait.disabled", "verified wait writes are disabled")
+
+    async def wait_listener_lease(self, listener, *, release=False):
+        """Internal service mutation boundary; never an agent command or tool."""
+        self._wait_listener_authorize(listener, release=release)
+        return await listener.lease(release=release)
+
+    async def wait_listener_drain(self, listener, watermark):
+        """Commit dispatch and cursor advancement together at the command boundary."""
+        self._wait_listener_authorize(listener)
+        return await listener.drain(watermark)
+
     def _wait_v2_enabled(self):
         return getattr(getattr(self.config, "wait_policy", None), "v2_enabled", False) is True
 

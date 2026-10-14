@@ -4015,6 +4015,12 @@ class Orchestrator(
             except Exception:
                 logger.error("AgentWaitReconciler tick failed", exc_info=True)
             try:
+                wait_service = getattr(self, "wait_service", None)
+                if wait_service is not None:
+                    await wait_service.tick()
+            except Exception:
+                logger.error("WaitService recovery tick failed", exc_info=True)
+            try:
                 result = await self.agent_cron.tick()
                 if not result.get("success"):
                     logger.error("Agent cron tick refused: %s", result)
