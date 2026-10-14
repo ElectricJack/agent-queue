@@ -24,7 +24,10 @@ import logging
 import time
 
 from src.collaboration import CollaborationError, is_collaboration_thread
-from src.models import MESSAGE_FROM_KINDS, MESSAGE_TO_KINDS, Message, SessionRecord
+from src.commands.principal import (
+    ExecutionPrincipal, PrincipalKind, current_principal, principal_context,
+)
+from src.models import MESSAGE_FROM_KINDS, MESSAGE_TO_KINDS, Message, SessionRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +279,90 @@ class MessageCommandsMixin:
     # Commands
     # ------------------------------------------------------------------
 
+    async def _queue_message_notification(self, args: dict) -> dict:
+        """Queue a server-authored notice after its parent command's authorization.
+
+        This is an internal call, never a request flag that bypasses ordinary
+        sender ownership. Keep the parent scope's recipient/project fences.
+        """
+        with principal_context(ExecutionPrincipal.service("message-notification")):
+            return await self._cmd_message_send(args)
+
+    async def _ordinary_message_sender(self, args: dict) -> tuple[str, str] | dict:
+        """Bind a return address to the current principal, never CLI environment."""
+        principal = current_principal()
+        session = None
+        supervisor = False
+        if principal is not None and principal.kind == PrincipalKind.SESSION:
+            session = await self.db.get_session(principal.session_id) if principal.session_id else None
+            if (
+                principal.unresolved or session is None
+                or not principal.session_instance_token
+                or session.instance_token != principal.session_instance_token
+                or session.state not in {"running", "draining"}
+                or session.desired_state == "stopped"
+                or session.project_id != principal.project_id
+                or session.profile_id != principal.profile_id
+            ):
+                return {"error": "out of scope: a live matching sender session is required"}
+            if principal.project_id is None and not principal.elevated:
+                return {"error": "out of scope: sender requires a matching project scope"}
+            if principal.project_id is not None and args.get("project_id") not in (
+                None, principal.project_id,
+            ):
+                return {"error": "out of scope: sender project mismatch"}
+            if principal.task_id is not None and session.task_id != principal.task_id:
+                return {"error": "out of scope: sender task mismatch"}
+            if session.lifecycle in {"task", "pool"}:
+                task = await self.db.get_task(session.task_id) if session.task_id else None
+                agent = await self.db.get_agent(session.agent_id) if session.agent_id else None
+                epoch = args.get("claim_epoch")
+                if (
+                    task is None or task.project_id != session.project_id
+                    or task.status != TaskStatus.IN_PROGRESS
+                    or (session.lifecycle == "pool" and (
+                        session.claim_phase != "active" or epoch is None
+                    ))
+                    or (epoch is not None and (
+                        isinstance(epoch, bool) or not isinstance(epoch, int)
+                        or epoch != task.claim_epoch
+                    ))
+                    or (session.last_claim_epoch is not None
+                        and session.last_claim_epoch != task.claim_epoch)
+                    or agent is None or task.assigned_agent_id != agent.id
+                    or agent.current_task_id != task.id or agent.state.value != "BUSY"
+                ):
+                    return {
+                        "error": "out of scope: sender does not match the live claim",
+                        "error_code": "stale_claim",
+                    }
+            supervisor = (
+                principal.elevated and session.profile_id == "supervisor"
+                and session.lifecycle == "named"
+                and session.name == f"n-supervisor--{session.project_id or 'global'}"
+            )
+
+        from_kind = (args.get("from_kind") or ("session" if session else "user")).strip()
+        if from_kind not in MESSAGE_FROM_KINDS:
+            return {
+                "error": f"Invalid from_kind '{from_kind}'. "
+                f"Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}"
+            }
+        default_id = session.id if session else ("cli" if from_kind == "user" else "")
+        from_id = (args.get("from_id", default_id) or "").strip()
+        if not from_id:
+            return {"error": "from_id is required"}
+        if session:
+            addresses = {session.id}
+            if supervisor:
+                addresses.update({session.name, f"supervisor-{session.project_id or 'global'}"})
+            if not (
+                (from_kind == "session" and from_id in addresses)
+                or (from_kind == "system" and supervisor and session.project_id is None)
+            ):
+                return {"error": "out of scope: sender identity is not owned by this session"}
+        return from_kind, from_id
+
     async def _cmd_message_send(self, args: dict) -> dict:
         """Queue a message to a session, task, profile, or user."""
         disabled = self._messages_disabled_error()
@@ -294,16 +381,6 @@ class MessageCommandsMixin:
             }
         if not to_id:
             return {"error": "to_id is required"}
-
-        from_kind = (args.get("from_kind") or "user").strip()
-        if from_kind not in MESSAGE_FROM_KINDS:
-            return {
-                "error": f"Invalid from_kind '{from_kind}'. "
-                f"Allowed: {', '.join(sorted(MESSAGE_FROM_KINDS))}"
-            }
-        from_id = (args.get("from_id") or "").strip()
-        if not from_id:
-            return {"error": "from_id is required"}
 
         # A task, or a session addressed by id, belongs to one project, and its
         # readers are fenced to that project: a durable message wait matches
@@ -331,6 +408,11 @@ class MessageCommandsMixin:
             scoped_global_report = True
             requested_project_id = scope["project_id"]
             from_kind, from_id = "session", scope["session_id"]
+        if not scoped_global_report:
+            sender = await self._ordinary_message_sender(args)
+            if isinstance(sender, dict):
+                return sender
+            from_kind, from_id = sender
         global_sender = (
             scope.get("kind") == "session"
             and scope.get("elevated")

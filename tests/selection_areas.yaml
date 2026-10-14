@@ -273,6 +273,7 @@ areas:
     description: "Agent messages: message commands and queries, the delivery engine with per-recipient policy, nudges and parking, the session lens, and message CLI and chat relay API."
     match:
       - tests/test_message_commands.py
+      - tests/test_message_sender_identity.py
       - tests/test_message_delivery.py
       - tests/test_message_queries.py
       - tests/test_session_lens.py

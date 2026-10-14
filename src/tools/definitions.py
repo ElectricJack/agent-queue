@@ -5678,7 +5678,9 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Queue a message to a session, task, profile, or user.  Messages "
             "are the single transport for user<->agent and agent<->agent "
-            "traffic; delivery is asynchronous. For an accepted collaboration thread, "
+            "traffic; delivery is asynchronous. Omitted sender identity is derived from "
+            "the authenticated live session, or user:cli for local callers. "
+            "For an accepted collaboration thread, "
             "omit the recipient to send to every other member; sender identity is server-derived."
         ),
         "input_schema": {
@@ -5702,9 +5704,9 @@ _ALL_TOOL_DEFINITIONS = [
                 "from_kind": {
                     "type": "string",
                     "enum": ["session", "user", "system"],
-                    "description": "Sender kind (default: user)",
+                    "description": "Explicit sender kind; session callers must own the identity",
                 },
-                "from_id": {"type": "string", "description": "Sender id"},
+                "from_id": {"type": "string", "description": "Explicit authorized sender id"},
                 "thread_id": {
                     "type": "string",
                     "description": "Conversation grouping key (Discord channel, chat id)",

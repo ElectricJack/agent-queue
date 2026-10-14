@@ -50724,16 +50724,28 @@
             "description": "Markdown message body"
           },
           "from_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "From Id",
-            "description": "Sender id",
-            "default": "cli"
+            "description": "Authorized sender id; omit for server default"
           },
           "from_kind": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "From Kind",
-            "description": "Sender kind",
-            "default": "user"
+            "description": "Authorized sender kind; omit for server default"
           },
           "subject": {
             "anyOf": [
@@ -70286,16 +70298,28 @@
             "description": "Markdown message body"
           },
           "from": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "From",
-            "description": "Sender id, e.g. 'discord:1234' or 'cli'",
-            "default": "user"
+            "description": "Authorized sender id; omit for server default"
           },
           "from_kind": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "From Kind",
-            "description": "Sender kind: session | user | system",
-            "default": "user"
+            "description": "Authorized sender kind: session | user | system; omit for server default"
           },
           "thread_id": {
             "anyOf": [
@@ -70326,6 +70350,18 @@
             "title": "Priority",
             "description": "Delivery ordering, lower first",
             "default": 100
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
           }
         },
         "type": "object",

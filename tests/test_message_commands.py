@@ -19,7 +19,7 @@ from src.commands.message_commands import MESSAGES_DISABLED_ERROR, message_to_di
 from src.config import MessagesConfig
 from src.event_schemas import validate_payload
 from src.messages.delivery import MessageDeliveryEngine
-from src.models import Agent, AgentState, Message, Project, SessionRecord, Task, TaskStatus
+from src.models import Agent, AgentProfile, AgentState, Message, Project, SessionRecord, Task, TaskStatus
 
 
 class _RecordingBus:
@@ -41,6 +41,12 @@ class _RecordingBus:
 async def setup(reuse_database):
     db = await reuse_database("messages.db")
     await db.create_project(Project(id="p1", name="test", supervisor_enabled=True))
+    await db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor",
+        aq_commands=["message_send", "message_reply", "message_inbox", "message_list",
+                     "message_status", "cron_register", "agent_message"],
+        harness_tools=[], plugin_tools=[],
+    ))
 
     bus = _RecordingBus()
     orch = MagicMock()
@@ -106,6 +112,7 @@ async def _create_live_worker(db, *, project_id: str, suffix: str) -> SessionRec
             assigned_agent_id=agent_id,
         )
     )
+    await db.update_agent(agent_id, current_task_id=task_id)
     await db.create_session(session)
     return session
 
@@ -209,7 +216,16 @@ class TestSend:
 
 _GLOBAL_SUPERVISOR_SCOPE = {
     "kind": "session", "session_id": "global-admin", "project_id": None, "elevated": True,
+    "session_instance_token": "global-token",
 }
+
+
+async def _seed_global_supervisor(db):
+    await db.create_session(SessionRecord(
+        id="global-admin", project_id=None, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+        epoch="test", instance_token="global-token", started_at=1, state="running",
+    ))
 
 
 class TestSendRecipientProject:
@@ -222,9 +238,11 @@ class TestSendRecipientProject:
     @pytest.mark.parametrize("to_kind", ["task", "session"])
     async def test_global_supervisor_without_project_uses_the_recipients(self, setup, to_kind):
         handler, db, _bus = setup
+        await _seed_global_supervisor(db)
         worker = await _create_live_worker(db, project_id="p1", suffix="a")
         to_id = worker.task_id if to_kind == "task" else worker.id
-        args = _send_args(to_kind=to_kind, to_id=to_id, body="APPROVED")
+        args = _send_args(to_kind=to_kind, to_id=to_id, body="APPROVED",
+                          from_kind="session", from_id="global-admin")
         args.pop("project_id")
         result = await handler.execute("message_send", {**args, "_scope": _GLOBAL_SUPERVISOR_SCOPE})
         assert result["message"]["project_id"] == "p1", result
@@ -254,8 +272,10 @@ class TestSendRecipientProject:
     async def test_unresolved_recipient_keeps_the_projectless_system_default(
         self, setup, to_kind, to_id
     ):
-        handler, _db, _bus = setup
-        args = _send_args(to_kind=to_kind, to_id=to_id)
+        handler, db, _bus = setup
+        await _seed_global_supervisor(db)
+        args = _send_args(to_kind=to_kind, to_id=to_id,
+                          from_kind="session", from_id="global-admin")
         args.pop("project_id")
         result = await handler.execute("message_send", {**args, "_scope": _GLOBAL_SUPERVISOR_SCOPE})
         assert result["message"]["project_id"] is None, result
@@ -326,7 +346,8 @@ class TestSendSupervisorAddress:
 
     async def test_alias_without_a_project_is_refused_and_not_stored(self, setup):
         handler, db, _bus = setup
-        args = _send_args(to_id="supervisor-aq")
+        await _seed_global_supervisor(db)
+        args = _send_args(to_id="supervisor-aq", from_kind="session", from_id="global-admin")
         args.pop("project_id")
         result = await handler.execute("message_send", {**args, "_scope": _GLOBAL_SUPERVISOR_SCOPE})
         assert "session:supervisor-aq names no project" in result["error"], result
@@ -1188,6 +1209,7 @@ class TestStatusRecipientProject:
         handler, db, _bus = setup
         await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
         await db.create_project(Project(id="p3", name="third"))
+        sender_scope = await _seed_project_supervisor(db, project_id="p2")
         sent = await _execute_as(
             handler,
             "message_send",
@@ -1198,7 +1220,7 @@ class TestStatusRecipientProject:
                 "from_id": "supervisor-p2",
                 "body": "registry investigation needed",
             },
-            _supervisor_scope("p2"),
+            sender_scope,
         )
         assert sent["message"]["project_id"] == "p2", sent
         assert sent["message"]["to_id"] == "supervisor-p1"
@@ -1302,7 +1324,9 @@ class TestProjectSupervisorInboxIdentity:
             "session_instance_token": authenticated.session_instance_token,
         }
         sent = await _execute_as(
-            handler, "message_send", _send_args(body="own logical mailbox"), scope
+            handler, "message_send", _send_args(body="own logical mailbox",
+                                                from_kind="session", from_id=scope["session_id"]),
+            scope,
         )
         named = await db.create_message(
             project_id="p1", from_kind="user", from_id="fixture",
@@ -1709,6 +1733,11 @@ class TestNativeGuidanceReplyRoute:
         )
 
     async def _guide(self, handler, db, scope, **args):
+        await db.create_profile(AgentProfile(
+            id="worker", name="Worker",
+            aq_commands=["message_send", "message_reply", "message_status", "message_inbox"],
+            harness_tools=[], plugin_tools=[],
+        ))
         worker = await _create_live_worker(db, project_id="p1", suffix="w")
         asked = await _execute_as(handler, "message_send", {
             "to_kind": "session", "to_id": "supervisor-p1", "from_kind": "session",

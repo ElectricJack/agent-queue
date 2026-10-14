@@ -774,6 +774,7 @@
         "tests/test_message_commands.py",
         "tests/test_message_delivery.py",
         "tests/test_message_queries.py",
+        "tests/test_message_sender_identity.py",
         "tests/test_session_lens.py"
       ]
     },
@@ -10888,6 +10889,32 @@
         "asyncio"
       ],
       "summary": "Tests for pane_open on _cmd_message_send."
+    },
+    "tests/test_message_sender_identity.py": {
+      "areas": [
+        "messages"
+      ],
+      "default_arm": true,
+      "digest": "sha256:d3ae245fb39f3873a44ac1058f27b0858706859d6db7a997e601e05934acd44f",
+      "imports": [
+        "src.api",
+        "src.api.auth",
+        "src.api.dependencies",
+        "src.api.execute",
+        "src.api.messages",
+        "src.api.middleware",
+        "src.api.scope",
+        "src.cli.app",
+        "src.cli.client",
+        "src.commands.handler",
+        "src.config",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "CLI reports, authenticated return identities and durable replies on PostgreSQL."
     },
     "tests/test_messaging_adapter.py": {
       "areas": [

@@ -162,7 +162,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
         if reply_to is not None:
             send["thread_id"] = reply_to.thread_id
             send["reply_to_id"] = reply_to.id
-        queued = await self._cmd_message_send(send)
+        queued = await self._queue_message_notification(send)
         if "error" in queued:
             return queued
         if reply_to is not None:
