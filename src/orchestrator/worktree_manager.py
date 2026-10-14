@@ -875,8 +875,9 @@ class WorktreeSlotManager:
         default_branch = await self._default_branch(base_path, project_id=slot_ws.project_id)
         start_point = base_branch or default_branch
 
+        repository_lock = self._git_mutex(base_path)
         with claim_phase("repository_lock"):
-            await self._git_mutex(base_path).acquire()
+            await repository_lock.acquire()
         try:
             start_ref = await self._fetch_and_resolve_start_ref(
                 base_path, start_point, required=preserve_branch, cwd=str(slot_dir),
@@ -924,7 +925,7 @@ class WorktreeSlotManager:
                 )
 
         finally:
-            self._git_mutex(base_path).release()
+            repository_lock.release()
 
         if kind is not None:
             desired = worktree_setup_hash(kind.worktree_setup)

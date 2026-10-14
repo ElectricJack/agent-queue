@@ -344,7 +344,7 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     assert session.state == "running"
     handler._current_scope = {"kind": "session", "session_id": session.id,
                               "project_id": PROJECT_ID, "task_id": None, "elevated": False}
-    result = await handler._cmd_task_claim({"next": True})
+    result = await handler._cmd_task_claim({"next": True, "wait": 5})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
 
@@ -389,7 +389,7 @@ async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
     [session] = await db.list_sessions(lifecycle="pool")
     handler._current_scope = {"kind": "session", "session_id": session.id,
                               "project_id": PROJECT_ID, "task_id": None, "elevated": False}
-    result = await handler._cmd_task_claim({"next": True})
+    result = await handler._cmd_task_claim({"next": True, "wait": 5})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
     prepare = orch._worktree_slots().reset_slot_for_task
@@ -500,7 +500,7 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
     env.git(env.origin.clone, "push", "origin", f"{env.source}:aq/epic")
     delivery_head = AsyncMock(wraps=db.hierarchy_prerequisite_delivery_head)
     monkeypatch.setattr(db, "hierarchy_prerequisite_delivery_head", delivery_head)
-    result = await handler._cmd_task_claim({"next": True})
+    result = await handler._cmd_task_claim({"next": True, "wait": 5})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
     # Admission refetches once; workspace preparation separately observes the
