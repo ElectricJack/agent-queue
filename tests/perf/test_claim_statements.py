@@ -232,6 +232,17 @@ class _ExplainingConn:
 
 
 class TestClaimStatementBudgets:
+    @pytest.fixture(autouse=True)
+    def _await_whole_preparation(self, monkeypatch):
+        """Count every claim's statements to completion, never a wall-clock cut.
+
+        ``_cmd_task_claim`` answers ``claim_in_progress`` once preparation
+        outlives ``_PREPARATION_RESPONSE_SECONDS`` (0.5s), leaving the rest of
+        it running outside ``count_statements``. These budgets measure
+        statements, not latency, so a loaded runner must not decide the result.
+        """
+        monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60.0)
+
     async def test_claim_happy_path_statement_budget(self, any_db, tmp_path):
         """Whole task_claim stays within 20 statements, including diagnostics.
 
