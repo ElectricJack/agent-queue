@@ -2130,7 +2130,9 @@ async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
         str(checkout), {"fresh": tip, "taken": tip}, repository_url=str(target)
     )
     assert observed["fresh"] == RemoteRefResult(RemoteRefState.PRESENT, oid=tip)
-    assert observed["taken"] == RemoteRefResult(RemoteRefState.PRESENT, oid=base)
+    assert observed["taken"].state is RemoteRefState.PRESENT
+    assert observed["taken"].oid == base
+    assert "stale info" in observed["taken"].publication_error
     assert await manager.als_remote_refs(
         str(checkout), ["fresh", "missing"], repository_url=str(target)
     ) == {
@@ -2143,7 +2145,55 @@ async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
                      subprocess.CompletedProcess([], 0, "", "")]))
     failed = await manager.apush_new_refs(str(checkout), {"other": tip}, repository_url=str(target))
     # Absent after a failed transfer is that failure, not an observation.
-    assert failed == {"other": RemoteRefResult(RemoteRefState.ERROR, error="remote unreachable")}
+    assert failed == {"other": RemoteRefResult(
+        RemoteRefState.ERROR, error="remote unreachable", publication_error="remote unreachable"
+    )}
+
+
+@pytest.mark.parametrize("readback", ["absent", "error", "mismatch", "correct"])
+async def test_immutable_push_retains_safe_transfer_failure_when_readback_cannot_prove_tip(
+    tmp_path, monkeypatch, readback,
+):
+    from src.git.manager import safe_git_detail
+
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    ref = "refs/aq/provenance/completions/subject/generation"
+    manager = GitManager()
+    secret = "private-installation-token"
+    failure = (
+        "\x1b\n" * 300
+        + f"{secret} https://alice:password@github.com/acme/widgets.git\n"
+        "Authorization: Bearer header-secret\npush rejected"
+    )
+    observed = {
+        "absent": RemoteRefResult(RemoteRefState.ABSENT),
+        "error": RemoteRefResult(RemoteRefState.ERROR, error="remote read denied"),
+        "mismatch": RemoteRefResult(RemoteRefState.PRESENT, oid=base),
+        "correct": RemoteRefResult(RemoteRefState.PRESENT, oid=tip),
+    }[readback]
+    monkeypatch.setattr(manager, "_apush_destination", AsyncMock(
+        return_value=(target.as_uri(), secret)))
+    transfer = AsyncMock(side_effect=GitError(failure))
+    monkeypatch.setattr(manager, "_apush_refs_with_app_auth_to_url", transfer)
+    monkeypatch.setattr(manager, "als_remote_qualified_refs", AsyncMock(return_value={ref: observed}))
+    result = (await manager.apush_new_refs(
+        str(checkout), {ref: tip}, repository_url=str(target), qualified=True,
+    ))[ref]
+    assert transfer.await_args.kwargs["updates"] == [(tip, ref, "0" * 40)]
+    assert transfer.await_args.kwargs["_qualified_refs"] is True
+    if readback == "correct":
+        assert result == observed
+    else:
+        assert "push rejected" in result.publication_error
+        assert len(result.publication_error) <= 512
+        assert safe_git_detail(result.publication_error) == result.publication_error
+        for credential in (secret, "password", "header-secret", "\x1b", "\n"):
+            assert credential not in repr(result)
+        if readback == "absent":
+            assert result.state is RemoteRefState.ERROR and result.error == result.publication_error
+        else:
+            assert (result.state, result.oid, result.error) == (
+                observed.state, observed.oid, observed.error)
 
 
 @pytest.mark.asyncio
