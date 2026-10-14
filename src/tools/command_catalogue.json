@@ -3719,6 +3719,29 @@
       }
     },
     {
+      "name": "playbook_source_resync",
+      "description": "Supervisor control: restore system Markdown from the digest-verified source retained with its active reviewed artifact, preserving the old bytes in a backup. Requires the active artifact hash and current source hash; never compiles or activates.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "playbook_id": {
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "type": "string"
+          },
+          "expected_source_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "playbook_id",
+          "artifact_sha256",
+          "expected_source_hash"
+        ]
+      }
+    },
+    {
       "name": "update_playbook_source",
       "description": "Write new playbook markdown to the vault atomically and compile synchronously. On successful compile returns the new version; on validation failure returns 'errors' with previous compiled version still live. If 'expected_source_hash' is supplied and does not match the current vault copy, returns a conflict error (vault changed underneath).",
       "input_schema": {
@@ -16243,6 +16266,7 @@
     "playbook_graph_layout_save": "playbook",
     "playbook_activation_health": "playbook",
     "playbook_activate": "playbook",
+    "playbook_source_resync": "playbook",
     "playbook_artifacts": "playbook",
     "playbook_artifact_diff": "playbook",
     "playbook_pending_events": "playbook",
