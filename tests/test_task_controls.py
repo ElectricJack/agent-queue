@@ -798,7 +798,9 @@ async def test_managed_pause_returns_capacity_only_after_full_checkpoint(env, tm
     assert not (repo / ".aq" / "claim.json").exists()
 
 
-@pytest.mark.parametrize("proof", ["generation", "job", "preparation_hold", "provider", "checkpoint"])
+@pytest.mark.parametrize("proof", [
+    "generation", "receipt", "job", "preparation_hold", "provider", "checkpoint",
+])
 async def test_managed_pause_retains_source_on_missing_proof(env, tmp_path, monkeypatch, proof):
     from src.orchestrator import task_checkpoint
     from unittest.mock import AsyncMock
@@ -808,6 +810,8 @@ async def test_managed_pause_retains_source_on_missing_proof(env, tmp_path, monk
     await env.db.pause_task("t")
     if proof == "generation":
         await env.db.update_workspace("workspace", generation=8)
+    elif proof == "receipt":
+        await env.db.set_task_meta("t", "claim_workspace", {"generation": 8})
     elif proof == "job":
         await env.db.update_workspace("workspace", job_pin_count=1)
     elif proof == "preparation_hold":
@@ -824,6 +828,63 @@ async def test_managed_pause_retains_source_on_missing_proof(env, tmp_path, monk
     assert (await env.db.get_workspace("workspace")).locked_by_task_id == "t"
     assert (repo / ".aq" / "claim.json").exists()
     assert (repo / "work.txt").read_text() == "keep\n"
+
+
+@pytest.mark.parametrize("control", ["pause_task", "stop_task"])
+@pytest.mark.parametrize("continuation", ["restart", "successor", "lost_checkpoint"])
+async def test_claim_retirement_crash_keeps_reservation_until_fenced_retry(
+    env, tmp_path, monkeypatch, control, continuation,
+):
+    import json
+    from src import claim_file
+    from src.orchestrator import retained_workspace
+
+    repo, git, _, _ = await retained_slot(env, tmp_path)
+    (repo / "work.txt").write_text("staged\n")
+    git("add", "work.txt")
+    index = git("write-tree")
+    (repo / "work.txt").write_text("unstaged\n")
+    if control == "stop_task":
+        await command(env, "set_task_status", status="BLOCKED")
+    module = retained_workspace if control == "stop_task" else claim_file
+    remove = module.remove_claim_file_if_matches
+
+    def crash_after_unlink(*args, **kwargs):
+        remove(*args, **kwargs)
+        raise RuntimeError("simulated restart after claim retirement")
+
+    monkeypatch.setattr(module, "remove_claim_file_if_matches", crash_after_unlink)
+    result = await command(env, control)
+    assert "error" in result, result
+    assert not (repo / ".aq" / "claim.json").exists()
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == 0
+    checkpoint = await env.db.get_task_meta("t", "manual_pause_checkpoint")
+    assert checkpoint
+    assert git("show", f"{checkpoint['commit']}:work.txt") == "unstaged"
+    monkeypatch.undo()
+    if continuation == "successor":
+        await env.db.update_workspace("workspace", generation=8)
+        (repo / ".aq" / "claim.json").write_text(json.dumps({
+            "task_id": "peer", "claim_epoch": 99, "session_id": "successor",
+        }))
+    elif continuation == "lost_checkpoint":
+        await env.db.delete_task_meta("t", "manual_pause_checkpoint")
+    reloaded = Orchestrator(env.config)
+    reloaded.db = env.db
+    reloaded.session_providers = env.orch.session_providers
+    handler = CommandHandler(reloaded, env.config)
+    result = await handler.execute(control, {"task_id": "t"})
+    # Pause can recapture its unchanged source from the durable pause snapshot;
+    # stop's permission for a missing marker also requires its prior checkpoint.
+    succeeds = continuation == "restart" or (
+        continuation == "lost_checkpoint" and control == "pause_task"
+    )
+    assert ("error" not in result) is succeeds, result
+    assert await env.db.count_available_workspaces("p", worktree_slot_cap=1) == int(succeeds)
+    assert git("write-tree") == index
+    assert (repo / "work.txt").read_text() == "unstaged\n"
+    if continuation == "successor":
+        assert claim_file.read_claim_file(str(repo))["session_id"] == "successor"
 
 
 @pytest.mark.parametrize("control", ["pause_task", "stop_task"])

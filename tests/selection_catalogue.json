@@ -16521,8 +16521,9 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:8a9d3560022dee951be2e386049f49b5d81dfa56324a553403265162d18fe6cb",
+      "digest": "sha256:181e96c3369a75adfc3a1d660ccbd9b3cbbcc574d79175cfdf91b483031eac12",
       "imports": [
+        "src",
         "src.api.auth",
         "src.api.codegen",
         "src.claim_file",

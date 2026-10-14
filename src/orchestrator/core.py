@@ -1305,18 +1305,21 @@ class Orchestrator(
         def release_sentinel():
             self._validate_paused_workspace_identity(task_id, ws, snapshot)
             self._remove_sentinel(ws.workspace_path)
+            if ws.is_slot:
+                from src.claim_file import remove_claim_file_if_matches
+
+                # Checkpoint persistence already committed. Retire the marker
+                # while the reservation is still locked; a rolled-back release
+                # can repeat Pause using its durable snapshot and fresh proofs.
+                for identity in snapshot["sessions"]:
+                    remove_claim_file_if_matches(
+                        ws.workspace_path, task_id, snapshot["claim_epoch"],
+                        session_id=identity["id"],
+                    )
         await self.db.finish_task_pause(
             task_id, snapshot,
             before_release=release_sentinel if ws else None,
         )
-        if ws and ws.is_slot:
-            from src.claim_file import remove_claim_file_if_matches
-
-            for identity in snapshot["sessions"]:
-                remove_claim_file_if_matches(
-                    ws.workspace_path, task_id, snapshot["claim_epoch"],
-                    session_id=identity["id"],
-                )
         if adapter is not None and self._adapters.get(agent_id) is adapter:
             self._adapters.pop(agent_id, None)
         self._task_exec_start.pop(task_id, None)

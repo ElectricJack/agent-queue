@@ -993,6 +993,17 @@ class TaskQueryMixin:
         if any(ws["slot_index"] is not None for ws in current):
             if (await self._recovery_owner(conn, row))["kind"] != "supervisor":
                 raise PauseFenceError("Integration operation owns the paused workspace cleanup")
+            raw = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == "claim_workspace",
+            ))
+            receipt = json.loads(raw) if raw is not None else None
+            ws = current[0]
+            if not any(identity["agent_id"] == ws["locked_by_agent_id"] and receipt == {
+                "workspace_id": ws["id"], "generation": ws["generation"],
+                "session_id": identity["id"], "instance_token": identity["instance_token"],
+                "claim_epoch": snapshot["claim_epoch"],
+            } for identity in snapshot["sessions"]):
+                raise PauseFenceError("Managed pause acquisition receipt is missing or changed")
         captured_ids = {identity["id"] for identity in snapshot["sessions"]}
         bound_ids = set((await conn.execute(select(sessions.c.id).where(
             sessions.c.task_id == task_id

@@ -113,8 +113,12 @@ the final native owner/session/workspace release. Capture uses fair-vault-95's
 isolated index. A full receipt is required for this release path; partial salvage
 cannot authorize slot reuse. Preserve the original branch-null detached capture;
 restoration needs a separate proved task branch ref tied to the captured HEAD,
-claim and sentinel. The old claim file is retired only after those proofs, with
-exact identity matching. The reusable slot's registration and source remain.
+claim and sentinel. Commit the checkpoint and exact claim-retirement intent
+while retaining the reservation, then retire the matching old claim file under
+the final release transaction's workspace lock. A crash after unlink leaves the
+reservation held and permits a retry only against that durable identity and
+checkpoint, with fresh termination proof. This avoids exposing an available
+slot with a stale claim after a crash. The reusable registration and source remain.
 
 Fresh local process inspection includes both the exact instance marker and
 unmarked processes whose current directory or open descriptors use the source
@@ -123,7 +127,7 @@ Transient process teardown permits at most three complete fresh inventories;
 retry exhaustion remains an unknown result. Neither a missing marker nor a
 historical stopped session is sufficient.
 
-Managed pause snapshots additionally fence acquisition generation, job pins,
+Managed pause snapshots additionally fence the acquisition receipt and generation, job pins,
 integration operation ownership and preparation uncertainty. Full checkpoint
 failure exhausts the automatic retry budget while retaining ownership. Explicit
 `aq task pause <id>` can retry the same source after the missing proof is resolved;
@@ -135,3 +139,38 @@ retry counters and records a `retained_workspace_checkpoint` task context before
 release. A completed stop is idempotent only for the same task identity. A changed
 identity must use the existing recovery owner; deleting the stop receipt, pause
 metadata, claims or locks is not a supported repair.
+
+## Initial candidate verification receipts
+
+Initial candidate: `fbea160ac4699286014dc6dbe72e59613e3f49a0`, preserving the
+required `116134665`, cancellation `18107effe`, and qualified checkpoint
+`5a3e0d9` ancestry. All PostgreSQL checks use the disposable test service on
+localhost:5534.
+
+- Focused: `aq test tests/test_task_controls.py tests/test_session_runtime_units.py
+  tests/test_selection_catalogue.py -q` — 244 passed in 189.62 seconds;
+  `/tmp/wise87-lifecycle-focused-final.log`.
+- Related area: Git manager/mutex/identity; worktree manager, preparation,
+  acquisition, reaper, doctor and capacity; claim commands, session reconciler,
+  workspace attachments, integration owner recovery and handoff; preparation
+  diagnostics, stranded work, task control API and surface commands — 1,536
+  passed and one existing strict xfail in 542.26 seconds;
+  `/tmp/wise87-lifecycle-area.log`. The xfail is
+  `test_verify_skips_the_automerge_under_worktree_mode`, whose existing marker
+  reserves the unfinished phase-three auto-merge behavior.
+- Changed-path Ruff, selection catalogue regeneration and `git diff --check`
+  passed. No full-suite run or live recovery was performed.
+
+The initial fixture mismatch and impossible synchronous pause interleaving
+found during integration were corrected without removing the source fences.
+The claim fixtures now carry acquisition receipts. Preparation holds the
+workspace lock, so a native pause must serialize behind it; the checkpoint
+activation race now uses a supported BLOCKED status transition, and separate
+coverage verifies pause/preparation serialization. Final focused and area runs
+above supersede those intermediate attempts.
+
+Review then identified the release/claim-retirement crash window described
+above. The correction keeps the checkpoint durable before retiring the marker,
+and keeps capacity reserved until marker retirement and database release both
+finish. Restart regressions cover retry, successor acquisition and lost checkpoint
+evidence. Final-source checks for that correction are recorded below when complete.

@@ -152,6 +152,23 @@ async def validate(db, conn, task_id, saved):
     if (await _meta(conn, task_id, STOP_META) != saved
             or await snapshot(db, conn, task_id) != saved["identity"]):
         raise RetainedWorkspaceError("Retained stop identity changed; resources remain held")
+    if saved.get("claim_retirement_pending"):
+        await validate_checkpoint(conn, task_id, saved)
+
+
+async def validate_checkpoint(conn, task_id, saved):
+    checkpoint = await _meta(conn, task_id, "manual_pause_checkpoint")
+    if not checkpoint or checkpoint.get("retained_stop_identity") != saved["identity"]:
+        raise RetainedWorkspaceError("A full, identity-bound checkpoint is required for release")
+
+
+async def prepare_claim_retirement(db, conn, task_id, saved):
+    """Commit preservation and exact unlink intent while all reservations remain held."""
+    await validate(db, conn, task_id, saved)
+    await validate_checkpoint(conn, task_id, saved)
+    saved = saved | {"claim_retirement_pending": True}
+    await db._upsert_meta(task_id, STOP_META, saved, conn=conn)
+    return saved
 
 
 async def save_checkpoint(db, conn, task_id, saved, checkpoint):
@@ -188,9 +205,7 @@ async def finish(db, conn, task_id, saved):
     """Native stopped-holder release without replaying the task state transition."""
     await validate(db, conn, task_id, saved)
     identity = saved["identity"]
-    checkpoint = await _meta(conn, task_id, "manual_pause_checkpoint")
-    if not checkpoint or checkpoint.get("retained_stop_identity") != identity:
-        raise RetainedWorkspaceError("A full, identity-bound checkpoint is required for release")
+    await validate_checkpoint(conn, task_id, saved)
     ws, session = identity["workspace"], identity["session"]
     for owner in identity["owners"]:
         await conn.execute(update(integration_branch_owners).where(
