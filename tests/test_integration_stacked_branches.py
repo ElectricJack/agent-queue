@@ -859,6 +859,46 @@ async def test_open_batch_refreshes_only_its_targets_candidate_window(stack, mon
     assert refresh.call_args.kwargs == {"snapshot": observed}
 
 
+async def test_stack_refresh_quantum_preserves_guards_and_admits_independent_work(stack, monkeypatch):
+    original = await stack_record(stack)
+    await completed(stack.world, "later-child", parent="epic", needs=("first",),
+                    head=stack.child, source_base=stack.first)
+    git(stack.origin.clone, "push", "origin", f"{stack.child}:refs/heads/aq/later-child")
+    await checkpoint(stack.db, "later-child", stack.child)
+    held = {**original, "hold": "prerequisite_reopened_or_unavailable"}
+    async with stack.db.immediate() as conn:
+        await conn.execute(update(task_branch_origins).where(
+            task_branch_origins.c.task_id == "later-child",
+        ).values(stack_snapshot=held))
+    independent = await completed(stack.world, "z-independent", parent="epic")
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    train, _, _ = lane(stack.world, LocalGit(stack.origin.url), target=target)
+    batches, calls, elapsed = train.batches, [], 0.0
+    batches._selection_clock = lambda: elapsed
+    refresh = StackedBranches.refresh
+
+    async def slow_refresh(self, task_id, *args, **kwargs):
+        nonlocal elapsed
+        calls.append(task_id)
+        result = await refresh(self, task_id, *args, **kwargs)
+        elapsed += 61
+        return result
+
+    monkeypatch.setattr(StackedBranches, "refresh", slow_refresh)
+    selected = await batches.open_batch(
+        target, await snapshot(stack.world, target), (await train.lane_for(target)).service,
+    )
+    assert calls == ["child"]
+    assert selected.batch is not None
+    assert {m.task_id for m in selected.members} == {"child", "first", "z-independent"}
+    assert next(m.source_sha for m in selected.members if m.task_id == "z-independent") == independent
+    assert any(b["code"] == "stack_prerequisite_reopened_or_unavailable"
+               and b["task_id"] == "later-child" for b in selected.blockers)
+    assert await stack_record(stack) == original
+    assert git(stack.origin.url, "rev-parse", "refs/heads/aq/child") == stack.child
+    assert await generation(stack.db, "child") == 0
+
+
 @pytest.mark.parametrize("operation", ["reopen", "abandon", "missing", "rewind"])
 async def test_reopened_abandoned_or_unproved_prerequisite_pauses_delivery(stack, operation):
     if operation == "reopen":
