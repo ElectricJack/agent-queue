@@ -113,7 +113,7 @@ def stall_reminder(task_id: str, minutes: int) -> str:
 
 _LIVE_STATES = ("starting", "running", "draining")
 #: Task statuses in which a session still holds the task's claim.
-_HELD_CLAIM_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+_HELD_CLAIM_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING)
 #: Public alias — other modules ask "is this session row live?" too
 #: (``_cmd_task_close`` decides whether verification feedback can be
 #: handed back in place rather than reopening the task).
@@ -590,6 +590,7 @@ class SessionReconciler:
             closed = task is None or task.status not in (
                 TaskStatus.IN_PROGRESS,
                 TaskStatus.ASSIGNED,
+                TaskStatus.WAITING,
             )
             if not closed:
                 await self._premature_drain(provider, row, task, now)

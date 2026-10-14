@@ -193,6 +193,7 @@ tasks = Table(
     Column("title", Text, nullable=False),
     Column("description", Text, nullable=False),
     Column("priority", Integer, nullable=False, server_default="100"),
+    Column("effective_priority", Integer, nullable=False, server_default="100"),
     Column("status", Text, nullable=False, server_default="DEFINED"),
     Column("verification_type", Text, nullable=False, server_default="auto_test"),
     Column("retry_count", Integer, nullable=False, server_default="0"),
@@ -301,9 +302,10 @@ tasks = Table(
     Column("legacy_completion_id", Text, nullable=False,
            server_default=text("'legacy:' || gen_random_uuid()::text")),
     # The §10 pool work query's three access paths.  All three carry
-    # ``priority, created_at`` as their trailing key columns so
-    # ``select_ready_for_profile``'s ``ORDER BY priority, created_at LIMIT 1``
-    # is an index-ordered scan that stops at the first admissible row, rather
+    # ``effective_priority, created_at`` as their trailing key columns for
+    # the wait graph's derived priority ordering (hibernation implementation §5).
+    # The claim reader adopts this order in the admission leaf. An ordered scan
+    # stops at the first admissible row, rather
     # than a materialise-and-sort of the whole frontier: the correlated
     # predicates in ``_frontier_where`` are then evaluated once instead of
     # once per frontier row (2,500 rows -> 10 shared buffers at the §15.2
@@ -325,7 +327,7 @@ tasks = Table(
         "project_id",
         "status",
         "is_blocked",
-        "priority",
+        "effective_priority",
         "created_at",
     ),
     Index(
@@ -334,7 +336,7 @@ tasks = Table(
         "profile_id",
         "status",
         "is_blocked",
-        "priority",
+        "effective_priority",
         "created_at",
     ),
     # The affinity probe.  Partial because affinity is the exception: the
@@ -347,7 +349,7 @@ tasks = Table(
         "project_id",
         "status",
         "is_blocked",
-        "priority",
+        "effective_priority",
         "created_at",
         postgresql_where=text("affinity_agent_id IS NOT NULL"),
     ),
@@ -1310,6 +1312,8 @@ workspace_kinds = Table(
     # JSON-encoded list[str] of shell commands run after a slot is created.
     # Text for SQLite/PG parity, matching the existing JSON-in-Text usage.
     Column("worktree_setup", Text, nullable=False, server_default="[]"),
+    Column("max_slots", Integer, nullable=True),
+    CheckConstraint("max_slots > 0", name="ck_workspace_kinds_max_slots"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
@@ -5562,6 +5566,328 @@ agent_waits = Table(
     Index("idx_agent_waits_scan", "state", "checked_at", "deadline_at"),
     Index("idx_agent_waits_owner", "project_id", "owner_kind", "owner_id", "created_at"),
     Index("idx_agent_waits_session", "session_id", "claim_epoch", "state"),
+)
+
+
+# Verified waits and hibernation state (implementation spec §5). These tables
+# are inert until the v2 readers and writers are enabled by the cutover.
+wait_records = Table(
+    "wait_records",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("origin", Text, nullable=False),
+    Column("session_id", Text, nullable=True),
+    Column("claim_epoch", Integer, nullable=True),
+    Column("condition_kind", Text, nullable=False),
+    Column("condition", JSONB, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("source_generation", Integer, nullable=False),
+    Column("source_watermark_seq", BigInteger, nullable=False),
+    Column("verification_state", Text, nullable=False),
+    Column("evidence_ref", Text, nullable=False),
+    Column("verified_at", Float, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("escalate_at", Float, nullable=True),
+    Column("due_at", Float, nullable=True),
+    Column("ceiling_anchor_at", Float, nullable=True),
+    Column("sleep_decision", Text, nullable=True),
+    Column("decision_reason", Text, nullable=True),
+    Column("decision_inputs", JSONB, nullable=True),
+    Column("idempotency_key", Text, nullable=True),
+    Column("request_hash", Text, nullable=False),
+    Column("claimed", Text, nullable=True),
+    Column("outcome", Text, nullable=False, server_default="pending"),
+    Column("resolved_at", Float, nullable=True),
+    Column("result_ref", Text, nullable=True),
+    Column("blocking", Boolean, nullable=False, server_default=false()),
+    Column("cleared_at", Float, nullable=True),
+    Column("legacy_kind", Text, nullable=True),
+    Column("legacy_id", Text, nullable=True),
+    Column("wake_delivered_at", Float, nullable=True),
+    Column("version", Integer, nullable=False, server_default="1"),
+    CheckConstraint(
+        "owner_kind IN ('task','session','scheduler','playbook','integration')",
+        name="ck_wait_records_owner_kind",
+    ),
+    CheckConstraint(
+        "origin IN ('agent','scheduler','integration','playbook','human')",
+        name="ck_wait_records_origin",
+    ),
+    CheckConstraint(
+        "condition_kind IN ('task','dependency','job','ci_check','ci_run','pull_request',"
+        "'batch','message','human','timer','resource','playbook_condition')",
+        name="ck_wait_records_condition_kind",
+    ),
+    CheckConstraint(
+        "verification_state IN ('verified','stale','unavailable')",
+        name="ck_wait_records_verification_state",
+    ),
+    CheckConstraint(
+        "sleep_decision IN ('in_place','hibernate')", name="ck_wait_records_sleep_decision"
+    ),
+    CheckConstraint(
+        "outcome IN ('pending','satisfied','cancelled','lifted_by_supervisor','source_unavailable')",
+        name="ck_wait_records_outcome",
+    ),
+    Index(
+        "uq_wait_records_active_owner",
+        "owner_kind",
+        "owner_id",
+        unique=True,
+        postgresql_where=text("outcome = 'pending' AND origin <> 'scheduler'"),
+    ),
+    Index(
+        "uq_wait_records_idempotency",
+        "project_id",
+        "owner_kind",
+        "owner_id",
+        "claim_epoch",
+        "idempotency_key",
+        unique=True,
+        postgresql_where=text("idempotency_key IS NOT NULL"),
+    ),
+    Index(
+        "uq_wait_records_scheduler_blocker",
+        "owner_kind",
+        "owner_id",
+        "source_key",
+        "source_generation",
+        unique=True,
+        postgresql_where=text("origin = 'scheduler'"),
+    ),
+    Index(
+        "uq_wait_records_legacy",
+        "legacy_kind",
+        "legacy_id",
+        unique=True,
+        postgresql_where=text("legacy_id IS NOT NULL"),
+    ),
+    Index(
+        "idx_wait_records_source",
+        "source_key",
+        "source_generation",
+        postgresql_where=text("outcome = 'pending'"),
+    ),
+    Index(
+        "idx_wait_records_project_pending",
+        "project_id",
+        "created_at",
+        postgresql_where=text("outcome = 'pending'"),
+    ),
+)
+
+wait_edges = Table(
+    "wait_edges",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("waiter_key", Text, nullable=False),
+    Column("waiter_project_id", Text, nullable=False),
+    Column("blocker_key", Text, nullable=False),
+    Column("blocker_project_id", Text, nullable=False),
+    Column("relation", Text, nullable=False),
+    Column("source_revision", Text, nullable=False),
+    Column("active", Boolean, nullable=False, server_default=true()),
+    Column("created_at", Float, nullable=False),
+    Column("cleared_at", Float, nullable=True),
+    CheckConstraint("relation IN ('semantic','resource')", name="ck_wait_edges_relation"),
+    Index("idx_wait_edges_waiter", "waiter_key", postgresql_where=text("active")),
+    Index("idx_wait_edges_blocker", "blocker_key", postgresql_where=text("active")),
+)
+
+wait_source_events = Table(
+    "wait_source_events",
+    metadata,
+    Column("seq", BigInteger, Identity(), primary_key=True),
+    Column("id", Text, nullable=False),
+    Column("source_key", Text, nullable=False),
+    Column("source_generation", Integer, nullable=False),
+    Column("source_revision", Text, nullable=False),
+    Column("occurred_at", Float, nullable=False),
+    Column("committed_at", Float, nullable=False),
+    Column("outcome_ref", Text, nullable=False),
+    Column("payload_hash", Text, nullable=False),
+    Column("payload", JSONB, nullable=False),
+    Column("dispatched_at", Float, nullable=True),
+    UniqueConstraint("id", name="uq_wait_source_events_id"),
+    UniqueConstraint(
+        "source_key", "source_generation", "source_revision", name="uq_wait_source_events_revision"
+    ),
+    Index(
+        "idx_wait_source_events_undispatched",
+        "seq",
+        postgresql_where=text("dispatched_at IS NULL"),
+    ),
+)
+
+wait_listener_cursors = Table(
+    "wait_listener_cursors",
+    metadata,
+    Column("listener_key", Text, primary_key=True),
+    Column("last_seq", BigInteger, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("listener_key IN ('source','timer')", name="ck_wait_listener_cursors_key"),
+)
+
+wait_deadlines = Table(
+    "wait_deadlines",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("deadline_type", Text, nullable=False),
+    Column("due_at", Float, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("fired_at", Float, nullable=True),
+    Column("cancelled_at", Float, nullable=True),
+    CheckConstraint(
+        "deadline_type IN ('due','escalation','ceiling','transition','reservation')",
+        name="ck_wait_deadlines_type",
+    ),
+    UniqueConstraint(
+        "wait_id", "deadline_type", "generation", name="uq_wait_deadlines_wait_type_gen"
+    ),
+    Index(
+        "idx_wait_deadlines_due",
+        "due_at",
+        postgresql_where=text("fired_at IS NULL AND cancelled_at IS NULL"),
+    ),
+)
+
+wait_escalations = Table(
+    "wait_escalations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("escalation_id", Text, ForeignKey("escalations.id"), nullable=False),
+    Column("raised_at", Float, nullable=False),
+    Column("original_age_seconds", Float, nullable=False),
+    Column("supervisor_session_id", Text, nullable=True),
+    Column("decision", Text, nullable=True),
+    Column("decided_at", Float, nullable=True),
+    Column("note", Text, nullable=True),
+    Column("prior_escalation_id", Text, nullable=True),
+    CheckConstraint(
+        "decision IN ('extend','wake','cancel','reroute','escalate_to_human')",
+        name="ck_wait_escalations_decision",
+    ),
+)
+
+continuations = Table(
+    "continuations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("task_id", Text, ForeignKey("tasks.id"), nullable=False),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("suspension_generation", Integer, nullable=False),
+    Column("summary", Text, nullable=True),
+    Column("summary_sha256", Text, nullable=True),
+    Column("summary_degraded", Boolean, nullable=False, server_default=false()),
+    Column("facts", JSONB, nullable=False),
+    Column("branch", Text, nullable=False),
+    Column("saved_head", Text, nullable=True),
+    Column("prior_status", Text, nullable=False),
+    Column("held_cursor_seq", BigInteger, nullable=False),
+    Column("resume_state", Text, nullable=False),
+    Column("hold_reason", Text, nullable=True),
+    Column("launch_attempts", Integer, nullable=False, server_default="0"),
+    Column("new_session_id", Text, nullable=True),
+    Column("envelope_id", Text, nullable=True),
+    Column("created_at", Float, nullable=True),
+    Column("stopped_at", Float, nullable=True),
+    Column("resumed_at", Float, nullable=True),
+    Column("acknowledged_at", Float, nullable=True),
+    Column("version", Integer, nullable=False, server_default="1"),
+    CheckConstraint(
+        "resume_state IN ('sleeping','queued','reserved','launching','delivered',"
+        "'acknowledged','held','failed','cancelled')",
+        name="ck_continuations_resume_state",
+    ),
+    CheckConstraint("octet_length(summary) <= 8192", name="ck_continuations_summary_bytes"),
+    Index(
+        "uq_continuations_active_task",
+        "task_id",
+        unique=True,
+        postgresql_where=text("resume_state NOT IN ('acknowledged','failed','cancelled')"),
+    ),
+    UniqueConstraint("wait_id", "suspension_generation", name="uq_continuations_intent"),
+)
+
+admission_reservations = Table(
+    "admission_reservations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("task_id", Text, ForeignKey("tasks.id"), nullable=True),
+    Column("continuation_id", Text, ForeignKey("continuations.id"), nullable=True),
+    Column("scope", JSONB, nullable=False),
+    Column("effective_priority", Integer, nullable=False),
+    Column("provenance", Text, nullable=False),
+    Column("deadline_at", Float, nullable=False),
+    Column("fifo_seq", BigInteger, Identity(), nullable=False),
+    Column("state", Text, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("consumed_by_session_id", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("granted_at", Float, nullable=True),
+    Column("consumed_at", Float, nullable=True),
+    CheckConstraint(
+        "provenance IN ('branch_blocker','resume','train_repair')",
+        name="ck_admission_reservations_provenance",
+    ),
+    CheckConstraint(
+        "state IN ('pending','overdue','granted','consumed','cancelled')",
+        name="ck_admission_reservations_state",
+    ),
+    Index(
+        "uq_admission_reservations_subject",
+        text("COALESCE(task_id, continuation_id)"),
+        unique=True,
+        postgresql_where=text("state IN ('pending','overdue','granted')"),
+    ),
+)
+
+wait_measurements = Table(
+    "wait_measurements",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("condition_kind", Text, nullable=False),
+    Column("source_class", Text, nullable=False),
+    Column("wait_id", Text, ForeignKey("wait_records.id"), nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("waited_seconds", Float, nullable=False),
+    Column("hibernated", Boolean, nullable=False),
+    Column("evicted", Boolean, nullable=False),
+    Column("summary_tokens", Integer, nullable=True),
+    Column("resume_tokens", Integer, nullable=True),
+    Column("teardown_seconds", Float, nullable=True),
+    Column("setup_seconds", Float, nullable=True),
+    Column("rebuild_seconds", Float, nullable=True),
+    Column("recorded_at", Float, nullable=False),
+    Index(
+        "idx_wait_measurements_bucket",
+        "project_id",
+        "condition_kind",
+        "source_class",
+        "recorded_at",
+    ),
+)
+
+wait_priority_projection = Table(
+    "wait_priority_projection",
+    metadata,
+    Column("task_id", Text, ForeignKey("tasks.id"), primary_key=True),
+    Column("donor_task_id", Text, nullable=True),
+    Column("donor_path", JSONB, nullable=False),
+    Column("graph_version", BigInteger, nullable=False),
+    Column("computed_at", Float, nullable=False),
 )
 
 

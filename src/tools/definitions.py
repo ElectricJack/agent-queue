@@ -6,6 +6,8 @@ These are pure data — no logic.
 
 from __future__ import annotations
 
+from src.models import TaskStatus
+
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
@@ -2483,8 +2485,10 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["DEFINED", "READY", "IN_PROGRESS", "COMPLETED", "FAILED", "BLOCKED"],
-                    "description": "New status — admin override, bypasses state machine (optional)",
+                    "enum": [status.value for status in TaskStatus],
+                    "description": (
+                        "New lifecycle status (optional); suspended states require wait controls"
+                    ),
                 },
                 "max_retries": {"type": "integer", "description": "Max retry attempts (optional)"},
                 "verification_type": {
