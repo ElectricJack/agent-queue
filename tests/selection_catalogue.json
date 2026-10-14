@@ -17631,13 +17631,16 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:db1caf6cdf76b687cc0649cb33c6458545758315ede11f65c5fc890b2c4d6730",
+      "digest": "sha256:83d00ffd0e8dc7ed68105b80377377e0b7b22ddb162228f7369d7585cb3732c9",
       "imports": [
         "src.api.auth",
         "src.api.scope",
+        "src.asks.batch_scope",
         "src.asks.operations",
         "src.commands",
+        "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.principal",
         "src.commands.proposal_commands",
         "src.database.queries",
         "src.database.queries.ingest_batch_queries",
@@ -17646,6 +17649,7 @@
         "src.event_schemas",
         "src.models",
         "src.orchestrator.events",
+        "src.profiles.capabilities",
         "src.vault"
       ],
       "markers": [

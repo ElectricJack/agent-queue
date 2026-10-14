@@ -548,6 +548,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_restart`](supervisor_restart.md) | Supervisor Restart | Execute the supervisor_restart command. |
 | [`task_batch_discard`](task_batch_discard.md) | Task Batch Discard | Execute the task_batch_discard command. |
 | [`task_batch_propose`](task_batch_propose.md) | Task Batch Propose | Execute the task_batch_propose command. |
+| [`task_batch_release`](task_batch_release.md) | Release a reviewed ingestion batch | Verify source approval, the live graph and its fidelity receipt before release. |
 | [`task_batch_review_record`](task_batch_review_record.md) | Record a batch fidelity review | Attest every mapped section and whole-batch intent on the exact held graph. |
 | [`task_batch_update`](task_batch_update.md) | Task Batch Update | Execute the task_batch_update command. |
 | [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
