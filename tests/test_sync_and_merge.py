@@ -52,6 +52,18 @@ def _current_branch(cwd: str) -> str:
     return _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
 
 
+def _disable_auto_maintenance(repo: str) -> None:
+    # Detached maintenance can remove objects/maintenance.lock while copytree
+    # reads the seed. Configure both repos locally: caller -c settings do not
+    # reach receive-pack over the local transport during the initial push.
+    for key, value in (
+        ("maintenance.auto", "false"),
+        ("gc.auto", "0"),
+        ("receive.autogc", "false"),
+    ):
+        _git(["config", "--local", key, value], cwd=repo)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -67,12 +79,14 @@ def _git_repo_seed(tmp_path_factory):
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(str(remote))
     clone = tmp_path / "clone"
     subprocess.run(
         ["git", "clone", str(remote), str(clone)],
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(str(clone))
     # Initial commit
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
@@ -100,6 +114,15 @@ def git_repo(tmp_path, _git_repo_seed):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_seed_and_copies_disable_auto_maintenance(_git_repo_seed, git_repo):
+    """Seed and copied repos stay safe to snapshot, including receive-pack."""
+    for repos in (_git_repo_seed, git_repo):
+        for repo in repos.values():
+            assert _git(["config", "--local", "--bool", "maintenance.auto"], cwd=repo) == "false"
+            assert _git(["config", "--local", "--int", "gc.auto"], cwd=repo) == "0"
+            assert _git(["config", "--local", "--bool", "receive.autogc"], cwd=repo) == "false"
 
 
 class TestSyncAndMerge:
