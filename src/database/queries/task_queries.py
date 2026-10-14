@@ -35,6 +35,7 @@ from src.database.queries.blocked_state import (
     apply_label_filters,
 )
 from src.database.tables import (
+    admission_reservations,
     agents,
     archived_tasks,
     continuations,
@@ -61,6 +62,7 @@ from src.database.tables import (
     task_tools,
     task_workspace_requirements,
     tasks,
+    wait_priority_projection,
     wait_records,
     workspaces,
 )
@@ -2230,6 +2232,20 @@ class TaskQueryMixin:
         await conn.execute(delete(task_metadata).where(task_metadata.c.task_id == task_id))
         await conn.execute(delete(task_labels).where(task_labels.c.task_id == task_id))
         await conn.execute(delete(task_tools).where(task_tools.c.task_id == task_id))
+        # Verified-wait rows owned by the task: its priority projection, its
+        # admission reservations (direct or through a continuation), then the
+        # continuations themselves. The wait records stay as graph history.
+        await conn.execute(
+            delete(wait_priority_projection).where(wait_priority_projection.c.task_id == task_id)
+        )
+        task_continuations = select(continuations.c.id).where(continuations.c.task_id == task_id)
+        await conn.execute(
+            delete(admission_reservations).where(
+                (admission_reservations.c.task_id == task_id)
+                | admission_reservations.c.continuation_id.in_(task_continuations)
+            )
+        )
+        await conn.execute(delete(continuations).where(continuations.c.task_id == task_id))
         # Layout rows reference ``tasks.id`` with a plain FK, so they must go
         # before the task row — on both the delete and the archive path
         # (``_archive_one`` reuses this cleanup).  The layout driver re-lays

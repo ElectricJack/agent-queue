@@ -47,7 +47,9 @@ from src.database.tables import (
 #: * ``"history"``  — durable integration audit retained by archive and audited
 #:   operator deletion; unaudited system deletion is refused by the removal guard.
 TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
+    ("admission_reservations", "task_id"): "deleted",
     ("agents", "current_task_id"): "nulled",
+    ("continuations", "task_id"): "deleted",
     ("integration_candidate_resolutions", "repair_task_id"): "history",
     ("integration_parent_episodes", "parent_task_id"): "history",
     ("integration_parent_verifications", "parent_task_id"): "history",
@@ -69,6 +71,7 @@ TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
     ("task_tools", "task_id"): "deleted",
     ("task_workspace_requirements", "task_id"): "deleted",
     ("tasks", "parent_task_id"): "subtree",
+    ("wait_priority_projection", "task_id"): "deleted",
     ("workspaces", "locked_by_task_id"): "released",
 }
 

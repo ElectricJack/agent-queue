@@ -25,8 +25,13 @@ from sqlalchemy import insert, select
 from src.database.queries.blocked_state import blocked_predicate
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import gates, task_dependencies, task_gates, tasks as tasks_t
-from src.models import DepType, Project, Task, TaskStatus
-from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge, validate_waits_for
+from src.models import SUSPENDED_TASK_STATUSES, DepType, Project, Task, TaskStatus
+from src.state_machine import (
+    CyclicDependencyError,
+    InvalidTransition,
+    validate_dag_with_new_edge,
+    validate_waits_for,
+)
 
 
 PROJECT = "p-wg"
@@ -692,8 +697,14 @@ class TestRecomputeProperty:
                 from src.database.queries.task_queries import ManualPauseActive
 
                 previous = await db.get_task(tid)
+                target = rng.choice(statuses)
                 try:
-                    await db.transition_task(tid, rng.choice(statuses))
+                    await db.transition_task(tid, target)
+                except InvalidTransition:
+                    # Invalid moves into or out of suspended work are always
+                    # refused, leaving the task where it was.
+                    assert {previous.status, target} & SUSPENDED_TASK_STATUSES
+                    assert (await db.get_task(tid)).status == previous.status
                 except ManualPauseActive:
                     # Random automatic transitions cannot override a manual hold.
                     assert previous.status == TaskStatus.PAUSED

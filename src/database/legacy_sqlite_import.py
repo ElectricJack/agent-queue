@@ -252,6 +252,18 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "record_compatibility_usage",
         # Per-API-call transcript usage maxima shipped in revision 56.
         "transcript_usage_calls",
+        # Verified waits, continuations and resume admission shipped in
+        # PostgreSQL revision 97; legacy files have no wait graph or hibernation state.
+        "wait_records",
+        "wait_edges",
+        "wait_source_events",
+        "wait_listener_cursors",
+        "wait_deadlines",
+        "wait_escalations",
+        "wait_measurements",
+        "wait_priority_projection",
+        "continuations",
+        "admission_reservations",
     }
 )
 

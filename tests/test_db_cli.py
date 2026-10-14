@@ -493,6 +493,16 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         await conn.execute(text("INSERT INTO integration_batches VALUES ('original')"))
         # Migration a00000000085 adds promotion_flow to this restored table.
         await conn.execute(text("CREATE TABLE projects (id text PRIMARY KEY)"))
+        # Migration a00000000097 references escalations, seeds
+        # tasks.effective_priority from tasks.priority and indexes the claim
+        # frontier columns.
+        await conn.execute(text("CREATE TABLE escalations (id text PRIMARY KEY)"))
+        await conn.execute(text(
+            "ALTER TABLE tasks ADD COLUMN priority integer NOT NULL DEFAULT 100, "
+            "ADD COLUMN project_id text, ADD COLUMN profile_id text, "
+            "ADD COLUMN affinity_agent_id text, ADD COLUMN status text, "
+            "ADD COLUMN is_blocked integer"
+        ))
     dump = tmp_path / "older.dump"
     assert (await invoke("db", "backup", str(dump))).exit_code == 0
     clients = await backup.postgres_clients(config.database.url)
