@@ -591,10 +591,6 @@ repository lock waits. Command arguments and credentials are omitted. The claim
 response carries `claim_timing`; task explain and its dashboard show live progress
 and the last completed timing saved in task metadata. Nested totals are inclusive,
 not additive. Diagnostics cannot change a claim outcome if their persistence fails.
-Completed timing persistence uses one atomic metadata upsert in a separate
-transaction after activation. Statement-budget tests count this diagnostic write
-separately (one statement and one checkout), retaining the existing claim and
-selection transaction budgets. End-to-end latency accounting includes both costs.
 A locally available exact origin SHA needs no full origin fetch when resetting
 an exact target to that immutable commit. Child preservation, retry/continuation
 branches, branch-valued origins and missing origins still refresh remote refs. All origin, owner, retained-source,

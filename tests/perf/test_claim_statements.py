@@ -5,10 +5,6 @@ the claim transaction alone; ``_apply_transition``, activation and metadata
 bring the whole command to a larger budget.  The measured numbers are
 recorded in each test's docstring.
 
-Completed preparation timing adds one metadata upsert in its own transaction
-after activation. It is counted and bounded separately from the existing claim
-budgets; the round-trip latency floor includes that statement and checkout.
-
 Ruling P2-7: ``any_db`` (``tests/perf/conftest.py``) leases one PostgreSQL
 database -- the only supported backend -- at
 ``seed_scale(n_tasks=5000, profile_id="worker")``.  Every number recorded
@@ -43,10 +39,8 @@ from __future__ import annotations
 
 import re
 import time
-from contextlib import asynccontextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import event, text
@@ -78,59 +72,6 @@ NOW = time.time()
 #: these, so a pre-read added without updating this constant would otherwise
 #: be charged to the transaction.
 _OUTER_PRE_READS = 3
-
-
-_persisting_diagnostics = ContextVar("counting_claim_diagnostics", default=False)
-
-
-@asynccontextmanager
-async def observe_claim_diagnostics(db):
-    """Identify completed timing writes without modifying production timing state."""
-    original = db.set_task_meta
-
-    async def persist(task_id, key, value):
-        token = _persisting_diagnostics.set(key == "claim_timing")
-        try:
-            return await original(task_id, key, value)
-        finally:
-            _persisting_diagnostics.reset(token)
-
-    with patch.object(db, "set_task_meta", persist):
-        yield
-
-
-@asynccontextmanager
-async def count_claim_statements(db):
-    """Keep the existing claim budget and independently bound its new diagnostics.
-
-    The completed timing is saved after activation, in an isolated transaction:
-    a diagnostic failure must never roll back a usable claim. Count that write
-    explicitly rather than charging it to the selection transaction stubbed by
-    ``test_claim_transaction_statement_budget``.
-    """
-    diagnostics = {"statements": 0, "transactions": 0}
-    counts = {"n": 0, "statements": []}
-
-    def statement(conn, cursor, sql, parameters, context, executemany):
-        if _persisting_diagnostics.get():
-            diagnostics["statements"] += 1
-        else:
-            counts["n"] += 1
-            counts["statements"].append(sql)
-
-    def checkout(dbapi_connection, record, proxy):
-        diagnostics["transactions"] += int(_persisting_diagnostics.get())
-
-    engine = db._engine.sync_engine
-    event.listen(engine, "before_cursor_execute", statement)
-    event.listen(engine.pool, "checkout", checkout)
-    try:
-        async with observe_claim_diagnostics(db):
-            yield counts
-        assert diagnostics == {"statements": 1, "transactions": 1}, diagnostics
-    finally:
-        event.remove(engine, "before_cursor_execute", statement)
-        event.remove(engine.pool, "checkout", checkout)
 
 
 def _over(n: int, budget: int, statements) -> str:
@@ -368,7 +309,7 @@ class TestClaimStatementBudgets:
         sid, _wd = await pool_session(any_db, tmp_path)
         handler = await build_handler(any_db, tmp_path)
         h = scoped(handler, sid)
-        async with count_claim_statements(any_db) as c:
+        async with count_statements(any_db) as c:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
         budget = 20  # keep in step with ``CLAIM_STATEMENTS`` below
@@ -413,7 +354,7 @@ class TestClaimStatementBudgets:
             return {"success": True, "result": "claimed", "task": None, "claim_epoch": None}
 
         h._prepare_and_activate = _fake_prepare
-        async with count_claim_statements(any_db) as c:
+        async with count_statements(any_db) as c:
             res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
         assert prepared["task"] is not None
@@ -639,11 +580,8 @@ CLAIM_STATEMENTS = 20
 CLAIM_TRANSACTIONS = 4
 RELEASE_STATEMENTS = 10  # includes the fenced-lease release
 RELEASE_TRANSACTIONS = 2
-# Completed preparation diagnostics have their own isolated transaction.
-DIAGNOSTIC_STATEMENTS = 1
-DIAGNOSTIC_TRANSACTIONS = 1
-ROUND_TRIP_STATEMENTS = CLAIM_STATEMENTS + DIAGNOSTIC_STATEMENTS + RELEASE_STATEMENTS
-ROUND_TRIP_TRANSACTIONS = CLAIM_TRANSACTIONS + DIAGNOSTIC_TRANSACTIONS + RELEASE_TRANSACTIONS
+ROUND_TRIP_STATEMENTS = CLAIM_STATEMENTS + RELEASE_STATEMENTS
+ROUND_TRIP_TRANSACTIONS = CLAIM_TRANSACTIONS + RELEASE_TRANSACTIONS
 
 #: How much of the claim/release round trip may be work rather than wire,
 #: as a multiple of the floor those two budgets imply.  Measured across
@@ -677,25 +615,20 @@ async def measure_round_trip_shape(db, h, sid) -> dict:
     takes a fresh pooled connection.
     """
     counts = {"claim_statements": 0, "claim_transactions": 0}
-    diagnostics = {"statements": 0, "transactions": 0}
     bucket = {"statements": 0, "transactions": 0}
 
     def _statement(conn, cursor, statement, parameters, context, executemany):
-        target = diagnostics if _persisting_diagnostics.get() else bucket
-        target["statements"] += 1
+        bucket["statements"] += 1
 
     def _checkout(dbapi_connection, record, proxy):
-        target = diagnostics if _persisting_diagnostics.get() else bucket
-        target["transactions"] += 1
+        bucket["transactions"] += 1
 
     sync_engine = db._engine.sync_engine
     event.listen(sync_engine, "before_cursor_execute", _statement)
     event.listen(sync_engine.pool, "checkout", _checkout)
     try:
-        async with observe_claim_diagnostics(db):
-            res = await h._cmd_task_claim({"next": True})
+        res = await h._cmd_task_claim({"next": True})
         assert res["result"] == "claimed"
-        assert diagnostics == {"statements": 1, "transactions": 1}, diagnostics
         counts["claim_statements"] = bucket["statements"]
         counts["claim_transactions"] = bucket["transactions"]
         bucket["statements"] = bucket["transactions"] = 0
