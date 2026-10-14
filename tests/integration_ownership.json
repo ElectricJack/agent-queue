@@ -8674,6 +8674,21 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin.recover_orphaned_integration_task": {
+      "reason": "Stopped pool orphan recovery delegates to fenced integration owner recovery only after exact session, epoch, agent, workspace, repository, branch and supervisor guards. Preserves retained bindings on refusal and emits ordinary task evidence after proven release; no new journal or publication path."
+    },
+    "src/commands/task_commands.py::import from src.models import BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, AgentState, DepType, ProjectStatus, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Existing charged task-command model import now includes agent and project state guards for integration orphan recovery; enum vocabulary adds no storage or publication authority."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Claim preparation repairs an idle misplaced workspace lock under row locks. Refuses retained integration attachments, other live sessions, claim files and job pins before moving ordinary lock fields; no ref mutation or integration lifecycle storage."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Existing charged claim-query table import adds job_workspace_pins to prevent workspace lock repair over retained jobs; integration tables and their adapter remain charged."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only integration attachment and job-pin probe prevents missing-slot recreation from destroying retained writer evidence; no ref mutation or new storage."
     }
   },
   "exclusions": {
@@ -12693,7 +12708,12 @@
     "9286d2bd1ed4411cd57a776c216ccdab9a808647171f01039fb1e90e87b09cf4",
     "b21c32a8c394481661c22adf29429a69efe6e8843c531d2b8af8fb89418cf26c",
     "e0fc1cf5330bca638663d64d9289f82cf88987cea25879f3fee7aeec1ea328cf",
-    "ea6455ddf2f8a1e47396f7ca3a0ab733b9e6c43f24b60ce8072fbb5bbf37c3ad"
+    "ea6455ddf2f8a1e47396f7ca3a0ab733b9e6c43f24b60ce8072fbb5bbf37c3ad",
+    "d182371d645e692858957e59809f158abd1e533d01ca24f20cfa770be91c6c4f",
+    "e48ca4643e4ce9358e4b30188d9efe95b46df12231507a4bdaa8d8d61a6d6bd6",
+    "506027d4d7d2b4361555e56f5d57fe9f048c086036c3427b72c399b5226103ed",
+    "ac21808518fb762e3d0303005059a004f02ce73ee397f42457addba250bf1423",
+    "727333120b63a0f3a82efbb005d07d5efb43a59d1ea3a440f2e92fa6a4c6de66"
   ],
   "owned_file_fingerprints": [
     "020e0abc4dae8c8c3a3671fab609db3a5b1308dba6bd380a94fccfb591c63c4d",
@@ -12935,22 +12955,22 @@
       "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
-      "line": 1362,
+      "line": 1459,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary attention marker when permanent preparation failure cannot safely detach an attached writer; PostgreSQL contention bypasses this write. Metadata key: 'needs_attention'; contains no remote OIDs, publication intent or ref replay authority."
+      "reason": "Unchanged ordinary needs_attention marker after permanent preparation failure cannot detach a writer. Re-reviewed enclosing handler diagnostics preserve retained attachments and database-contention guards; no ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": {
-      "line": 1315,
+      "line": 1412,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary claim-preparation attention marker when the repair target is confirmed absent and the managed fence cannot be released. Metadata key: 'needs_attention'; records repair_target_unpublished without remote OIDs, publication intent or ref replay authority."
+      "reason": "Unchanged ordinary repair_target_unpublished attention marker when the managed fence cannot be released. Re-reviewed after preparation diagnostics; no remote OID, publication intent or ref replay authority."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._recover_stale_binding::4da77d287ab4d26107e389b895bb84e501975a032a135aa4074cb2a9dd28a70c": {
       "line": 924,
@@ -14324,10 +14344,10 @@
       "line": 1451,
       "owner": "Orchestrator._stop_task_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "86ab85667e0a3358fe4e2760c7beb3510a31a23d4483b39d936531f4cf35234d",
+      "owner_fingerprint": "85e35be52272325eead4d4c17ac1a4390dd67acb06ef3080d25e249a0c4d269c",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Diagnostic needs_attention=integration_handoff_unproven marker after a refused stop handoff; resources stay bound. Re-reviewed after exact-session stop confirmation was added before assignment/workspace release: this diagnostic write is unchanged. Stores no ref/SHA, replay intent or duplicate lifecycle authority."
+      "reason": "Unchanged ordinary integration_handoff_unproven attention marker on refused stop handoff. Re-reviewed after allowing both train and hierarchy modes: stopped-writer proof still precedes resource release, with no new journal or ref replay authority."
     },
     "src/orchestrator/core.py::Orchestrator._sweep_gates::09a8c81adcd7b86401088dbc04f5d3e98384c7378264232630db2ae930f309f5": {
       "line": 3249,
@@ -14771,13 +14791,13 @@
       "reason": "Existing ordinary stuck-worker attention metadata; reviewed the owner change introducing claim-fenced recovery, without adding integration lifecycle state or replay authority."
     },
     "src/sessions/reconciler.py::SessionReconciler._step_orphans::bd56abe22d01405d7daf3f367c989c6039944b48df86b62d01fd17e0697a3b6d": {
-      "line": 2552,
+      "line": 2605,
       "owner": "SessionReconciler._step_orphans",
       "call": "set_task_meta",
-      "owner_fingerprint": "b4f8268b0e205d6092ffc0d2a404691c06c2a33e08a8f3a9cf1d83021eeb0ddb",
+      "owner_fingerprint": "003f8245704ad48ba075e2da5136501b0c3b91ee2d7625811e048df96693c0b7",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Ordinary session orphan attention state; missing-session assignments now delegate to the fenced recovery command. Existing attention metadata remains unchanged, with no ref replay authority."
+      "reason": "Unchanged ordinary session_not_live attention marker. Stopped integration writers now delegate to exact-identity fenced recovery before fallback; refusal retains bindings and bypasses this marker. No ref replay or duplicate integration lifecycle storage."
     },
     "src/sessions/reconciler.py::SessionReconciler._step_stall_ladder::2fc410e5e6cb875696994311109b55067ff1da9123f3889244bb579af7fdf5d0": {
       "line": 2342,
@@ -14987,13 +15007,13 @@
       "reason": "Audit of an epic refresh the train started because the epic's root PR conflicts with the default branch, with the PR URL and the (epic head, default head) pair. The deterministic frozen refresh batch is the once-per-pair record; this event cannot replay refs or authorize delivery."
     },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": {
-      "line": 1276,
+      "line": 1374,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
       "call": "set_task_meta",
-      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
       "integration_signal": true,
       "disposition": "ordinary",
-      "reason": "Records a named preparation hold when a retained attachment cannot be safely released; ordinary claim diagnostic, never Git publication or ref replay authority."
+      "reason": "Ordinary attention marker for a refused prerequisite handoff. Re-reviewed after richer preparation diagnostics: retained bindings remain guarded, and this marker stores no ref replay or publication authority."
     },
     "src/integration/cutover.py::_Activation.write_on::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
       "call": "insert",
@@ -15291,6 +15311,33 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Deletes the claimed_by_session record a durably stopped writer left on a task the operator closes (azure-beacon-38); ordinary claim lifecycle, no ref replay or duplicate integration lifecycle storage."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::aa66b0c4bf394b454a55b04b3048c4ae854edc5b7c2e7dcc2bdeb6a61fa2e5b1": {
+      "line": 1094,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "call": "set_task_meta",
+      "owner_fingerprint": "5320f339dd4403a0b643d4cd1d80c453fcd0e62e4f25d3ae07da6ef69c3a5f35",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary branch-fence preparation diagnostic now includes bounded exception text and workspace identity. Branch and repository identify the incident, not a remote OID or replay intent; recovery remains the dedicated fenced owner service."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::5f457951c70bf9a85748058a4541961a976c9d242448650882070b61af58ba61": {
+      "line": 1354,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary claim_preparation_failure diagnosis records bounded exception text, exception type, workspace path/id, exact session and epoch, and time. Evidence explains an infrastructure refusal; it adds no remote OID, publication intent or duplicate integration lifecycle authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::64d9070466d052e67a1a96dd3a40b4a768057d1acb08c0c4e390c117e3eb58e7": {
+      "line": 1473,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "cb140f298160c8324c6cb626611251fe21364b75df8b25fece265417ed928df0",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary slot_reset_failure retry diagnosis now uses bounded preparation exception text and workspace identity. Existing attempt count and manual/automatic hint preserve the bounded failure ladder; no ref replay or duplicate integration lifecycle storage."
     }
   },
   "generic_dependencies": {

@@ -9745,6 +9745,21 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/commands/task_commands.py::TaskCommandsMixin.recover_orphaned_integration_task": {
+      "reason": "Stopped pool orphan recovery delegates to fenced integration owner recovery only after exact session, epoch, agent, workspace, repository, branch and supervisor guards. Preserves retained bindings on refusal and emits ordinary task evidence after proven release; no new journal or publication path."
+    },
+    "src/commands/task_commands.py::import from src.models import BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, AgentState, DepType, ProjectStatus, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Existing charged task-command model import now includes agent and project state guards for integration orphan recovery; enum vocabulary adds no storage or publication authority."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Claim preparation repairs an idle misplaced workspace lock under row locks. Refuses retained integration attachments, other live sessions, claim files and job pins before moving ordinary lock fields; no ref mutation or integration lifecycle storage."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Existing charged claim-query table import adds job_workspace_pins to prevent workspace lock repair over retained jobs; integration tables and their adapter remain charged."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only integration attachment and job-pin probe prevents missing-slot recreation from destroying retained writer evidence; no ref mutation or new storage."
     }
   },
   "shared_state": {
@@ -10442,5 +10457,31 @@
     "refreshed_owner_fingerprints": 12,
     "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
     "reason": "The review-revision completion gate reads existing review-response metadata and persisted review revisions before any completion side effect. All 12 task-close write-call AST identities and ordinary-storage dispositions are unchanged from the parent commit; only source lines and the enclosing handler fingerprint changed. No ref-replay journal, duplicate lifecycle storage or new metadata writer was added. Immutable baseline, landing measurements, allowance and caps remain unchanged."
+  },
+  "orphaned_train_writer_source_ci_repair": {
+    "source_head": "a69cbcce9adc4d745b3da5940b4a461e706a1676",
+    "failed_jobs": [
+      "https://github.com/ElectricJack/agent-queue/actions/runs/38515779277/job/115694131770",
+      "https://github.com/ElectricJack/agent-queue/actions/runs/38515779277/job/115694131804",
+      "https://github.com/ElectricJack/agent-queue/actions/runs/38515779277/job/115694131903"
+    ],
+    "owned_definition_additions": {
+      "src/commands/task_commands.py::TaskCommandsMixin.recover_orphaned_integration_task": "Stopped pool orphan recovery delegates to fenced integration owner recovery only after exact session, epoch, agent, workspace, repository, branch and supervisor guards. Preserves retained bindings on refusal and emits ordinary task evidence after proven release; no new journal or publication path.",
+      "src/commands/task_commands.py::import from src.models import BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, AgentState, DepType, ProjectStatus, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": "Existing charged task-command model import now includes agent and project state guards for integration orphan recovery; enum vocabulary adds no storage or publication authority.",
+      "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": "Claim preparation repairs an idle misplaced workspace lock under row locks. Refuses retained integration attachments, other live sessions, claim files and job pins before moving ordinary lock fields; no ref mutation or integration lifecycle storage.",
+      "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": "Existing charged claim-query table import adds job_workspace_pins to prevent workspace lock repair over retained jobs; integration tables and their adapter remain charged.",
+      "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": "Read-only integration attachment and job-pin probe prevents missing-slot recreation from destroying retained writer evidence; no ref mutation or new storage."
+    },
+    "ordinary_storage_reviews": {
+      "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::aa66b0c4bf394b454a55b04b3048c4ae854edc5b7c2e7dcc2bdeb6a61fa2e5b1": "Ordinary branch-fence preparation diagnostic now includes bounded exception text and workspace identity. Branch and repository identify the incident, not a remote OID or replay intent; recovery remains the dedicated fenced owner service.",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9": "Ordinary attention marker for a refused prerequisite handoff. Re-reviewed after richer preparation diagnostics: retained bindings remain guarded, and this marker stores no ref replay or publication authority.",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::5f457951c70bf9a85748058a4541961a976c9d242448650882070b61af58ba61": "Ordinary claim_preparation_failure diagnosis records bounded exception text, exception type, workspace path/id, exact session and epoch, and time. Evidence explains an infrastructure refusal; it adds no remote OID, publication intent or duplicate integration lifecycle authority.",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::64d9070466d052e67a1a96dd3a40b4a768057d1acb08c0c4e390c117e3eb58e7": "Ordinary slot_reset_failure retry diagnosis now uses bounded preparation exception text and workspace identity. Existing attempt count and manual/automatic hint preserve the bounded failure ladder; no ref replay or duplicate integration lifecycle storage.",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": "Unchanged ordinary needs_attention marker after permanent preparation failure cannot detach a writer. Re-reviewed enclosing handler diagnostics preserve retained attachments and database-contention guards; no ref replay authority.",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879": "Unchanged ordinary repair_target_unpublished attention marker when the managed fence cannot be released. Re-reviewed after preparation diagnostics; no remote OID, publication intent or ref replay authority.",
+      "src/orchestrator/core.py::Orchestrator._stop_task_locked::d86ccbef339ede4d738a06fe782e380b5a8f344ba31c80022f4f060258184622": "Unchanged ordinary integration_handoff_unproven attention marker on refused stop handoff. Re-reviewed after allowing both train and hierarchy modes: stopped-writer proof still precedes resource release, with no new journal or ref replay authority.",
+      "src/sessions/reconciler.py::SessionReconciler._step_orphans::bd56abe22d01405d7daf3f367c989c6039944b48df86b62d01fd17e0697a3b6d": "Unchanged ordinary session_not_live attention marker. Stopped integration writers now delegate to exact-identity fenced recovery before fallback; refusal retains bindings and bypasses this marker. No ref replay or duplicate integration lifecycle storage."
+    },
+    "reason": "Explicitly reviewed five shared integration surfaces and eight preparation/stop/orphan diagnostic writer identities. Existing baseline, landing, caps and storage dispositions remain fixed; no exclusion or test threshold was relaxed. The factory policy was shortened while preserving recovery and delivery requirements."
   }
 }
