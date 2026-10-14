@@ -13,6 +13,7 @@ Every git-touching test runs against a real repo with a real bare
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -62,26 +63,39 @@ def _git(args: list[str], cwd: str | Path) -> str:
     return r.stdout.strip()
 
 
-@pytest.fixture(scope="session")
-def _base_repo_seed(tmp_path_factory) -> Path:
+def _create_base_repo(tmp_path: Path) -> Path:
     """A clone of a bare origin, with one commit on ``main``."""
-    tmp_path = tmp_path_factory.mktemp("worktree-seed")
     origin = tmp_path / "origin.git"
     subprocess.run(
         ["git", "init", "--bare", "--initial-branch=main", str(origin)],
         check=True,
         capture_output=True,
     )
+    _disable_auto_maintenance(origin)
     base = tmp_path / "base"
     subprocess.run(
         ["git", "clone", str(origin), str(base)], check=True, capture_output=True
     )
+    _disable_auto_maintenance(base)
     (base / "README.md").write_text("init\n")
     (base / ".gitignore").write_text("node_modules/\n")
     _git(["add", "-A"], cwd=base)
     _git(["commit", "-m", "init"], cwd=base)
     _git(["push", "origin", "main"], cwd=base)
     return base
+
+
+def _disable_auto_maintenance(repo: Path) -> None:
+    # Configure the receiver too: local pushes do not forward -c settings.
+    # Detached maintenance would mutate the seed while copytree reads it.
+    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
+    for key, value in settings:
+        _git(["config", key, value], cwd=repo)
+
+
+@pytest.fixture(scope="session")
+def _base_repo_seed(tmp_path_factory) -> Path:
+    return _create_base_repo(tmp_path_factory.mktemp("worktree-seed"))
 
 
 @pytest.fixture
@@ -93,6 +107,34 @@ def base_repo(tmp_path: Path, _base_repo_seed: Path) -> Path:
     shutil.copytree(_base_repo_seed, base)
     _git(["config", "remote.origin.url", str(origin)], cwd=base)
     return base
+
+
+def test_repo_seed_and_copies_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+    trace = tmp_path / "git-trace.json"
+    config = tmp_path / "empty-git-config"
+    config.touch()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    seed = _create_base_repo(seed_root)
+    seed_head = _git(["rev-parse", "HEAD"], cwd=seed)
+    origin = tmp_path / "origin.git"
+    base = tmp_path / "base"
+    shutil.copytree(seed_root / "origin.git", origin)
+    shutil.copytree(seed, base)
+    _git(["remote", "set-url", "origin", str(origin)], cwd=base)
+    _git(["commit", "--allow-empty", "-m", "private copy"], cwd=base)
+    _git(["push", "origin", "main"], cwd=base)
+    _git(["fetch", "origin"], cwd=base)
+    assert _git(["rev-parse", "main"], cwd=seed_root / "origin.git") == seed_head
+    assert _git(["rev-parse", "main"], cwd=origin) != seed_head
+    commands = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()]
+    assert not [
+        args for args in commands
+        if "--auto" in args and ("maintenance" in args or "gc" in args)
+    ]
 
 
 class FakeDB:

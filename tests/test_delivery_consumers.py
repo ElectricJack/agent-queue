@@ -40,6 +40,14 @@ def git(path, *args) -> str:
     ).strip()
 
 
+def _disable_auto_maintenance(repo) -> None:
+    # Configure the receiver too: local pushes do not forward -c settings.
+    # Detached maintenance would mutate the seed while copytree reads it.
+    settings = (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"))
+    for key, value in settings:
+        git(repo, "config", key, value)
+
+
 class Origin:
     def __init__(self, tmp_path, *, template=None):
         self.url = str(tmp_path / "origin.git")
@@ -50,7 +58,9 @@ class Origin:
             git(self.clone, "remote", "set-url", "origin", self.url)
             return
         git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
+        _disable_auto_maintenance(self.url)
         git(tmp_path, "clone", self.url, str(self.clone))
+        _disable_auto_maintenance(self.clone)
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
         (self.clone / "base.txt").write_text("base\n")
@@ -74,6 +84,29 @@ class Origin:
         git(self.clone, "checkout", "-q", "-B", "main", "origin/main")
         git(self.clone, "merge", "-q", "--no-ff", "-m", f"deliver {tid}", f"origin/aq/{tid}")
         git(self.clone, "push", "-q", "origin", "main")
+
+
+def test_origin_template_and_copies_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+    trace = tmp_path / "git-trace.json"
+    config = tmp_path / "empty-git-config"
+    config.touch()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    seed = Origin(seed_root)
+    seed_head = git(seed.url, "rev-parse", "main")
+    copied = Origin(tmp_path, template=seed)
+    copied_head = copied.work("private-copy")
+    assert git(seed.url, "rev-parse", "main") == seed_head
+    assert git(seed.url, "for-each-ref", "refs/heads/aq/private-copy") == ""
+    assert git(copied.url, "rev-parse", "aq/private-copy") == copied_head
+    commands = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()]
+    assert not [
+        args for args in commands
+        if "--auto" in args and ("maintenance" in args or "gc" in args)
+    ]
 
 
 async def close(db, tid: str, commits: list[str], *, close_id: str | None = None,
