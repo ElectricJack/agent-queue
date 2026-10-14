@@ -16485,10 +16485,11 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:0a2347f26e6abe9656e7ed9fbd8d1b4eb987012f56d116eb2c0e9eabd893532b",
+      "digest": "sha256:fa9f4aa278f3c63c3e0cea09266ae8e58d13a4f3f1fe4f6b2ab05c90c32e9ac7",
       "imports": [
         "src.api.auth",
         "src.api.codegen",
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
         "src.database.queries.claim_queries",
