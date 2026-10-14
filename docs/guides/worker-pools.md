@@ -735,6 +735,14 @@ admission reason resets the streak. On a second identical failure an idle sessio
 is marked for drain and receives `drain_requested`, stopping even older workers'
 claim loops. A retained preparation is never released by this guard.
 
+A slot still bound to another task (a foreign `.aq/claim.json`, typically left by a
+paused holder, or a slot lock naming another task) is a workspace fault, not the
+claimant's. Preparation releases the task to `READY` with no `slot_reset_failed`
+ladder attempt, backoff or `needs_attention`, so the next session prepares it in a
+free slot. The refused session receives `drain_requested`, and its workspace is
+disabled under `claim_failures` (restored by the slot reconciler after the cooldown).
+The foreign claim file stays on disk as the holder's evidence.
+
 Workers report a repeated blocker once to the project supervisor. Idle workers
 drain-ack and exit; workers with retained preparation end their turn awaiting the
 supervisor's inbox delivery (durable waits require an active claim). Workers with

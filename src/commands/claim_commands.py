@@ -20,8 +20,10 @@ from src.claim_file import (
     write_claim_file,
 )
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+from src.git.manager import ForeignSlotClaim
 from src.models import ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
+from src.workspace_disable import CLAIM_FAILURES, disable_fields
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,12 @@ BRANCH_FENCED = "branch_fenced"
 #: (:meth:`_record_prepare_failure`).  Diagnostic only; cleared with the rest
 #: of the preparation ladder by the next successful activation.
 PREPARE_FAILURE = "prepare_failure"
+
+#: Release context for a preparation refused because the session's slot is
+#: still bound to another task (a stale ``.aq/claim.json`` or slot lock).  The
+#: slot is at fault, not the task: the task returns to ``READY`` with no ladder
+#: attempt and the slot is quarantined (:meth:`_foreign_slot_claim_prepare_failed`).
+FOREIGN_SLOT_CLAIM = "foreign_slot_claim"
 
 
 def _task_block(task) -> dict:
@@ -1124,6 +1132,58 @@ class ClaimCommandsMixin:
         self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
         return True
 
+    async def _foreign_slot_claim_prepare_failed(
+        self, task, *, exc, failure, session, slot, epoch, row, cap
+    ) -> dict:
+        """Hand a task back for another slot when this one is still bound elsewhere.
+
+        A foreign ``.aq/claim.json`` (or a slot lock naming another task) is a
+        fault of the *workspace*: a paused or stranded holder left its claim
+        behind.  The generic ladder charged it to the claimant instead -- three
+        sessions landing on the same stale slot BLOCKED the task with
+        ``slot_reset_failed`` and parked it in a supervisor recovery hold
+        (fleet-ridge-94 behind fair-horizon-78 in slot-4, 2026-10-13).
+
+        So release the task to ``READY`` with no ladder attempt, backoff or
+        ``needs_attention``: the next session claims it in a free slot.  This
+        session drains, and its workspace is disabled under ``claim_failures``
+        so no session re-acquires it before the slot reconciler's cooldown.
+        The foreign claim file stays on disk -- it is the holder's evidence.
+        """
+        now = time.time()
+        holder = exc.holder_task_id or "another task"
+        detail = f"foreign claim of {holder} at {exc.path or row.work_dir}"
+        if slot is not None:
+            await self.db.update_workspace(
+                slot.id, **disable_fields(CLAIM_FAILURES, detail, now=now)
+            )
+        await self.db.release_claim(
+            session.id,
+            task_status=TaskStatus.READY,
+            context=FOREIGN_SLOT_CLAIM,
+            now=now,
+            result="prepare_failed",
+            drain_after_release=True,
+        )
+        await self._record_prepare_failure(
+            task, failure, session=session, slot=slot, epoch=epoch, disposition="released",
+        )
+        await self.orchestrator.bus.emit("pool.prepare_failed", {
+            "project_id": session.project_id, "profile_id": session.profile_id,
+            "session_id": session.id, "task_id": task.id,
+            **failure.event_fields(), "defect": FOREIGN_SLOT_CLAIM,
+            "holder_task_id": exc.holder_task_id,
+        })
+        self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+        fresh = await self.db.get_session(session.id) or row
+        return self._simple(
+            ClaimResult.DRAIN_REQUESTED,
+            f"{failure.reason}; {task.id} released for another slot and workspace "
+            f"{slot.id if slot else row.work_dir} quarantined. "
+            "Run `aq session drain-ack` and exit 0.",
+            fresh, cap,
+        )
+
     async def _record_prepare_failure(
         self, task, failure, *, session, slot, epoch, disposition, attempt=None
     ) -> None:
@@ -1201,7 +1261,12 @@ class ClaimCommandsMixin:
                 on_disk.get("task_id") != task.id or on_disk.get("claim_epoch") != epoch
                 or on_disk.get("session_id") != session.id
             ):
-                raise RuntimeError(f"workspace {slot.id} at {row.work_dir} retains a foreign claim")
+                raise ForeignSlotClaim(
+                    f"workspace {slot.id} at {row.work_dir} retains a foreign claim "
+                    f"of task {on_disk.get('task_id')}",
+                    workspace_id=slot.id, path=row.work_dir,
+                    holder_task_id=on_disk.get("task_id"),
+                )
             if slot.is_slot:
                 stage = "ensure_slot_checkout"
                 await self.orchestrator._worktree_slots().ensure_slot_checkout(slot, task)
@@ -1532,6 +1597,11 @@ class ClaimCommandsMixin:
                 )
                 self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
                 return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
+            if isinstance(exc, ForeignSlotClaim):
+                return await self._foreign_slot_claim_prepare_failed(
+                    task, exc=exc, failure=failure, session=session, slot=slot,
+                    epoch=epoch, row=row, cap=cap,
+                )
             if hierarchy_enabled and await self._branch_fenced_prepare_failed(
                 task, project, exc=exc, failure=failure, session=session, slot=slot,
                 epoch=epoch, row=row, cap=cap,
