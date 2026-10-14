@@ -309,9 +309,23 @@ def wait_graph(ctx, project_id, fleet):
 @_handle_errors
 def wait_checkpoint(ctx, wait_id, summary_file, continuation_id, generation, claim_epoch):
     """Store the compaction summary on the active continuation."""
+    # Bound the read itself and preserve exact newlines for the stored digest.
+    with Path(summary_file).open("rb") as stream:
+        raw = stream.read(8193)
+    if len(raw) > 8192:
+        raise click.BadParameter("wait.checkpoint_invalid: summary exceeds 8192 UTF-8 bytes",
+                                 param_hint="--summary-file")
+    try:
+        summary = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise click.BadParameter("wait.checkpoint_invalid: summary must be UTF-8",
+                                 param_hint="--summary-file") from exc
+    if not summary.strip():
+        raise click.BadParameter("wait.checkpoint_invalid: summary must not be blank",
+                                 param_hint="--summary-file")
     params = dict(
         wait_id=wait_id,
-        summary=Path(summary_file).read_text(encoding="utf-8"),
+        summary=summary,
         continuation_id=continuation_id,
         generation=generation,
         claim_epoch=resolve_claim_epoch(claim_epoch),

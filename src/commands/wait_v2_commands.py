@@ -260,6 +260,10 @@ class WaitV2CommandsMixin:
     async def _wait_v2_invoke(self, name, args, *, scope=None):
         handlers = getattr(self.orchestrator, "wait_v2_handlers", None)
         callback = handlers.get(name) if isinstance(handlers, Mapping) else None
+        if callback is None and name == "wait_checkpoint":
+            from src.waits.checkpoint import wait_checkpoint
+
+            callback = wait_checkpoint
         if callback is None:
             return refusal("wait.unavailable", f"{name} implementation is not installed")
         result = await callback(args, principal=current_principal(), scope=scope, handler=self)

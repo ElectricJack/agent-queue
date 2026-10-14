@@ -41,6 +41,7 @@
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
         "tests/test_wait_commands.py",
+        "tests/test_wait_hibernation.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_queries.py",
         "tests/test_waits.py"
@@ -17793,6 +17794,34 @@
         "parametrize"
       ],
       "summary": "Verified wait surfaces, principal fences and dormant runtime composition."
+    },
+    "tests/test_wait_hibernation.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:09cc0bea2e470709b3eafbbc7bf560a328745cf183adf6ecf71f7434076eaf08",
+      "imports": [
+        "src.cli.waits",
+        "src.commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries.continuation_queries",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.prime",
+        "src.prime.budgets",
+        "src.prime.hook_envelopes",
+        "src.profiles.capabilities",
+        "src.waits.conditions",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Checkpoint and fresh-prime boundary, without enabling stop/launch services."
     },
     "tests/test_wait_migration.py": {
       "areas": [
