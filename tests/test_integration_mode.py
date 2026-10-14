@@ -20,6 +20,7 @@ from src.models import (
     AgentProfile,
     AgentOutput,
     AgentResult,
+    DepType,
     PhaseResult,
     PipelineContext,
     Project,
@@ -1176,6 +1177,32 @@ class TestSessionCloseCompletion:
 
         assert result["status"] == TaskStatus.COMPLETED.value
         assert [row["status"] for row in await orch.db.list_task_subtasks(task.id)] == ["skipped"]
+
+    async def _close_with_dependent(self, orch, task):
+        await orch.db.create_task(task)
+        await orch.db.create_task(
+            Task(id=f"{task.id}-dep", project_id="p-1", title="dep", description="dep")
+        )
+        await orch.db.add_dependency(f"{task.id}-dep", task.id, DepType.BLOCKS.value)
+        pr = "https://github.com/org/repo/pull/56"
+        orch._run_completion_pipeline = AsyncMock(return_value=(pr, True))
+        result = await orch.complete_session_task(task, outcome="pass", notes="done")
+        assert result["status"] == TaskStatus.COMPLETED.value
+        return await orch.db.get_task(f"{task.id}-dep"), pr
+
+    async def test_pull_request_completion_holds_blocks_dependent_on_pr_merge(self, orch):
+        """sound-journey-29: an open PR is not delivery; the dependent waits."""
+        dep, pr = await self._close_with_dependent(orch, _pr_task("t-close-gate"))
+
+        assert dep.is_blocked is True
+        [gate] = await orch.db.get_gates_for_task(dep.id)
+        assert (gate["gate_type"], gate["await_id"], gate["status"]) == ("pr-merged", pr, "open")
+
+    async def test_direct_completion_releases_blocks_dependent(self, orch):
+        dep, _ = await self._close_with_dependent(orch, _direct_task("t-close-direct"))
+
+        assert dep.is_blocked is False
+        assert await orch.db.get_gates_for_task(dep.id) == []
 
 
 class TestResolveIntegrationMode:

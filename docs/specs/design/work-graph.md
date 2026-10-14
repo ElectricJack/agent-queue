@@ -262,6 +262,29 @@ branch, the gate stays open until `origin/<base>` is an ancestor of
 network, no checkout — resolves the gate as before: unknowable must not wedge
 every dependent shut forever.
 
+The gate is attached automatically when a task completes in `pull_request`
+integration mode. Session close completes such a task with its PR still open.
+A `blocks` edge is satisfied by `COMPLETED` alone, so the dependents would be
+dispatched onto a default branch that has none of the prerequisite's work.
+This is what happened to sound-journey-29: PR #56 was still open when
+calm-summit-59.1 started without it.
+
+To prevent this, the `COMPLETED` transition takes a `pr_merge_gate=<PR URL>`
+argument (`_apply_transition` → `gate_dependents_on_pr_on`). In the same
+transaction, and before the projection recomputes, it adds the task's
+unstarted `blocks` dependents as waiters on the PR's open `pr-merged` gate.
+The dependents it gates are those in `DEFINED`, `READY`, `BLOCKED` or `PAUSED`.
+If an open gate for that PR already exists it is reused; otherwise a new one is
+created. The dependents are released only when the sweep above resolves the
+gate.
+
+Managed projects (`development`, `hierarchy`, `train`) are excluded because
+they deliver through their own admission paths. Known limits:
+
+- A dependency added after the completion is not gated.
+- A PR closed without merging leaves the gate open, so an operator must
+  resolve it.
+
 Before it merges anything, `pr_merge` asks what CI said. `integration.merge_ci_policy`
 (`off` / `warn` / `required`, shipped as `warn`) decides what a non-green
 status-check rollup does — nothing, a logged verdict in the result's `ci`

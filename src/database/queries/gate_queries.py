@@ -17,7 +17,8 @@ from sqlalchemy import and_, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
-from src.database.tables import gates, task_gates, tasks
+from src.database.tables import gates, task_dependencies, task_gates, tasks
+from src.models import DepType
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +315,74 @@ class GateQueriesMixin:
                 pg_insert(task_gates).values(task_id=tid, gate_id=gate_id).on_conflict_do_nothing()
             )
         return await self.recompute_blocked(waiters, conn=conn)
+
+    #: Dependent statuses a prerequisite's ``pr-merged`` gate still holds:
+    #: work that has not started.  A running or finished dependent is left
+    #: alone -- gating it now could not stop work already under way.
+    _PR_GATE_WAITER_STATUSES = ("DEFINED", "READY", "BLOCKED", "PAUSED")
+
+    async def gate_dependents_on_pr_on(self, conn, task_id: str, pr_url: str) -> str | None:
+        """Hold *task_id*'s unstarted ``blocks`` dependents on its PR merging.
+
+        A ``pull_request`` completion leaves the work on an open PR, so the
+        ``blocks`` edge (satisfied by ``COMPLETED``) would release dependents
+        that then find none of it on the default branch.  The open
+        ``pr-merged`` gate for *pr_url* -- reused when one exists, since open
+        gates are unique per ``(project_id, gate_type, await_id)`` -- gains
+        every unstarted dependent as a waiter; the gate sweep resolves it once
+        the PR's work reaches the default branch.
+
+        Runs on the caller's transaction and does **not** recompute: the
+        caller's recompute of *task_id* reaches its direct dependents, so they
+        never flip to unblocked in between.  Returns the gate id, or ``None``
+        when there is nothing to hold.
+        """
+        project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == task_id))
+        dependent = tasks.alias()
+        waiters = (
+            await conn.execute(
+                select(task_dependencies.c.task_id)
+                .join(dependent, dependent.c.id == task_dependencies.c.task_id)
+                .where(
+                    task_dependencies.c.depends_on_task_id == task_id,
+                    task_dependencies.c.dep_type == DepType.BLOCKS.value,
+                    dependent.c.status.in_(self._PR_GATE_WAITER_STATUSES),
+                )
+                .order_by(task_dependencies.c.task_id)
+            )
+        ).scalars().all()
+        if project_id is None or not waiters:
+            return None
+        open_gate = select(gates.c.id).where(
+            gates.c.project_id == project_id,
+            gates.c.gate_type == "pr-merged",
+            gates.c.await_id == pr_url,
+            gates.c.status == "open",
+        )
+        gate_id = await conn.scalar(open_gate)
+        if gate_id is None:
+            # ON CONFLICT keeps a concurrent creator's open gate from aborting
+            # the caller's transaction (``uq_gates_open_dedup``).
+            gate_id = await conn.scalar(
+                pg_insert(gates)
+                .values(
+                    id="gate-" + uuid.uuid4().hex[:12],
+                    project_id=project_id,
+                    gate_type="pr-merged",
+                    title=f"PR merge: {task_id}",
+                    question=f"{task_id} completed unmerged; its dependents wait for {pr_url}",
+                    await_id=pr_url,
+                    status="open",
+                    created_at=time.time(),
+                )
+                .on_conflict_do_nothing()
+                .returning(gates.c.id)
+            ) or await conn.scalar(open_gate)
+        for tid in waiters:
+            await conn.execute(
+                pg_insert(task_gates).values(task_id=tid, gate_id=gate_id).on_conflict_do_nothing()
+            )
+        return gate_id
 
     async def resolve_gate(
         self,

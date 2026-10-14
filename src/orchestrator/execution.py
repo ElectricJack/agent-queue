@@ -1939,6 +1939,17 @@ class ExecutionMixin:
         # (final-reviewer trigger, downstream ``pr-merged`` gates) can see
         # it even when the agent never called ``aq task set --pr-url``.
         pr_kwargs = {"pr_url": pr_url} if pr_url else {}
+        # A ``pull_request`` completion leaves its work on that open PR, so
+        # ``blocks`` dependents wait on its ``pr-merged`` gate rather than on
+        # COMPLETED alone.  Managed projects deliver through their own paths.
+        if pr_url and new_status == TaskStatus.COMPLETED:
+            from src.integration.delivery_path import MANAGED_MODES
+
+            if (
+                getattr(project, "hierarchical_integration_mode", None) not in MANAGED_MODES
+                and await self._effective_integration_mode(task) == "pull_request"
+            ):
+                pr_kwargs["pr_merge_gate"] = pr_url
         try:
             if managed_parent_suspended or managed_parent_completed:
                 # The suspension transition and episode reservation above
