@@ -8737,6 +8737,8 @@
     "src/playbooks/executors/agent_task.py::CHILD_STATUS_OUTCOMES['completed']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/playbooks/executors/agent_task.py::CHILD_STATUS_OUTCOMES['failed']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/playbooks/receipts.py::RECEIPT_OUTCOMES['cancelled']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
+    "src/playbooks/script_inputs.py::QuotaLedger._locked": "Generic script input/output quota persistence uses atomic_json; it writes no integration lifecycle, ref replay or task metadata.",
+    "src/playbooks/script_policy.py::MIB": "Generic byte-unit constant for script capture limits; its same-shaped AST is not relocated integration logic.",
     "src/playbooks/waits.py::CHILD_TERMINAL_STATUSES['COMPLETED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/playbooks/waits.py::CHILD_TERMINAL_STATUSES['FAILED']": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
     "src/projects/github.py::GitHubAuthStatus.to_dict": "Generic same-shaped definition independently present at the pinned baseline/landing; new relocations are still charged.",
