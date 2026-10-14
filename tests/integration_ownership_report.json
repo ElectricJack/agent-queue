@@ -9745,6 +9745,15 @@
     },
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
+    },
+    "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
+      "reason": "Claim and integration schema imports; job_workspace_pins joins retained branch ownership as a refusal fence for repairing an idle misplaced workspace lock."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Repairs only an idle misplaced agent workspace lock after checking foreign claims, live sessions, retained integration ownership and job pins. Reads integration owners as a refusal fence; changes workspace locks only, never branch ownership, publication or ref replay state."
+    },
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding": {
+      "reason": "Read-only attached/handoff-pending integration-owner and job-pin fence. Prevents slot recreation or abandoned-merge recovery from changing retained checkouts; grants no release, delivery or ref replay authority."
     }
   },
   "shared_state": {
@@ -10442,5 +10451,38 @@
     "refreshed_owner_fingerprints": 12,
     "owner_fingerprint": "1ae9502a2134c965be65db66fea93c9d0a4a5fd8d706f659f0172c928a18cdba",
     "reason": "The review-revision completion gate reads existing review-response metadata and persisted review revisions before any completion side effect. All 12 task-close write-call AST identities and ordinary-storage dispositions are unchanged from the parent commit; only source lines and the enclosing handler fingerprint changed. No ref-replay journal, duplicate lifecycle storage or new metadata writer was added. Immutable baseline, landing measurements, allowance and caps remain unchanged."
+  },
+  "containment_cutover_review": {
+    "source_head": "4b36bdec6ad501afa55e484019590eea12f82dd7",
+    "ownership_evidence_revision": "aed09d6ec0c6cc2e8f217cf5d11a755f04a468dc",
+    "source_identity": "Reviewed ASTs match the immutable ownership repair for all five affected units.",
+    "shared_definitions": [
+      "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces",
+      "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock",
+      "src/orchestrator/worktree_manager.py::WorktreeSlotManager._slot_has_retained_binding"
+    ],
+    "storage_sinks": [
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::7a916a65e9151b75a342cc96b899777719a789274ba927f08edaabe5af70d879",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::3d42ccd676d8e3ea97e225f6a3ff602b9f5b68a48a3950e76d6d7fabbd3e03b9",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::aa66b0c4bf394b454a55b04b3048c4ae854edc5b7c2e7dcc2bdeb6a61fa2e5b1",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::5f457951c70bf9a85748058a4541961a976c9d242448650882070b61af58ba61",
+      "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::64d9070466d052e67a1a96dd3a40b4a768057d1acb08c0c4e390c117e3eb58e7"
+    ],
+    "ordinary_boundary": "Workspace-only lock repair and bounded preparation/refusal diagnostics; no Git publication intent or replay authority.",
+    "fixed_baseline_and_caps_unchanged": true,
+    "current_owned_groups": {
+      "shared": 49939,
+      "companions": 10915,
+      "engine": 76607,
+      "policy_sources": 1749,
+      "policy": 480,
+      "ui": 262,
+      "guards": 639
+    },
+    "current_owned_total": 140591,
+    "current_table_count": 45,
+    "unknown_definitions": [],
+    "unknown_storage_sites": []
   }
 }
