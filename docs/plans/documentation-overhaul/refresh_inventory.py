@@ -423,6 +423,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Managed-jobs package."),
     ("src/jobs/runner.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
      PRODUCTION, "Detached managed-job supervisor: admission locks, pipes, deadlines and fsync receipts."),
+    ("src/jobs/playbook.py", "playbooks", "docs/guides/playbook-script-sandbox.md",
+     PRODUCTION, "Durable script job admission, protected output, recovery and retention."),
     ("src/jobs/script_sandbox.py", "playbooks", "docs/guides/playbook-script-sandbox.md",
      PRODUCTION, "Pinned ordinary script processes with shared admission and bounded capture."),
     ("src/jobs/service.py", "scheduler", "docs/specs/implementation/managed-jobs.md",

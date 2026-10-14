@@ -21846,8 +21846,8 @@
     "denial_reason": null,
     "result_policy": "metadata only; protected output references",
     "source_digest": "sha256:02b7be905be5965a6a0e498396ff84e16f954abe5cc40b3b069a2a93783d728d",
-    "input_schema_source": "opaque",
-    "schema_quality": "opaque",
+    "input_schema_source": "explicit_tool",
+    "schema_quality": "declared",
     "effect": "destructive",
     "resource_gates": [
       "pinned_script_invocation"

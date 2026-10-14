@@ -15974,12 +15974,18 @@
       "parameters": {
         "required": [],
         "optional": [
+          "--arguments",
+          "--environment",
+          "--stdin-base64",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--arguments",
+          "--environment"
+        ],
         "nullable": []
       }
     },

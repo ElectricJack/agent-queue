@@ -1,5 +1,5 @@
 {
-  "cli_catalogue_sha256": "459a956f47544bfaf649a09957d00fe14ba7ae9cdf979a2e768fbc3f27d89d9c",
+  "cli_catalogue_sha256": "2e5172222d620cb5e9997113eaabe278505bce38948a75c69d7ff2304b305220",
   "contracts": {
     "job_logs": {
       "execution": {
@@ -106,5 +106,5 @@
     }
   },
   "previous_cli_catalogue_sha256": "074ac7979f95e93d367d4d4ea857c8f8617da929648cf293f7e64a428f704bd2",
-  "reason": "E2 adds job_logs.stream for authorized protected script output; E4 explicitly repins default-assignment-routing for the additive authoring contract. Legacy and C2 evidence remain unchanged."
+  "reason": "E2 adds job_logs.stream for authorized protected script output; E4 explicitly repins default-assignment-routing for the additive authoring contract. The script CI repair declares playbook_script_run data-only inputs in the CLI catalogue. Legacy and C2 evidence remain unchanged."
 }

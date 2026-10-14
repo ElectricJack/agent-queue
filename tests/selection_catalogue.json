@@ -5072,13 +5072,14 @@
         "install"
       ],
       "default_arm": true,
-      "digest": "sha256:70fce6adbaeb40ca5dbac8c0a010dba8defba254173d9c592ed8b3678c2c57e7",
+      "digest": "sha256:c97e5e91254b89ee344a42af98c2cbdb2ddfda33f209f1743b4a32f09cd595ee",
       "imports": [
         "src.cli.app",
         "src.cli.db",
         "src.database.backup",
         "src.database.engine",
         "src.database.schema_key",
+        "src.database.tables",
         "src.install.update"
       ],
       "markers": [

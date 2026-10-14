@@ -10878,6 +10878,33 @@
         "title": "OperatorPreflightArgs",
         "type": "object"
       }
+    },
+    {
+      "name": "playbook_script_run",
+      "description": "Submit or rejoin the current pinned ScriptStep as a durable job.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 256
+          },
+          "environment": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "stdin_base64": {
+            "type": "string",
+            "maxLength": 87384
+          }
+        },
+        "additionalProperties": false
+      }
     }
   ],
   "fallback": {
@@ -14874,14 +14901,6 @@
     "observe_integration_source_ci": {
       "name": "observe_integration_source_ci",
       "description": "Daemon-only adapter for trusted CI observations, never a raw tool input.",
-      "input_schema": {
-        "type": "object",
-        "properties": {}
-      }
-    },
-    "playbook_script_run": {
-      "name": "playbook_script_run",
-      "description": "Submit/rejoin a pinned ScriptStep. Inputs are resolved data only.",
       "input_schema": {
         "type": "object",
         "properties": {}

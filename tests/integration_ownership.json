@@ -8774,7 +8774,22 @@
     "src/database/queries/observation_snapshot_queries.py::task_rows": "Generic protected-snapshot projection of ordinary task rows; integration_mode is an existing task column copied verbatim. No integration storage, lifecycle or ref authority.",
     "src/doctor/stall_checks.py::_SUBJECTS['completed_undelivered']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
     "src/doctor/stall_checks.py::_SUBJECTS['continuous_promotion_lag']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
-    "src/doctor/stall_checks.py::_SUBJECTS['integration_unknown_facts']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently."
+    "src/doctor/stall_checks.py::_SUBJECTS['integration_unknown_facts']": "Doctor observation identity mapping (finding kind to subject column) for read-only doctor_run pages; the integration finding producer is charged independently.",
+    "src/jobs/playbook.py::import from src.jobs.artifacts import atomic_json, job_directory, read_json": "Playbook-only adapter import of generic managed-job receipt I/O; independent integration callers remain charged.",
+    "src/jobs/playbook.py::import from src.jobs.identity import processes, require_readable_identity, verified": "Playbook-only adapter import of generic process identity verification; no integration decisions.",
+    "src/jobs/playbook.py::launch_payload": "Decrypts script inputs for a closed stdin pipe; no integration identity or publication.",
+    "src/jobs/playbook.py::reconcile": "Settles protected script completion or pauses its owning playbook run; no integration ref replay.",
+    "src/jobs/playbook.py::retire": "Releases playbook input/output quotas and launch intent at result retention expiry; no integration lifecycle.",
+    "src/jobs/playbook.py::run": "Executes a pinned playbook script and encrypts its process result; independent of source CI jobs.",
+    "src/jobs/playbook.py::settle_unlaunched": "Records an unlaunched script cancellation/expiry as protected output; no integration lifecycle.",
+    "src/jobs/playbook.py::submit": "Admits playbook-owned scripts only, with encrypted inputs and immutable input pins; no integration submission.",
+    "src/jobs/script_sandbox.py::BINDING_BYTES": "Generic script binding size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_sandbox.py::REQUEST_BYTES": "Generic script input size constant; same-shaped numeric AST is not relocated integration logic.",
+    "src/jobs/script_sandbox.py::launch": "Ordinary script process backend with shared box admission and bounded streams; no integration policy/ref state.",
+    "src/playbooks/private_values.py::REFERENCE_KEY": "Generic protected-value reference key; same-shaped constant AST is not relocated integration logic.",
+    "src/playbooks/receipts.py::attempt_key": "Generic playbook step attempt hash; not an integration mutation key or replay ledger.",
+    "src/playbooks/script_inputs.py::canonical": "Generic canonical JSON for script input pins; not integration ref serialization.",
+    "src/playbooks/script_inputs.py::digest": "Generic SHA-256 for script bytes; not integration lifecycle storage."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -16138,7 +16153,8 @@
     "src/playbooks/definition.py::step_values": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/playbooks/definition.py::uses_iteration_paths": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/playbooks/features.py::execution_metadata_from_source": "Generic dependency; integration-specific definitions in this file are charged independently.",
-    "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently."
+    "src/playbooks/features.py::infer_required_features": "Generic dependency; integration-specific definitions in this file are charged independently.",
+    "src/database/tables.py::job_input_pins": "Playbook-only immutable script input retention; no integration owner, workspace lease or ref replay storage."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",
