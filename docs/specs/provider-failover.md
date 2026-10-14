@@ -809,8 +809,8 @@ detail) into `_fail_session_launch`; the exit path is
   take) and `unknown`, because none of them proves the work is safe.
 * **The hand-off note** is `task_metadata['provider_failover_handoff']` plus a
   system comment (`system:provider-failover`), and `aq prime` renders it in
-  the task-context section on its own, so a later re-route comment cannot push
-  it out of the five recent comments. It names the saved commit, tells the next
+  the task-context section on its own with terminal context, alongside the full
+  comment history. It names the saved commit, tells the next
   worker to continue from the branch tip rather than restart, and keeps the
   stopped session's last ~80 screen lines (`screen_tail`, captured before the
   stop, at most 8 KiB of UTF-8). Prime quotes only the last whole lines within
