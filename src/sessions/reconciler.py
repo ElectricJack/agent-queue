@@ -1685,6 +1685,8 @@ class SessionReconciler:
         blocked = record["count"] >= MAX_SAME_CAUSE
         deferred = False
         unconfirmed = False
+        retry_queued = not blocked
+        retry_message = "Retrying with a bounded continuation note. "
         if not await prepare_guarded_recovery(self.db, row, task, record):
             return
         if cause == "stalled":
@@ -1706,6 +1708,11 @@ class SessionReconciler:
                 return  # No confirmed outcome, duplicate, or a newer claim/decision.
             deferred = disposition["disposition"] == "handoff_deferred"
             unconfirmed = disposition["disposition"] == "stop_unconfirmed"
+            retry_queued = disposition["disposition"] == "retry_ready"
+            retry_message = (
+                "Task returned to READY with a bounded continuation note; "
+                "claim admission remains subject to recovery controls. "
+            )
         else:
             await self._stop_session(provider, row, reason=cause)
             if not blocked:
@@ -1726,7 +1733,7 @@ class SessionReconciler:
                "supervisor investigation and guarded owner handoff required. "
                if deferred else
                "BLOCKED; automatic relaunch stopped. Supervisor investigation required. "
-               if blocked else "Retrying with a bounded continuation note. ")
+               if blocked else retry_message)
             + "Check the branch and recovery note in aq prime before repeating reads.",
             author_kind="supervisor", author_id="session-reconciler",
         )
@@ -1747,7 +1754,7 @@ class SessionReconciler:
                        if deferred else
                        f"{record['count']} consecutive {cause} incidents; automatic retries stopped"),
             )
-        else:
+        elif retry_queued:
             await self._emit(
                 "task.restarted", task_id=task.id, project_id=task.project_id,
                 title=task.title, session_id=row.id, attempt=record["count"], reason=cause,

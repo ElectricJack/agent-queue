@@ -352,6 +352,12 @@ class SessionReconciler:
    `deferred_reason`. With no such evidence to offer (a harness with neither reader nor store),
    the stall is announced with `evidence="unverified"` and how long the pane has held still,
    and nothing is spent — a terminal read is never the decision (design spec §4.3).
+   Pool guarded-failure reporting checks the stopped session instance and released
+   claim after teardown before announcing a return to READY or emitting
+   `task.restarted`. A retained integration owner, unconfirmed stop, concurrent
+   pause or changed claim emits `task.needs_attention` instead; its comment records
+   the observed task status and asks for investigation. A saved continuation note
+   is historical evidence, never permission to retry or release a recovery hold.
 4a. **Wedged-turn override** — the gate above is `window_activity`, and a TUI that repaints
    its in-turn spinner keeps it fresh forever (`crisp-horizon-90.10`: 42 minutes, zero rungs,
    zero events, task held). When the pane claims activity, the reconciler asks the CLI's own

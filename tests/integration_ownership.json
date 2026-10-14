@@ -15211,22 +15211,22 @@
       "reason": "Ordinary recovery hold supersession only after a guarded repair-delegate branch handoff succeeds; refused reservation restores the worker failure streak and retains the prior incident. Integration reservation guards remain authoritative; no ref replay or duplicate integration lifecycle storage."
     },
     "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::9092769dc16180050c1d7a01c5d46256c2cd0383b351f15fadc91645e2ec169a": {
-      "line": 1644,
+      "line": 1687,
       "owner": "SessionReconciler._recover_guarded_failure",
       "call": "set_task_meta",
-      "owner_fingerprint": "a0cca07f395697be7c0ba862af07f9a3c00fade70e738237d814753d1e4aa23e",
+      "owner_fingerprint": "74932194f5b7721fe57ecc60b553903fe67b1445f67f78bdc1bf4e65721d4046",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure; no integration lifecycle state or replay authority."
+      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure. Observed teardown state only selects the continuation comment and event; it grants no claim admission, hold release, integration lifecycle state or replay authority."
     },
     "src/sessions/reconciler.py::SessionReconciler._recover_guarded_failure::ac90864190cb937e76dcb9c547f507fd4285011a7f0853249f741e69e6ba8acb": {
-      "line": 1645,
+      "line": 1688,
       "owner": "SessionReconciler._recover_guarded_failure",
       "call": "set_task_meta",
-      "owner_fingerprint": "a0cca07f395697be7c0ba862af07f9a3c00fade70e738237d814753d1e4aa23e",
+      "owner_fingerprint": "74932194f5b7721fe57ecc60b553903fe67b1445f67f78bdc1bf4e65721d4046",
       "integration_signal": false,
       "disposition": "ordinary",
-      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure; no integration lifecycle state or replay authority."
+      "reason": "Ordinary worker stall-nudge and last-action counters are reset after a claim-fenced worker failure. Observed teardown state only selects the continuation comment and event; it grants no claim admission, hold release, integration lifecycle state or replay authority."
     },
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_audit::bd2a4a293320cc867e1020b0690f6f6eed30d0527bacc63a71e5489091be21fe": {
       "line": 208,
