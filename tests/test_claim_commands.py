@@ -5760,7 +5760,11 @@ async def test_daemon_shutdown_cancels_preparation_before_resource_release(handl
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
     with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
         result = await scoped(handler, sid)._cmd_task_claim({"next": True})
-    assert result["result"] == "claim_in_progress" and started.is_set()
+    assert result["result"] == "claim_in_progress"
+    # The response window can close before the preparation reaches the reset
+    # on a loaded runner; shutdown must find it inside the reset, so wait for
+    # that ordering instead of assuming it from the clock.
+    await asyncio.wait_for(started.wait(), timeout=30)
     await handler.orchestrator.cancel_claim_preparations()
     assert cleaned.is_set()
     assert not handler.orchestrator.claim_preparations
