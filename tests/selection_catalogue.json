@@ -3480,11 +3480,12 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:46efb5bf20f09e7ecc12aa3fc43d532791f2248ab907d7338d03b5d8e97c7f07",
+      "digest": "sha256:3261dc01700d76ac087887c6b54585035deec264db50c6bee3ad256a838bf08c",
       "imports": [
         "src.api.models.session",
         "src.api.models.task",
         "src.claim_file",
+        "src.claim_preparation",
         "src.claim_timing",
         "src.commands.claim_commands",
         "src.commands.handler",

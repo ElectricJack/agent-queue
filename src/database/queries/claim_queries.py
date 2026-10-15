@@ -756,6 +756,23 @@ class ClaimQueryMixin:
             return "active", record
         return "not_found", record
 
+    async def completed_claim_preparation_state(self, session_id: str, task_id: str):
+        """Read a deferred response's current session and task in one snapshot.
+
+        A refused preparation may have released its session's task binding, so
+        join the exact recorded task rather than ``sessions.task_id``.
+        """
+        stmt = (select(sessions, tasks)
+                .select_from(sessions.join(tasks, tasks.c.id == task_id))
+                .where(sessions.c.id == session_id))
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(stmt)).fetchone()
+        if row is None:
+            return None, None
+        mapping = row._mapping
+        return (_row_to_session({c.name: mapping[c] for c in sessions.c}),
+                self._row_to_task({c.name: mapping[c] for c in tasks.c}))
+
     async def claim_preparation_state(
         self, session_id: str, task_id: str, claim_epoch: int, *, conn=None
     ):

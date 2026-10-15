@@ -585,6 +585,15 @@ A notification cannot restart a still-live preparation. Deferred responses are
 fenced to their session instance and claim binding, and one failed preparation
 records one refusal even when several callers await its result.
 
+A completed refusal is observable before new-work drain/disable admission checks:
+the preparation itself may have stopped the session after refusing a foreign
+claim. Its original diagnostic is consumed once, without charging the refusal
+budget again. This exception never serves a cached success or admits new work.
+The response must still match the session launch, project, agent, task creation,
+claim epoch and retained preparation start. Mismatched polls leave the cached
+response untouched; ordinary drain responses remain unchanged when no matching
+refusal is pending.
+
 Each attempt logs monotonic phase start/completion and total timing, including
 frontier selection, owner/lease checks, fetch, checkout, reset, setup and shared
 repository lock waits. Command arguments and credentials are omitted. The claim

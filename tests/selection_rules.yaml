@@ -169,7 +169,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/aq_uri.py", "src/wiki_links.py", "src/vault_*.py", "src/file_watcher.py", "src/readme_handler.py", "src/override_handler.py", "src/reference_stub_enricher.py", "src/workspace_spec_watcher.py"], areas: ["vault"] }
   - { paths: ["src/vault.py"], areas: ["vault", "profiles", "intelligence-classes", "harnesses"] }
   - { paths: ["src/assignment_routing.py", "src/explain.py"], areas: ["task-routing", "work-graph"] }
-  - { paths: ["src/claim_file.py", "src/claim_timing.py", "src/pool_claims.py", "src/preparation_failure.py"], areas: ["claims", "worker-pools"] }
+  - { paths: ["src/claim_file.py", "src/claim_timing.py", "src/claim_preparation.py", "src/pool_claims.py", "src/preparation_failure.py"], areas: ["claims", "worker-pools"] }
   - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py", "src/portable_setup.py"], areas: ["config"] }
   - { paths: ["src/conversations/**"], areas: ["discord-conversations", "supervisor"] }
   - { paths: ["src/deliverables.py", "src/state_machine.py", "src/task_summary.py", "src/task_names.py"], areas: ["task-lifecycle"] }
