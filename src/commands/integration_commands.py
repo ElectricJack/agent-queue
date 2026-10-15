@@ -65,6 +65,48 @@ class IntegrationCommandsMixin:
 
         return await record_incident(self, state, load=load)
 
+    async def _cmd_integration_clear_retained_recovery(self, args: dict) -> dict:
+        """Lift a retained-cache admission hold after the store passes a full fsck."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationClearRetainedRecoveryArgs
+        from src.integration.repository_incidents import admission_holds, clear_incident
+        from src.integration.repository_recovery import clear_retained_recovery
+
+        try:
+            request = IntegrationClearRetainedRecoveryArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_found", f"invalid clear request: {exc}")
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        holds = [state for state in await admission_holds(self.db, request.project_id)
+                 if request.incident_id in (None, state["id"])]
+        if not holds:
+            return _failure("not_found", "no retained recovery incident holds this project")
+        incidents = []
+        for state in holds:
+            try:
+                result = await clear_retained_recovery(
+                    self.orchestrator.git, state, by=principal,
+                    record=lambda cleared, state=state: clear_incident(self, state, cleared),
+                )
+            except (GitError, OSError, ValueError) as exc:
+                incidents.append({"id": state["id"], "cache": state["cache"],
+                                  "outcome": "unavailable", "error": str(exc)})
+                continue
+            incidents.append({"id": state["id"], "cache": state["cache"],
+                              "outcome": "cleared" if result["cleared"] else "not_clean",
+                              "fsck": result["fsck"]})
+        outcomes = {item["outcome"] for item in incidents}
+        outcome = next(name for name in ("not_clean", "unavailable", "cleared")
+                       if name in outcomes)
+        payload = {"outcome": outcome, "project_id": request.project_id,
+                   "evidence": {"incidents": incidents}}
+        if outcome != "cleared":
+            payload["reason"] = "a held retained cache failed its full fsck or is unavailable"
+        return _with_reason(outcome == "cleared", payload)
+
     async def _cmd_integration_migrate_provenance_refs(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationMigrateProvenanceRefsArgs
         from src.integration.provenance_migration import ProvenanceMigration

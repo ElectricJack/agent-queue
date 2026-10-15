@@ -110,6 +110,13 @@ branch back — a fence still held by the stopped writer — restart is refused 
 leaves the task as it found it, naming `reserve-owner` (and `release-owner` for
 the held fence) as the recovery.
 
+A retained Git cache incident that holds a project's new-batch admission is lifted by
+`aq integration clear-retained-recovery --project-id <p> [--incident-id <id>]`, a
+supervisor/operator control. It reruns the full `fsck` under the cache's repository
+transaction and clears only an incident whose cache is clean, including an `exhausted`
+one; a dirty cache stays held (`not_clean`). See
+[integration-repository-recovery.md](integration-repository-recovery.md).
+
 For READY/BLOCKED tasks with `slot_reset_failure`, `aq task resume` clears the
 preparation backoff and retries. A historical claim from a terminal session does
 not prevent recovery once the session provider confirms that exact writer has

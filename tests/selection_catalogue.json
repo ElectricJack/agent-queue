@@ -5534,9 +5534,10 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:b3392a1c80e5310a0f046487a43c702b76f49ba26aaf9ff993384e9490b23ac0",
+      "digest": "sha256:b5a7e4d289fee8791e8954dcbd18c2acaba6d070f0064c906d3c991b67859076",
       "imports": [
         "src.commands",
+        "src.commands.principal",
         "src.config",
         "src.database.queries.task_queries",
         "src.database.tables",
@@ -5553,7 +5554,8 @@
         "src.integration.repository_incidents",
         "src.integration.status",
         "src.models",
-        "src.prime.sections"
+        "src.prime.sections",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "parametrize"

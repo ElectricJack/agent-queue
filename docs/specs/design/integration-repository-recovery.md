@@ -5,10 +5,23 @@ The retained development checkout, delivery observer and repository reader enabl
 and reaps the subprocess before the repository transaction releases. These are
 object durability fixes, not proof of the October 14 incident's cause.
 
+No write to a retained store spawns automatic maintenance. The store config and every
+isolated import set `gc.auto=0`, `gc.autoDetach=false` and `maintenance.auto=false`:
+under git 2.43 a detached auto-gc ran in a temporary HOME that was deleted under it,
+died, and left a `gc.log` whose `fatal:` lines every later `gc --auto` repeated on
+stderr with exit status zero, which the integrity check read as a failed fetch and
+wedged the cache. Maintenance instead runs explicitly in the foreground under the
+repository transaction after a successful acquisition (`gc --auto` with a real
+threshold, never detached); a successful run removes a stale `gc.log`. Only the
+stale-report block itself is forgiven on a zero exit; any other `error:`/`fatal:` line
+still fails.
+
 The approved `rev-swift-flare` revision 2 recovery runs through the existing
 integration acquisition seam and CommandHandler. Full `fsck` diagnoses the actual
 managed cache. Ordinary network/authentication failure with clean objects creates
-no recovery incident. Any unexpected integrity diagnostic fails the check, even
+no recovery incident and spends no attempt; when a clean fsck finds an earlier
+incident's store already clean with nothing to move, that incident closes as recovered
+and its escalation resolves. Any unexpected integrity diagnostic fails the check, even
 with exit status zero. All acquisition, diagnosis, refetch, publication and final
 checking share the existing Git acquisition deadline; recovery never grants a
 new work-stage deadline.
@@ -50,9 +63,19 @@ attempts. Subsequent owner visits use the same incident and remaining budget.
 After exhaustion, repeated visits cannot start a fresh incident or retry refetch.
 Failure keeps the backup and admission hold and atomically records one coalesced
 supervisor/escalation notice. The incident's bounded evidence updates on later
-failure without repeating the notice. A restart retains both the filesystem move
+failure without repeating the notice. Every attempt records its own error in its check,
+and the exhausted refusal names the last one. A restart retains both the filesystem move
 ledger and PostgreSQL admission state. No migration or operator database write is
 required to install the implementation.
+
+An exhausted (or failed) incident is lifted only by the project-scoped supervisor and
+operator control `integration_clear_retained_recovery` (`aq integration
+clear-retained-recovery --project-id <p> [--incident-id <id>]`). Under the cache's
+repository transaction it reruns the full fsck above. A clean cache marks the local
+journal and the PostgreSQL ledger recovered with the clearing principal, removes the
+pending marker and resolves the escalation (`cleared`); a dirty one changes nothing
+(`not_clean`). It moves, refetches and publishes nothing, and never resets an attempt
+budget in place.
 
 The train separately checks sealed open batches for 60 minutes without progress.
 Its stall incident mechanism remains independent of cache recovery and never
