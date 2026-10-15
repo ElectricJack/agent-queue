@@ -17357,11 +17357,15 @@
         "task-hierarchy"
       ],
       "default_arm": true,
-      "digest": "sha256:5e9217ce76c613b841aceebfe5d6fe3730e41ffc0491947ea8b588209321794b",
+      "digest": "sha256:37164bf622e4b0599e08b53e8d7c0038764cf64b9cc3f43bdddb7ac1719780d4",
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.provenance",
         "src.mcp_registration",
         "src.models"
       ],

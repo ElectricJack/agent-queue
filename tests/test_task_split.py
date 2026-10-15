@@ -18,7 +18,9 @@ from src.database.tables import (
     integration_batches,
     task_branch_origins,
     task_criteria,
+    task_delivery_receipts,
     task_dependencies,
+    task_gates,
     task_integration_checkpoints,
     tasks,
 )
@@ -391,6 +393,143 @@ async def test_active_integration_batch_requires_quiescence(started):
     assert "Preserve the source claim" in result["safe_continuation"]
     assert await _row(handler.db, tasks, args["task_id"]) == before
     assert len(await handler.db.list_tasks(project_id="p")) == 2
+
+
+async def test_split_root_admitted_only_after_observed_default_landing(started, tmp_path):
+    """Exercise the integrated L1.5 SQL projection and observer against real Git."""
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.delivery_truth import DeliveryState
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+    from src.models import TaskCompletion
+    from tests.test_delivery_consumers import Origin, git
+
+    handler, args = started
+    db = handler.db
+    source_id = args["task_id"]
+    origin = Origin(tmp_path)
+    await db.update_repo("repo", url=origin.url)
+    source_before = await _row(db, tasks, source_id)
+    branch_before = await _row(db, task_branch_origins, source_id)
+    split = await handler.execute("task_split", args)
+    assert split.get("success"), split
+    root_id = split["moved_task_id"]
+    assert await _row(db, task_branch_origins, source_id) == branch_before
+    source_after = await _row(db, tasks, source_id)
+    assert {k: v for k, v in source_after.items() if k not in {"description", "updated_at"}} == {
+        k: v for k, v in source_before.items() if k not in {"description", "updated_at"}
+    }
+
+    # A separate split must remain withheld when only this source lands.
+    await db.create_task(
+        Task(
+            id="unrelated",
+            project_id="p",
+            repo_id="repo",
+            title="Other code",
+            description=f"{CONTEXT}\n\n## Acceptance Criteria\n- {CODE}\n- {OBSERVE}",
+            branch_name="aq/unrelated",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    other_args = copy.deepcopy(args)
+    other_args.update(task_id="unrelated", expected_generation=0)
+    other_args["moved"]["delivery_targets"] = ["unrelated"]
+    other = await handler.execute("task_split", other_args)
+    assert other.get("success"), other
+    other_root = other["moved_task_id"]
+    for tid in (root_id, other_root):
+        async with db._engine.connect() as conn:
+            gate_id = await conn.scalar(
+                select(task_gates.c.gate_id).where(task_gates.c.task_id == tid)
+            )
+        await db.resolve_gate(gate_id, resolved_by="test-router")
+        await db.transition_task(tid, TaskStatus.READY)
+        assert (await db.get_task(tid)).is_blocked
+
+    head = origin.work(source_id)
+    assert (await db.get_task(source_id)).branch_name == "aq/" + source_id
+    completed_at = time.time()
+    await db.save_task_completion(
+        TaskCompletion(
+            id="split-source-close",
+            task_id=source_id,
+            outcome="pass",
+            commits=[head],
+            completed_at=completed_at,
+        )
+    )
+    await db.transition_task(source_id, TaskStatus.COMPLETED)
+    observer = DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "observer-data")
+    db.set_delivery_observer(observer)
+    unproven = await observer.observe([source_id])
+    assert unproven.get(source_id).state is DeliveryState.UNKNOWN
+    assert (await db.get_task(root_id)).is_blocked
+
+    async def receipt(name, **changes):
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(task_delivery_receipts).values(
+                    **{
+                        "id": name,
+                        "domain_key": name,
+                        "source_task_id": source_id,
+                        "repository_id": "repo",
+                        "target_task_id": None,
+                        "target_branch": "refs/heads/main",
+                        "disposition": "code",
+                        "created_at": time.time(),
+                        **changes,
+                    },
+                )
+            )
+
+    await receipt("failed", disposition="failed", resolution_evidence={"reason": "failed check"})
+    await db.recompute_delivery_dependents([source_id])
+    assert (await db.get_task(root_id)).is_blocked
+    await GitProvenance(
+        GitManager(), str(origin.clone), repository_url=origin.url
+    ).write_completion(
+        CompletedSource(CompletionIdentity("p", "repo", source_id, "split-source-close"), head)
+    )
+    pending = await observer.observe([source_id])
+    assert not pending.satisfied(source_id)
+    assert (await db.get_task(root_id)).is_blocked
+
+    origin.land(source_id)
+    landed = await observer.observe([source_id])
+    assert landed.get(source_id).state is DeliveryState.CONTAINED
+    assert await landed.fresh()
+    # Git containment alone, a stale receipt, and an epic-branch receipt are
+    # each insufficient for the persisted delivery-of projection.
+    assert (await db.get_task(root_id)).is_blocked
+    for name, changes in (
+        ("old-generation", {"created_at": completed_at - 1}),
+        ("epic-only", {"target_task_id": "epic"}),
+        ("wrong-default", {"target_branch": "refs/heads/release"}),
+    ):
+        await receipt(name, **changes)
+        await observer.observe([source_id])
+        assert (await db.get_task(root_id)).is_blocked
+    await receipt(
+        "verified-default",
+        reviewed_head_sha=head,
+        after_sha=git(origin.url, "rev-parse", "main"),
+        verification_evidence={"default_containment": "verified"},
+    )
+    verified = await observer.observe([source_id])
+    assert verified.satisfied(source_id) and await verified.fresh()
+    assert not (await db.get_task(root_id)).is_blocked
+    assert (await db.get_task(other_root)).is_blocked
+    frontier = {t.id for t in await db.get_ready_frontier("p")}
+    assert root_id in frontier and other_root not in frontier
+    assert await db.get_task_meta(source_id, "checks") == {"unit": "passed"}
+    assert (await db.get_session("writer")).task_id == source_id
+    assert await _row(db, task_branch_origins, source_id) == branch_before
+    assert (
+        await db.get_task(source_id)
+    ).description == f"{CONTEXT}\n\n## Acceptance Criteria\n- {CODE}"
+    assert OBSERVE in (await db.get_task(root_id)).description
 
 
 @pytest.mark.parametrize(
