@@ -170,6 +170,19 @@ That is the whole protocol an agent needs: `aq inbox` to see what is waiting,
 `aq reply <id> "…"` to answer, `aq message send` to raise something. The
 canonical human recipient is `user:dashboard`.
 
+The server, not the client, decides who a reply comes from and goes to. A
+worker session can reply only to a message addressed to one of its own
+mailboxes in its own project; anything else reads as not found. The reply is
+signed as the mailbox the original was addressed to; a worker that names a
+different `from_kind` or `from_id` is refused. The reply goes to the original's
+sender, so a message from a `system:*` sender cannot be replied to. Supervisor
+guidance (`aq agent message`) is signed by the caller's authenticated identity.
+A live launch of the target project's own supervisor signs as
+`session:supervisor-<project>`, so a worker can reply to it. The operator CLI,
+automation, the global supervisor and a stale launch have no such return
+address. Their guidance stays `system:supervisor`, and the worker answers it
+with `aq message send --to session:supervisor-<project>`.
+
 ## Inputs and outputs
 
 | Lane | Input | Output |

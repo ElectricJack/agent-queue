@@ -31,6 +31,18 @@ The corrected completion must pass its own exact PR checks and ordinary
 candidate validation before delivery. Independent healthy roots can continue
 through admission while failed roots recover.
 
+Recovery reads delivery truth for mutation, so it can wait behind the delivery
+observer's per-repository fetch. The admission gate waits for it a bounded time
+(`ROOT_PR_RECOVERY_WAIT_SECONDS`) and then defers that root as `pr_checks_red`
+with a `pending` recovery. The recovery keeps running past the visit that stopped
+waiting. A later visit takes its outcome before the root's backoff expires and
+never starts a second recovery for the same observation. A changed head, PR,
+branch, policy or completion supersedes the observation and cancels its
+recovery, so at most one recovery runs per target and root; the recovery's own
+identity recheck still refuses any outcome that went stale while it waited. A
+slow recovery therefore never spends a visit's deadline or keeps other roots
+from batching.
+
 When source-CI recovery is authorized, the one-repair source budget also applies
 to root PR recovery, including under `on_exhausted: continue`. Feedback from the
 source observer and the root admission gate counts across both paths. Historical

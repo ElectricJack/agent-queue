@@ -232,6 +232,9 @@ tasks = Table(
     # 0/1 matches the table's existing flag style (e.g. is_plan_subtask).
     # Recomputed by the query layer; never written directly.
     Column("is_blocked", Integer, nullable=False, server_default="0"),
+    # Independent admission hold, cleared only by atomic ingestion release.
+    Column("held_batch_id", Text, nullable=True),
+    Index("ix_tasks_held_batch_id", "held_batch_id"),
     Column("dedup_key", Text, nullable=True),
     Column("intelligence_class", Text, nullable=True),
     # Discord thread opened for this task.  Persisted because the bot's
@@ -384,6 +387,7 @@ TASK_DEP_TYPES = (
     "parent-child",
     "waits-for",
     "conditional-blocks",
+    "delivery-of",
     "discovered-from",
     "related",
     "duplicates",
@@ -391,7 +395,7 @@ TASK_DEP_TYPES = (
 )
 """Typed dependency edge kinds — see docs/specs/design/work-graph.md.
 
-Only ``blocks``/``parent-child``/``waits-for``/``conditional-blocks`` gate
+Only ``blocks``/``parent-child``/``waits-for``/``conditional-blocks``/``delivery-of`` gate
 readiness; the rest are informational.  The tuple order is the check
 constraint's order and must stay stable (it is embedded in the migration).
 """
@@ -1004,7 +1008,7 @@ hierarchy_migration_rejects = Table(
 # ``{"tasks": [...], "edges": [...]}`` — see the plan's Interfaces block.
 # ---------------------------------------------------------------------------
 
-TASK_PROPOSAL_STATUSES = ("draft", "ready", "committed", "discarded")
+TASK_PROPOSAL_STATUSES = ("draft", "ready", "held", "committed", "discarded")
 _TASK_PROPOSAL_STATUS_CHECK = (
     "status IN (" + ", ".join(f"'{s}'" for s in TASK_PROPOSAL_STATUSES) + ")"
 )
@@ -1024,6 +1028,100 @@ task_proposals = Table(
     Column("updated_at", Float, nullable=False),
     CheckConstraint(_TASK_PROPOSAL_STATUS_CHECK, name="ck_task_proposals_status"),
     Index("idx_task_proposals_project_status", "project_id", "status"),
+)
+
+# Held ingestion is keyed by the existing proposal identity. Historical task
+# references deliberately survive task archival/retirement; they are not FKs
+# to live tasks. Batch/proposal/project ownership remains database-enforced.
+ingest_batches = Table(
+    "ingest_batches",
+    metadata,
+    Column("batch_id", Text, ForeignKey("task_proposals.id"), primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("source_review_id", Text, nullable=False),
+    Column("source_revision", Integer, nullable=False),
+    Column("source_content_sha256", Text, nullable=False),
+    Column("decision_id", Text, nullable=False),
+    Column("design_review_id", Text, nullable=True),
+    Column("design_revision", Integer, nullable=True),
+    Column("design_content_sha256", Text, nullable=True),
+    Column("lineage_kind", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("structure_revision", Integer, nullable=False, server_default="1"),
+    Column("structure_digest", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="held"),
+    Column("check_results", JSONB(none_as_null=True), nullable=True),
+    Column("reviewer_task_id", Text, nullable=True),
+    Column("reviewer_session_id", Text, nullable=True),
+    Column("reviewer_claim_epoch", Integer, nullable=True),
+    Column("release_actor", Text, nullable=True),
+    Column("release_revision", Integer, nullable=True),
+    Column("release_digest", Text, nullable=True),
+    Column("released_at", Float, nullable=True),
+    Column("release_receipt", JSONB(none_as_null=True), nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "state IN ('held','reviewing','needs_scope','released','retired')",
+        name="ck_ingest_batches_state",
+    ),
+    CheckConstraint(
+        "lineage_kind IN ('resolved','none')",
+        name="ck_ingest_batches_lineage_kind",
+    ),
+    CheckConstraint(
+        "(design_review_id IS NULL AND design_revision IS NULL "
+        "AND design_content_sha256 IS NULL) OR "
+        "(design_review_id IS NOT NULL AND design_revision IS NOT NULL "
+        "AND design_content_sha256 IS NOT NULL)",
+        name="ck_ingest_batches_design_lineage",
+    ),
+    UniqueConstraint(
+        "project_id", "source_review_id", "source_revision", "source_content_sha256",
+        name="uq_ingest_batches_source",
+    ),
+)
+
+ingest_batch_members = Table(
+    "ingest_batch_members",
+    metadata,
+    Column("batch_id", Text, ForeignKey("ingest_batches.batch_id"), primary_key=True),
+    Column("task_id", Text, primary_key=True),
+    Column("member_key", Text, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("section_anchor", Text, nullable=False),
+    Column("primary_outcome", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("retired_reason", Text, nullable=True),
+    Column("created_revision", Integer, nullable=False),
+    Column("retired_revision", Integer, nullable=True),
+    CheckConstraint(
+        "role IN ('container','leaf','operational_root')",
+        name="ck_ingest_batch_members_role",
+    ),
+    CheckConstraint("state IN ('active','retired')", name="ck_ingest_batch_members_state"),
+    UniqueConstraint("batch_id", "member_key", name="uq_ingest_batch_members_key"),
+)
+
+ingest_batch_receipts = Table(
+    "ingest_batch_receipts",
+    metadata,
+    Column("receipt_id", Text, primary_key=True),
+    Column("batch_id", Text, ForeignKey("ingest_batches.batch_id"), nullable=False),
+    Column("structure_revision", Integer, nullable=False),
+    Column("structure_digest", Text, nullable=False),
+    Column("reviewer_task_id", Text, nullable=False),
+    Column("reviewer_session_id", Text, nullable=False),
+    Column("passing", Boolean, nullable=False, server_default=false()),
+    Column("section_verdicts", JSONB(none_as_null=True), nullable=False),
+    Column("reverse_coverage_verdict", Text, nullable=False),
+    Column("walkthrough_verdict", Text, nullable=False),
+    Column("structural_findings", JSONB(none_as_null=True), nullable=False),
+    Column("created_at", Float, nullable=False),
+    Index(
+        "uq_ingest_batch_receipts_passing", "batch_id", "structure_revision",
+        unique=True, postgresql_where=text("passing"),
+    ),
 )
 
 task_tools = Table(
@@ -6793,7 +6891,7 @@ record_compatibility_usage = Table(
 
 register_record_schema_events(metadata)
 
-from src.knowledge.extraction_schema import register_extraction_schema  # noqa: E402
+from src.knowledge.extraction_schema import register_extraction_schema
 
 register_extraction_schema(metadata)
 

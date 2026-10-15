@@ -4860,7 +4860,7 @@
     },
     {
       "name": "message_send",
-      "description": "Queue a message to a session, task, profile, or user.  Messages are the single transport for user<->agent and agent<->agent traffic; delivery is asynchronous. For an accepted collaboration thread, omit the recipient to send to every other member; sender identity is server-derived.",
+      "description": "Queue a message to a session, task, profile, or user.  Messages are the single transport for user<->agent and agent<->agent traffic; delivery is asynchronous. Omitted sender identity is derived from the authenticated live session, or user:cli for local callers. For an accepted collaboration thread, omit the recipient to send to every other member; sender identity is server-derived.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -4897,11 +4897,11 @@
               "user",
               "system"
             ],
-            "description": "Sender kind (default: user)"
+            "description": "Explicit sender kind; session callers must own the identity"
           },
           "from_id": {
             "type": "string",
-            "description": "Sender id"
+            "description": "Explicit authorized sender id"
           },
           "thread_id": {
             "type": "string",
@@ -12524,6 +12524,38 @@
         "type": "object"
       }
     },
+    "integration_clear_retained_recovery": {
+      "name": "integration_clear_retained_recovery",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "incident_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Incident Id"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationClearRetainedRecoveryArgs",
+        "type": "object"
+      }
+    },
     "integration_close_delivered_pr": {
       "name": "integration_close_delivered_pr",
       "description": "Authenticated hierarchical integration operational control.",
@@ -13484,6 +13516,139 @@
           "task_id"
         ],
         "title": "IntegrationRecordRootNoopArgs",
+        "type": "object"
+      }
+    },
+    "integration_recover_completed_container": {
+      "name": "integration_recover_completed_container",
+      "description": "Prove accepted published pass provenance and CAS only its checkpoint; delivery gates remain.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_head_sha": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Head Sha"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "title": "Repository Id",
+            "type": "string"
+          },
+          "branch": {
+            "minLength": 1,
+            "title": "Branch",
+            "type": "string"
+          },
+          "expected_completion_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Completion Id"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Version"
+          },
+          "expected_origin_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Origin Sha256"
+          },
+          "expected_snapshot_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Snapshot Sha256"
+          }
+        },
+        "required": [
+          "task_id",
+          "project_id",
+          "repository_id",
+          "branch"
+        ],
+        "title": "IntegrationRecoverCompletedContainerArgs",
         "type": "object"
       }
     },

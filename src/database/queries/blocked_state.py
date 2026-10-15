@@ -25,6 +25,7 @@ import time
 
 from sqlalchemy import and_, case, false, insert, literal, not_, or_, select, update
 
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     events,
     gates,
@@ -598,8 +599,8 @@ class BlockedStateMixin:
         Development callers evaluate dynamic delivery admission separately;
         this SQL query never treats delivery rows as git authority.
 
-        ``status = READY ∧ is_blocked = 0 ∧ no hold:* label``, ordered
-        ``(priority, created_at)``.  ``labels`` is all-of, ``any_label`` is
+        ``status = READY ∧ is_blocked = 0 ∧ no hold:* label ∧ no ingestion
+        batch hold``, ordered ``(priority, created_at)``.  ``labels`` is all-of, ``any_label`` is
         any-of; both are AND-ed with each other.
         """
         stmt = select(tasks).where(
@@ -607,6 +608,7 @@ class BlockedStateMixin:
                 tasks.c.project_id == project_id,
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.is_blocked == 0,
+                not_ingest_held(),
             )
         )
         stmt = apply_label_filters(stmt, labels=labels, any_label=any_label, exclude_hold=True)

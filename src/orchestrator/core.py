@@ -2057,6 +2057,11 @@ class Orchestrator(
         )
         from src.integration.repository_git import RepositoryGit
 
+        async def retained_recovery_state(state, *, load=False):
+            return await self._command_handler.retained_repository_recovery(state, load=load)
+
+        self.git.retained_recovery_state = retained_recovery_state
+
         self.repository_git = RepositoryGit(
             self.db, data_dir=self.config.data_dir, git_manager=self.git,
         )
@@ -2726,6 +2731,7 @@ class Orchestrator(
         # They still auto-complete correctly: settlement (spec §7) keys off
         # the container flag, not off is_plan_subtask.
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
+        held = await self.db.ingest_held_task_ids({t.id for t in tasks})
         for t in tasks:
             if t.id in skip_task_ids:
                 logger.info("Recovery: task '%s' kept IN_PROGRESS — its session was adopted", t.id)
@@ -2747,6 +2753,11 @@ class Orchestrator(
                     t.id,
                     t.title,
                 )
+                continue
+            if t.id in held:
+                # Held work never starts, so this breaks an invariant. Readying
+                # it would not release the hold either; leave it for an operator.
+                logger.error("Recovery: ingestion-held task '%s' is IN_PROGRESS; not readying", t.id)
                 continue
             logger.info(
                 "Recovery: resetting task '%s' (%s) from IN_PROGRESS to READY", t.id, t.title
@@ -3842,6 +3853,7 @@ class Orchestrator(
             except Exception:
                 logger.exception("Daily Git sweep could not recover landing cleanup")
         seen_common_dirs: set[str] = set()
+        registered_urls: list[str] | None = None
         reports_delivered = True
         for project in projects:
             project_marker = (Path(self.config.data_dir) / "maintenance" / "git-branch-sweeps"
@@ -3896,6 +3908,13 @@ class Orchestrator(
                 publisher = getattr(self, "development_integration", None)
                 if publisher is not None:
                     extra_paths.append(str(publisher._store_path(repository)))
+            # A checkout no registration matches falls back to the project's own
+            # repository: its repo_url, or with neither, the checkout's origin.
+            project_url = getattr(project, "repo_url", "") or ""
+            derived = SimpleNamespace(
+                id=f"project:{project.id}",
+                default_branch=getattr(project, "repo_default_branch", "") or "main",
+            )
             registered = {ws.workspace_path for ws in workspaces}
             workspaces.extend(SimpleNamespace(workspace_path=path, kind_id=None, is_slot=False)
                               for path in extra_paths if path and path not in registered)
@@ -3938,6 +3957,19 @@ class Orchestrator(
                          if repo.id == getattr(project, "integration_repository_id", None)]
                 if bound:
                     matches = bound
+                if not matches and (
+                    repository_urls_match(project_url, repository_url, base=checkout)
+                    if project_url else not repositories
+                ):
+                    # Another project's registration owns that origin's ref leases.
+                    try:
+                        if registered_urls is None:
+                            registered_urls = [r.url for r in await self.db.list_repos() if r.url]
+                        if not any(repository_urls_match(url, repository_url, base=checkout)
+                                   for url in registered_urls):
+                            matches = [derived]
+                    except Exception as exc:
+                        failures.append(f"{checkout}: repository list failed ({exc})")
                 if len(matches) != 1:
                     # Ref exclusion needs a repository identity: skip, reported once.
                     unregistered.setdefault(repository_url, []).append(checkout)

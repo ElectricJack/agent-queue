@@ -46,6 +46,7 @@ import pytest
 from sqlalchemy import event, text
 from sqlalchemy.dialects import postgresql
 
+from src.claim_file import remove_claim_file_if_matches
 from src.models import (
     Agent,
     AgentProfile,
@@ -72,6 +73,19 @@ NOW = time.time()
 #: these, so a pre-read added without updating this constant would otherwise
 #: be charged to the transaction.
 _OUTER_PRE_READS = 3
+
+
+@pytest.fixture(autouse=True)
+def _await_whole_preparation(monkeypatch):
+    """Count every claim's statements to completion, never a wall-clock cut.
+
+    ``_cmd_task_claim`` answers ``claim_in_progress`` once preparation
+    outlives ``_PREPARATION_RESPONSE_SECONDS`` (0.5s), leaving the rest of
+    it running outside the statement and transaction counters. Every claim
+    in this module asserts ``claimed`` and measures statements, transactions
+    or a floor-relative latency, so a loaded runner must not decide the result.
+    """
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 60.0)
 
 
 def _over(n: int, budget: int, statements) -> str:
@@ -778,6 +792,9 @@ class TestClaimLatency:
                 sid, task_status=TaskStatus.READY, context="perf", now=time.time()
             )
             times.append(time.perf_counter() - started)
+            # The benchmark calls the database release directly, so it must
+            # also perform the CLI's claim-file cleanup before reusing the slot.
+            remove_claim_file_if_matches(_wd, res["task"]["id"], res["claim_epoch"])
         after = await measure_wire_floor(any_db)
 
         transaction_s = (before[0] + after[0]) / 2
