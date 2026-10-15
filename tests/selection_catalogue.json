@@ -5423,7 +5423,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:00f0f1038d5b31f45626c36e05acb81323f131d635a13ed45863d36b1d8ad9f7",
+      "digest": "sha256:4e4f690e99540ef93d25afc94c9624cfae7e896b5aa5549c4fdb4bdba06888ef",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -5433,6 +5433,7 @@
         "src.doctor.models",
         "src.doctor.stall_checks",
         "src.git.manager",
+        "src.integration",
         "src.integration.admission",
         "src.integration.child_delivery",
         "src.integration.delivery_observer",
@@ -5443,6 +5444,7 @@
         "src.integration.hierarchy",
         "src.integration.provenance",
         "src.integration.publishable_artifact",
+        "src.integration.repository_recovery",
         "src.integration.service",
         "src.integration.source_trailer",
         "src.integration.status",
