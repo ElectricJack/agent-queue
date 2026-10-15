@@ -76,6 +76,7 @@ import shlex
 import signal
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
@@ -536,6 +537,29 @@ def _parse_status_branch_header(header: str) -> str:
         return "HEAD"
     return header.split("...", 1)[0].split(" ", 1)[0].strip()
 
+
+
+#: How long a clean full fsck of an unchanged object store is reused.
+_RETAINED_VERIFY_TTL_SECONDS = 3600.0
+
+
+def _object_store_fingerprint(git_dir: str) -> tuple | None:
+    """Every object-store file's (path, size, mtime_ns), or None if unreadable.
+
+    Covers loose objects, packs, indexes and alternates, so any object write
+    or damage through the filesystem changes it.
+    """
+    root = Path(git_dir) / "objects"
+    entries = []
+    try:
+        for directory, _subdirs, files in os.walk(root):
+            for name in files:
+                path = os.path.join(directory, name)
+                stat = os.stat(path)
+                entries.append((os.path.relpath(path, root), stat.st_size, stat.st_mtime_ns))
+    except OSError:
+        return None
+    return tuple(sorted(entries))
 
 class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
@@ -2282,12 +2306,28 @@ class GitManager:
         remote tip is sufficient proof. Do not cache this result across writes.
         The caller must separately fence repository identity and all writers
         before using any inspection as a recovery precondition.
+
+        A clean result is reused only while the object store is byte-for-byte
+        the same set of files (name, size, mtime) and for at most
+        ``_RETAINED_VERIFY_TTL_SECONDS``: any write invalidates it. A full
+        check holds the repository lock for many seconds on a large store, so
+        repeating it on every no-op fetch starves the integration train.
         """
+        verified = self.__dict__.setdefault("_retained_verified", {})
+        fingerprint = _object_store_fingerprint(git_dir)
+        now = time.monotonic()
+        cached = verified.get(git_dir)
+        if (fingerprint is not None and cached is not None and cached[0] == fingerprint
+                and now - cached[1] < _RETAINED_VERIFY_TTL_SECONDS):
+            return
+        verified.pop(git_dir, None)
         await self._run_isolated_import_git(
             [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
              "--no-reflogs", "--no-progress"],
             home=home, deadline=deadline, verify_integrity=True,
         )
+        if fingerprint is not None and _object_store_fingerprint(git_dir) == fingerprint:
+            verified[git_dir] = (fingerprint, now)
 
     async def _aholds_complete_commit(
         self, imported: Path, oid: str, *, home: Path, deadline: float,

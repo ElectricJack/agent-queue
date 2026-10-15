@@ -3156,3 +3156,46 @@ def test_trust_manifest_path_is_deliverable_repository_content():
         ".github/agent-queue-integration.json\0.github/agent-queue-integration.example.json\0"
         ".aq/claim.json\0.codex/settings.json\0"
     ) == [".aq/claim.json", ".codex/settings.json"]
+
+
+async def test_clean_integrity_check_is_reused_only_while_store_is_unchanged(tmp_path, monkeypatch):
+    store = tmp_path / "store.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(store)], check=True)
+    loose = store / "objects" / "ab"
+    loose.mkdir(parents=True)
+    (loose / ("c" * 38)).write_bytes(b"x")
+    manager = GitManager()
+    runs = AsyncMock(return_value=b"")
+    monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
+
+    async def verify():
+        await manager._averify_retained_objects(
+            str(store), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+        )
+
+    await verify()
+    await verify()
+    assert runs.await_count == 1
+    (loose / ("c" * 38)).write_bytes(b"")  # damage changes the store
+    await verify()
+    assert runs.await_count == 2
+    (loose / ("d" * 38)).write_bytes(b"y")  # a new object changes the store
+    await verify()
+    assert runs.await_count == 3
+    monkeypatch.setattr("src.git.manager._RETAINED_VERIFY_TTL_SECONDS", 0.0)
+    await verify()
+    assert runs.await_count == 4
+
+
+async def test_failed_integrity_check_is_never_reused(tmp_path, monkeypatch):
+    store = tmp_path / "store.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(store)], check=True)
+    manager = GitManager()
+    runs = AsyncMock(side_effect=GitError("retained Git integrity is unavailable"))
+    monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
+    for _ in range(2):
+        with pytest.raises(GitError, match="integrity is unavailable"):
+            await manager._averify_retained_objects(
+                str(store), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+            )
+    assert runs.await_count == 2
