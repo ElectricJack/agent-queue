@@ -209,6 +209,9 @@ this lets a worker session manage the daemon.
 - Publish before you close: `aq git push`, then `aq task close <id> --outcome pass|fail
   --summary "..."`, recording each check with `--test` / `--command`. Never push main or
   merge yourself.
+- **Never edit the daemon's live checkout**, the operator's main clone that the daemon
+  runs from. Work in a worktree. Uncommitted edits there make every auto-deploy skip
+  (2026-10-14: about 17 hours of skipped deploys).
 - Operator surfaces (`aq task list`, `aq doctor`, `aq session …`) answer `out of scope`
   to a worker token; that is scope, not a bug. The normative policy for admitting,
   delivering and recovering work is [docs/concepts/factory-policy.md](docs/concepts/factory-policy.md).

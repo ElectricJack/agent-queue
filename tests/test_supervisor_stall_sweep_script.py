@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -64,7 +65,7 @@ def _session(name, project_id, task_id):
     }
 
 
-def _run(tmp_path, responses, *args, missing_commands=(), session_id=None):
+def _run(tmp_path, responses, *args, missing_commands=(), session_id=None, extra_env=None):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake = tmp_path / "fake.py"
@@ -84,6 +85,7 @@ def _run(tmp_path, responses, *args, missing_commands=(), session_id=None):
     }
     if session_id:
         env["AQ_SESSION_ID"] = session_id
+    env.update(extra_env or {})
     proc = subprocess.run(
         [sys.executable, "-I", str(SCRIPT), *args],
         capture_output=True, text=True, timeout=60, env=env, cwd=tmp_path, check=False,
@@ -751,3 +753,129 @@ def test_never_claimed_pool_is_reported_despite_fresh_activity(
     proc, _ = _run(tmp_path, responses, "--project", "rom")
     assert proc.returncode == 0, proc.stderr
     assert ("POOL-NO-CLAIM retrying" in proc.stdout) is expected
+
+
+DIRTY_STATUS = " M src/database/engine.py\n M src/main.py\n"
+
+
+def _deploy_log(tmp_path, *entries):
+    """An auto-deploy log of (seconds ago, message) lines, oldest first."""
+    log = tmp_path / "aq-auto-deploy.log"
+    stamp = lambda ago: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - ago))
+    log.write_text("".join(f"{stamp(ago)} {message}\n" for ago, message in entries))
+    return {"AQ_AUTO_DEPLOY_LOG": str(log)}
+
+
+def _auto_deploy_sweep(tmp_path, *, behind="12", status=DIRTY_STATUS, env=None):
+    responses = {
+        "aq": {
+            "project list": [{"id": "agent-queue", "status": "ACTIVE"}],
+            "task list -p agent-queue": [],
+            "pool status": [],
+            "session list": [],
+        },
+        "git": {"log": f"{int(time.time())} abc1234\n", "rev-list": f"{behind}\n",
+                "status": status},
+    }
+    proc, _ = _run(tmp_path, responses, extra_env=env or {
+        "AQ_AUTO_DEPLOY_LOG": str(tmp_path / "missing.log")})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return [line for line in proc.stdout.splitlines() if "AUTO-DEPLOY-STALLED" in line]
+
+
+def test_dirty_skip_run_past_threshold_is_an_auto_deploy_stall(tmp_path):
+    skips = [(ago, "skip: dirty tree") for ago in range(17 * 3600, 0, -300)]
+    env = _deploy_log(tmp_path, (18 * 3600, "deployed 3 commits a -> b health=ok"),
+                      *skips, (60, "escalated: 6 consecutive skips reported to supervisor"))
+    [line] = _auto_deploy_sweep(tmp_path, env=env)
+    assert "12 commits behind origin/dev" in line
+    assert "skipped every run for 17.0h (last: dirty tree)" in line
+    assert "src/database/engine.py, src/main.py" in line
+    assert "never edit the live checkout" in line and "never discard" in line
+
+
+@pytest.mark.parametrize("entries,behind", [
+    # A fresh run is a cron cycle or two, not a stall yet.
+    ([(1200, "skip: dirty tree"), (900, "skip: dirty tree")], "12"),
+    # Old skips ended by a deploy, or separated by a long gap, are history.
+    ([(7200, "skip: dirty tree"), (3600, "deployed 2 commits a -> b")], "12"),
+    ([(9 * 3600, "skip: dirty tree"), (5 * 3600, "skip: dirty tree")], "12"),
+    # Nothing to deploy: a skip run cannot be holding anything back.
+    ([(7200, "skip: dirty tree"), (60, "skip: dirty tree")], "0"),
+])
+def test_auto_deploy_skips_that_hold_nothing_back_stay_quiet(tmp_path, entries, behind):
+    env = _deploy_log(tmp_path, *[(ago, msg) for ago, msg in entries])
+    assert _auto_deploy_sweep(tmp_path, behind=behind, status="", env=env) == []
+
+
+def test_unexplained_dirty_checkout_behind_dev_is_reported(tmp_path):
+    [line] = _auto_deploy_sweep(tmp_path)
+    assert "records no recent skip" in line and "src/main.py" in line
+
+
+def test_auto_deploy_check_stays_out_of_scoped_sweeps(tmp_path):
+    proc, calls = _run(tmp_path, _scoped_responses([]), "--project", "rom",
+                       extra_env={"AQ_AUTO_DEPLOY_LOG": str(tmp_path / "missing.log")})
+    assert "AUTO-DEPLOY" not in proc.stdout
+    assert not any(call[0] == "git" for call in calls)
+
+
+DEPLOY_SCRIPT = ROOT / "scripts" / "operator-checks" / "aq-auto-deploy.sh"
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "-c", "maintenance.auto=false", *args],
+                   check=True, capture_output=True, text=True)
+
+
+@pytest.mark.skipif(not all(shutil.which(c) for c in ("bash", "git", "flock")),
+                    reason="needs bash, git and flock")
+def test_auto_deploy_escalates_consecutive_dirty_skips_once(tmp_path):
+    origin, live = tmp_path / "origin", tmp_path / "live"
+    _git(tmp_path, "init", "-q", "-b", "dev", str(origin))
+    (origin / "app.py").write_text("v1\n")
+    _git(origin, "add", "app.py")
+    _git(origin, "commit", "-qm", "v1")
+    _git(tmp_path, "clone", "-q", "-b", "dev", str(origin), str(live))
+    (origin / "app.py").write_text("v2\n")
+    _git(origin, "commit", "-qam", "v2")
+    (live / "app.py").write_text("an agent's edit\n")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    sent = tmp_path / "sent.txt"
+    (bin_dir / "aq").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {sent}\n')
+    (bin_dir / "aq").chmod(0o755)
+    log, state = tmp_path / "deploy.log", tmp_path / "skips"
+    env = {
+        "AQ_AUTO_DEPLOY_REPO": str(live), "AQ_AUTO_DEPLOY_LOG": str(log),
+        "AQ_AUTO_DEPLOY_STATE": str(state), "AQ_AUTO_DEPLOY_LOCK": str(tmp_path / "lock"),
+        "AQ_AUTO_DEPLOY_SKIP_ALERT_RUNS": "2", "AQ_AUTO_DEPLOY_SUPERVISOR": "session:sup",
+        "AQ_AUTO_DEPLOY_PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+    }
+
+    def run():
+        proc = subprocess.run(["bash", str(DEPLOY_SCRIPT)], env=env, capture_output=True,
+                              text=True, timeout=60, check=False)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    for _ in range(3):
+        run()
+    lines = log.read_text().splitlines()
+    assert [line.split(" ", 1)[1] for line in lines if " skip: " in line] == [
+        f"skip: dirty tree, uncommitted edits to app.py (run {n})" for n in (1, 2, 3)]
+    messages = sent.read_text().splitlines()
+    assert len(messages) == 1, messages
+    assert "message send --to session:sup" in messages[0]
+    assert "skipped 2 consecutive runs" in messages[0] and "1 commits ahead" in messages[0]
+    assert "never edit the live checkout" in messages[0]
+    assert state.read_text().split()[1:] == ["3", "1"]
+    assert (live / "app.py").read_text() == "an agent's edit\n"
+
+    # Saving the edits ends the stall: a clean, current tree resets the count.
+    _git(live, "checkout", "--", "app.py")
+    _git(live, "merge", "-q", "--ff-only", "origin/dev")
+    run()
+    assert not state.exists()
