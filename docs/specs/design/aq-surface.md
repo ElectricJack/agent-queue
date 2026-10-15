@@ -268,8 +268,10 @@ include a safe `details.failure_kind` (HTTP exception class or response-validati
 category); read timeouts also include `details.read_timeout_seconds`. Diagnostics
 never include raw exception messages or response bodies. `pool status` and `task
 explain` have a 120-second read budget because they may measure the entire fleet,
-including separate bounded prerequisite reads for each project. Other commands
-retain their existing timeout budgets.
+including separate bounded prerequisite reads for each project. `integration
+release-owner` has a 300-second read budget for provider confirmation and remote
+Git verification, including dry runs. Other commands retain their existing timeout
+budgets.
 
 The two structured-output exceptions are protocols rather than ordinary command results:
 `aq logs --json` (and `aq --json logs`) emits JSON Lines until the bounded read or follow
