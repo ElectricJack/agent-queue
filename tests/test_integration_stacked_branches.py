@@ -21,12 +21,13 @@ from src.database.tables import (
     tasks,
 )
 from src.git.github_contracts import GitHubRepositoryBinding
-from src.git.manager import GitError
+from src.git.manager import GitError, RemoteRefResult, RemoteRefState
 from src.integration.batches import SupersedeMemberUnavailable, ejection_instruction
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.provenance import CompletionIdentity, GitProvenance
 from src.integration.stacked_branches import (
     StackPrerequisitesConflict,
+    StackView,
     StackedBranches,
     merge_heads,
     observe_stacks,
@@ -1232,3 +1233,57 @@ async def test_conflict_dispatches_isolated_repairs_and_adopts_resolution(stack,
         await stack.db.transition_task(next_repair.id, TaskStatus.COMPLETED)
     assert await stack.service.refresh("child", stack.gitops) == "refreshed"
     assert await stack.service.current("child", source_sha=resolved)
+
+
+_TARGET, _MOVED, _PROOF = "a" * 40, "b" * 40, "c" * 40
+
+
+def _stack_view(refs=None, *, error=None, raises=None, proofs=None):
+    async def als_remote_refs(store, branches):
+        if raises:
+            raise raises
+        return {branch: refs[branch] for branch in branches if branch in refs}
+
+    git = SimpleNamespace(aget_remote_url=AsyncMock(return_value="u"),
+                          als_remote_refs=als_remote_refs)
+    snapshot = SimpleNamespace(error=error, target_oid=_TARGET, target_ref="refs/heads/main",
+                               store="s", repository_url="u", git=git)
+    return StackView(db=None, project_id="p", rows=({"task_id": "x"},), proofs=proofs or {},
+                     snapshot=snapshot)
+
+
+def _ref(oid=None, state=None):
+    return RemoteRefResult(state or (RemoteRefState.PRESENT if oid else RemoteRefState.ABSENT),
+                           oid)
+
+
+async def test_stack_currentness_separates_moved_refs_from_missing_git_evidence():
+    proof = {"x": {"task_id": "x", "branch_name": "refs/heads/aq/x", "checkpoint_sha": _PROOF}}
+    current = _stack_view({"main": _ref(_TARGET), "aq/x": _ref(_PROOF)}, proofs=proof)
+    assert (await current.currentness()).state == "current"
+    assert await current.fresh()
+
+    moved = await _stack_view({"main": _ref(_TARGET), "aq/x": _ref(_MOVED)},
+                              proofs=proof).currentness()
+    assert moved.evidence() == {"state": "changed", "reason": "stack_ref_moved", "ref": "aq/x",
+                                "expected": _PROOF, "observed": f"present:{_MOVED}",
+                                "task_id": "x"}
+    target = await _stack_view({"main": _ref(_MOVED)}).currentness()
+    assert (target.state, target.ref, target.expected) == ("changed", "main", _TARGET)
+
+    # No Git answer is never "current", and never claims a ref moved.
+    for view, reason in (
+        (_stack_view(error="snapshot_git_error: fetch failed"), "snapshot_git_error: fetch failed"),
+        (_stack_view(raises=GitError("ls-remote failed")), "stack_refs_unreadable: GitError"),
+        (_stack_view({"main": _ref(_TARGET), "aq/x": _ref(state=RemoteRefState.ERROR)},
+                     proofs=proof), "stack_ref_unreadable"),
+        (_stack_view({"main": _ref(_TARGET)}, proofs=proof), "stack_ref_unreadable"),
+        (StackView(db=None, project_id="p", rows=({"task_id": "x"},)),
+         "stack_repository_unavailable"),
+    ):
+        state = await view.currentness()
+        assert (state.state, state.reason) == ("unavailable", reason)
+        assert not await view.fresh()
+    assert await StackView(db=None, project_id="p").fresh()
+    unproven = _stack_view({"main": _ref(_TARGET)}, proofs=proof).without_proofs()
+    assert (unproven.proofs, unproven.delivered_refs) == ({}, {})

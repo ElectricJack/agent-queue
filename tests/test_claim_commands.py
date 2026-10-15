@@ -4338,6 +4338,197 @@ async def test_hierarchy_claim_inherits_git_proven_parent_without_resetting_chil
         assert owner["handoff_state"] == "reserved"
 
 
+async def _stacked_dependent(handler, db, tmp_path, env, **truth):
+    """The stacked "dependent" of a published prerequisite, ready for a pool claim."""
+    from src.integration.delivery_observer import DeliveryObserver
+    from src.integration.git_truth import GitTruth
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    git = env.git
+    await mktask(db, "epic", status=TaskStatus.IN_PROGRESS, repo_id="repo",
+                 branch_name="aq/epic")
+    await db.add_dependency("dependent", "epic", "parent-child")
+    await db.add_dependency("prerequisite", "epic", "parent-child")
+    await db.update_task("dependent", branch_name="aq/dependent", is_blocked=False)
+    git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/epic",
+        f"{env.base}:refs/heads/aq/dependent")
+    async with db.immediate() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="origin-dependent", task_id="dependent", repository_id="repo",
+            branch_name="aq/dependent", parent_task_id="epic", parent_repository_id="repo",
+            parent_ref="aq/epic", base_sha=env.base, creation_generation=1,
+            reserved=True, materialized=True, created_at=time.time(),
+        ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="dependent", repository_id="repo", branch="aq/dependent",
+            checkpoint_sha=env.base, updated_at=time.time(),
+        ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="prerequisite", repository_id="repo", branch="prerequisite",
+            checkpoint_sha=env.head, updated_at=time.time(),
+        ))
+    await db.update_project(PROJECT_ID, hierarchical_integration_mode="train",
+                            repo_url=str(env.remote), hierarchical_integration_policy={
+                                "prerequisite_branches": "stacked",
+                            })
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/dependent"), "dependent", "worker",
+    )
+    transport = handler.orchestrator.git
+    observer = DeliveryObserver(
+        db, git=transport, truth=GitTruth(transport, **truth),
+        data_dir=tmp_path / "prerequisites",
+    )
+    db.set_prerequisite_observer(observer)
+    manager = WorktreeSlotManager(
+        db=db, git=transport, bus=handler.orchestrator.bus,
+        config=handler.config.worktrees, git_mutex=handler.orchestrator._git_mutex,
+    )
+    handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    return observer
+
+
+async def _cloned_pool_session(db, tmp_path, env, sid, agent_id):
+    sid, work_dir = await pool_session(db, tmp_path, sid=sid, agent_id=agent_id)
+    env.git(tmp_path, "clone", str(env.remote), str(work_dir))
+    return sid, work_dir
+
+
+async def test_unavailable_stack_evidence_withholds_only_stacked_work(
+    handler, db, tmp_path, development_admission
+):
+    """A failed or backed-off fetch is no stack change: eligible roots still claim.
+
+    GitTruth answers every snapshot of a repository with the recorded fetch error
+    until its backoff expires. That is missing evidence, so it proves no stacked
+    prerequisite, but it moved nothing either; refusing the whole project as
+    ``stack_snapshot_changed`` starved every stable root for the backoff.
+    """
+    from src.integration.stacked_branches import observe_stacks
+
+    env = development_admission
+    clock = [1000.0]
+    observer = await _stacked_dependent(
+        handler, db, tmp_path, env, retry_delay=60, max_retry_delay=60,
+        clock=lambda: clock[0],
+    )
+    # A stable own-project root on the same repository, with no stacked inputs.
+    await mktask(db, "solo", profile_id="worker", repo_id="repo", branch_name="aq/solo")
+    env.git(env.source, "push", "origin", f"{env.base}:refs/heads/aq/solo")
+    async with db.immediate() as conn:
+        await conn.execute(task_branch_origins.insert().values(
+            id="origin-solo", task_id="solo", repository_id="repo", branch_name="aq/solo",
+            parent_repository_id="repo", parent_ref="main", base_sha=env.base,
+            creation_generation=1, reserved=True, materialized=True, created_at=time.time(),
+        ))
+        await conn.execute(task_integration_checkpoints.insert().values(
+            task_id="solo", repository_id="repo", branch="aq/solo",
+            checkpoint_sha=env.base, updated_at=time.time(),
+        ))
+    await BranchOwnership(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/solo"), "solo", "worker",
+    )
+    sid, work_dir = await _cloned_pool_session(db, tmp_path, env, "s1", "agent-1")
+    assert await (await observe_stacks(observer, PROJECT_ID)).fresh()
+    # One failed fetch puts the repository into backoff; the remote is back at once.
+    away = env.remote.with_name("remote-away.git")
+    env.remote.rename(away)
+    await observer.prerequisite_view(PROJECT_ID)
+    away.rename(env.remote)
+    stack = await observe_stacks(observer, PROJECT_ID)
+    state = await stack.currentness()
+    assert state.state == "unavailable", state
+    assert state.reason.startswith("snapshot_git_error:"), state
+    # Activation guards keep refusing the same evidence.
+    assert not await stack.fresh()
+
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "solo"
+    assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "solo"
+
+    sid2, work_dir2 = await _cloned_pool_session(db, tmp_path, env, "s2", "agent-2")
+    for args, refused in (({"next": True}, "no_ready_work"),
+                          ({"task_id": "dependent"}, "claim_conflict")):
+        result = await settled_claim(scoped(handler, sid2), args)
+        assert result["result"] == refused, result
+        assert result["reason"] == "stack_snapshot_unavailable", result
+        assert result["stack_evidence"]["state"] == "unavailable"
+        assert result["stack_evidence"]["reason"].startswith("snapshot_git_error:")
+        assert not (work_dir2 / ".aq/claim.json").exists()
+        dependent = await db.get_task("dependent")
+        assert dependent.status is TaskStatus.READY and dependent.claim_epoch == 0
+    assert (await db.get_task("solo")).status is TaskStatus.IN_PROGRESS
+
+    # Fresh evidence after the backoff admits the stacked dependent through the
+    # normal frontier, exactly once.
+    clock[0] += 61
+    result = await settled_claim(scoped(handler, sid2), {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+    origin = await db.get_task_branch_origin_for_promotion("dependent", "repo")
+    assert origin["stack_snapshot"]["base_sha"] == env.head
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/dependent"),
+    )
+    assert owner["handoff_state"] == "attached" and owner["session_id"] == sid2
+    assert json.loads((work_dir / ".aq/claim.json").read_text())["task_id"] == "solo"
+
+
+async def test_moving_stack_ref_refuses_after_bounded_reobservation(
+    handler, db, tmp_path, development_admission, monkeypatch
+):
+    """A genuine stack move still refuses activation, with the moved ref named."""
+    import src.integration.stacked_branches as stacked
+
+    env = development_admission
+    await _stacked_dependent(handler, db, tmp_path, env)
+    sid, work_dir = await _cloned_pool_session(db, tmp_path, env, "s1", "agent-1")
+    observe = stacked.observe_stacks
+    env.git(env.source, "checkout", "--detach", env.base)
+    (env.source / "epic-move").write_text("moved")
+    env.git(env.source, "add", ".")
+    env.git(env.source, "commit", "-m", "epic move")
+    moved = env.git(env.source, "rev-parse", "HEAD")
+    moves = []
+    moving = [True]
+
+    async def observe_then_move(*args, **kwargs):
+        view = await observe(*args, **kwargs)
+        if moving[0] and not kwargs.get("preparation"):
+            # The stack target flips after every claim observation.
+            seen = view.snapshot.target_oid
+            nxt = moved if seen == env.base else env.base
+            env.git(env.source, "push", "--force", "origin",
+                    f"{nxt}:{view.snapshot.target_ref}")
+            moves.append((view.snapshot.target_ref, seen, nxt))
+        return view
+
+    monkeypatch.setattr(stacked, "observe_stacks", observe_then_move)
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "no_ready_work", result
+    assert result["reason"] == "stack_snapshot_changed", result
+    assert len(moves) == 3
+    target, expected, observed = moves[-1]
+    assert result["stack_evidence"] == {
+        "state": "changed", "reason": "stack_ref_moved",
+        "ref": target.removeprefix("refs/heads/"),
+        "expected": expected, "observed": f"present:{observed}",
+    }
+    assert not (work_dir / ".aq/claim.json").exists()
+    dependent = await db.get_task("dependent")
+    assert dependent.status is TaskStatus.READY and dependent.claim_epoch == 0
+
+    # Once the stack holds still the same frontier selects it, once.
+    moving[0] = False
+    env.git(env.source, "push", "--force", "origin", f"{env.base}:{target}")
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "dependent"
+    assert (await db.get_task("dependent")).claim_epoch == 1
+    assert len(moves) == 3
+
+
 @pytest.mark.parametrize("conflict_kind, repair_result", [
     ("incarnation", "pass"), ("merge", "pass"), ("merge", "moved"),
     ("merge", "unrelated"), ("merge", "no-commit"), ("merge", "same-head"),
