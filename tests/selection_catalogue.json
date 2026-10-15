@@ -16785,11 +16785,16 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:9387a7c5c2aa045bb7e5ab2ab2e7228c04affa5f7b39bd06587b7c4f905b5be8",
+      "digest": "sha256:194fe7c2cfbe44838b9bac84c4ae8ed917e97592aadd4161a6fdebbc78af6fc7",
       "imports": [
         "src.api.auth",
         "src.api.scope",
+        "src.asks.operations",
+        "src.commands",
         "src.commands.contracts.builtin",
+        "src.commands.proposal_commands",
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
         "src.database.tables",
         "src.event_schemas",
