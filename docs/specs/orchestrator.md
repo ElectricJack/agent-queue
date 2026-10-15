@@ -1025,6 +1025,15 @@ close uses the held claim and checkout proof; task-lifecycle close additionally
 requires the provider to confirm the writer stopped. Missing proof retains the
 attachment, regardless of harness or model.
 
+Retry preparation reclaims only the owner fence it observed. A newer attachment
+must remain untouched even when it belongs to the same task. An attachment already
+bound to the preparing session and workspace is reused; a pending handoff for that
+same preparation stays fenced and never initiates its own detach. A stopped pool
+session whose task binding was cleared can still prove its old handoff through its
+ended attempt and fresh provider confirmation. Recovery holds the owner, session,
+agent and workspace rows through checkout verification and detach, refuses reused
+identities, and accepts a fully unlocked slot and an idle or retired unbound agent.
+
 For a stranded `BLOCKED/session_close_hard_failure`, a project supervisor may
 preview `aq integration release-owner --task-id TASK_ID --dry-run`, then apply
 without `--dry-run`. The command requires a stopped session and fresh provider

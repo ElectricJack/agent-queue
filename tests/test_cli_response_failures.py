@@ -104,6 +104,26 @@ async def test_fleet_diagnostics_allow_more_than_default_read_budget(command):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_release_owner_allows_provider_and_git_verification_read_budget(dry_run):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        assert request.extensions["timeout"]["read"] == 300.0
+        return httpx.Response(200, json={"ok": True, "result": {"success": True}})
+
+    client = CLIClient(base_url="http://test")
+    async with httpx.AsyncClient(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as transport:
+        client._http = transport
+        assert await client.execute(
+            "integration_release_owner", {"owner_row_id": "owner", "dry_run": dry_run}
+        ) == {"success": True}
+    assert len(calls) == 1
+
+
 @pytest.fixture
 def command_http_server():
     """Real HTTP framing, so a subprocess exercises httpx's response reader."""
