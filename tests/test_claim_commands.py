@@ -255,6 +255,89 @@ async def test_preparation_reads_current_project_with_both_claim_fences(handler,
     assert await db.claim_preparation_state(sid, task.id, task.claim_epoch) == (False, None)
 
 
+@pytest.mark.parametrize("mutation", ["branch", "completion", "edge"])
+async def test_ordinary_preparation_rechecks_new_source_artifacts(
+    handler, db, tmp_path, mutation,
+):
+    """The cheap no-artifact hint cannot authorize a source added during reset."""
+    from src.models import TaskCompletion
+
+    await mktask(db, "source", status=TaskStatus.COMPLETED)
+    await mktask(db, "dependent", profile_id="worker")
+    if mutation != "edge":
+        await db.add_dependency("dependent", "source")
+    sid, work_dir = await pool_session(db, tmp_path)
+
+    async def reset(*args, **kwargs):
+        if mutation == "completion":
+            await db.save_task_completion(TaskCompletion(
+                id="late-source", task_id="source", outcome="pass", commits=["a" * 40],
+            ))
+        else:
+            await db.update_task("source", branch_name="unmerged-source")
+            if mutation == "edge":
+                await db.add_dependency("dependent", "source")
+        return "aq/dependent"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "no_ready_work", result
+    assert (await db.get_session(sid)).claims == 0
+    assert (await db.get_task("dependent")).status is TaskStatus.READY
+    assert not (work_dir / ".aq" / "claim.json").exists()
+
+
+async def test_ordinary_preparation_retries_a_locked_artifact_free_source(handler, db, tmp_path):
+    """Skipping a locked source never treats that source as an absent edge."""
+    await mktask(db, "source", status=TaskStatus.COMPLETED)
+    await mktask(db, "dependent", profile_id="worker")
+    await db.add_dependency("dependent", "source")
+    sid, _ = await pool_session(db, tmp_path)
+    async with db.immediate() as conn:
+        await conn.execute(select(tasks.c.id).where(tasks.c.id == "source").with_for_update())
+        result = await settled_claim(scoped(handler, sid), {"next": True})
+        assert result["result"] == "no_ready_work", result
+        assert (await db.get_session(sid)).claims == 0
+    assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
+
+
+async def test_ordinary_preparation_preserves_activation_loss(handler, db, tmp_path, monkeypatch):
+    await mktask(db, "dependent", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    monkeypatch.setattr(db, "activate_claim", AsyncMock(return_value=None))
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "prepare_failed", result
+    assert result["reason"] == "released before activation"
+
+
+@pytest.mark.parametrize("change", ["hold", "development"])
+async def test_ordinary_preparation_rechecks_policy_and_holds(handler, db, tmp_path, change):
+    await mktask(db, "dependent", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    resets = 0
+
+    async def reset(*args, **kwargs):
+        nonlocal resets
+        resets += 1
+        if resets == 1:
+            if change == "hold":
+                await db.add_task_label("dependent", "hold:operator")
+            else:
+                await db.update_project(PROJECT_ID, hierarchical_integration_mode="development")
+        return "aq/dependent"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    if change == "hold":
+        assert result["result"] == "no_ready_work", result
+        assert (await db.get_session(sid)).claims == 0
+    else:
+        # Re-enter admission for the new policy before activating a new epoch.
+        assert result["result"] == "claimed", result
+        assert result["claim_epoch"] == 2
+        assert resets == 2
+
+
 async def stopped_slot_reset_claim(handler, db, tmp_path, *, detached=False, stopped=True):
     """The retained claim left by a stopped worker after a reset incident."""
     await mktask(db, "t1", profile_id="worker")

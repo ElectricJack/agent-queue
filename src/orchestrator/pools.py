@@ -298,7 +298,7 @@ class PoolsMixin:
             if session.project_id is not None:
                 sessions_by_project.setdefault(session.project_id, []).append(session)
 
-        for project in await self.db.list_projects():
+        for project in await self.db.list_projects(include_admission=True):
             if project.status != ProjectStatus.ACTIVE:
                 continue
             if project_ids is not None and project.id not in project_ids:
@@ -309,11 +309,13 @@ class PoolsMixin:
             measurement.projects[project.id] = project
             from src.integration.admission import structural_candidates
 
-            batch = await self._delivery_admission(
-                await structural_candidates(self.db, project.id),
-                **({"cached_only": True} if for_display else {}),
-            )
-            allowed = batch.allowed
+            allowed = None
+            if getattr(project, "_source_admission_required", True):
+                batch = await self._delivery_admission(
+                    await structural_candidates(self.db, project.id),
+                    **({"cached_only": True} if for_display else {}),
+                )
+                allowed = batch.allowed
             # Demand is claimable work only (mandatory routing §9.1): an
             # unrouted task is demand for no pool, and neither is a legacy
             # one once the project's router is ready.

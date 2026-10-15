@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import DBAPIError
 
 from src.database.tables import (
@@ -32,6 +32,86 @@ from src.integration.delivery_truth import (
 )
 from src.integration.delivery_observer import DeliveryTarget
 from src.integration.publishable_artifact import legacy_artifact
+
+
+class OrdinaryAdmissionChanged(Exception):
+    """Artifact-free activation lost its graph or policy fence."""
+
+
+def source_has_artifact(source):
+    """Any current or recorded artifact requires the full delivery observer."""
+    completion = task_completion_records.alias("admission_completion")
+    return or_(
+        source.c.branch_name.is_not(None),
+        source.c.pr_url.is_not(None),
+        select(completion.c.id).where(
+            completion.c.task_id == source.c.id,
+            completion.c.commits != "[]",
+        ).exists(),
+        legacy_artifact(source),
+    )
+
+
+def ordinary_activation_guard(task_id):
+    """Lock artifact-free sources and policy without adding a SQL round trip.
+
+    SKIP LOCKED makes concurrent source/config writers a retry. The source
+    count prevents a skipped row from masquerading as an absent prerequisite.
+    The caller already holds the candidate task, serializing graph edits.
+    """
+    edge = task_dependencies.alias("ordinary_edge")
+    source_ids = select(edge.c.depends_on_task_id).where(
+        edge.c.task_id == task_id, edge.c.dep_type == "blocks",
+    )
+    sources = select(tasks).where(tasks.c.id.in_(source_ids)).order_by(
+        tasks.c.id,
+    ).with_for_update(read=True, skip_locked=True).cte("ordinary_sources")
+    project_id = select(tasks.c.project_id).where(tasks.c.id == task_id).scalar_subquery()
+    policy = select(projects).where(projects.c.id == project_id).with_for_update(
+        read=True, skip_locked=True,
+    ).cte("ordinary_policy")
+    return and_(
+        select(policy.c.id).where(
+            policy.c.hierarchical_integration_mode != "development",
+        ).exists(),
+        select(func.count()).select_from(sources).scalar_subquery()
+        == select(func.count()).select_from(source_ids.subquery()).scalar_subquery(),
+        ~select(sources.c.id).where(source_has_artifact(sources)).exists(),
+    )
+
+
+def source_admission_required(task):
+    """Conservative SQL guard for the ordinary, artifact-free claim path.
+
+    Development always observes its delivery policy. Other projects need the
+    PR observer when any blocks source has a branch, PR or recorded artifact.
+    This is a request hint only; activation locks and rechecks the same inputs.
+    """
+    source = tasks.alias("admission_source")
+    edge = task_dependencies.alias("admission_edge")
+    return or_(
+        select(projects.c.id).where(
+            projects.c.id == task.c.project_id,
+            projects.c.hierarchical_integration_mode == "development",
+        ).correlate(task).exists(),
+        select(edge.c.task_id).select_from(edge.join(
+            source, source.c.id == edge.c.depends_on_task_id,
+        )).where(
+            edge.c.task_id == task.c.id,
+            edge.c.dep_type == "blocks",
+            source_has_artifact(source),
+        ).correlate(task).exists(),
+    )
+
+
+def project_admission_required(project):
+    candidate = tasks.alias("admission_candidate")
+    return select(candidate.c.id).where(
+        candidate.c.project_id == project.c.id,
+        candidate.c.status == "READY",
+        candidate.c.assigned_agent_id.is_(None),
+        source_admission_required(candidate),
+    ).exists()
 
 
 async def _inputs(db, candidate_ids, conn):

@@ -297,6 +297,16 @@ or removes explicit human waiter links. Explicit attachment takes ownership of
 an existing generated link. Completion and graph notifications do not publish
 an intermediate ready event for a PR source awaiting admission.
 
+Ordinary claims whose `blocks` sources have no branch, PR, completion commits or
+legacy artifact may bypass remote admission. The existing project and preparation
+reads carry this request hint; it is never a stored delivery fact. Activation locks
+the candidate, its sources and project policy and rechecks artifact absence and
+graph blockedness in the activation transaction. A source/configuration writer,
+new edge or newly recorded artifact invalidates the hint and retries admission.
+Development claims always retain their delivery observation. Pool measurement
+carries the same hint on its existing project-list query; skipped remote reads
+never authorize activation, which still revalidates the task's current inputs.
+
 Managed projects (`development`, `hierarchy`, `train`) retain their own source
 delivery policies. Organizational sources with no branch, PR or completion
 artifact retain ordinary graph semantics.
