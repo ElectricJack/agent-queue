@@ -3355,6 +3355,36 @@ async def test_prerequisite_with_delivery_identity_still_requires_proof(world, r
                 if "prerequisite" in item["code"]]
 
 
+async def test_active_control_status_reads_no_git_and_omits_epic_distance(world, monkeypatch):
+    """Control-only status is the durable train projection: no fetch, no rev-list."""
+    from src.integration import stacked_branches
+    from src.integration import train_sources
+
+    db = world.db
+    await cross_epic_world(world)
+    world.origin.land("prerequisite")
+    status = IntegrationStatusService(db, git_first="active")
+    full = await status.train_status("p")
+    assert next(item for item in full["epics"] if item["task_id"] == "epic")["behind"] == 2
+
+    observed = []
+
+    async def no_snapshot(*args, **kwargs):
+        observed.append("project_snapshot")
+        raise AssertionError("control-only status observed the default branch")
+
+    async def no_inspect(self, task_id, **kwargs):
+        observed.append(task_id)
+        raise AssertionError("control-only status measured epic distance")
+
+    monkeypatch.setattr(train_sources, "project_snapshot", no_snapshot)
+    monkeypatch.setattr(stacked_branches.EpicRefresh, "inspect", no_inspect)
+    control = await status.control_status("p")
+    assert observed == []
+    assert control["projection_kind"] == "train" and "epics" not in control
+    assert control == {key: value for key, value in full.items() if key != "epics"}
+
+
 async def test_epic_refresh_preview_apply_attestation_lease_and_origin(world):
     from src.integration.stacked_branches import EpicRefresh
 
@@ -3814,7 +3844,9 @@ async def test_active_status_projects_the_train_not_subjects(world):
     assert [m["task_id"] for m in batch["members"]] == ["a", "b"]
     assert [b["code"] for b in project["blockers"]] == ["checks_pending"]
     assert project["blockers"][0]["candidate_sha"] == target["candidate_sha"]
-    assert await status.status("p") == project
+    # Full status is the same train projection plus the Git epic observation.
+    full = await status.status("p")
+    assert full.pop("epics") == [] and full == project
 
     task = await status.task_blockers("b")
     assert task["projection_kind"] == "train"

@@ -53,6 +53,12 @@ def _retryable_preparation_error(exc: Exception) -> bool:
         exc = getattr(exc, "orig", None) or exc.__cause__
     return False
 
+
+def _moved_target(outcome: dict) -> bool:
+    """A settled attempt that released its claim because admission inputs moved."""
+    return (outcome.get("result") == ClaimResult.NO_READY_WORK.value
+            and outcome.get("reason") == "delivery_snapshot_changed")
+
 __all__ = [
     "CLAIM_FILE",
     "ClaimCommandsMixin",
@@ -474,7 +480,7 @@ class ClaimCommandsMixin:
                     )
                     if settled is None:
                         return outcome
-                    if isinstance(settled, dict):
+                    if isinstance(settled, dict) and not _moved_target(settled):
                         return await self._record_claim_refusal(settled, session, cap)
                     session = await self.db.get_session(session.id) or session
                     continue  # re-run: active → claimed; released → new attempt
@@ -1112,6 +1118,11 @@ class ClaimCommandsMixin:
         if (epoch != session.last_claim_epoch or instance_token != session.instance_token
                 or (want_id and want_id != task_id)
                 or session.task_id not in (None, task_id)):
+            return None
+        if _moved_target(outcome):
+            # The preparation released its claim because the target moved
+            # after it outlived the response window. Retry from new inputs, as
+            # the in-request loop would have, instead of reporting no work.
             return None
         if outcome["result"] == ClaimResult.CLAIMED.value and (
             session.task_id != task_id or session.claim_phase != "active"
