@@ -33,6 +33,7 @@ from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
     apply_label_filters,
 )
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     agents,
     archived_tasks,
@@ -530,8 +531,9 @@ class TaskQueryMixin:
     ) -> list[Task]:
         """List non-terminal tasks, optionally filtered by project.
 
-        Scheduling excludes held READY work, while retaining in-flight rows
-        for concurrency and sync-task exclusivity. Ordinary listings show holds.
+        Scheduling excludes held READY work (``hold:*`` labels and ingestion
+        batch members), while retaining in-flight rows for concurrency and
+        sync-task exclusivity. Ordinary listings show holds.
         """
         if exclude_statuses is None:
             exclude_statuses = {TaskStatus.COMPLETED}
@@ -543,7 +545,9 @@ class TaskQueryMixin:
             conditions.append(tasks.c.project_id == project_id)
         if exclude_held_ready:
             unheld = apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause
-            conditions.append(or_(tasks.c.status != TaskStatus.READY.value, unheld))
+            conditions.append(
+                or_(tasks.c.status != TaskStatus.READY.value, and_(unheld, not_ingest_held()))
+            )
 
         stmt = select(tasks)
         if conditions:
@@ -1237,6 +1241,8 @@ class TaskQueryMixin:
             tasks.c.id.in_(sorted(task_ids)),
             tasks.c.status == TaskStatus.READY.value,
             tasks.c.is_blocked == 0,
+            # A held batch member may be READY, but it is not frontier work.
+            not_ingest_held(),
         )
         if supports_returning(conn):
             src = apply_label_filters(
@@ -1852,6 +1858,11 @@ class TaskQueryMixin:
         going through :meth:`_apply_transition`.
         """
         if entries and self._ready_listener is not None:
+            # Callers outside ``_note_frontier_entry`` pass computed ids; an
+            # ingestion batch member never emits ``task.ready`` (design §4).
+            held = await self.ingest_held_task_ids({task_id for task_id, _ in entries})
+            entries = [entry for entry in entries if entry[0] not in held]
+        if entries and self._ready_listener is not None:
             try:
                 await self._ready_listener(list(entries))
             except Exception:  # a listener failure must not fail the transition
@@ -1964,6 +1975,16 @@ class TaskQueryMixin:
 
     #: Post-commit ready-frontier callback, registered via ``set_ready_listener``.
     _ready_listener = None
+
+    async def ingest_held_task_ids(self, task_ids: Collection[str], *, conn=None) -> set[str]:
+        """Return the ids in *task_ids* that belong to an unreleased ingestion batch."""
+        if not task_ids:
+            return set()
+        stmt = select(tasks.c.id).where(tasks.c.id.in_(sorted(task_ids)), ~not_ingest_held())
+        if conn is not None:
+            return set((await conn.execute(stmt)).scalars())
+        async with self._engine.connect() as own:
+            return set((await own.execute(stmt)).scalars())
 
     async def expire_satisfied_gates(self, task_id: str, *, conn=None) -> int:
         """Expire open gates whose every waiter has reached a terminal state.

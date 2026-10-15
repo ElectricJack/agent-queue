@@ -754,6 +754,10 @@ class ExecutionMixin:
             logger.info("Task %s changed ownership or stopped before session launch", action.task_id)
             return
         task = current
+        if await self.db.ingest_held_task_ids({task.id}):
+            # Held after assignment: the batch awaits fidelity review (design §4).
+            await self._fail_session_launch(action, task, "ingest_held", notify=False)
+            return
         agent = await self.db.get_agent(action.agent_id)
         routed_task, effective_route = await self._effective_assignment_task(task)
         mismatch = "task has unresolved gates or dependencies" if task.is_blocked else None

@@ -123,9 +123,10 @@ areas:
 
   # ----------------------------------------------------------- claims and pools
   - id: claims
-    description: "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims and claim statement budgets."
+    description: "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims, claim statement budgets and the ingestion-hold admission ratchet."
     match:
       - tests/test_claim_*.py
+      - tests/test_ingest_hold_admission.py
       - tests/test_cli_claim_restart.py
       - tests/test_preparation_failure.py
       - tests/perf/test_claim_statements.py

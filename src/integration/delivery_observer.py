@@ -23,6 +23,7 @@ from types import MappingProxyType
 
 from sqlalchemy import literal, or_, select
 
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     archived_tasks,
     projects,
@@ -149,6 +150,8 @@ async def gating_delivery_ids(conn, project_id: str, *, limit: int = STATUS_DELI
                 tasks.c.project_id == project_id,
                 tasks.c.status == "COMPLETED",
                 development_delivery_scope(tasks),
+                # Held ingestion members are never delivery candidates.
+                not_ingest_held(),
                 gating,
             )
             .order_by(tasks.c.updated_at.desc(), tasks.c.id)
