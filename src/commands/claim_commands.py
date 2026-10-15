@@ -37,6 +37,9 @@ _UNSET = object()
 _PREPARATION_RETRY_DELAYS = (0.05, 0.1)
 # A no-wait caller receives progress after this bounded warm-path allowance.
 _PREPARATION_RESPONSE_SECONDS = 0.5
+# Admission refusals whose Git inputs moved under the claim; a bounded re-read
+# recomputes selection from the new inputs and refuses again if they keep moving.
+_MOVED_ADMISSION = frozenset({"delivery_snapshot_changed", "stack_snapshot_changed"})
 
 
 def _retryable_preparation_error(exc: Exception) -> bool:
@@ -612,9 +615,12 @@ class ClaimCommandsMixin:
             outcome = await self._attempt_claim_once(
                 session, want_id, cap, project, routing=routing, repaired=repaired
             )
-            if outcome.get("reason") != "delivery_snapshot_changed":
+            if outcome.get("reason") not in _MOVED_ADMISSION:
                 return outcome
-        return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", session, cap)
+        out = self._simple(ClaimResult.NO_READY_WORK, outcome["reason"], session, cap)
+        if "stack_evidence" in outcome:
+            out["stack_evidence"] = outcome["stack_evidence"]
+        return out
 
     async def _delivered_source_repairs(self, project_id: str) -> dict:
         """Queued source-CI repairs this claim must not hand to an agent.
@@ -707,6 +713,7 @@ class ClaimCommandsMixin:
                 )
         prerequisite_view = None
         stack_view = None
+        stack_unavailable = None
         from src.integration.delivery_observer import prerequisite_observer
 
         observer = prerequisite_observer(self.db)
@@ -720,8 +727,22 @@ class ClaimCommandsMixin:
             from src.integration.stacked_branches import observe_stacks
 
             stack_view = await observe_stacks(observer, project.id, task_id=want_id)
-            if not await stack_view.fresh():
-                return self._simple(ClaimResult.NO_READY_WORK, "stack_snapshot_changed", None, cap)
+            stack_state = await stack_view.currentness()
+            if not stack_state.current:
+                logger.info(
+                    "claim %s for %s: stack evidence %s: %s", session.id, project.id,
+                    stack_state.state, stack_state.evidence(),
+                )
+            if stack_state.state == "changed":
+                out = self._simple(ClaimResult.NO_READY_WORK, "stack_snapshot_changed", None, cap)
+                out["stack_evidence"] = stack_state.evidence()
+                return out
+            if not stack_state.current:
+                # Git gave no answer, which proves no stacked prerequisite: select
+                # as the scheduler does, with no stack proofs, so stacked dependents
+                # stay withheld while roots and delivered-prerequisite work claim.
+                stack_unavailable = stack_state
+                stack_view = stack_view.without_proofs()
             hierarchy_mode = replace(hierarchy_mode,
                                      stackable_prerequisite_ids=frozenset(stack_view.proofs))
         # What to do once the transaction has committed — set inside the
@@ -944,6 +965,14 @@ class ClaimCommandsMixin:
                 await self.orchestrator._emit_task_event(
                     "task.claim_conflict", conflict_task, session_id=session.id
                 )
+            if stack_unavailable is not None:
+                # The named task's stack rows had no Git evidence, so it was not
+                # selectable; say so rather than imply another claimant won it.
+                out = self._simple(
+                    ClaimResult.CLAIM_CONFLICT, "stack_snapshot_unavailable", row, cap
+                )
+                out["stack_evidence"] = stack_unavailable.evidence()
+                return out
             return self._simple(ClaimResult.CLAIM_CONFLICT, "", row, cap)
         if withheld_source_repairs:
             # Nothing else was claimable and at least one candidate was withheld
@@ -951,6 +980,12 @@ class ClaimCommandsMixin:
             return self._simple(
                 ClaimResult.NO_READY_WORK, "source_ci_repair_already_delivered", row, cap
             )
+        if stack_unavailable is not None:
+            # Stacked candidates were withheld for want of Git evidence, not because
+            # the frontier is empty; name that so repeated non-progress is visible.
+            out = self._simple(ClaimResult.NO_READY_WORK, "stack_snapshot_unavailable", row, cap)
+            out["stack_evidence"] = stack_unavailable.evidence()
+            return out
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
     async def _recover_stale_binding(
