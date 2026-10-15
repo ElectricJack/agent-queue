@@ -4259,6 +4259,87 @@ async def test_root_pr_failure_observation_cannot_reopen_changed_identity(world,
     assert "Reopen Feedback" not in (await world.db.get_task("root")).description
 
 
+def queued_recovery(world, monkeypatch, result=None):
+    """Recovery stuck behind the delivery observer's fetch queue until released."""
+    import src.integration.github_review_poll as review_poll
+
+    monkeypatch.setattr(review_poll, "ROOT_PR_RECOVERY_WAIT_SECONDS", 0.2)
+    recover, release, calls = root_pr_recovery(world), asyncio.Event(), []
+
+    async def queued(observation):
+        calls.append(observation.request.task_id)
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            calls.append("cancelled")
+            raise
+        return result if result is not None else await recover(observation)
+
+    return queued, release, calls
+
+
+async def test_slow_root_pr_recovery_does_not_hold_the_visit_or_other_roots(world, monkeypatch):
+    # bright-grove-93: a red root's recovery waited 809s in pr_admission and the
+    # 900s visit deadline cancelled it, so no root of the target ever batched.
+    queued, release, calls = queued_recovery(world, monkeypatch)
+    train, github, _ = await hosted_train(world, failure_handler=queued)
+    red = await completed(world, "red-root")
+    await completed(world, "green-root")
+    github.pr_runs[red] = "failure"
+    started = time.monotonic()
+    outcome = await asyncio.wait_for(train.visit(MAIN, seal_now=True), timeout=30)
+    assert time.monotonic() - started < 30
+    assert [m.task_id for m in await BatchStore(world.db).members(outcome.batch_id)] == [
+        "green-root"]
+    assert calls == ["red-root"]
+    assert (await world.db.get_task("red-root")).status is TaskStatus.COMPLETED
+    # The recovery outlives the visit that stopped waiting for it.
+    release.set()
+    for _ in range(200):
+        if (await world.db.get_task("red-root")).status is TaskStatus.READY:
+            break
+        await asyncio.sleep(0.05)
+    task = await world.db.get_task("red-root")
+    assert task.status is TaskStatus.READY and "unit: failure" in task.description
+    assert calls == ["red-root"]
+
+
+async def test_pending_root_pr_recovery_is_taken_by_a_later_visit(world, monkeypatch):
+    queued, release, calls = queued_recovery(world, monkeypatch, result={
+        "success": True, "outcome": "supervisor_notified", "blocker": "root_pr_checks_unchanged",
+    })
+    train, github, _ = await hosted_train(world, failure_handler=queued)
+    source = await completed(world, "root")
+    github.pr_runs[source] = "failure"
+    first = await asyncio.wait_for(train.visit(MAIN, seal_now=True), timeout=30)
+    assert first.batch_id is None
+    assert first.detail["blockers"][0]["code"] == "pr_checks_red"
+    assert first.detail["blockers"][0]["recovery"]["outcome"] == "pending"
+    second = await asyncio.wait_for(train.visit(MAIN, seal_now=True), timeout=30)
+    assert second.detail["blockers"][0]["recovery"]["outcome"] == "pending"
+    release.set()
+    await asyncio.sleep(0)
+    # A finished recovery is observed before the root's backoff expires.
+    third = await asyncio.wait_for(train.visit(MAIN, seal_now=True), timeout=30)
+    assert third.detail["blockers"][0]["code"] == "root_pr_checks_unchanged"
+    assert third.detail["blockers"][0]["recovery"]["outcome"] == "supervisor_notified"
+    assert calls == ["root"]
+
+
+async def test_superseded_root_pr_recovery_is_cancelled(world, monkeypatch):
+    queued, _, calls = queued_recovery(world, monkeypatch)
+    train, github, _ = await hosted_train(world, failure_handler=queued)
+    source = await completed(world, "root")
+    github.pr_runs[source] = "failure"
+    await asyncio.wait_for(train.visit(MAIN, seal_now=True), timeout=30)
+    assert calls == ["root"]
+    # A changed PR identity supersedes the pending observation.
+    await world.db.update_task("root", pr_url="https://github.com/acme/widgets/pull/9999")
+    later = await asyncio.wait_for(train.visit(MAIN, seal_now=True), timeout=30)
+    await asyncio.sleep(0)
+    assert later.batch_id is None and calls == ["root", "cancelled"]
+
+
 @pytest.mark.parametrize("unchanged", [True, False])
 async def test_root_pr_recovery_escalates_once_after_restart(world, unchanged):
     from src.database.tables import messages
