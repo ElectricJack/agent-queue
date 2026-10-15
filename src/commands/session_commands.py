@@ -738,9 +738,47 @@ class SessionCommandsMixin:
 
         This cancels the instance's cron schedules with the intent write.
         The reconciler stops named sessions on the next tick, independently
-        of idle timeout. Pool sessions drain through their claim lifecycle.
+        of idle timeout. Pool sessions drain through their claim lifecycle;
+        stopped pool history stays stopped. Legacy stopped/sleeping pools
+        can normalize only after fresh proof that their exact instance is gone.
         """
-        return await self._set_desired_state(args, "sleeping")
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
+        stopped_confirmed = False
+        if (session.lifecycle == "pool" and session.state == "stopped"
+                and session.desired_state == "sleeping"):
+            if (not session.instance_token or session.task_id is not None
+                    or session.claim_phase is not None or session.failed_preparation is not None):
+                return {"error": "Stopped pool session retains work or lacks an instance token"}
+            provider = self._provider_for_session(session)
+            if provider is None:
+                return {"error": "Provider unavailable; cannot confirm pool instance is inactive"}
+            try:
+                if not await provider.confirm_instance_stopped(self._session_handle(session)):
+                    return {"error": "Pool instance is still live; sleep intent was not changed"}
+                from src.sessions.proctable import scan_by_env_marker
+
+                if any(process.marker == session.instance_token
+                       for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")):
+                    return {"error": "Pool instance still has live marked processes"}
+                stopped_confirmed = True
+            except Exception:
+                return {"error": "Could not verify pool instance is inactive"}
+        try:
+            current = await self.db.request_session_sleep(
+                session, stopped_confirmed=stopped_confirmed,
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {
+            "success": True,
+            "session_id": current.id,
+            "desired_state": current.desired_state,
+            "state": current.state,
+        }
 
     async def _cmd_session_wake(self, args: dict) -> dict:
         """Mark a sleeping named session as wanted again.
@@ -788,18 +826,6 @@ class SessionCommandsMixin:
             "desired_state": "running",
             "state": session.state,
             "note": "the next reconciler tick starts it",
-        }
-
-    async def _set_desired_state(self, args: dict, desired: str) -> dict:
-        session, err = await self._resolve_session(args)
-        if err:
-            return err
-        await self.db.update_session(session.id, desired_state=desired)
-        return {
-            "success": True,
-            "session_id": session.id,
-            "desired_state": desired,
-            "state": session.state,
         }
 
     async def _cmd_session_drain_ack(self, args: dict) -> dict:

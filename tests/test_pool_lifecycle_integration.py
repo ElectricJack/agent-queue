@@ -369,7 +369,12 @@ class TestFullPullLoop:
         provider.sessions[first.name].activity = stale_at
         await db.update_session(first.id, last_activity=stale_at)
         await orch.session_reconciler.tick(now=time.time())
-        assert (await db.get_session(first.id)).state == "stopped"
+        stopped = await db.get_session(first.id)
+        assert (stopped.state, stopped.desired_state, stopped.end_reason) == (
+            "stopped", "stopped", "claim_loop_stalled",
+        )
+        slept = await handler.execute("session_sleep", {"session_id": first.id})
+        assert slept["success"] and slept["desired_state"] == "stopped"
 
         await orch._reconcile_pools()
         await orch.wait_for_pool_launches()
@@ -452,6 +457,20 @@ class TestPublicPoolSleep:
         assert successor.agent_id == first.agent_id
         assert successor.instance_token != first.instance_token
         assert (successor.state, successor.desired_state) == ("running", "running")
+        assert [h.name for h in await provider.list_running("")] == [successor.name]
+
+        # A late operator sleep addresses the historical instance only. It
+        # cannot reattach it to the checkout or drain its successor's claim.
+        claim = await scoped(handler, successor.id)._cmd_task_claim({"next": True})
+        assert claim["result"] == "claimed"
+        slept = await handler.execute("session_sleep", {"session_id": first.id})
+        assert slept["success"] and slept["desired_state"] == "stopped"
+        assert (await db.get_session(first.id)).desired_state == "stopped"
+        current = await db.get_session(successor.id)
+        assert (current.state, current.desired_state, current.task_id) == (
+            "running", "running", "t1",
+        )
+        assert (await db.get_workspace_for_agent(successor.agent_id)).locked_by_task_id == "t1"
         assert [h.name for h in await provider.list_running("")] == [successor.name]
 
     async def test_sleep_defers_while_pool_holds_a_task(self, orch, db, handler):

@@ -681,6 +681,132 @@ class TestDesiredStateCommands:
         assert entry["state"] == "running" and entry["desired_state"] == "sleeping"
 
 
+@pytest.mark.parametrize("blocker", [
+    "live", "provider_unavailable", "probe_failed", "process_probe_failed", "marked_process",
+    "missing_token",
+    "task", "claim", "preparation", "running_intent",
+])
+async def test_stopped_pool_sleep_preserves_unproven_history(
+    handler, db, provider, monkeypatch, blocker,
+):
+    from unittest.mock import AsyncMock
+
+    from src.sessions.proctable import ProcEntry
+
+    await _make_task(db)
+    row = await _make_session(
+        db, provider, task_id=None, lifecycle="pool", state="stopped", desired_state="sleeping",
+    )
+    if blocker != "live":
+        await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+    if blocker == "provider_unavailable":
+        monkeypatch.setattr(handler, "_provider_for_session", lambda _: None)
+    elif blocker == "probe_failed":
+        monkeypatch.setattr(
+            provider, "confirm_instance_stopped", AsyncMock(side_effect=RuntimeError("partial probe")),
+        )
+    elif blocker == "marked_process":
+        monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[
+            ProcEntry(42, 1, "codex", 1, row.instance_token),
+        ]))
+    elif blocker == "process_probe_failed":
+        monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(
+            side_effect=RuntimeError("incomplete process scan"),
+        ))
+    fields = {
+        "missing_token": {"instance_token": ""},
+        "task": {"task_id": "t1"},
+        "claim": {"claim_phase": "preparing"},
+        "preparation": {"failed_preparation": {"reason": "preserve evidence"}},
+        "running_intent": {"desired_state": "running"},
+    }.get(blocker, {})
+    if fields:
+        await db.update_session(row.id, **fields)
+    before = await db.get_session(row.id)
+    stop = AsyncMock(side_effect=AssertionError("sleep must not signal"))
+    monkeypatch.setattr(provider, "stop", stop)
+
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert "error" in result, result
+    assert await db.get_session(row.id) == before
+    assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+    stop.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", [
+    {"instance_token": "revived-token"}, {"provider": "tmux"}, {"name": "successor"},
+    {"started_at": 200.0}, {"last_claim_epoch": 2}, {"claim_phase": "active"},
+    {"task_id": "t1"}, {"failed_preparation": {"reason": "retained"}},
+    {"desired_state": "running"}, {"state": "running"},
+], ids=[
+    "instance", "provider", "name", "generation", "epoch", "claim", "task", "prepare", "intent",
+    "revived",
+])
+async def test_stopped_pool_sleep_rechecks_identity_and_work_after_provider_proof(
+    handler, db, provider, monkeypatch, change,
+):
+    from unittest.mock import AsyncMock
+
+    await _make_task(db)
+    row = await _make_session(
+        db, provider, task_id=None, lifecycle="pool", state="stopped", desired_state="sleeping",
+    )
+    await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+
+    async def confirm_then_change(_handle):
+        if "state" in change:
+            # Supported transitions never revive stopped rows. Fail closed
+            # even if legacy/corrupt metadata changes during provider proof.
+            from sqlalchemy import update
+
+            from src.database.tables import sessions
+
+            async with db.immediate() as conn:
+                await conn.execute(update(sessions).where(sessions.c.id == row.id).values(**change))
+        else:
+            await db.update_session(row.id, **change)
+        return True
+
+    monkeypatch.setattr(provider, "confirm_instance_stopped", confirm_then_change)
+    monkeypatch.setattr("src.sessions.proctable.scan_by_env_marker", AsyncMock(return_value=[]))
+
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert "error" in result, result
+    current = await db.get_session(row.id)
+    for key, value in change.items():
+        assert getattr(current, key) == value
+    assert current.desired_state == change.get("desired_state", "sleeping")
+
+
+async def test_live_pool_sleep_racing_completed_teardown_preserves_stopped_intent(
+    handler, db, provider, monkeypatch,
+):
+    row = await _make_session(db, provider, task_id=None, lifecycle="pool")
+    request_sleep = db.request_session_sleep
+
+    async def stop_then_sleep(observed, **kwargs):
+        await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+        await db.update_session(row.id, state="stopped", desired_state="stopped")
+        return await request_sleep(observed, **kwargs)
+
+    monkeypatch.setattr(db, "request_session_sleep", stop_then_sleep)
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+
+    assert result["success"], result
+    assert (result["state"], result["desired_state"]) == ("stopped", "stopped")
+
+
+@pytest.mark.parametrize("state", ["starting", "running", "draining"])
+async def test_pool_sleep_keeps_live_session_attached(handler, db, provider, state):
+    row = await _make_session(db, provider, task_id=None, lifecycle="pool", state=state)
+    result = await handler.execute("session_sleep", {"session_id": row.id})
+    assert result["success"], result
+    assert (result["state"], result["desired_state"]) == (state, "sleeping")
+    assert await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
+
+
 class TestDrainAckCommand:
     async def test_marks_the_session_draining(self, handler, db, provider):
         await _make_task(db)
