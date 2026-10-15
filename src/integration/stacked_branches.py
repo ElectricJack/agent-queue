@@ -182,6 +182,35 @@ def _identity(row):
     return {key: value for key, value in row.items() if key != "dependent"}
 
 
+@dataclass(frozen=True)
+class StackCurrentness:
+    """Whether a stack view still describes Git: current, changed or unavailable.
+
+    *changed* means Git answered and a pinned ref moved, so the view's selection
+    inputs are stale. *unavailable* means Git gave no answer (a failed or backed-off
+    snapshot, an unreadable remote): that proves no stack prerequisite at all, so a
+    caller drops every proof rather than reading the failure as a change.
+    """
+
+    state: str
+    reason: str | None = None
+    ref: str | None = None
+    expected: str | None = None
+    observed: str | None = None
+    task_id: str | None = None
+
+    @property
+    def current(self):
+        return self.state == "current"
+
+    def evidence(self):
+        return {key: value for key, value in vars(self).items() if value is not None}
+
+
+def _observed(ref):
+    return None if ref is None else f"{ref.state}:{ref.oid}" if ref.oid else str(ref.state)
+
+
 @dataclass
 class StackView:
     db: object
@@ -196,12 +225,23 @@ class StackView:
     cached_only: bool = False
 
     async def fresh(self):
+        return (await self.currentness()).current
+
+    def without_proofs(self):
+        """The same observation proving nothing, for evidence Git could not give."""
+        return replace(self, proofs={}, delivered_refs={})
+
+    async def currentness(self):
+        def unavailable(reason, ref=None, observed=None):
+            return StackCurrentness("unavailable", reason, ref, observed=observed)
+
         if self.snapshot is None:
-            return not self.rows
+            return (unavailable("stack_repository_unavailable") if self.rows
+                    else StackCurrentness("current"))
         snapshot = self.snapshot
-        if snapshot.error or not snapshot.target_oid:
-            return False
         target = snapshot.target_ref.removeprefix("refs/heads/")
+        if snapshot.error or not snapshot.target_oid:
+            return unavailable(snapshot.error or "missing_target", target)
         branches = {target}
         branches.update(proof["branch_name"].removeprefix("refs/heads/")
                         for proof in self.proofs.values())
@@ -218,14 +258,14 @@ class StackView:
             else:
                 missing.append(branch)
         if self.cached_only and missing:
-            return False
+            return unavailable("stack_refs_not_cached", missing[0])
         try:
             if (not self.cached_only and
                     await snapshot.git.aget_remote_url(snapshot.store) != snapshot.repository_url):
-                return False
+                return unavailable("stack_store_remote_mismatch")
             observed = await snapshot.git.als_remote_refs(snapshot.store, missing) if missing else {}
-        except (GitError, OSError):
-            return False
+        except (GitError, OSError) as exc:
+            return unavailable(f"stack_refs_unreadable: {type(exc).__name__}")
         for branch, ref in observed.items():
             refs[branch] = ref
             self.ref_cache[(*key, branch)] = now, ref
@@ -233,28 +273,36 @@ class StackView:
         for cached_key, (stamp, _) in list(self.ref_cache.items()):
             if now - stamp > 2:
                 self.ref_cache.pop(cached_key, None)
-        ref = refs.get(target)
-        if ref is None or ref.state is not RemoteRefState.PRESENT or ref.oid != snapshot.target_oid:
-            return False
-        for branch, expected in self.watched_refs.items():
+        for branch in branches:
             ref = refs.get(branch)
-            if ref is None or (ref.state, ref.oid) != (
+            if ref is None or ref.state is RemoteRefState.ERROR:
+                return unavailable("stack_ref_unreadable", branch, observed=_observed(ref))
+
+        def changed(branch, expected, task_id=None):
+            return StackCurrentness("changed", "stack_ref_moved", branch, expected,
+                                    _observed(refs.get(branch)), task_id)
+
+        ref = refs[target]
+        if ref.state is not RemoteRefState.PRESENT or ref.oid != snapshot.target_oid:
+            return changed(target, snapshot.target_oid)
+        for branch, expected in self.watched_refs.items():
+            ref = refs[branch]
+            if (ref.state, ref.oid) != (
                 RemoteRefState.PRESENT if expected else RemoteRefState.ABSENT, expected,
             ):
-                return False
+                return changed(branch, expected)
         for proof in self.proofs.values():
-            ref = refs.get(proof["branch_name"].removeprefix("refs/heads/"))
-            if ref is None:
-                return False
+            branch = proof["branch_name"].removeprefix("refs/heads/")
+            ref = refs[branch]
             if ref.state is RemoteRefState.PRESENT and ref.oid == proof["checkpoint_sha"]:
                 continue
             delivered = self.delivered_refs.get(proof["task_id"])
             if ref.state is not RemoteRefState.ABSENT or delivered is None:
-                return False
-            parent = refs.get(delivered[0])
-            if parent is None or parent.state is not RemoteRefState.PRESENT or parent.oid != delivered[1]:
-                return False
-        return True
+                return changed(branch, proof["checkpoint_sha"], proof["task_id"])
+            parent = refs[delivered[0]]
+            if parent.state is not RemoteRefState.PRESENT or parent.oid != delivered[1]:
+                return changed(delivered[0], delivered[1], proof["task_id"])
+        return StackCurrentness("current")
 
     async def verified_on(self, conn, ids=None):
         current = {

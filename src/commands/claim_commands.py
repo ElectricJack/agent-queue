@@ -24,6 +24,7 @@ from src.claim_timing import (
     ClaimTiming, claim_phase, claim_selection, current_claim_timing, timed_claim_phase,
 )
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+from src.database.queries.ingest_hold import IngestHeld
 from src.git.manager import ForeignSlotClaim
 from src.models import ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
@@ -37,6 +38,9 @@ _UNSET = object()
 _PREPARATION_RETRY_DELAYS = (0.05, 0.1)
 # A no-wait caller receives progress after this bounded warm-path allowance.
 _PREPARATION_RESPONSE_SECONDS = 0.5
+# Admission refusals whose Git inputs moved under the claim; a bounded re-read
+# recomputes selection from the new inputs and refuses again if they keep moving.
+_MOVED_ADMISSION = frozenset({"delivery_snapshot_changed", "stack_snapshot_changed"})
 
 
 def _retryable_preparation_error(exc: Exception) -> bool:
@@ -612,9 +616,12 @@ class ClaimCommandsMixin:
             outcome = await self._attempt_claim_once(
                 session, want_id, cap, project, routing=routing, repaired=repaired
             )
-            if outcome.get("reason") != "delivery_snapshot_changed":
+            if outcome.get("reason") not in _MOVED_ADMISSION:
                 return outcome
-        return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", session, cap)
+        out = self._simple(ClaimResult.NO_READY_WORK, outcome["reason"], session, cap)
+        if "stack_evidence" in outcome:
+            out["stack_evidence"] = outcome["stack_evidence"]
+        return out
 
     async def _delivered_source_repairs(self, project_id: str) -> dict:
         """Queued source-CI repairs this claim must not hand to an agent.
@@ -707,6 +714,7 @@ class ClaimCommandsMixin:
                 )
         prerequisite_view = None
         stack_view = None
+        stack_unavailable = None
         from src.integration.delivery_observer import prerequisite_observer
 
         observer = prerequisite_observer(self.db)
@@ -720,8 +728,22 @@ class ClaimCommandsMixin:
             from src.integration.stacked_branches import observe_stacks
 
             stack_view = await observe_stacks(observer, project.id, task_id=want_id)
-            if not await stack_view.fresh():
-                return self._simple(ClaimResult.NO_READY_WORK, "stack_snapshot_changed", None, cap)
+            stack_state = await stack_view.currentness()
+            if not stack_state.current:
+                logger.info(
+                    "claim %s for %s: stack evidence %s: %s", session.id, project.id,
+                    stack_state.state, stack_state.evidence(),
+                )
+            if stack_state.state == "changed":
+                out = self._simple(ClaimResult.NO_READY_WORK, "stack_snapshot_changed", None, cap)
+                out["stack_evidence"] = stack_state.evidence()
+                return out
+            if not stack_state.current:
+                # Git gave no answer, which proves no stacked prerequisite: select
+                # as the scheduler does, with no stack proofs, so stacked dependents
+                # stay withheld while roots and delivered-prerequisite work claim.
+                stack_unavailable = stack_state
+                stack_view = stack_view.without_proofs()
             hierarchy_mode = replace(hierarchy_mode,
                                      stackable_prerequisite_ids=frozenset(stack_view.proofs))
         # What to do once the transaction has committed — set inside the
@@ -944,6 +966,14 @@ class ClaimCommandsMixin:
                 await self.orchestrator._emit_task_event(
                     "task.claim_conflict", conflict_task, session_id=session.id
                 )
+            if stack_unavailable is not None:
+                # The named task's stack rows had no Git evidence, so it was not
+                # selectable; say so rather than imply another claimant won it.
+                out = self._simple(
+                    ClaimResult.CLAIM_CONFLICT, "stack_snapshot_unavailable", row, cap
+                )
+                out["stack_evidence"] = stack_unavailable.evidence()
+                return out
             return self._simple(ClaimResult.CLAIM_CONFLICT, "", row, cap)
         if withheld_source_repairs:
             # Nothing else was claimable and at least one candidate was withheld
@@ -951,6 +981,12 @@ class ClaimCommandsMixin:
             return self._simple(
                 ClaimResult.NO_READY_WORK, "source_ci_repair_already_delivered", row, cap
             )
+        if stack_unavailable is not None:
+            # Stacked candidates were withheld for want of Git evidence, not because
+            # the frontier is empty; name that so repeated non-progress is visible.
+            out = self._simple(ClaimResult.NO_READY_WORK, "stack_snapshot_unavailable", row, cap)
+            out["stack_evidence"] = stack_unavailable.evidence()
+            return out
         return self._simple(ClaimResult.NO_READY_WORK, "", row, cap)
 
     async def _recover_stale_binding(
@@ -983,7 +1019,27 @@ class ClaimCommandsMixin:
         untouched.  When the release is refused the ownership evidence is
         still load-bearing and must not be erased; drain instead, which
         stops the loop and leaves the stall visible on the task.
+
+        One terminal binding is not stale at all: this session's own accepted
+        close, still finishing its tail (writer handoff, record, release).  A
+        claim that reaches it -- typically an abandoned earlier request still
+        running server-side -- must leave it alone: releasing would free the
+        slot before the close's handoff, and a refused release flagged the
+        completed task and drained the session the close was about to hand
+        its next claim to (amber-flare-10).  The close releases the claim
+        itself, so the answer is "nothing yet".
         """
+        if task.status is not TaskStatus.IN_PROGRESS and await self.db.accepted_close_in_flight(
+            task.id, session_id=session.id, claim_epoch=task.claim_epoch
+        ):
+            logger.info(
+                "claim %s: held task %s is %s under this session's accepted close, "
+                "which is still finishing; leaving its claim to the close",
+                session.id, task.id, task.status.value,
+            )
+            out = self._simple(ClaimResult.NO_READY_WORK, "close_in_flight", row, cap)
+            out["task_id"] = task.id
+            return out
         logger.warning(
             "claim %s: held task %s is %s under agent %s, not IN_PROGRESS under %s; "
             "unwinding the stale binding",
@@ -1593,6 +1649,23 @@ class ClaimCommandsMixin:
                         )
             else:
                 fresh = await prepare_and_activate()
+        except IngestHeld:
+            remove_claim_file_if_matches(row.work_dir, task.id, epoch)
+            if hierarchy_attached and not await (
+                self.orchestrator.arelease_integration_writer_for_retry(
+                    task, reason="ingest_held", pool=True,
+                )
+            ):
+                # Keep the holder proof when managed ownership cannot detach.
+                await self.db.set_task_meta(task.id, "needs_attention", "ingest_held")
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, "ingest_held", row, cap)
+            await self.db.release_claim(
+                session.id, task_status=TaskStatus.READY, context="ingest_held",
+                now=time.time(), result="no_ready_work",
+            )
+            self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
+            return self._simple(ClaimResult.NO_READY_WORK, "ingest_held", row, cap)
         except Exception as exc:
             if _retryable_preparation_error(exc):
                 # Retry only after the failed transaction unwinds; never run

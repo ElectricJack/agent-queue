@@ -37,6 +37,7 @@ areas:
       - tests/test_task_command_authorization.py
       - tests/test_task_close_summary_enforcement.py
       - tests/test_task_close_completion_recovery.py
+      - tests/test_task_close_accepted_tail.py
       - tests/test_reopen_with_feedback.py
       - tests/test_task_failed_event.py
       - tests/test_task_ready_event.py
@@ -83,6 +84,7 @@ areas:
   - id: task-graph-creation
     description: "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants."
     match:
+      - tests/test_batch_digest.py
       - tests/test_task_graph.py
       - tests/test_create_task_graph_command.py
       - tests/test_hierarchy_graph_creator.py
@@ -122,9 +124,10 @@ areas:
 
   # ----------------------------------------------------------- claims and pools
   - id: claims
-    description: "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims and claim statement budgets."
+    description: "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims, claim statement budgets and the ingestion-hold admission ratchet."
     match:
       - tests/test_claim_*.py
+      - tests/test_ingest_hold_admission.py
       - tests/test_cli_claim_restart.py
       - tests/test_preparation_failure.py
       - tests/perf/test_claim_statements.py
@@ -273,6 +276,7 @@ areas:
     description: "Agent messages: message commands and queries, the delivery engine with per-recipient policy, nudges and parking, the session lens, and message CLI and chat relay API."
     match:
       - tests/test_message_commands.py
+      - tests/test_message_sender_identity.py
       - tests/test_message_delivery.py
       - tests/test_message_queries.py
       - tests/test_session_lens.py
@@ -391,6 +395,7 @@ areas:
       - tests/test_integration_train_sources.py
       - tests/perf/test_train_selection.py
       - tests/test_integration_stacked_branches.py
+      - tests/test_integration_container_completion.py
       - tests/test_integration_candidate_baseline.py
       - tests/test_integration_cutover.py
       - tests/test_integration_settling.py
@@ -419,6 +424,7 @@ areas:
       - tests/test_integration_hierarchy.py
       - tests/test_integration_resume_metadata.py
       - tests/test_integration_completion_recovery.py
+      - tests/test_integration_completed_container_recovery.py
       - tests/test_integration_attestation.py
       - tests/test_integration_ci.py
       - tests/test_integration_ci_producers.py

@@ -130,21 +130,39 @@ class AgentCommandsMixin(FlockCommandsMixin):
             return None, None, f"Agent '{target}' has no unique live worker session"
         return sessions[0], sessions[0].task_id, None
 
+    async def _agent_message_sender(self, session) -> tuple[str, str]:
+        """The sender guidance to *session* is stored under, from the caller's scope.
+
+        A current named launch of the target's own project supervisor
+        (``_project_supervisor_session``) signs as its stable mailbox
+        ``session:supervisor-<project>``, so the worker's ``aq message reply``
+        returns there on the same thread.  Every other caller — the local
+        operator CLI, automation, the global supervisor, a stale or foreign
+        launch — has no project-supervisor return address and keeps the
+        ``system:supervisor`` announcement, which ``message_reply`` refuses.
+        The client never names the sender.
+        """
+        supervisor = await self._project_supervisor_session()
+        if supervisor is not None and supervisor.project_id == session.project_id:
+            return "session", f"supervisor-{supervisor.project_id}"
+        return "system", "supervisor"
+
     async def _queue_supervisor_message(
         self, session, body: str, wait: int | None, *, reply_to=None
     ) -> dict:
+        from_kind, from_id = await self._agent_message_sender(session)
         send = {
             "project_id": session.project_id,
             "to_kind": "session",
             "to_id": session.id,
-            "from_kind": "system",
-            "from_id": "supervisor",
+            "from_kind": from_kind,
+            "from_id": from_id,
             "body": body,
         }
         if reply_to is not None:
             send["thread_id"] = reply_to.thread_id
             send["reply_to_id"] = reply_to.id
-        queued = await self._cmd_message_send(send)
+        queued = await self._queue_message_notification(send)
         if "error" in queued:
             return queued
         if reply_to is not None:
@@ -152,7 +170,7 @@ class AgentCommandsMixin(FlockCommandsMixin):
             await self.db.mark_read(reply_to.id)
         if session.task_id:
             await self.db.add_task_comment(
-                session.task_id, body, author_kind="supervisor", author_id="supervisor"
+                session.task_id, body, author_kind="supervisor", author_id=from_id
             )
         if wait:
             deadline = time.monotonic() + wait

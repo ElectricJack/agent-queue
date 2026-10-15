@@ -480,3 +480,18 @@ def test_train_brief_status_keeps_batch_intent_and_ejection_disposition():
         result = CliRunner().invoke(cli, ["integration", "status", "p", "--json", "--brief"])
     assert result.exit_code == 0
     assert json.loads(result.output)["data"]["batches"] == response["batches"]
+
+
+@pytest.mark.parametrize("incident", [[], ["--incident-id", "abc"]])
+def test_clear_retained_recovery_names_the_project_and_optional_incident(incident):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "cleared"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "clear-retained-recovery",
+                                         "--project-id", "p", *incident])
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == (
+        "integration_clear_retained_recovery",
+        {"project_id": "p", **({"incident_id": "abc"} if incident else {})},
+    )

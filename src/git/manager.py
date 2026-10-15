@@ -76,6 +76,7 @@ import shlex
 import signal
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager, suppress
@@ -143,6 +144,19 @@ def safe_git_detail(value: str, token: str | None = None, *, limit: int = 512) -
 
 def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int = 512) -> str:
     return safe_git_detail(value, token, limit=limit)
+
+
+#: Git's notice that an earlier detached auto-gc failed.  Auto maintenance runs
+#: last, so the block runs to the end of stderr; its quoted "fatal:" lines are
+#: that old gc run's, not the command's.
+_STALE_GC_REPORT = re.compile(
+    rb"(?ms)^(?:warning|error): The last gc run reported the following\..*\Z"
+)
+
+
+def _without_stale_gc_report(stderr: bytes) -> bytes:
+    """Drop the stale-gc.log notice; callers apply this only after a zero exit."""
+    return _STALE_GC_REPORT.sub(b"", stderr)
 
 
 class GitError(Exception):
@@ -536,6 +550,30 @@ def _parse_status_branch_header(header: str) -> str:
         return "HEAD"
     return header.split("...", 1)[0].split(" ", 1)[0].strip()
 
+
+
+#: How long a clean full fsck of an unchanged object store is reused.
+_RETAINED_VERIFY_TTL_SECONDS = 3600.0
+
+
+def _object_store_fingerprint(git_dir: str) -> tuple | None:
+    """Every object-store file's (path, size, inode), or None if unreadable.
+
+    Covers loose objects, packs, indexes and alternates. Git writes objects
+    by rename, so any new or replaced object changes it; mtime is left out
+    because Git freshens existing objects on every fetch that names them.
+    """
+    root = Path(git_dir) / "objects"
+    entries = []
+    try:
+        for directory, _subdirs, files in os.walk(root):
+            for name in files:
+                path = os.path.join(directory, name)
+                stat = os.stat(path)
+                entries.append((os.path.relpath(path, root), stat.st_size, stat.st_ino))
+    except OSError:
+        return None
+    return tuple(sorted(entries))
 
 class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
@@ -2282,12 +2320,49 @@ class GitManager:
         remote tip is sufficient proof. Do not cache this result across writes.
         The caller must separately fence repository identity and all writers
         before using any inspection as a recovery precondition.
+
+        A clean result is reused only while the object store holds the same
+        files (path, size, inode) and for at most
+        ``_RETAINED_VERIFY_TTL_SECONDS``: any object write invalidates it. A
+        full check holds the repository lock for many seconds on a large store,
+        so repeating it on every no-op fetch starves the integration train.
         """
+        if self.retained_store_verified(git_dir):
+            return
+        fingerprint = _object_store_fingerprint(git_dir)
+        started = time.monotonic()
         await self._run_isolated_import_git(
             [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
              "--no-reflogs", "--no-progress"],
             home=home, deadline=deadline, verify_integrity=True,
         )
+        self.record_retained_store_verified(git_dir, fingerprint, started)
+
+    def retained_store_verified(self, git_dir: str) -> bool:
+        """Whether a clean full fsck of *git_dir*'s unchanged object store is reusable."""
+        verified = self.__dict__.setdefault("_retained_verified", {})
+        key = os.path.realpath(git_dir)
+        cached = verified.get(key)
+        if cached is None:
+            return False
+        fingerprint, at = cached
+        if (time.monotonic() - at < _RETAINED_VERIFY_TTL_SECONDS
+                and fingerprint is not None and _object_store_fingerprint(git_dir) == fingerprint):
+            return True
+        verified.pop(key, None)
+        return False
+
+    def record_retained_store_verified(
+        self, git_dir: str, fingerprint: tuple | None, started: float,
+    ) -> None:
+        """Remember a clean full fsck of *git_dir* taken from *fingerprint*.
+
+        Nothing is recorded when the store changed while the check ran.
+        """
+        if fingerprint is None or _object_store_fingerprint(git_dir) != fingerprint:
+            return
+        self.__dict__.setdefault("_retained_verified", {})[
+            os.path.realpath(git_dir)] = (fingerprint, started)
 
     async def _aholds_complete_commit(
         self, imported: Path, oid: str, *, home: Path, deadline: float,
@@ -3561,7 +3636,7 @@ class GitManager:
 
     async def apush_new_refs(
         self, checkout_path: str, tips: Mapping[str, str], *, remote: str = "origin",
-        repository_url: str | None = None, qualified: bool = False,
+        repository_url: str | None = None, qualified: bool = False, lock_held: bool = False,
     ) -> dict[str, RemoteRefResult]:
         """Create absent heads or qualified provenance refs; read each back.
 
@@ -3595,6 +3670,7 @@ class GitManager:
                      *(f"--force-with-lease={refs[branch]}:{old}" for _t, branch, old in updates),
                      *(f"{tip}:{refs[branch]}" for tip, branch, _old in updates)],
                     cwd=checkout_path,
+                    lock_held=lock_held,
                 )
                 if result.returncode != 0:
                     failure = (result.stderr or result.stdout or "git push failed").strip()
@@ -4558,6 +4634,16 @@ class GitManager:
             "GIT_NO_REPLACE_OBJECTS": "1",
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_LFS_SKIP_SMUDGE": "1",
+            # A detached auto-gc outlives the temporary HOME it runs in, dies on the
+            # deleted cwd and leaves gc.log behind, which turns every later write's
+            # auto-gc into "fatal:" lines.  Retained stores run maintenance explicitly.
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_0": "gc.auto",
+            "GIT_CONFIG_VALUE_0": "0",
+            "GIT_CONFIG_KEY_1": "gc.autoDetach",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": "maintenance.auto",
+            "GIT_CONFIG_VALUE_2": "false",
         }
 
     def _existing_git_auth_environment(self) -> dict[str, str]:
@@ -4978,7 +5064,9 @@ class GitManager:
                           )]
             if process.returncode != 0 or unexpected:
                 raise GitError("retained Git object integrity is unavailable")
-        elif process.returncode == 0 and re.search(rb"(?m)^(?:error|fatal):", stderr):
+        elif process.returncode == 0 and re.search(
+            rb"(?m)^(?:error|fatal):", _without_stale_gc_report(stderr)
+        ):
             raise GitError("isolated Git command reported errors")
         if process.returncode != 0:
             raise GitError("authenticated Git push preparation failed")

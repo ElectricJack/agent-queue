@@ -1054,7 +1054,10 @@ async def test_concurrent_retained_store_hardening_is_serialized_once(setup):
     assert stores == [store] * 10
     configurations = [call.args[0] for call in run.await_args_list if call.args[0][0] == "config"]
     assert configurations == [["config", "core.fsync", "committed"],
-                              ["config", "core.fsyncMethod", "fsync"]]
+                              ["config", "core.fsyncMethod", "fsync"],
+                              ["config", "gc.auto", "0"],
+                              ["config", "gc.autoDetach", "false"],
+                              ["config", "maintenance.auto", "false"]]
 
 
 async def test_snapshot_scopes_generation_and_fences_target_movement(setup):
@@ -1300,7 +1303,7 @@ async def test_corrupt_retained_source_keeps_snapshot_unknown_and_frozen_records
     damaged = git_dir / "objects" / blob[:2] / blob[2:]
     damaged.parent.mkdir(parents=True, exist_ok=True)
     damaged.chmod(0o600)
-    # Nonempty corruption must remain in place; only zero-byte objects may be quarantined.
+    # Git-diagnosed nonempty corruption is backed up, but local-only loss stays unknown.
     truncated = damaged.read_bytes()[:1]
     assert truncated
     damaged.write_bytes(truncated)
@@ -1341,6 +1344,7 @@ async def test_corrupt_retained_source_keeps_snapshot_unknown_and_frozen_records
         return await service.git._afetch_origin_with_auth_to_url(
             # The file-URL fixture needs no App credential broker.
             str(path), source_url=remote.as_uri(), token=None,
+            refetch=kwargs.get("refetch", False),
         )
 
     monkeypatch.setattr(service.git, "afetch_origin", native_fetch)
@@ -1350,7 +1354,11 @@ async def test_corrupt_retained_source_keeps_snapshot_unknown_and_frozen_records
     assert evidence.state is DeliveryState.UNKNOWN and not evidence.satisfied
     assert await records() == before
     assert git(store, "for-each-ref", "--format=%(refname) %(objectname)") == refs
-    assert damaged.read_bytes() == truncated
+    journal = json.loads((git_dir / "aq-empty-object-backups" / "incident.json").read_text())
+    [move] = journal["moves"]
+    assert move["oid"] == blob and move["original"] == str(damaged)
+    assert Path(move["backup"]).read_bytes() == truncated
+    assert journal["status"] == "failed"
 
     # A different, healthy store can still produce fresh native delivery proof.
     healthy = tmp_path / "healthy"
@@ -1638,3 +1646,560 @@ def _is_ancestor(repository, commit, ref):
         ["git", "-C", str(repository), "merge-base", "--is-ancestor", commit, ref],
         capture_output=True, check=False,
     ).returncode == 0
+
+
+def recovery_journal(store):
+    directory = store / '.git' if (store / '.git').is_dir() else store
+    return directory / 'aq-empty-object-backups' / 'incident.json'
+
+
+def recovery_handler(setup, tmp_path):
+    from types import SimpleNamespace
+
+    from src.commands import CommandHandler
+    from src.config import AppConfig
+
+    db, service, *_ = setup
+    handler = CommandHandler(SimpleNamespace(db=db, git=service.git),
+                             AppConfig(data_dir=str(tmp_path / 'data')))
+    service.git.retained_recovery_state = handler.retained_repository_recovery
+    return handler
+
+
+def damage_origin_object(store, source, *, body=b''):
+    oid = git(source, 'rev-parse', 'HEAD:base.txt')
+    obj = store / '.git' / 'objects' / oid[:2] / oid[2:]
+    obj.parent.mkdir(exist_ok=True)
+    # Local clones may hardlink origin's healthy object; damage only this cache.
+    obj.unlink(missing_ok=True)
+    obj.write_bytes(body)
+    return oid, obj
+
+
+@pytest.mark.parametrize('body', [b'', b'not a compressed Git object'])
+async def test_retained_recovery_manifest_and_guarded_local_aq_publication(setup, tmp_path, body):
+    from src.integration.repository_incidents import admission_holds
+
+    db, service, source, remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+    base = git(store, 'rev-parse', 'HEAD')
+    git(store, 'config', 'user.name', 'Tester')
+    git(store, 'config', 'user.email', 'tester@example.test')
+    local = git(store, 'commit-tree', base + '^{tree}', '-p', base, '-m', 'local candidate')
+    git(store, 'update-ref', 'refs/heads/aq/batches/local', local)
+    git(store, 'update-ref', 'refs/heads/private-not-aq', local)
+    oid, obj = damage_origin_object(store, source, body=body)
+    assert await service.store(repo) == store
+    state = json.loads(recovery_journal(store).read_text())
+    assert state['project_id'] == 'p' and state['repository_id'] == 'r'
+    assert state['cache'] == str(store) and state['attempts'] == 1
+    assert state['status'] == 'recovered'
+    [move] = state['moves']
+    assert (move['oid'], move['original'], move['status']) == (oid, str(obj), 'moved')
+    assert Path(move['backup']).read_bytes() == body
+    assert json.loads((Path(state['backup']) / 'manifest.json').read_text()) == state
+    [check] = state['checks']
+    assert check['before']['exit_status'] != 0
+    assert check['after']['exit_status'] == 0
+    assert not await admission_holds(db, 'p')
+    assert git(store, 'rev-parse', 'refs/heads/aq/batches/local') == local
+    assert git(remote, 'rev-parse', 'refs/heads/aq/batches/local') == local
+    missing = subprocess.run(['git', '-C', str(remote), 'show-ref', '--verify',
+                              'refs/heads/private-not-aq'], capture_output=True)
+    assert missing.returncode != 0
+    assert git(remote, 'rev-parse', 'main') == base
+    git(store, '--no-replace-objects', 'fsck', '--full', '--no-dangling', '--no-reflogs',
+        '--no-progress')
+
+
+async def test_retained_recovery_project_hold_caps_restart_and_notice(setup, tmp_path, monkeypatch):
+    from src.database.tables import escalations, integration_batches, messages
+    from src.git.manager import GitError
+    from src.integration.batches import Batch, BatchMember, BatchStore
+    from src.integration.repository_incidents import admission_holds
+
+    db, service, source, _remote, repo = setup
+    handler = recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+    base = git(store, 'rev-parse', 'HEAD')
+    tree = git(store, 'rev-parse', 'HEAD^{tree}')
+    members = (BatchMember('frozen', base, base),)
+    batches = BatchStore(db)
+    original = Batch('frozen', 'p', 'r', 'refs/heads/main')
+    await batches.freeze(original, members, trees={'frozen': tree})
+    await batches.set_intent('frozen', 'paused')
+    frozen = await batches.get('frozen')
+    await db.update_project('p', status='PAUSED')
+    await db.create_project(Project(id='other', name='Other'))
+    await db.create_repo(RepoConfig(id='other-repo', project_id='other',
+                                   source_type=RepoSourceType.CLONE, url=repo.url))
+    oid, _obj = damage_origin_object(store, source, body=b'broken')
+    normal_fetch = service.git.afetch_origin
+    refetches = []
+
+    async def fail_refetch(*args, **kwargs):
+        if kwargs.get('refetch'):
+            refetches.append(1)
+            raise GitError('Authorization: Bearer secret-token\nrefetch unavailable')
+        return await normal_fetch(*args, **kwargs)
+
+    monkeypatch.setattr(service.git, 'afetch_origin', fail_refetch)
+    with pytest.raises(GitError, match='refetch unavailable'):
+        await service.store(repo)
+    first = json.loads(recovery_journal(store).read_text())
+    assert first['attempts'] == 1 and first['status'] == 'failed'
+    assert first['moves'][0]['oid'] == oid
+    assert 'secret-token' not in json.dumps(first)
+    assert await admission_holds(db, 'p') and not await admission_holds(db, 'other')
+    with pytest.raises(ValueError, match='admission held'):
+        await batches.freeze(Batch('new', 'p', 'r', 'refs/heads/other'), members,
+                             trees={'frozen': tree})
+    # An independent project still admits, and an existing batch's exact replay stays paused.
+    await batches.freeze(Batch('other', 'other', 'other-repo', 'refs/heads/main'), members,
+                         trees={'frozen': tree})
+    assert await batches.freeze(original, members, trees={'frozen': tree}) == frozen
+    assert await batches.members('frozen') == members
+    # A new manager/process uses the same incident and remaining budget.
+    restarted = DevelopmentPrimitives(db, data_dir=tmp_path / 'data', git=GitManager())
+    restarted.git.retained_recovery_state = handler.retained_repository_recovery
+    monkeypatch.setattr(restarted.git, 'afetch_origin', fail_refetch)
+    for _ in range(2):
+        with pytest.raises(GitError):
+            await restarted.store(repo)
+    # Exhaustion still names the last attempt's real cause, scrubbed.
+    with pytest.raises(GitError, match='last error: .*refetch unavailable') as exhausted:
+        await restarted.store(repo)
+    assert 'secret-token' not in str(exhausted.value)
+    last = json.loads(recovery_journal(store).read_text())
+    assert last['id'] == first['id'] and last['attempts'] == 2
+    assert [check['error'] for check in last['checks']] == [last['error']] * 2
+    assert 'refetch unavailable' in last['error'] and 'secret-token' not in last['error']
+    assert last['status'] == 'exhausted' and len(refetches) == 2
+    assert last['moves'] == first['moves']
+    assert (await db.get_project('p')).status.value == 'PAUSED'
+    async with db._engine.connect() as conn:
+        assert len((await conn.execute(select(escalations))).all()) == 1
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == 'retained_repository_recovery'))).mappings().all()
+        assert len(notices) == 1 and 'secret-token' not in notices[0]['body']
+        assert len((await conn.execute(select(integration_batches))).all()) == 2
+
+
+async def test_retained_recovery_success_preserves_operator_project_and_batch_pause(
+    setup, tmp_path, monkeypatch,
+):
+    from src.git.manager import GitError
+    from src.integration.repository_incidents import admission_holds
+
+    db, service, source, _remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+    await db.update_project('p', status='PAUSED')
+    damage_origin_object(store, source)
+    original = service.git.afetch_origin
+
+    async def fail(*args, **kwargs):
+        if kwargs.get('refetch'):
+            raise GitError('first unavailable')
+        return await original(*args, **kwargs)
+
+    with patch.object(service.git, 'afetch_origin', fail):
+        with pytest.raises(GitError):
+            await service.store(repo)
+    assert await admission_holds(db, 'p')
+    assert await service.store(repo) == store
+    state = json.loads(recovery_journal(store).read_text())
+    assert state['attempts'] == 2 and state['status'] == 'recovered'
+    assert not await admission_holds(db, 'p')
+    assert (await db.get_project('p')).status.value == 'PAUSED'
+
+
+async def test_retained_recovery_cancelled_fetch_preserves_moves_and_remaining_budget(
+    setup, tmp_path, monkeypatch,
+):
+    import asyncio
+
+    from src.integration.repository_incidents import admission_holds
+
+    db, service, source, _remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+    damage_origin_object(store, source, body=b'corrupt')
+    normal = service.git.afetch_origin
+    entered, reaped = asyncio.Event(), asyncio.Event()
+
+    async def wait_refetch(*args, **kwargs):
+        if kwargs.get('refetch'):
+            entered.set()
+            try:
+                # Real local Git process; cancellation must reap it before next writer.
+                return await service.git.arun_git_result(
+                    ['-c', 'alias.wait=!sleep 30', 'wait'], cwd=str(store), lock_held=True)
+            finally:
+                reaped.set()
+        return await normal(*args, **kwargs)
+
+    monkeypatch.setattr(service.git, 'afetch_origin', wait_refetch)
+    attempt = asyncio.create_task(service.store(repo))
+    await asyncio.wait_for(entered.wait(), 5)
+    attempt.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await attempt
+    assert reaped.is_set() and await admission_holds(db, 'p')
+    first = json.loads(recovery_journal(store).read_text())
+    assert first['attempts'] == 1 and first['moves'][0]['status'] == 'moved'
+    monkeypatch.setattr(service.git, 'afetch_origin', normal)
+    assert await service.store(repo) == store
+    last = json.loads(recovery_journal(store).read_text())
+    assert last['id'] == first['id'] and last['attempts'] == 2
+    assert last['moves'] == first['moves'] and last['status'] == 'recovered'
+
+
+@pytest.mark.parametrize('failure', ['auth', 'pack', 'zero-exit', 'publication', 'timeout'])
+async def test_retained_recovery_failure_boundaries(setup, tmp_path, monkeypatch, failure):
+    from src.git.manager import GitError
+    from src.integration.repository_incidents import admission_holds
+
+    db, service, source, remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+    normal_fetch, normal_run = service.git.afetch_origin, service.git.arun_git_result
+    if failure == 'auth':
+        async def fail_auth(*args, **kwargs):
+            raise GitError('authentication unavailable')
+        monkeypatch.setattr(service.git, 'afetch_origin', fail_auth)
+        with pytest.raises(GitError, match='authentication'):
+            await service.store(repo)
+        assert not recovery_journal(store).exists()
+        assert not await admission_holds(db, 'p')
+        return
+    oid, obj = damage_origin_object(store, source, body=b'bad')
+    if failure == 'pack':
+        async def pack_error(args, **kwargs):
+            if 'fsck' in args:
+                return subprocess.CompletedProcess(args, 1, '', 'error: packfile checksum mismatch')
+            return await normal_run(args, **kwargs)
+        monkeypatch.setattr(service.git, 'arun_git_result', pack_error)
+    elif failure == 'zero-exit':
+        async def contradictory(args, **kwargs):
+            if 'fsck' in args:
+                return subprocess.CompletedProcess(args, 0, '',
+                    f'error: {oid}: object corrupt or missing: {obj}')
+            return await normal_run(args, **kwargs)
+        monkeypatch.setattr(service.git, 'arun_git_result', contradictory)
+    elif failure == 'publication':
+        git(store, 'update-ref', 'refs/heads/aq/local', git(store, 'rev-parse', 'HEAD'))
+        async def denied(*args, **kwargs):
+            raise GitError('publication rejected')
+        monkeypatch.setattr(service.git, 'apush_new_refs', denied)
+    elif failure == 'timeout':
+        import asyncio
+        service.git._GIT_TIMEOUT = 0.2
+        async def stuck(*args, **kwargs):
+            if kwargs.get('refetch'):
+                await asyncio.Event().wait()
+            return await normal_fetch(*args, **kwargs)
+        monkeypatch.setattr(service.git, 'afetch_origin', stuck)
+    with pytest.raises(GitError):
+        await service.store(repo)
+    state = json.loads(recovery_journal(store).read_text())
+    assert state['status'] == 'failed' and state['attempts'] == 1
+    assert await admission_holds(db, 'p')
+    if failure == 'pack':
+        assert state['moves'] == [] and obj.read_bytes() == b'bad'
+    assert git(remote, 'rev-parse', 'main') == git(source, 'rev-parse', 'main')
+
+
+async def test_retained_recovery_interrupted_move_reconciles_durable_intent(
+    setup, tmp_path, monkeypatch,
+):
+    import asyncio
+
+    db, service, source, _remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+    oid, obj = damage_origin_object(store, source, body=b'broken object')
+    original = Path.rename
+    interrupted = False
+
+    def interrupted_rename(path, destination):
+        nonlocal interrupted
+        result = original(path, destination)
+        if path == obj and not interrupted:
+            interrupted = True
+            raise asyncio.CancelledError
+        return result
+
+    monkeypatch.setattr(Path, 'rename', interrupted_rename)
+    with pytest.raises(asyncio.CancelledError):
+        await service.store(repo)
+    first = json.loads(recovery_journal(store).read_text())
+    assert first['attempts'] == 1 and first['moves'][0]['status'] == 'planned'
+    assert first['moves'][0]['oid'] == oid
+    assert Path(first['moves'][0]['backup']).read_bytes() == b'broken object'
+    assert await service.store(repo) == store
+    last = json.loads(recovery_journal(store).read_text())
+    assert last['id'] == first['id'] and last['attempts'] == 2
+    assert last['moves'][0]['status'] == 'moved' and len(last['moves']) == 1
+
+
+async def test_retained_recovery_unreadable_aq_head_preserves_ref_and_escalates(setup, tmp_path):
+    from src.database.tables import messages
+    from src.git.manager import GitError
+    from src.integration.repository_incidents import admission_holds
+
+    db, service, source, remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+    base = git(store, 'rev-parse', 'HEAD')
+    git(store, 'config', 'user.name', 'Tester')
+    git(store, 'config', 'user.email', 'tester@example.test')
+    local = git(store, 'commit-tree', base + '^{tree}', '-p', base, '-m', 'unpublished')
+    git(store, 'update-ref', 'refs/heads/aq/local', local)
+    obj = store / '.git' / 'objects' / local[:2] / local[2:]
+    obj.chmod(0o600)
+    obj.write_bytes(b'broken')
+    for _ in range(3):
+        with pytest.raises(GitError):
+            await service.store(repo)
+    last = json.loads(recovery_journal(store).read_text())
+    assert last['status'] == 'exhausted' and last['attempts'] == 2
+    assert last['moves'][0]['oid'] == local
+    assert Path(last['moves'][0]['backup']).read_bytes() == b'broken'
+    assert git(store, 'rev-parse', 'refs/heads/aq/local') == local
+    assert git(remote, 'rev-parse', 'main') == base
+    assert await admission_holds(db, 'p')
+    async with db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.body_kind == 'retained_repository_recovery'))).mappings().all()
+        assert len(notices) == 1 and last['backup'] in notices[0]['body']
+
+
+@pytest.mark.parametrize('phase', ['spawn', 'validation'])
+async def test_retained_recovery_cancellation_reaps_before_next_writer(
+    setup, tmp_path, monkeypatch, phase,
+):
+    import asyncio
+
+    db, service, source, _remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+    damage_origin_object(store, source)
+    entered, release_spawn = asyncio.Event(), asyncio.Event()
+    processes = []
+    original_create = asyncio.create_subprocess_exec
+    normal_run = service.git.arun_git_result
+    fscks, intercept_spawn = 0, False
+
+    async def create(*args, **kwargs):
+        process = await original_create(*args, **kwargs)
+        if intercept_spawn:
+            processes.append(process)
+            entered.set()
+            if phase == 'spawn':
+                await release_spawn.wait()
+        return process
+
+    async def run(args, **kwargs):
+        nonlocal fscks, intercept_spawn
+        if 'fsck' in args:
+            fscks += 1
+            if fscks == 3:  # initial diagnosis, attempt before, final validation
+                intercept_spawn = True
+                return await normal_run(['-c', 'alias.wait=!sleep 30', 'wait'], **kwargs)
+        return await normal_run(args, **kwargs)
+
+    async def next_writer():
+        async with service.git.arepository_transaction(str(store)):
+            assert processes and all(process.returncode is not None for process in processes)
+
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', create)
+    monkeypatch.setattr(service.git, 'arun_git_result', run)
+    attempt = asyncio.create_task(service.store(repo))
+    next_attempt = None
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        next_attempt = asyncio.create_task(next_writer())
+        attempt.cancel()
+        release_spawn.set()
+        with pytest.raises(asyncio.CancelledError):
+            await attempt
+        await asyncio.wait_for(next_attempt, 5)
+        state = json.loads(recovery_journal(store).read_text())
+        assert state['attempts'] == 1 and state['moves'][0]['status'] == 'moved'
+    finally:
+        release_spawn.set()
+        for process in processes:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        if not attempt.done():
+            attempt.cancel()
+        await asyncio.gather(attempt, return_exceptions=True)
+        if next_attempt is not None:
+            await asyncio.gather(next_attempt, return_exceptions=True)
+
+
+async def test_retained_bare_read_uses_bounded_recovery_and_identity(setup, tmp_path):
+    from src.integration.repository_git import RepositoryGit
+    from src.integration.repository_incidents import admission_holds
+
+    db, service, source, remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    reader = RepositoryGit(db, data_dir=tmp_path / 'data', git_manager=service.git)
+    resolved = await reader._resolve_repository(repo.id)
+    await reader._ensure_retained_repository(resolved)
+    store = resolved.retained_git_dir
+    oid = git(source, 'rev-parse', 'HEAD:base.txt')
+    obj = store / 'objects' / oid[:2] / oid[2:]
+    obj.parent.mkdir(exist_ok=True)
+    obj.unlink(missing_ok=True)
+    obj.write_bytes(b'broken bare object')
+    async with service.git.arepository_transaction(str(store)):
+        await reader._fetch_all_heads(store, resolved.origin_url)
+    state = json.loads(recovery_journal(store).read_text())
+    assert state['status'] == 'recovered' and state['attempts'] == 1
+    assert (state['project_id'], state['repository_id']) == ('p', 'r')
+    assert Path(state['moves'][0]['backup']).read_bytes() == b'broken bare object'
+    assert git(store, 'show', 'refs/remotes/origin/main:base.txt') == 'base'
+    assert git(remote, 'show', 'main:base.txt') == 'base'
+    assert git(store, 'config', 'core.fsync') == 'committed'
+    assert not await admission_holds(db, 'p')
+
+
+async def test_retained_recovery_clean_fsck_closes_failed_incident_without_attempt(
+    setup, tmp_path, monkeypatch,
+):
+    from src.database.tables import escalations
+    from src.git.manager import GitError
+    from src.integration.repository_incidents import admission_holds
+
+    db, service, _source, _remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    # This scenario injects an fsck diagnostic without changing any object body;
+    # expire clean verification so the injected failure is actually observed.
+    monkeypatch.setattr('src.git.manager._RETAINED_VERIFY_TTL_SECONDS', 0.0)
+    store = await service.store(repo)
+    normal_run = service.git.arun_git_result
+
+    async def pack_error(args, **kwargs):
+        if 'fsck' in args:
+            return subprocess.CompletedProcess(args, 1, '', 'error: packfile checksum mismatch')
+        return await normal_run(args, **kwargs)
+
+    monkeypatch.setattr(service.git, 'arun_git_result', pack_error)
+    with pytest.raises(GitError):
+        await service.store(repo)
+    assert await admission_holds(db, 'p')
+    failed = json.loads(recovery_journal(store).read_text())
+    assert failed['status'] == 'failed' and failed['moves'] == []
+    assert failed['error'] == 'pack integrity requires supervisor intervention'
+    # The store verifies again (a transient fsck failure): close without a new attempt.
+    monkeypatch.setattr(service.git, 'arun_git_result', normal_run)
+    assert await service.store(repo) == store
+    state = json.loads(recovery_journal(store).read_text())
+    assert state['id'] == failed['id'] and state['attempts'] == 1
+    assert state['status'] == 'recovered' and state['checks'][-1]['cleared'] == 'clean_fsck'
+    assert not await admission_holds(db, 'p')
+    assert not (recovery_journal(store).parent / 'pending').exists()
+    async with db._engine.connect() as conn:
+        [incident] = (await conn.execute(select(escalations))).mappings().all()
+    assert incident['state'] == 'resolved'
+
+
+async def test_retained_fetch_failure_on_a_clean_store_never_opens_an_incident(
+    setup, tmp_path, monkeypatch,
+):
+    from src.database.tables import escalations
+    from src.git.manager import GitError
+
+    db, service, _source, _remote, repo = setup
+    recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+
+    async def unavailable(*args, **kwargs):
+        raise GitError('fatal: unable to access origin')
+
+    monkeypatch.setattr(service.git, 'afetch_origin', unavailable)
+    for _ in range(3):
+        with pytest.raises(GitError, match='unable to access origin'):
+            await service.store(repo)
+    assert not recovery_journal(store).exists()
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(escalations))).all() == []
+
+
+async def test_retained_maintenance_runs_foreground_and_drops_stale_gc_log(setup):
+    _db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    report = store / '.git' / 'gc.log'
+    report.write_text('fatal: Unable to read current working directory\n')
+    assert service.git.retained_store_verified(str(store / '.git'))
+    with patch.object(service.git, 'arun_git_result', wraps=service.git.arun_git_result) as run:
+        assert await service.store(repo) == store
+    commands = [call.args[0] for call in run.await_args_list]
+    assert not any('fsck' in command for command in commands)
+    assert any('gc' in command and 'gc.autoDetach=false' in command for command in commands)
+    assert not report.exists()
+    assert git(store, 'config', 'gc.auto') == '0'
+    assert git(store, 'config', 'gc.autoDetach') == 'false'
+
+
+async def test_supervisor_clears_exhausted_retained_incident_after_clean_fsck(
+    setup, tmp_path, monkeypatch,
+):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.database.tables import escalations
+    from src.git.manager import GitError
+    from src.integration.repository_incidents import admission_holds
+    from src.profiles.capabilities import DENY_ALL
+
+    db, service, source, _remote, repo = setup
+    handler = recovery_handler(setup, tmp_path)
+    store = await service.store(repo)
+    damage_origin_object(store, source, body=b'broken')
+    normal_fetch = service.git.afetch_origin
+
+    async def fail_refetch(*args, **kwargs):
+        if kwargs.get('refetch'):
+            raise GitError('refetch unavailable')
+        return await normal_fetch(*args, **kwargs)
+
+    monkeypatch.setattr(service.git, 'afetch_origin', fail_refetch)
+    for _ in range(3):
+        with pytest.raises(GitError):
+            await service.store(repo)
+    [held] = await admission_holds(db, 'p')
+    assert held['status'] == 'exhausted'
+    clear = handler._cmd_integration_clear_retained_recovery
+
+    worker = ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL,
+                                session_id='worker', project_id='p', elevated=False)
+    with principal_context(worker):
+        denied = await clear({'project_id': 'p'})
+    assert denied['outcome'] == 'unauthorized'
+    assert (await clear({'project_id': 'p', 'incident_id': 'other'}))['outcome'] == 'not_found'
+    # The quarantined object is still missing: fsck refuses the clear.
+    refused = await clear({'project_id': 'p'})
+    assert refused['success'] is False and refused['outcome'] == 'not_clean'
+    [item] = refused['evidence']['incidents']
+    assert item['id'] == held['id'] and item['fsck']['exit_status'] != 0
+    assert await admission_holds(db, 'p')
+
+    # The operator repairs the cache out of band; the exhausted hold stays sticky.
+    await normal_fetch(str(store), repository_url=repo.url, all_heads=True, refetch=True)
+    with pytest.raises(GitError, match='exhausted'):
+        await service.store(repo)
+    cleared = await clear({'project_id': 'p', 'incident_id': held['id']})
+    assert cleared['success'] is True and cleared['outcome'] == 'cleared'
+    assert not await admission_holds(db, 'p')
+    state = json.loads(recovery_journal(store).read_text())
+    assert state['status'] == 'recovered'
+    assert state['cleared']['by'] == 'human:local-operator'
+    assert not (recovery_journal(store).parent / 'pending').exists()
+    async with db._engine.connect() as conn:
+        [incident] = (await conn.execute(select(escalations))).mappings().all()
+    assert incident['state'] == 'resolved'
+    assert (await clear({'project_id': 'p'}))['outcome'] == 'not_found'
+    assert await service.store(repo) == store
