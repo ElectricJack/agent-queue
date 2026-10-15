@@ -1877,6 +1877,29 @@ def test_bugfix_escalation_names_the_failed_attempt():
     assert "escalated_after_failure" in result.value["reason"]
 
 
+@pytest.mark.parametrize("rework", [
+    {"reason": "reopen_with_feedback", "previous_status": "COMPLETED"},
+    {"reason": "reopen_with_feedback", "previous_status": "BLOCKED"},
+    {"reason": "verification_reopen", "previous_status": "COMPLETED"},
+])
+def test_rework_after_a_passing_attempt_does_not_escalate(rework):
+    attempt = {"attempt_id": "rework", "intelligence_class": "standard-high", **rework}
+    result = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(attempt,)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert result.value["intelligence_class"] == "standard-high"
+    assert "escalated_after_failure" not in result.value
+    failure = {"attempt_id": "hard", "intelligence_class": "standard-high",
+               "reason": "session_close_hard_failure", "previous_status": "IN_PROGRESS"}
+    escalated = _risk_plan(
+        ESCALATING_POLICY, _task(task_type="bugfix", failed_attempts=(attempt, failure)),
+        classification={**NARROW_NO, "risk": "very_high"},
+    )
+    assert escalated.value["intelligence_class"] == "deep-high"
+    assert escalated.value["escalated_after_failure"]["failed_attempts"] == [failure]
+
+
 @pytest.mark.parametrize("failed_class", ["fast-high", "deep-high"])
 def test_failure_at_another_class_does_not_skip_the_standard_attempt(failed_class):
     result = _risk_plan(

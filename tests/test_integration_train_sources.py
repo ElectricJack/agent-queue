@@ -4189,17 +4189,13 @@ async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world
                 "provider_intent": before.provider_intent,
             }
         assert task.route == expected_route
-        failures = await world.db.get_task_meta("red-root", "routing_failed_attempts")
-        assert len(failures) == 1
-        assert failures[0]["reason"] == "reopen_with_feedback"
-        assert failures[0]["profile_id"] == "worker"
-        assert failures[0]["intelligence_class"] == "standard-high"
     else:
         assert (task.route_source, task.profile_id, task.intelligence_class) == (
             route_source, "worker", "standard-high",
         )
         assert task.route == route
-        assert await world.db.get_task_meta("red-root", "routing_failed_attempts") is None
+    # Reworking a completed task is not a capability failure: nothing to escalate on.
+    assert await world.db.get_task_meta("red-root", "routing_failed_attempts") is None
     assert task.integration_mode == "pull_request" and task.pr_url == before.pr_url
     assert "unit: failure" in task.description
     assert "FAILED tests/test_registry.py::test_new_command" in task.description
@@ -4210,8 +4206,7 @@ async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world
     train, _, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
     assert (await train.visit(MAIN, seal_now=True)).batch_id is None
     assert (await world.db.get_task_meta("red-root", RECOVERY_KEY))["attempts"] == 1
-    if route_source in {"router", "legacy"}:
-        assert await world.db.get_task_meta("red-root", "routing_failed_attempts") == failures
+    assert await world.db.get_task_meta("red-root", "routing_failed_attempts") is None
 
 
 @pytest.mark.parametrize("conclusion", ["pending", "cancelled", "success"])
