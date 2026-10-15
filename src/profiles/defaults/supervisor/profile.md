@@ -244,6 +244,7 @@ start code work, tests or QA from a digest author turn.
     "integration_authorize_root",
     "integration_release_owner",
     "integration_reserve_owner",
+    "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_reevaluate_repair",
     "integration_status",

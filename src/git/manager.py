@@ -145,6 +145,19 @@ def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int 
     return safe_git_detail(value, token, limit=limit)
 
 
+#: Git's notice that an earlier detached auto-gc failed.  Auto maintenance runs
+#: last, so the block runs to the end of stderr; its quoted "fatal:" lines are
+#: that old gc run's, not the command's.
+_STALE_GC_REPORT = re.compile(
+    rb"(?ms)^(?:warning|error): The last gc run reported the following\..*\Z"
+)
+
+
+def _without_stale_gc_report(stderr: bytes) -> bytes:
+    """Drop the stale-gc.log notice; callers apply this only after a zero exit."""
+    return _STALE_GC_REPORT.sub(b"", stderr)
+
+
 class GitError(Exception):
     pass
 
@@ -4559,6 +4572,16 @@ class GitManager:
             "GIT_NO_REPLACE_OBJECTS": "1",
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_LFS_SKIP_SMUDGE": "1",
+            # A detached auto-gc outlives the temporary HOME it runs in, dies on the
+            # deleted cwd and leaves gc.log behind, which turns every later write's
+            # auto-gc into "fatal:" lines.  Retained stores run maintenance explicitly.
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_0": "gc.auto",
+            "GIT_CONFIG_VALUE_0": "0",
+            "GIT_CONFIG_KEY_1": "gc.autoDetach",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": "maintenance.auto",
+            "GIT_CONFIG_VALUE_2": "false",
         }
 
     def _existing_git_auth_environment(self) -> dict[str, str]:
@@ -4979,7 +5002,9 @@ class GitManager:
                           )]
             if process.returncode != 0 or unexpected:
                 raise GitError("retained Git object integrity is unavailable")
-        elif process.returncode == 0 and re.search(rb"(?m)^(?:error|fatal):", stderr):
+        elif process.returncode == 0 and re.search(
+            rb"(?m)^(?:error|fatal):", _without_stale_gc_report(stderr)
+        ):
             raise GitError("isolated Git command reported errors")
         if process.returncode != 0:
             raise GitError("authenticated Git push preparation failed")

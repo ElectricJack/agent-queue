@@ -18,6 +18,9 @@ from src.database.tables import escalations, messages, projects, repos, system_c
 from src.git.manager import GitError, safe_git_detail
 
 
+_OPEN = ("needs_human", "reply_received", "resolving")
+
+
 def _prefix(project_id):
     return "retained_repository_recovery:" + hashlib.sha256(project_id.encode()).hexdigest() + ":"
 
@@ -115,7 +118,7 @@ async def record_incident(handler, state, *, load=False):
                 # bounded evidence even if the first notice was already consumed.
                 await conn.execute(update(escalations).where(
                     escalations.c.id == incident_id,
-                    escalations.c.state.in_(("needs_human", "reply_received", "resolving")),
+                    escalations.c.state.in_(_OPEN),
                 ).values(summary=summary, investigation=investigation,
                          revision=escalations.c.revision + 1, updated_at=now))
                 await conn.execute(update(messages).where(
@@ -123,4 +126,48 @@ async def record_incident(handler, state, *, load=False):
                     messages.c.delivered_at.is_(None),
                 ).values(subject=summary,
                          body=f"{summary}\n{investigation}\n{decision}\nIncident: {incident_id}"))
+    if state["status"] == "recovered":
+        # An earlier failed attempt may have notified the supervisor already.
+        await _resolve_notice(handler, state, "Retained Git cache recovered; full fsck is clean.",
+                              {"attempts": state["attempts"]})
     return state
+
+
+async def clear_incident(handler, state, cleared):
+    """Mark one held incident recovered after the caller's clean full fsck.
+
+    The supervisor control behind ``integration_clear_retained_recovery``; the
+    sticky ``exhausted`` merge in :func:`record_incident` is what this lifts.
+    """
+    key, now = incident_key(state), time.time()
+    async with handler.db.immediate() as conn:
+        await conn.scalar(select(projects.c.id).where(
+            projects.c.id == state["project_id"],
+        ).with_for_update())
+        current = await conn.scalar(select(system_config.c.value).where(
+            system_config.c.key == key,
+        ).with_for_update())
+        current = json.loads(current) if current else None
+        if current is None or current["id"] != state["id"] or current["status"] == "recovered":
+            return None
+        current.update(status="recovered", cleared=cleared, updated_at=now)
+        await conn.execute(update(system_config).where(system_config.c.key == key).values(
+            value=json.dumps(current)))
+    await _resolve_notice(
+        handler, current,
+        f"Retained Git cache passed a full fsck; {cleared['by']} cleared the admission hold.",
+        {"fsck_exit_status": cleared["fsck"]["exit_status"], "cleared_by": cleared["by"]},
+    )
+    return current
+
+
+async def _resolve_notice(handler, state, outcome, evidence):
+    """Close the incident's open escalation; a concurrent supervisor turn wins the CAS."""
+    incident = await handler.db.get_escalation("escalation-retained-" + state["id"])
+    if incident is None or incident["state"] not in _OPEN:
+        return
+    await handler.db.resolve_escalation_on_recovery(
+        incident["id"], expected_revision=int(incident["revision"]),
+        source_kind="retained_repository_recovery", terminal_outcome=outcome,
+        terminal_evidence={"incident_id": state["id"], "cache": state["cache"], **evidence},
+    )

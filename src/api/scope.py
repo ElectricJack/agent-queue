@@ -208,6 +208,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_reevaluate_repair",
         "integration_release_owner",
         "integration_release_stale_owners",
+        "integration_clear_retained_recovery",
         "integration_redrive_root",
         "integration_authorize_root",
         "integration_redrive_child",

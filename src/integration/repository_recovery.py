@@ -22,6 +22,13 @@ _HEX = re.compile(r"[0-9a-f]+\Z")
 _LOOSE_PATH = re.compile(r"(?:[^\s:]*objects)/([0-9a-f]{2})/([0-9a-f]{38}|[0-9a-f]{62})(?![0-9a-f])")
 _FSCK = ["--no-replace-objects", "fsck", "--full", "--no-dangling", "--no-reflogs",
          "--no-progress"]
+# Every write to a retained store disables auto-gc (the stores' config and the isolated
+# import environment); this foreground run, with a valid cwd under the repository
+# transaction, replaces it.  Command-line -c beats both.
+_MAINTENANCE = ["-c", "gc.auto=6700", "-c", "gc.autoDetach=false", "-c", "maintenance.auto=false",
+                "gc", "--auto", "--quiet"]
+_RETAINED_CONFIG = (("core.fsync", "committed"), ("core.fsyncMethod", "fsync"),
+                    ("gc.auto", "0"), ("gc.autoDetach", "false"), ("maintenance.auto", "false"))
 MAX_ATTEMPTS = 2
 
 
@@ -45,7 +52,7 @@ async def harden_retained_repository(git, store, *, lock_held=False):
     async with _transaction(git, store, lock_held):
         if identity in git._retained_fsync_stores:
             return
-        for key, value in (("core.fsync", "committed"), ("core.fsyncMethod", "fsync")):
+        for key, value in _RETAINED_CONFIG:
             await git._arun_unlocked(["config", key, value], cwd=str(store))
         git._retained_fsync_stores.add(identity)
 
@@ -200,6 +207,24 @@ async def _publish_local_heads(git, store, repository_url):
         raise GitError("guarded local-only AQ branch publication failed")
 
 
+async def _maintain(git, store, git_dir):
+    """Best-effort foreground gc; a successful run makes any old gc.log obsolete."""
+    try:
+        result = await git.arun_git_result(_MAINTENANCE, cwd=str(store), lock_held=True,
+                                           env={"LC_ALL": "C"})
+    except GitError as exc:
+        logger.warning("retained cache %s maintenance failed: %s", store, exc)
+        return
+    if result.returncode:
+        logger.warning("retained cache %s maintenance failed: %s", store,
+                       safe_git_detail(result.stderr, limit=1000))
+        return
+    report = git_dir / "gc.log"
+    if report.is_file() and not report.is_symlink():
+        report.unlink()
+        logger.info("retained cache %s: removed stale gc.log after foreground gc", store)
+
+
 @asynccontextmanager
 async def _transaction(git, store, lock_held):
     if lock_held:
@@ -209,6 +234,10 @@ async def _transaction(git, store, lock_held):
             yield
 
 
+class RetainedRecoveryExhausted(GitError):
+    """The incident's attempt budget is spent; only a supervisor clear reopens admission."""
+
+
 async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                                 repository_id=None, lock_held=False):
     """Recover inside the existing acquisition budget, keeping all local refs.
@@ -216,6 +245,8 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
     The journal is durable even without a daemon (disposable Git fixtures). In
     production the CommandHandler port mirrors incident state in PostgreSQL,
     gates project batch admission and atomically coalesces supervisor notices.
+    A fetch failure on a store whose full fsck is clean is the caller's ordinary
+    failure: it never opens an incident, and closes one that moved no object.
     """
     store = Path(store).absolute()
     directory = _git_dir(store)
@@ -238,88 +269,119 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
         return await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
                                         env={"LC_ALL": "C"})
 
+    async def fetch(**options):
+        await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True,
+                                lock_held=True, **options)
+
+    async def acquire():
+        nonlocal state
+        before = None
+        if journal.exists():
+            state = json.loads(journal.read_text())
+            if (state["cache"], state["project_id"], state["repository_id"]) != (
+                str(store), project_id, repository_id
+            ):
+                raise GitError("retained recovery identity changed")
+            if state["status"] == "recovered":
+                await save(load=True)
+                if state["status"] == "recovered":
+                    pending.unlink(missing_ok=True)
+                    state = None
+        if state is None:
+            fetch_error = None
+            try:
+                if pending.exists():
+                    raise GitError("retained repository recovery pending")
+                await fetch()
+            except (GitError, GitHubAccessError) as exc:
+                fetch_error = exc
+            before = await fsck()
+            if _clean(before) and not pending.exists():
+                if fetch_error:
+                    raise fetch_error
+                return
+            root.mkdir(exist_ok=True)
+            incident = uuid.uuid4().hex
+            timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+            state = {"id": incident, "project_id": project_id,
+                     "repository_id": repository_id, "cache": str(store),
+                     "backup": str(root / f"{timestamp}-{incident}"),
+                     "attempts": 0, "status": "pending", "moves": [],
+                     "checks": [], "created_at": time.time()}
+            # Load any unresolved PostgreSQL incident rather than refreshing its budget.
+            await save(load=True)
+        else:
+            _reconcile_moves(state)
+            await save(load=True)
+        if state["attempts"] >= MAX_ATTEMPTS:
+            state["status"] = "exhausted"
+            await save()
+            raise RetainedRecoveryExhausted(
+                "retained recovery exhausted its two attempts; last error: "
+                + (state.get("error") or "unrecorded"))
+        if before is None:
+            before = await fsck()
+        if _clean(before) and not state["moves"]:
+            # Every object verifies and nothing was quarantined, so there is
+            # nothing to refetch or publish: close without spending an attempt.
+            state["status"] = "recovered"
+            state["checks"].append({"attempt": state["attempts"], "cleared": "clean_fsck",
+                                    "before": _diagnostics(before)})
+            await save()
+            if state["status"] == "recovered":
+                pending.unlink(missing_ok=True)
+                _sync_directory(root)
+                logger.warning("retained cache %s incident %s closed: full fsck clean and "
+                               "no object moved", store, state["id"])
+                state = None
+                await fetch()
+                return
+        state["attempts"] += 1
+        state["status"] = "pending"
+        state["checks"].append({"attempt": state["attempts"]})
+        pending.touch()
+        _sync_directory(root)
+        await save()
+        before = await fsck()
+        state["checks"][-1]["before"] = _diagnostics(before)
+        await save()
+        if not _clean(before):
+            _move_objects(directory, journal, state, before)
+            await save()
+        await fetch(refetch=True)
+        after = await fsck()
+        state["checks"][-1]["after"] = _diagnostics(after)
+        await save()
+        if not _clean(after):
+            raise GitError("retained full fsck failed after refetch")
+        await _publish_local_heads(git, store, repository_url)
+        after = await fsck()
+        state["checks"][-1]["after"] = _diagnostics(after)
+        if not _clean(after):
+            raise GitError("retained full fsck failed after publication")
+        state["status"] = "recovered"
+        await save()
+        if state["status"] != "recovered":
+            raise GitError("retained recovery incident remains held")
+        pending.unlink(missing_ok=True)
+        _sync_directory(root)
+        logger.warning("retained cache %s recovered: incident=%s attempts=%s backup=%s",
+                       store, state["id"], state["attempts"], state["backup"])
+
     deadline = asyncio.get_running_loop().time() + git._command_timeout()
     async with _transaction(git, store, lock_held):
         try:
             async with asyncio.timeout_at(deadline):
-                if journal.exists():
-                    state = json.loads(journal.read_text())
-                    if (state["cache"], state["project_id"], state["repository_id"]) != (
-                        str(store), project_id, repository_id
-                    ):
-                        raise GitError("retained recovery identity changed")
-                    if state["status"] == "recovered":
-                        await save(load=True)
-                        if state["status"] == "recovered":
-                            pending.unlink(missing_ok=True)
-                            state = None
-                if state is None:
-                    fetch_error = None
-                    try:
-                        if pending.exists():
-                            raise GitError("retained repository recovery pending")
-                        await git.afetch_origin(str(store), repository_url=repository_url,
-                                               all_heads=True, lock_held=True)
-                    except (GitError, GitHubAccessError) as exc:
-                        fetch_error = exc
-                    before = await fsck()
-                    if _clean(before) and not pending.exists():
-                        if fetch_error:
-                            raise fetch_error
-                        return
-                    root.mkdir(exist_ok=True)
-                    incident = uuid.uuid4().hex
-                    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
-                    state = {"id": incident, "project_id": project_id,
-                             "repository_id": repository_id, "cache": str(store),
-                             "backup": str(root / f"{timestamp}-{incident}"),
-                             "attempts": 0, "status": "pending", "moves": [],
-                             "checks": [], "created_at": time.time()}
-                    # Load any unresolved PostgreSQL incident rather than refreshing its budget.
-                    await save(load=True)
-                else:
-                    _reconcile_moves(state)
-                    await save(load=True)
-                if state["attempts"] >= MAX_ATTEMPTS:
-                    state["status"] = "exhausted"
-                    await save()
-                    raise GitError("retained recovery exhausted its two attempts")
-                state["attempts"] += 1
-                state["status"] = "pending"
-                state["checks"].append({"attempt": state["attempts"]})
-                pending.touch()
-                _sync_directory(root)
-                await save()
-                before = await fsck()
-                state["checks"][-1]["before"] = _diagnostics(before)
-                await save()
-                if not _clean(before):
-                    _move_objects(directory, journal, state, before)
-                    await save()
-                await git.afetch_origin(str(store), repository_url=repository_url,
-                                       all_heads=True, lock_held=True, refetch=True)
-                after = await fsck()
-                state["checks"][-1]["after"] = _diagnostics(after)
-                await save()
-                if not _clean(after):
-                    raise GitError("retained full fsck failed after refetch")
-                await _publish_local_heads(git, store, repository_url)
-                after = await fsck()
-                state["checks"][-1]["after"] = _diagnostics(after)
-                if not _clean(after):
-                    raise GitError("retained full fsck failed after publication")
-                state["status"] = "recovered"
-                await save()
-                if state["status"] != "recovered":
-                    raise GitError("retained recovery incident remains held")
-                pending.unlink(missing_ok=True)
-                _sync_directory(root)
-                logger.warning("retained cache %s recovered: incident=%s attempts=%s backup=%s",
-                               store, state["id"], state["attempts"], state["backup"])
+                await acquire()
         except BaseException as exc:
             if state is not None and state["status"] != "recovered":
                 state["status"] = "exhausted" if state["attempts"] >= MAX_ATTEMPTS else "failed"
-                state["error"] = safe_git_detail(str(exc) or type(exc).__name__, limit=2000)
+                if not isinstance(exc, RetainedRecoveryExhausted):
+                    # Keep each attempt's own cause; exhaustion never hides the last one.
+                    detail = safe_git_detail(str(exc) or type(exc).__name__, limit=2000)
+                    state["error"] = detail
+                    if state["checks"] and state["checks"][-1]["attempt"] == state["attempts"]:
+                        state["checks"][-1].setdefault("error", detail)
                 # Finish accounting before cancellation releases the repository transaction.
                 accounting = asyncio.create_task(save())
                 try:
@@ -329,3 +391,36 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
             if isinstance(exc, TimeoutError):
                 raise GitError("retained Git acquisition timed out") from exc
             raise
+        await _maintain(git, store, directory)
+
+
+async def clear_retained_recovery(git, state, *, by, record):
+    """Close one held incident once the store passes a full fsck (supervisor control).
+
+    The journal is marked before ``record`` clears the PostgreSQL ledger: a
+    cleared ledger beside an open journal would reopen the hold on the next
+    fetch, while the reverse only asks for the clear to be retried.
+    """
+    store = Path(state["cache"])
+    directory = _git_dir(store)
+    root = directory / "aq-empty-object-backups"
+    if root.is_symlink():
+        raise GitError("retained backup directory is not isolated")
+    journal, pending = root / "incident.json", root / "pending"
+    async with _transaction(git, store, False):
+        result = await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
+                                           env={"LC_ALL": "C"})
+        check = _diagnostics(result)
+        if not _clean(result):
+            return {"cleared": False, "fsck": check, "state": state}
+        cleared = {"by": by, "at": time.time(), "fsck": check}
+        if journal.exists():
+            local = json.loads(journal.read_text())
+            if local["status"] != "recovered":
+                local.update(status="recovered", cleared=cleared)
+                _write(journal, local)
+        if root.is_dir():
+            pending.unlink(missing_ok=True)
+            _sync_directory(root)
+        durable = await record(cleared)
+        return {"cleared": durable is not None, "fsck": check, "state": durable or state}

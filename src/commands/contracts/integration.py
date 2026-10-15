@@ -70,6 +70,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_reevaluate_repair",
         "integration_release_owner",
         "integration_reserve_owner",
+        "integration_clear_retained_recovery",
         "integration_release_stale_owners",
         "integration_redrive_root",
         "integration_authorize_root",
@@ -309,6 +310,12 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
 
 class IntegrationReserveOwnerArgs(CommandArgs):
     task_id: str = Field(min_length=1)
+
+
+class IntegrationClearRetainedRecoveryArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    #: Clear only this incident; omitted clears every hold the project's caches show.
+    incident_id: str | None = Field(default=None, min_length=1)
 
 
 class IntegrationReleaseStaleOwnersArgs(CommandArgs):
@@ -1346,6 +1353,16 @@ INTEGRATION_RESERVE_OWNER = _operational_contract(
     side_effect=SideEffectClass.UPDATE,
 )
 
+CLEAR_RETAINED_RECOVERY_OUTCOMES = ("cleared", "not_clean", "unavailable", "not_found")
+
+INTEGRATION_CLEAR_RETAINED_RECOVERY = _operational_contract(
+    "integration_clear_retained_recovery",
+    IntegrationClearRetainedRecoveryArgs,
+    CLEAR_RETAINED_RECOVERY_OUTCOMES,
+    successes=frozenset({"cleared"}),
+    side_effect=SideEffectClass.UPDATE,
+)
+
 RELEASE_STALE_OWNERS_OUTCOMES = ("released", "nothing_to_release", "invalid", "not_found")
 
 INTEGRATION_RELEASE_STALE_OWNERS = _operational_contract(
@@ -2195,6 +2212,18 @@ async def _reserve_owner_adapter(args: IntegrationReserveOwnerArgs, ctx: Command
     )
 
 
+async def _clear_retained_recovery_adapter(
+    args: IntegrationClearRetainedRecoveryArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_clear_retained_recovery",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        set(CLEAR_RETAINED_RECOVERY_OUTCOMES),
+    )
+
+
 async def _release_stale_owners_adapter(
     args: IntegrationReleaseStaleOwnersArgs, ctx: CommandContext | None
 ):
@@ -2513,6 +2542,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_REEVALUATE_REPAIR, _reevaluate_repair_adapter),
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
         (INTEGRATION_RESERVE_OWNER, _reserve_owner_adapter),
+        (INTEGRATION_CLEAR_RETAINED_RECOVERY, _clear_retained_recovery_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
         (INTEGRATION_REDRIVE_ROOT, _redrive_root_adapter),
         (INTEGRATION_AUTHORIZE_ROOT, _authorize_root_adapter),

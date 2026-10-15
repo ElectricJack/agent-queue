@@ -383,6 +383,21 @@ def integration_reserve_owner(ctx: click.Context, task_id: str) -> None:
     _execute(ctx, "integration_reserve_owner", {"task_id": task_id})
 
 
+@integration.command("clear-retained-recovery")
+@click.option("--project-id", required=True)
+@click.option("--incident-id", default=None, help="Clear only this incident.")
+@click.pass_context
+@_handle_errors
+def integration_clear_retained_recovery(
+    ctx: click.Context, project_id: str, incident_id: str | None
+) -> None:
+    """Lift a retained Git cache admission hold once a full fsck is clean."""
+    args = {"project_id": project_id}
+    if incident_id is not None:
+        args["incident_id"] = incident_id
+    _execute(ctx, "integration_clear_retained_recovery", args)
+
+
 @integration.command("release-stale-owners")
 @click.option("--project-id", required=True)
 @click.option("--dry-run", is_flag=True, help="Report what would be released; change nothing.")
