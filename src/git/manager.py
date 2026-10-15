@@ -544,10 +544,11 @@ _RETAINED_VERIFY_TTL_SECONDS = 3600.0
 
 
 def _object_store_fingerprint(git_dir: str) -> tuple | None:
-    """Every object-store file's (path, size, mtime_ns), or None if unreadable.
+    """Every object-store file's (path, size, inode), or None if unreadable.
 
-    Covers loose objects, packs, indexes and alternates, so any object write
-    or damage through the filesystem changes it.
+    Covers loose objects, packs, indexes and alternates. Git writes objects
+    by rename, so any new or replaced object changes it; mtime is left out
+    because Git freshens existing objects on every fetch that names them.
     """
     root = Path(git_dir) / "objects"
     entries = []
@@ -556,7 +557,7 @@ def _object_store_fingerprint(git_dir: str) -> tuple | None:
             for name in files:
                 path = os.path.join(directory, name)
                 stat = os.stat(path)
-                entries.append((os.path.relpath(path, root), stat.st_size, stat.st_mtime_ns))
+                entries.append((os.path.relpath(path, root), stat.st_size, stat.st_ino))
     except OSError:
         return None
     return tuple(sorted(entries))
@@ -2307,27 +2308,48 @@ class GitManager:
         The caller must separately fence repository identity and all writers
         before using any inspection as a recovery precondition.
 
-        A clean result is reused only while the object store is byte-for-byte
-        the same set of files (name, size, mtime) and for at most
-        ``_RETAINED_VERIFY_TTL_SECONDS``: any write invalidates it. A full
-        check holds the repository lock for many seconds on a large store, so
-        repeating it on every no-op fetch starves the integration train.
+        A clean result is reused only while the object store holds the same
+        files (path, size, inode) and for at most
+        ``_RETAINED_VERIFY_TTL_SECONDS``: any object write invalidates it. A
+        full check holds the repository lock for many seconds on a large store,
+        so repeating it on every no-op fetch starves the integration train.
         """
-        verified = self.__dict__.setdefault("_retained_verified", {})
-        fingerprint = _object_store_fingerprint(git_dir)
-        now = time.monotonic()
-        cached = verified.get(git_dir)
-        if (fingerprint is not None and cached is not None and cached[0] == fingerprint
-                and now - cached[1] < _RETAINED_VERIFY_TTL_SECONDS):
+        if self.retained_store_verified(git_dir):
             return
-        verified.pop(git_dir, None)
+        fingerprint = _object_store_fingerprint(git_dir)
+        started = time.monotonic()
         await self._run_isolated_import_git(
             [f"--git-dir={git_dir}", "fsck", "--full", "--no-dangling",
              "--no-reflogs", "--no-progress"],
             home=home, deadline=deadline, verify_integrity=True,
         )
-        if fingerprint is not None and _object_store_fingerprint(git_dir) == fingerprint:
-            verified[git_dir] = (fingerprint, now)
+        self.record_retained_store_verified(git_dir, fingerprint, started)
+
+    def retained_store_verified(self, git_dir: str) -> bool:
+        """Whether a clean full fsck of *git_dir*'s unchanged object store is reusable."""
+        verified = self.__dict__.setdefault("_retained_verified", {})
+        key = os.path.realpath(git_dir)
+        cached = verified.get(key)
+        if cached is None:
+            return False
+        fingerprint, at = cached
+        if (time.monotonic() - at < _RETAINED_VERIFY_TTL_SECONDS
+                and fingerprint is not None and _object_store_fingerprint(git_dir) == fingerprint):
+            return True
+        verified.pop(key, None)
+        return False
+
+    def record_retained_store_verified(
+        self, git_dir: str, fingerprint: tuple | None, started: float,
+    ) -> None:
+        """Remember a clean full fsck of *git_dir* taken from *fingerprint*.
+
+        Nothing is recorded when the store changed while the check ran.
+        """
+        if fingerprint is None or _object_store_fingerprint(git_dir) != fingerprint:
+            return
+        self.__dict__.setdefault("_retained_verified", {})[
+            os.path.realpath(git_dir)] = (fingerprint, started)
 
     async def _aholds_complete_commit(
         self, imported: Path, oid: str, *, home: Path, deadline: float,

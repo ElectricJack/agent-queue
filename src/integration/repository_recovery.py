@@ -15,7 +15,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, RemoteRefState, safe_git_detail
+from src.git.manager import (
+    GitError, RemoteRefState, _object_store_fingerprint, safe_git_detail,
+)
 
 logger = logging.getLogger(__name__)
 _HEX = re.compile(r"[0-9a-f]+\Z")
@@ -262,8 +264,19 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
                                                all_heads=True, lock_held=True)
                     except (GitError, GitHubAccessError) as exc:
                         fetch_error = exc
+                    reusable = getattr(git, "retained_store_verified", None)
+                    if (not pending.exists() and reusable is not None
+                            and reusable(str(directory))):
+                        if fetch_error:
+                            raise fetch_error
+                        return
+                    fingerprint = _object_store_fingerprint(str(directory))
+                    started = time.monotonic()
                     before = await fsck()
                     if _clean(before) and not pending.exists():
+                        record = getattr(git, "record_retained_store_verified", None)
+                        if record is not None:
+                            record(str(directory), fingerprint, started)
                         if fetch_error:
                             raise fetch_error
                         return

@@ -3176,6 +3176,9 @@ async def test_clean_integrity_check_is_reused_only_while_store_is_unchanged(tmp
     await verify()
     await verify()
     assert runs.await_count == 1
+    os.utime(loose / ("c" * 38))  # Git freshening an existing object is not a write
+    await verify()
+    assert runs.await_count == 1
     (loose / ("c" * 38)).write_bytes(b"")  # damage changes the store
     await verify()
     assert runs.await_count == 2
