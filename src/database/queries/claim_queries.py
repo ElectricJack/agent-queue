@@ -787,6 +787,19 @@ class ClaimQueryMixin:
         return (_row_to_session({c.name: mapping[c] for c in sessions.c}),
                 self._row_to_task({c.name: mapping[c] for c in tasks.c}))
 
+    async def get_project_for_claim(self, project_id, *, conn):
+        """Read integration demand with the existing admission-loop project read."""
+        from src.integration.admission import project_admission_required
+
+        row = (await conn.execute(select(
+            projects, project_admission_required(projects).label("source_admission"),
+        ).where(projects.c.id == project_id))).mappings().one_or_none()
+        if row is None:
+            return None
+        project = self._row_to_project(row)
+        project._source_admission_required = row["source_admission"]
+        return project
+
     async def claim_preparation_state(
         self, session_id: str, task_id: str, claim_epoch: int, *, conn=None
     ):
@@ -798,8 +811,10 @@ class ClaimQueryMixin:
         another projects SELECT without reusing the admission loop's old row.
         An absent project is distinct from a stale preparation fence.
         """
+        from src.integration.admission import source_admission_required
+
         stmt = (
-            select(projects)
+            select(projects, source_admission_required(tasks).label("source_admission"))
             .select_from(tasks.join(sessions, sessions.c.task_id == tasks.c.id)
                          .outerjoin(projects, projects.c.id == tasks.c.project_id))
             .where(
@@ -816,7 +831,10 @@ class ClaimQueryMixin:
         else:
             async with self._engine.connect() as owned:
                 row = (await owned.execute(stmt)).mappings().fetchone()
-        return (row is not None, self._row_to_project(row) if row and row["id"] else None)
+        project = self._row_to_project(row) if row and row["id"] else None
+        if project is not None:
+            project._source_admission_required = row["source_admission"]
+        return row is not None, project
 
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(
@@ -1183,6 +1201,7 @@ class ClaimQueryMixin:
         branch_name: str | None = None,
         clear_preparation_metadata: bool = False,
         admission=None,
+        ordinary_admission_guard: bool = False,
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
@@ -1243,8 +1262,22 @@ class ClaimQueryMixin:
                     failed_preparation=None,
                 )
             )
+            if ordinary_admission_guard:
+                from src.integration.admission import (
+                    OrdinaryAdmissionChanged,
+                    ordinary_activation_guard,
+                )
+
+                stmt = stmt.where(
+                    ordinary_activation_guard(task_id),
+                    apply_label_filters(select(tasks.c.id).where(
+                        tasks.c.id == task_id, ~blocked_predicate(),
+                    ), exclude_hold=True).exists(),
+                )
             row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
             if row is None:
+                if ordinary_admission_guard:
+                    raise OrdinaryAdmissionChanged()
                 return None
             # A claim only becomes usable after preparation has succeeded and
             # this session row has atomically moved to ``active``.  Clear an

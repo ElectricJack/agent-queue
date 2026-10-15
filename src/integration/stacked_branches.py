@@ -320,7 +320,8 @@ class StackView:
 
 
 async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snapshot=None,
-                         cached_only=False, preparation=False):
+                         cached_only=False, require_snapshot=False):
+    """Observe prerequisites; preparation and refresh need Git even for an empty set."""
     async with observer.db._engine.connect() as conn:
         rows = await _inputs(conn, project_id, task_id)
         parents = dict(
@@ -349,7 +350,7 @@ async def observe_stacks(observer, project_id, *, task_id=None, max_age=0, snaps
     view = StackView(observer.db, project_id, rows,
                      ref_cache=observer._stack_ref_cache, fresh_max_age=min(max_age, 2),
                      cached_only=cached_only)
-    if repository is None or not rows and not preparation:
+    if repository is None or not rows and not require_snapshot:
         return view
     target = DeliveryTarget(
         project_id,
@@ -501,7 +502,7 @@ class StackedBranches:
         """Retain a checkout's exact inputs after abort, then reserve one repair."""
         task = await self.db.get_task(task_id)
         view = await observe_stacks(
-            self.observer, task.project_id, task_id=task_id, preparation=True,
+            self.observer, task.project_id, task_id=task_id, require_snapshot=True,
         )
         ids = view.required(task_id)
         async with self.db._engine.connect() as conn:
@@ -549,7 +550,7 @@ class StackedBranches:
                 or not stacked_policy(project) and parent_base is None):
             return None
         view = await observe_stacks(
-            self.observer, task.project_id, task_id=task_id, preparation=True,
+            self.observer, task.project_id, task_id=task_id, require_snapshot=True,
         )
         ids = view.required(task_id)
         if not ids and parent_base is None:
@@ -931,7 +932,8 @@ class StackedBranches:
             source_inputs = await self._refresh_inputs(conn, task_id, origin)
         checkpoint, request, outcome = source_inputs
         view = await observe_stacks(self.observer, task["project_id"], task_id=task_id,
-                                    snapshot=snapshot.observation if snapshot else None)
+                                    snapshot=snapshot.observation if snapshot else None,
+                                    require_snapshot=True)
         if view.snapshot and not view.snapshot.error and request:
             truth = snapshot or GitTruthSnapshot(
                 self.observer.truth or GitTruth(self.observer.git), view.snapshot,
@@ -951,7 +953,8 @@ class StackedBranches:
         ids = view.required(task_id)
         async with self.db._engine.connect() as conn:
             proofs = await view.verified_on(conn, ids)
-        if set(proofs) != ids or not set(old["prerequisites"]) <= ids or not await view.fresh():
+        if (view.snapshot is None or set(proofs) != ids
+                or not set(old["prerequisites"]) <= ids or not await view.fresh()):
             await self._hold(origin, old, "prerequisite_reopened_or_unavailable")
             return "waiting_prerequisite"
         if (not checkpoint or not request or not request.completion_id

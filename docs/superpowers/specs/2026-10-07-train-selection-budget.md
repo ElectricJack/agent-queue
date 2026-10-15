@@ -18,6 +18,12 @@ reuses its candidate IDs for `pending` only within that visit, after unchanged
 stack refreshes; a changed refresh ends the visit and requires a new Git view.
 Mutable eligibility and publication fences still revalidate independently.
 
+Parent-only preparation may record a stack with no sibling prerequisites. Refresh
+still requires a qualified repository snapshot for delivery, source and currentness
+checks; the empty prerequisite set alone supplies no Git evidence. An unavailable
+repository or failed or stale observation holds the source. An unchanged empty
+stack preserves the original completion, checkpoint, branch and filing origin.
+
 At most four visits per repository run concurrently, including requested visits.
 No tasks are created just to wait for a repository slot. Admission chooses the
 least recently started idle target, with unvisited targets first; other repositories
