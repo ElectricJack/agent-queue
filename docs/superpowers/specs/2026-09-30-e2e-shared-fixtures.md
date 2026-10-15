@@ -33,6 +33,14 @@ Regression checks cover scenario collection and selection, prerequisites, failur
 cleanup, fixture reuse, daemon isolation, global restoration and coverage parity.
 Fixture/probe safety suites remain separate from the real-daemon acceptance arm.
 
+Readiness uses the daemon's background health snapshot. The kit requires an
+overall ready verdict and successful database check; a stale snapshot must not
+authorize scenarios. Initializing, stale and timed-out collection states may
+recover within a bounded 15-second preflight wait. They are reported as unavailable
+health evidence, not database corruption. A reported database error fails without
+retrying, and an expired wait still refuses to run scenarios. Existing-daemon
+startup and the final smoke preflight use this wait; status remains a single probe.
+
 CLI imports are a measured bottleneck. Pytest opts into a per-world Unix-socket
 launcher which registers the real CLI once and forks a new CLI child with a fresh
 environment and Click context for each ordinary command. No handlers are invoked
