@@ -75,6 +75,16 @@ from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, claimable_sources
 
 _frontier_child = tasks.alias("frontier_child")
 
+# Every claim builds the frontier predicates afresh. An alias proxies every
+# column (with its foreign keys) of its table, so creating these per call made
+# thousands of cyclic objects per claim and drove the gen2 collections that
+# formed the claim latency tail. Aliases are immutable; the builders share them.
+_URGENT_OPERATION = integration_repair_operations.alias("urgent_operation")
+_URGENT_STAGE = integration_repair_stages.alias("urgent_stage")
+_CLAIM_STACK_ORIGIN = task_branch_origins.alias("claim_stack_origin")
+_CLAIM_STACK_REPAIR = tasks.alias("claim_stack_repair")
+_CLAIM_STACK_COMPLETION = task_completion_records.alias("claim_stack_completion")
+
 #: Task statuses a pool claim can end in that no further close changes.
 SETTLED_POOL_CLAIM_STATUSES = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
 
@@ -88,8 +98,8 @@ ACCEPTED_CLOSE_KEY = "accepted_close"
 
 def active_train_repair_bindings():
     """Current active batch-repair delegate identities, independent of titles."""
-    operation = integration_repair_operations.alias("urgent_operation")
-    stage = integration_repair_stages.alias("urgent_stage")
+    operation = _URGENT_OPERATION
+    stage = _URGENT_STAGE
     return select(
         stage.c.repair_task_id, operation.c.id.label("operation_id"), operation.c.batch_id,
     ).select_from(stage.join(
@@ -489,9 +499,9 @@ def numeric_meta_value(column, *, default: str = "0"):
 
 
 def _claim_preparation_predicates():
-    origin = task_branch_origins.alias("claim_stack_origin")
-    repair = tasks.alias("claim_stack_repair")
-    completion = task_completion_records.alias("claim_stack_completion")
+    origin = _CLAIM_STACK_ORIGIN
+    repair = _CLAIM_STACK_REPAIR
+    completion = _CLAIM_STACK_COMPLETION
     latest_outcome = (
         select(completion.c.outcome).where(completion.c.task_id == repair.c.id)
         .order_by(completion.c.completed_at.desc()).limit(1).correlate(repair).scalar_subquery()
