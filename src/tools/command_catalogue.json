@@ -6068,6 +6068,69 @@
       }
     },
     {
+      "name": "task_batch_validate",
+      "description": "Run the ingestion-batch automatic checks (design \u00a75.1) against the live graph and write nothing. Takes the change set task_batch_propose takes, with the ingestion fields (section_anchor, primary_outcome, acceptance, size, owned_modules, placement, delivery_targets). Hard findings (authority, membership, parent_not_unique, cross_project, depth_exceeded, cycle, container_endpoint, external_target_invalid, dependency_on_ancestor, post_landing_inside_delivery_epic, delivery_condition_cycle, section_anchor_missing, primary_outcome_missing, acceptance_missing, profile_pinned) fail the batch; stale_revision, active_claim and integration_owned fail it with retryable: true. Advisory findings (large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, unexplained_serialization, concentrated_ownership) never fail it; gaps name advisory checks that lacked declared metadata. Checks are deterministic: no score and no model judgement.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Project the batch is for."
+          },
+          "source": {
+            "type": "string",
+            "description": "Proposal source; checked against a stored batch's."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Task specs keyed by tempId, as task_batch_propose takes."
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Edges {from, to, dep_type, reason}; from depends on to."
+          },
+          "edits": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Edits of existing batch members, keyed by task_id."
+          },
+          "remove_edges": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Edges {from, to, dep_type} the change set removes."
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Comments {task_id, body} on batch members."
+          },
+          "batch_id": {
+            "type": "string",
+            "description": "Held batch whose members the change set may edit."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "description": "Structure revision the caller read; a mismatch is stale_revision."
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
       "name": "task_batch_discard",
       "description": "Discard a pending proposal without creating anything. Refused if it has a human approval gate or was already committed or discarded.",
       "input_schema": {
@@ -17741,6 +17804,7 @@
     "task_batch_update": "task",
     "task_batch_commit": "task",
     "task_batch_discard": "task",
+    "task_batch_validate": "task",
     "ensure_task": "task",
     "get_downstream_tasks": "task",
     "task_route": "task",

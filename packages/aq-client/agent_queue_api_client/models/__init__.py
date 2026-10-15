@@ -1815,6 +1815,12 @@ from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDif
 from .task_batch_update_request import TaskBatchUpdateRequest
 from .task_batch_update_request_payload import TaskBatchUpdateRequestPayload
 from .task_batch_update_response_422 import TaskBatchUpdateResponse422
+from .task_batch_validate_request import TaskBatchValidateRequest
+from .task_batch_validate_response import TaskBatchValidateResponse
+from .task_batch_validate_response_422 import TaskBatchValidateResponse422
+from .task_batch_validate_response_advisory_item import TaskBatchValidateResponseAdvisoryItem
+from .task_batch_validate_response_gaps_item import TaskBatchValidateResponseGapsItem
+from .task_batch_validate_response_hard_item import TaskBatchValidateResponseHardItem
 from .task_children_request import TaskChildrenRequest
 from .task_children_response import TaskChildrenResponse
 from .task_children_response_422 import TaskChildrenResponse422
@@ -3827,6 +3833,12 @@ __all__ = (
     "TaskBatchUpdateRequest",
     "TaskBatchUpdateRequestPayload",
     "TaskBatchUpdateResponse422",
+    "TaskBatchValidateRequest",
+    "TaskBatchValidateResponse",
+    "TaskBatchValidateResponse422",
+    "TaskBatchValidateResponseAdvisoryItem",
+    "TaskBatchValidateResponseGapsItem",
+    "TaskBatchValidateResponseHardItem",
     "TaskChildrenRequest",
     "TaskChildrenResponse",
     "TaskChildrenResponse422",

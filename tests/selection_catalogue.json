@@ -1231,6 +1231,7 @@
     "task-graph-creation": {
       "description": "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants.",
       "modules": [
+        "tests/test_batch_checks.py",
         "tests/test_batch_digest.py",
         "tests/test_create_task_graph_command.py",
         "tests/test_hierarchy_graph_creator.py",
@@ -3106,6 +3107,22 @@
       ],
       "markers": [],
       "summary": "The base checkout is never handed to a session."
+    },
+    "tests/test_batch_checks.py": {
+      "areas": [
+        "task-graph-creation"
+      ],
+      "default_arm": true,
+      "digest": "sha256:2b97f8bb09704741808c065761a5840a88d14a38dfc4778135cf09efe01e9b43",
+      "imports": [
+        "src.database.tables",
+        "src.task_graph",
+        "src.task_graph.batch_checks"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Batch automatic checks (held-batches spec L1.3, design §5.1)."
     },
     "tests/test_batch_digest.py": {
       "areas": [
