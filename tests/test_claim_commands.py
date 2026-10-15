@@ -4392,7 +4392,6 @@ class TestStaleClaimBinding:
         assert (await db.get_session(sid)).desired_state == "stopped"
 
 
-
 class TestEventWaiter:
     async def test_waiter_subscribes_before_check(self):
         from src.event_bus import EventBus
@@ -5320,6 +5319,8 @@ async def test_cross_epic_no_change_readiness_demand_explain_and_claim_agree(
     assert claim["result"] == ("claimed" if allowed else "no_ready_work"), claim
     if allowed:
         assert claim["task"]["id"] == "dependent"
+
+
 @pytest.mark.parametrize("preparation", ["pool", "clone"])
 @pytest.mark.parametrize("kind", [
     "source", "local", "generated", "generated-local", "clean", "proof-moved", "parent",
@@ -6647,3 +6648,368 @@ async def test_empty_frontier_does_not_finish_the_long_poll_timing(handler, db, 
         await asyncio.gather(*handler.orchestrator.claim_preparations.values(),
                              return_exceptions=True)
         current_claim_timing.reset(token)
+
+
+@pytest.fixture
+async def pull_request_admission(handler, db, development_admission, monkeypatch):
+    """Real PostgreSQL and Git transport; only GitHub's API is substituted."""
+    from src.git.github_contracts import GitHubRepositoryBinding
+
+    env = development_admission
+    await db.update_project(
+        PROJECT_ID,
+        hierarchical_integration_mode="disabled",
+        integration_mode="pull_request",
+        repo_url=str(env.remote),
+    )
+    await db.update_task(
+        "prerequisite",
+        integration_mode="pull_request",
+        pr_url="https://github.com/test/repo/pull/1",
+    )
+    env.pull = {
+        "state": "open",
+        "merged": False,
+        "merge_commit_sha": None,
+        "head": {"sha": env.head, "ref": "prerequisite"},
+        "base": {"ref": "main", "repo": {"full_name": "test/repo"}},
+    }
+    env.client = SimpleNamespace(pull_request=AsyncMock(side_effect=lambda url: dict(env.pull)))
+    monkeypatch.setattr(
+        handler.orchestrator.git,
+        "bind_github_repository",
+        AsyncMock(return_value=GitHubRepositoryBinding(1, "test/repo")),
+    )
+    monkeypatch.setattr(
+        handler.orchestrator.git, "_github_client", MagicMock(return_value=env.client)
+    )
+    return env
+
+
+@pytest.mark.parametrize("mutation", ["edge", "create", "graph"])
+async def test_pr_late_dependency_mutations_do_not_admit_unmerged_source(
+    handler, db, tmp_path, pull_request_admission, mutation
+):
+    env = pull_request_admission
+    # Complete before a waiter exists, through the same atomic completion writer.
+    await db.remove_dependency("dependent", "prerequisite")
+    await db.transition_task("prerequisite", TaskStatus.IN_PROGRESS, force=True)
+    await db.transition_task(
+        "prerequisite", TaskStatus.COMPLETED, pr_merge_gate="https://github.com/test/repo/pull/1"
+    )
+    ready_events = []
+
+    async def record_ready(entries):
+        ready_events.extend(task_id for task_id, _ in entries)
+
+    db.set_ready_listener(record_ready)
+    if mutation == "edge":
+        result = await handler.execute(
+            "add_dependency",
+            {
+                "task_id": "dependent",
+                "depends_on": "prerequisite",
+            },
+        )
+        tid = "dependent"
+    elif mutation == "create":
+        await db.delete_task("dependent")
+        result = await handler.execute(
+            "create_task",
+            {
+                "project_id": PROJECT_ID,
+                "title": "late waiter",
+                "description": "late waiter",
+                "depends_on": ["prerequisite"],
+                "status": "ready",
+                "repo_id": "repo",
+            },
+        )
+        tid = result.get("task_id")
+    else:
+        await db.delete_task("dependent")
+        result = await handler.execute(
+            "create_task_graph",
+            {
+                "project_id": PROJECT_ID,
+                "graph": {
+                    "version": 1,
+                    "parent": {"title": "late graph"},
+                    "nodes": [
+                        {
+                            "key": "waiter",
+                            "title": "late waiter",
+                            "acceptance": ["delivered source"],
+                            "needs": [{"on": "prerequisite"}],
+                        }
+                    ],
+                },
+            },
+        )
+        tid = next((n["task_id"] for n in result.get("nodes", []) if n["key"] == "waiter"), None)
+    assert not result.get("error"), result
+    assert tid, result
+    await db.update_task(
+        tid,
+        profile_id="worker",
+        route_source=route_source_for("worker"),
+        repo_id="repo",
+        intelligence_class="standard-medium",
+    )
+    # Graphs begin DEFINED under a DEFINED epic. Open the structural parent
+    # so the only remaining question is this completed PR prerequisite.
+    parent = (await db.get_task(tid)).parent_task_id
+    if parent:
+        await db.transition_task(parent, TaskStatus.IN_PROGRESS, force=True)
+    await db.transition_task(tid, TaskStatus.READY)
+    ready = await handler.execute("project_ready", {"project_id": PROJECT_ID, "brief": True})
+    assert tid not in {t["id"] for t in ready["ready"]}, ready
+    assert tid not in ready_events
+    sid, _ = await pool_session(db, tmp_path)
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "no_ready_work", result
+    assert (await db.get_task(tid)).claim_epoch == 0
+    assert env.client.pull_request.await_count > 0
+
+
+@pytest.mark.parametrize("qualified", [False, True])
+async def test_pr_stacked_claim_requires_real_remote_and_prepared_ancestry(
+    handler, db, tmp_path, pull_request_admission, qualified
+):
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    env = pull_request_admission
+    await db.update_task("dependent", branch_name="aq/dependent")
+    tip = env.head if qualified else env.base
+    env.git(env.source, "push", "origin", f"{tip}:refs/heads/aq/dependent")
+    # Keep the original close-time gate: a qualified stack may retire its own
+    # generated association, but cannot resolve the shared gate.
+    await db.transition_task("prerequisite", TaskStatus.IN_PROGRESS, force=True)
+    await db.transition_task(
+        "prerequisite", TaskStatus.COMPLETED, pr_merge_gate="https://github.com/test/repo/pull/1"
+    )
+    sid, work_dir = await pool_session(db, tmp_path)
+    env.git(tmp_path, "clone", str(env.remote), str(work_dir))
+    manager = WorktreeSlotManager(
+        db=db,
+        git=handler.orchestrator.git,
+        bus=handler.orchestrator.bus,
+        config=handler.config.worktrees,
+        git_mutex=handler.orchestrator._git_mutex,
+    )
+    handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    if qualified:
+        assert result["result"] == "claimed", result
+        assert env.git(work_dir, "rev-parse", "HEAD") == env.head
+        assert env.git(work_dir, "branch", "--show-current") == "aq/dependent"
+        assert (work_dir / ".aq/claim.json").exists()
+    else:
+        assert result["result"] == "no_ready_work", result
+        assert not (work_dir / ".aq/claim.json").exists()
+    gates = await db.list_gates(project_id=PROJECT_ID)
+    assert len(gates) == 1 and gates[0]["status"] == "open"
+
+
+@pytest.mark.parametrize("state", ["open", "closed", "unknown", "moved", "malformed"])
+async def test_pr_default_requires_current_exact_source_and_known_pr(
+    handler, db, tmp_path, pull_request_admission, state
+):
+    from src.integration.admission import observe_admission
+
+    env = pull_request_admission
+    env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+    if state == "closed":
+        env.pull["state"] = "closed"
+    elif state == "unknown":
+        env.client.pull_request.side_effect = OSError("GitHub unavailable")
+    elif state == "moved":
+        env.pull["head"] = {"sha": env.base, "ref": "prerequisite"}
+    elif state == "malformed":
+        env.pull.pop("state")
+    batch = await observe_admission(db, ["dependent"], env.service)
+    assert ("dependent" in batch.allowed) == (state == "open")
+    ready = await handler.execute("project_ready", {"project_id": PROJECT_ID, "brief": True})
+    assert ("dependent" in {t["id"] for t in ready["ready"]}) == (state == "open")
+    if state == "open":
+        from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+        sid, work_dir = await pool_session(db, tmp_path)
+        env.git(tmp_path, "clone", str(env.remote), str(work_dir))
+        manager = WorktreeSlotManager(
+            db=db,
+            git=handler.orchestrator.git,
+            bus=handler.orchestrator.bus,
+            config=handler.config.worktrees,
+            git_mutex=handler.orchestrator._git_mutex,
+        )
+        handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+        claimed = await settled_claim(scoped(handler, sid), {"next": True})
+        assert claimed["result"] == "claimed", claimed
+        assert env.git(work_dir, "rev-parse", "HEAD") == env.head
+
+
+async def test_pr_replacement_delivery_retires_only_generated_gate_links(
+    handler, db, pull_request_admission
+):
+    from src.integration.admission import observe_admission
+    from src.models import TaskCompletion
+
+    env = pull_request_admission
+    old_url, new_url = "https://github.com/test/repo/pull/1", "https://github.com/test/repo/pull/2"
+    await db.transition_task("prerequisite", TaskStatus.IN_PROGRESS, force=True)
+    await db.transition_task("prerequisite", TaskStatus.COMPLETED, pr_merge_gate=old_url)
+    old_gate = (await db.list_gates(project_id=PROJECT_ID))[0]
+    await mktask(db, "explicit-waiter", profile_id="worker", repo_id="repo")
+    async with db.immediate() as conn:
+        await db.attach_gate_waiters(old_gate["id"], ["explicit-waiter"], conn=conn)
+    env.git(env.source, "checkout", "prerequisite")
+    (env.source / "replacement").write_text("new exact source")
+    env.git(env.source, "add", ".")
+    env.git(env.source, "commit", "-m", "replacement source")
+    new_head = env.git(env.source, "rev-parse", "HEAD")
+    env.git(env.source, "push", "origin", "prerequisite")
+    await db.update_task("prerequisite", pr_url=new_url)
+    await db.save_task_completion(
+        TaskCompletion(
+            id="close-2",
+            task_id="prerequisite",
+            outcome="pass",
+            commits=[new_head],
+            completed_at=time.time(),
+        )
+    )
+    await db.transition_task("prerequisite", TaskStatus.IN_PROGRESS, force=True)
+    await db.transition_task("prerequisite", TaskStatus.COMPLETED, pr_merge_gate=new_url)
+    env.pull["head"] = {"sha": new_head, "ref": "prerequisite"}
+    assert not (await observe_admission(db, ["dependent"], env.service)).allowed
+    # Only the replacement reaches default. The old PR gate stays open forever.
+    env.git(env.source, "push", "origin", f"{new_head}:refs/heads/main")
+    batch = await observe_admission(db, ["dependent", "explicit-waiter"], env.service)
+    assert "dependent" in batch.allowed
+    assert not (await db.get_task("dependent")).is_blocked
+    assert (await db.get_task("explicit-waiter")).is_blocked
+    assert all(g["status"] == "open" for g in await db.list_gates(project_id=PROJECT_ID))
+    assert all(c.args[0] == new_url for c in env.client.pull_request.await_args_list)
+
+
+@pytest.mark.parametrize("movement", ["remote", "pr", "checkout"])
+async def test_pr_preparation_rechecks_remote_identity_and_actual_checkout(
+    handler, db, tmp_path, pull_request_admission, movement
+):
+    from src.orchestrator.worktree_manager import WorktreeSlotManager
+
+    env = pull_request_admission
+    await db.update_task("dependent", branch_name="aq/dependent")
+    env.git(env.source, "push", "origin", f"{env.head}:refs/heads/aq/dependent")
+    sid, work_dir = await pool_session(db, tmp_path)
+    env.git(tmp_path, "clone", str(env.remote), str(work_dir))
+    manager = WorktreeSlotManager(
+        db=db,
+        git=handler.orchestrator.git,
+        bus=handler.orchestrator.bus,
+        config=handler.config.worktrees,
+        git_mutex=handler.orchestrator._git_mutex,
+    )
+    original_reset = manager.reset_slot_for_task
+
+    async def move_after_observation(*args, **kwargs):
+        branch = await original_reset(*args, **kwargs)
+        if movement == "remote":
+            env.git(env.source, "push", "--force", "origin", f"{env.base}:refs/heads/aq/dependent")
+        elif movement == "pr":
+            await db.update_task("prerequisite", pr_url="https://github.com/test/repo/pull/2")
+        else:
+            env.git(work_dir, "reset", "--hard", env.base)
+        return branch
+
+    manager.reset_slot_for_task = move_after_observation
+    handler.orchestrator._worktree_slots = MagicMock(return_value=manager)
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] != "claimed", result
+    assert (await db.get_task("dependent")).status is not TaskStatus.IN_PROGRESS
+    assert not (work_dir / ".aq/claim.json").exists()
+
+
+async def test_pr_explicit_attachment_takes_ownership_of_generated_link(
+    handler, db, pull_request_admission
+):
+    env = pull_request_admission
+    await db.transition_task("prerequisite", TaskStatus.IN_PROGRESS, force=True)
+    await db.transition_task(
+        "prerequisite", TaskStatus.COMPLETED, pr_merge_gate="https://github.com/test/repo/pull/1"
+    )
+    [gate] = await db.get_gates_for_task("dependent")
+    async with db.immediate() as conn:
+        await db.attach_gate_waiters(gate["id"], ["dependent"], conn=conn)
+    env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+    ready = await handler.execute("project_ready", {"project_id": PROJECT_ID, "brief": True})
+    assert "dependent" not in {t["id"] for t in ready["ready"]}
+    assert (await db.get_task("dependent")).is_blocked
+    assert await db.get_gate_waiters(gate["id"]) == {"dependent"}
+
+
+async def test_pr_authenticated_squash_object_on_default_satisfies_current_source(
+    db, pull_request_admission
+):
+    from src.integration.admission import observe_admission
+
+    env = pull_request_admission
+    env.git(env.source, "checkout", "main")
+    env.git(env.source, "cherry-pick", "--no-commit", env.head)
+    env.git(env.source, "commit", "-m", "squashed prerequisite")
+    merge_oid = env.git(env.source, "rev-parse", "HEAD")
+    assert merge_oid != env.head
+    env.git(env.source, "push", "origin", "main")
+    env.pull.update(state="closed", merged=True, merge_commit_sha=merge_oid)
+    assert (await observe_admission(db, ["dependent"], env.service)).allowed == {"dependent"}
+
+
+async def test_pr_source_is_itself_claimable_while_its_dependents_are_withheld(
+    handler, db, tmp_path, pull_request_admission
+):
+    await db.transition_task("prerequisite", TaskStatus.READY, force=True)
+    await db.update_task(
+        "prerequisite", profile_id="worker", route_source=route_source_for("worker")
+    )
+    sid, _ = await pool_session(db, tmp_path)
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert result["result"] == "claimed", result
+    assert result["task"]["id"] == "prerequisite"
+    assert (await db.get_task("dependent")).status is TaskStatus.READY
+
+
+async def test_pr_project_embedded_repository_has_the_same_source_admission(
+    handler, db, pull_request_admission
+):
+    from src.integration.admission import observe_admission
+
+    env = pull_request_admission
+    await db.update_task("prerequisite", repo_id=None)
+    await db.update_task("dependent", repo_id=None)
+    await db.update_project(PROJECT_ID, integration_repository_id=None)
+    async with db.immediate() as conn:
+        from src.database.tables import repos
+
+        await conn.execute(delete(repos).where(repos.c.id == "repo"))
+    assert not (await observe_admission(db, ["dependent"], env.service)).allowed
+    env.git(env.source, "push", "origin", f"{env.head}:refs/heads/main")
+    assert (await observe_admission(db, ["dependent"], env.service)).allowed == {"dependent"}
+
+
+async def test_pr_missing_current_source_cannot_erase_recorded_artifact(db, pull_request_admission):
+    from src.integration.admission import observe_admission
+    from src.models import TaskCompletion
+
+    env = pull_request_admission
+    await db.update_task("prerequisite", branch_name=None, pr_url=None)
+    await db.save_task_completion(
+        TaskCompletion(
+            id="empty-reclose",
+            task_id="prerequisite",
+            outcome="pass",
+            commits=[],
+            completed_at=time.time(),
+        )
+    )
+    assert not (await observe_admission(db, ["dependent"], env.service)).allowed

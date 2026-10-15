@@ -60,6 +60,7 @@ def _moved_target(outcome: dict) -> bool:
     return (outcome.get("result") == ClaimResult.NO_READY_WORK.value
             and outcome.get("reason") == "delivery_snapshot_changed")
 
+
 __all__ = [
     "CLAIM_FILE",
     "ClaimCommandsMixin",
@@ -699,11 +700,16 @@ class ClaimCommandsMixin:
         hierarchy_mode = ProjectIntegrationMode.of(project)
         admission = None
         withheld_source_repairs: dict = {}
-        if getattr(project, "hierarchical_integration_mode", None) == "development":
-            from src.integration.admission import observe_admission, structural_candidates
-            ids = [want_id] if want_id else await structural_candidates(self.db, project.id)
-            admission = await observe_admission(self.db, ids, self._development_integration())
-        elif getattr(project, "hierarchical_integration_mode", None) in {"hierarchy", "train"}:
+        from src.integration.admission import observe_admission, structural_candidates
+
+        ids = [want_id] if want_id else await structural_candidates(self.db, project.id)
+        admission = await observe_admission(
+            self.db,
+            ids,
+            self._development_integration(),
+            default_mode=self.config.integration.default_mode,
+        )
+        if getattr(project, "hierarchical_integration_mode", None) in {"hierarchy", "train"}:
             # A queued source-CI repair whose source generation is already on
             # the project's default target would repeat delivered work, so it
             # is withheld from this claim.
@@ -939,8 +945,12 @@ class ClaimCommandsMixin:
                 # in the READY frontier. Observe this held generation directly
                 # and retain its existing claim fence when it is still usable.
                 from src.integration.admission import observe_admission
+
                 admission = await observe_admission(
-                    self.db, [task.id], self._development_integration()
+                    self.db,
+                    [task.id],
+                    self._development_integration(),
+                    default_mode=self.config.integration.default_mode,
                 )
             timing = current_claim_timing.get()
             if timing is not None:
@@ -1549,11 +1559,14 @@ class ClaimCommandsMixin:
             stage = "project_lookup"
             if project is _UNSET:
                 project = await self.db.get_project(task.project_id)
-            if (admission is None
-                    and getattr(project, "hierarchical_integration_mode", None) == "development"):
+            if admission is None:
                 from src.integration.admission import observe_admission
+
                 admission = await observe_admission(
-                    self.db, [task.id], self._development_integration()
+                    self.db,
+                    [task.id],
+                    self._development_integration(),
+                    default_mode=self.config.integration.default_mode,
                 )
             hierarchy_enabled = getattr(project, "hierarchical_integration_mode", "disabled") in {
                 "hierarchy",
@@ -1617,6 +1630,13 @@ class ClaimCommandsMixin:
 
                     stage = "verify_preparation"
                     await verify_preparation(origin, conn=conn)
+                if (
+                    admission is not None
+                    and admission.pr is not None
+                    and not await admission.pr.verify_workspace(task.id, slot.workspace_path)
+                ):
+                    stage = "admission_recheck"
+                    return None
                 stage = "activate_claim"
                 activation_args = dict(
                     epoch=epoch, now=time.time(), branch_name=prepared_branch,
@@ -1725,7 +1745,20 @@ class ClaimCommandsMixin:
                             ),
                         )
             else:
-                fresh = await prepare_and_activate()
+                stacked = (
+                    admission.pr.stacked_bases.get(task.id) if admission and admission.pr else None
+                )
+                if stacked:
+                    store, tip, branch = stacked
+                    await self.orchestrator.git._arun(
+                        ["fetch", "--no-tags", store, tip],
+                        cwd=slot.workspace_path,
+                    )
+                    fresh = await prepare_and_activate(
+                        base_branch=tip, target_branch=branch, preserve_branch=True,
+                    )
+                else:
+                    fresh = await prepare_and_activate()
         except IngestHeld:
             remove_claim_file_if_matches(row.work_dir, task.id, epoch)
             if hierarchy_attached and not await (
@@ -1953,7 +1986,9 @@ class ClaimCommandsMixin:
             return self._simple(ClaimResult.PREPARE_FAILED, failure.reason, row, cap)
         if not fresh:
             remove_claim_file_if_matches(row.work_dir, task.id, epoch)
-            if admission is not None:
+            if admission is not None and (
+                stage == "admission_recheck" or not await admission.matches()
+            ):
                 await self.db.release_claim(
                     session.id, task_status=TaskStatus.READY,
                     context="delivery_snapshot_changed", now=time.time(), result="prepare_failed",
