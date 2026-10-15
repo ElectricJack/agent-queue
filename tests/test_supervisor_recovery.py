@@ -665,6 +665,57 @@ async def test_hold_release_repairs_only_exact_stopped_assignment(env, guard):
         }
 
 
+@pytest.mark.parametrize("race", ["historical_release", "during_stop_probe"])
+async def test_old_hold_release_cannot_clear_successor_assignment_or_hold(env, race):
+    await env.db.create_agent(Agent(id="old", name="Old", profile_id="worker"))
+    await env.db.create_agent(Agent(id="new", name="New", profile_id="worker"))
+    await stopped_attempt(env, reason="claim_binding_stale", agent_id="old", lifecycle="pool")
+    await env.db.update_session("s", last_claim_epoch=0)
+    await env.db.queue_task_recovery_notifications()
+    old = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    held, scope = await supervisor_handoff_hold(env, old)
+    await env.db.transition_task(
+        "t", TaskStatus.READY, force=True, context="test", assigned_agent_id="old",
+    )
+    if race == "historical_release":
+        assert "error" not in await decide(
+            env, old, "release", operator_release=True, expected_hold_at=held["decided_at"],
+        )
+
+    async def successor_holds(_=None):
+        await env.db.update_task("t", claim_epoch=1)
+        await env.db.transition_task(
+            "t", TaskStatus.BLOCKED, force=True, context="test", assigned_agent_id="new",
+        )
+        await stopped_attempt(env, sid="successor", started=9000, reason="context_thrash",
+                              agent_id="new", lifecycle="pool")
+        await env.db.update_session("successor", last_claim_epoch=1)
+        await env.db.set_task_meta("t", "claimed_by_session", "successor")
+        await env.db.queue_task_recovery_notifications()
+        current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+        assert current["id"] != old["id"]
+        assert "error" not in await decide(env, current, "hold", _scope=scope)
+        return True
+
+    if race == "historical_release":
+        await successor_holds()
+    else:
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=successor_holds,
+        )
+    result = await decide(
+        env, old, "release", operator_release=True, expected_hold_at=held["decided_at"],
+    )
+    assert "error" in result, result
+    task = await env.db.get_task("t")
+    assert task.status is TaskStatus.BLOCKED
+    assert task.claim_epoch == 1 and task.assigned_agent_id == "new"
+    assert task.retry_count == 0
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert current["id"] != old["id"] and current["decision"] == "hold"
+    assert (await env.db.get_session("successor")).last_claim_epoch == 1
+
+
 @pytest.mark.parametrize("authority", ["global", "project", "stopped", "wrong_instance",
                                        "worker", "service"])
 async def test_operator_hold_release_requires_live_global_authority(env, authority):
