@@ -983,7 +983,27 @@ class ClaimCommandsMixin:
         untouched.  When the release is refused the ownership evidence is
         still load-bearing and must not be erased; drain instead, which
         stops the loop and leaves the stall visible on the task.
+
+        One terminal binding is not stale at all: this session's own accepted
+        close, still finishing its tail (writer handoff, record, release).  A
+        claim that reaches it -- typically an abandoned earlier request still
+        running server-side -- must leave it alone: releasing would free the
+        slot before the close's handoff, and a refused release flagged the
+        completed task and drained the session the close was about to hand
+        its next claim to (amber-flare-10).  The close releases the claim
+        itself, so the answer is "nothing yet".
         """
+        if task.status is not TaskStatus.IN_PROGRESS and await self.db.accepted_close_in_flight(
+            task.id, session_id=session.id, claim_epoch=task.claim_epoch
+        ):
+            logger.info(
+                "claim %s: held task %s is %s under this session's accepted close, "
+                "which is still finishing; leaving its claim to the close",
+                session.id, task.id, task.status.value,
+            )
+            out = self._simple(ClaimResult.NO_READY_WORK, "close_in_flight", row, cap)
+            out["task_id"] = task.id
+            return out
         logger.warning(
             "claim %s: held task %s is %s under agent %s, not IN_PROGRESS under %s; "
             "unwinding the stale binding",

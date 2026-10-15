@@ -3318,6 +3318,103 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_task("t1")).pr_url == pr_url
         real_orch._phase_integrate.assert_not_awaited()
 
+    async def test_train_leaf_root_close_does_not_wait_on_a_slow_pull_request(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """Regression for amber-flare-10: the root PR open gated the whole close.
+
+        It reads the project-wide delivery observation, which a busy project
+        held for minutes; the record and claim release waited behind it while
+        the caller timed out.  Past the bound the close finishes and the open
+        lands detached, once.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from sqlalchemy import update
+
+        from src.database.tables import repos
+        from src.git.manager import RemoteRefState
+        from src.orchestrator import execution
+
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        await db.update_project("p1", hierarchical_integration_mode="train")
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(repos).where(repos.c.id == "repo").values(
+                    url="https://github.com/o/r.git", default_branch="main"
+                )
+            )
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+        session = await db.get_session_for_task("t1")
+        head = "b" * 40
+        monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+        monkeypatch.setattr(execution, "CLOSE_PUBLICATION_TIMEOUT_SECONDS", 0.05)
+        record_completion = AsyncMock(return_value=head)
+        monkeypatch.setattr("src.integration.provenance.record_worker_completion", record_completion)
+
+        async def git_run(args, *, cwd):
+            if args == ["status", "--porcelain"]:
+                return ""
+            if args == ["rev-parse", "HEAD"]:
+                return head
+            raise AssertionError(f"unexpected producer Git command: {args!r}")
+
+        pr_url = "https://github.com/o/r/pull/9"
+        github = asyncio.Event()
+
+        async def slow_create_pr(*args, **kwargs):
+            await github.wait()
+            return pr_url
+
+        real_orch.git = SimpleNamespace(
+            avalidate_checkout=AsyncMock(return_value=True),
+            ahas_remote=AsyncMock(return_value=True),
+            aget_current_branch=AsyncMock(return_value="aq/t1"),
+            als_remote_ref=AsyncMock(
+                return_value=SimpleNamespace(state=RemoteRefState.PRESENT, oid=head)
+            ),
+            areserved_paths_in_diff=AsyncMock(return_value=[]),
+            afind_open_pr=AsyncMock(),
+            arev_parse=AsyncMock(return_value=head),
+            bind_github_repository=AsyncMock(return_value="binding"),
+            acommits_ahead_of_base=AsyncMock(return_value=1),
+            acreate_pr=AsyncMock(side_effect=slow_create_pr),
+            _arun=git_run,
+        )
+        close = await asyncio.wait_for(
+            real_handler.execute(
+                "task_close",
+                {
+                    "task_id": "t1",
+                    "session_id": session.id,
+                    "outcome": "pass",
+                    "work_outcome": "shipped",
+                    "summary": "leaf root complete",
+                },
+            ),
+            10,
+        )
+
+        assert close["success"] is True
+        assert close["status"] == "COMPLETED"
+        assert len(await db.get_task_completions("t1")) == 1
+        (detached,) = execution._DETACHED_CLOSE_PUBLICATIONS
+        assert (await db.get_task("t1")).pr_url is None
+
+        github.set()
+        assert (await asyncio.wait_for(detached, 10))["pr_url"] == pr_url
+        real_orch.git.acreate_pr.assert_awaited_once()
+        assert (await db.get_task("t1")).pr_url == pr_url
+        assert len(await db.get_task_completions("t1")) == 1
+
     async def test_train_leaf_root_close_survives_a_pull_request_failure(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):

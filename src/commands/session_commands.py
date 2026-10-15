@@ -61,6 +61,9 @@ VALID_WORK_OUTCOMES = ("shipped", "no-op", "blocked", "abandoned")
 #: landed; refusing that would make the protocol racy for no benefit.
 _CLOSEABLE = (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
 
+#: Strong references to ordinary closes running past a cancelled caller.
+_CLOSE_ATTEMPTS: set[asyncio.Future] = set()
+
 
 class SessionCommandsMixin:
     """Session command methods mixed into CommandHandler."""
@@ -1057,6 +1060,26 @@ class SessionCommandsMixin:
             }
         if dispositions:
             return await self._close_task_obsolete(args, dispositions[0])
+        # Once started, an ordinary close runs to its end whatever happens to
+        # its caller.  Its terminal transition can commit before the slow
+        # tail (record, writer handoff, claim release) runs, and an HTTP
+        # client that gives up already leaves the request running; a
+        # cancelled in-process caller (embedded MCP, a test harness) must
+        # not instead strand an accepted close half-finished, holding its
+        # claim until a daemon restart (amber-flare-10).  ``--claim-next``
+        # stays outside: a caller that is gone must not be handed a task.
+        attempt = asyncio.ensure_future(self._close_task_ordinary(args))
+        _CLOSE_ATTEMPTS.add(attempt)
+        attempt.add_done_callback(_CLOSE_ATTEMPTS.discard)
+        response = await asyncio.shield(attempt)
+        if response.get("success") and args.get("claim_next"):
+            response["next"] = await self._cmd_task_claim(
+                {"next": True, "wait": int(args.get("wait") or 0)}
+            )
+        return response
+
+    async def _close_task_ordinary(self, args: dict) -> dict:
+        """The body of ``task close`` without a disposition or ``--claim-next``."""
         task_id = args.get("task_id") or await self._scoped_held_task_id()
         if not task_id:
             return {
@@ -1863,10 +1886,6 @@ class SessionCommandsMixin:
         if claim_release_declined:
             response["claim_released"] = False
             response["needs_attention"] = "claim_release_declined"
-        if args.get("claim_next"):
-            response["next"] = await self._cmd_task_claim(
-                {"next": True, "wait": int(args.get("wait") or 0)}
-            )
         return response
 
     async def _cmd_task_heartbeat(self, args: dict) -> dict:
