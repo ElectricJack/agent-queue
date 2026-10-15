@@ -720,10 +720,18 @@ def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
     )
 
 
+# Built once: the claim frontier evaluates these predicates on every claim, and
+# a fresh alias copies every column of its table (see claim_queries).
+_CROSS_PREREQUISITE_EDGE = task_dependencies.alias("cross_prerequisite_edge")
+_CROSS_PREREQUISITE_SOURCE = tasks.alias("cross_prerequisite_source")
+_REFRESH_PENDING_PARENT = tasks.alias("refresh_pending_parent")
+_CONTAINMENT_PARENT = tasks.alias("containment_parent")
+
+
 def _cross_parent_prerequisites():
     """Completed cross-parent blocks edges, correlated to the dependent task."""
-    edge = task_dependencies.alias("cross_prerequisite_edge")
-    source = tasks.alias("cross_prerequisite_source")
+    edge = _CROSS_PREREQUISITE_EDGE
+    source = _CROSS_PREREQUISITE_SOURCE
     return source, select(literal_column("1")).select_from(
         edge.join(source, source.c.id == edge.c.depends_on_task_id),
     ).correlate(tasks).where(
@@ -760,7 +768,7 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
 
 def open_epic_refresh_batches():
     """Open refresh batch ids for this task's epic; ordinary collections are unrelated."""
-    parent = tasks.alias("refresh_pending_parent")
+    parent = _REFRESH_PENDING_PARENT
     return select(integration_batches.c.id).select_from(
         integration_batches.join(parent, parent.c.repo_id == integration_batches.c.repository_id),
     ).correlate(tasks).where(
@@ -781,7 +789,7 @@ def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
     withhold a child whose epic already contains every proven source.
     """
     _, cross_edge = _cross_parent_prerequisites()
-    parent = tasks.alias("containment_parent")
+    parent = _CONTAINMENT_PARENT
     has_epic = exists(select(literal_column("1")).where(
         parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
     ))

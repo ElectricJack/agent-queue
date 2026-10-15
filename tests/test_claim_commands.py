@@ -1494,9 +1494,6 @@ class TestClaim:
     async def test_failed_preparation_observation_refuses_stale_or_successor_claim(
         self, handler, db, tmp_path, changed, response_seconds, monkeypatch,
     ):
-        monkeypatch.setattr(
-            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
-        )
         await mktask(db, "t", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
         h = scoped(handler, sid)
@@ -1525,29 +1522,50 @@ class TestClaim:
         )
         assert (await db.get_session(sid)).failed_preparation is None
 
-    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["warm", "deferred"])
+    @pytest.mark.parametrize("response", ["settled", "deferred"])
     async def test_successful_retry_clears_failed_preparation_diagnostic(
-        self, handler, db, tmp_path, response_seconds, monkeypatch,
+        self, handler, db, tmp_path, response,
     ):
-        monkeypatch.setattr(
-            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
-        )
         await mktask(db, "t", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         reset.side_effect = RuntimeError("Bearer secret-token-value; password=secret-value")
         h = scoped(handler, sid)
-        failed = await settled_claim(h, {"next": True})
+
+        async def claim_attempt(epoch, previous_diagnostic=None):
+            if response == "settled":
+                return await settled_claim(h, {"next": True})
+            # Exercise both failure and successful retry beyond the response
+            # window without depending on runner load or arbitrary sleeps.
+            release, prepare = asyncio.Event(), h._prepare_and_activate
+
+            async def gated(*args, **kwargs):
+                await release.wait()
+                return await prepare(*args, **kwargs)
+
+            with patch.object(h, "_prepare_and_activate", gated), patch(
+                "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01,
+            ):
+                progress = await h._cmd_task_claim({"next": True})
+                assert progress["result"] == "claim_in_progress", progress
+                assert progress["task_id"] == "t" and progress["claim_epoch"] == epoch
+                assert progress["session"]["failed_preparation"] == previous_diagnostic
+                release.set()
+                return await settled_claim(h, {"next": True})
+
+        failed = await claim_attempt(1)
         assert failed["result"] == "prepare_failed", failed
         diagnostic = failed["session"]["failed_preparation"]
+        assert diagnostic == (await db.get_session(sid)).failed_preparation
         assert diagnostic["task_id"] == "t"
         assert diagnostic["origin"] is None and diagnostic["checkpoint"] is None
         assert "secret-token-value" not in json.dumps(diagnostic)
         assert "secret-value" not in json.dumps(diagnostic)
         await expire_claim_refusal(db, sid, "t")
         reset.side_effect = None
-        claimed = await settled_claim(h, {"next": True})
+        claimed = await claim_attempt(2, diagnostic)
         assert claimed["result"] == "claimed"
+        assert claimed["session"]["failed_preparation"] is None
         assert (await db.get_session(sid)).failed_preparation is None
 
     async def test_repeating_fenced_branch_drains_idle_worker_without_blocking_task(
