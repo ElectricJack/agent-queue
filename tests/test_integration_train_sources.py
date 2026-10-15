@@ -6710,6 +6710,153 @@ async def test_train_seal_now_command_preserves_red_pr_gate(world):
     assert await train.batches.current(MAIN) is None
 
 
+async def promotion_control_target(world, mode):
+    await promotion_flow(world, ("staging", "main"))
+    await world.db.update_project("p", hierarchical_integration_mode=mode)
+    for branch in ("dev", "staging"):
+        git(world.origin.clone, "push", "-q", "origin", f"main:refs/heads/{branch}")
+    return TrainTarget("p", "r", "refs/heads/dev",
+                       "development" if mode == "development" else "root")
+
+
+@pytest.mark.parametrize("mode", ["train", "development"])
+async def test_seal_now_selects_default_root_with_promotion_targets(world, mode):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.database.tables import task_metadata
+
+    target = await promotion_control_target(world, mode)
+    source = await completed(world, "a", parent_ref="dev")
+    # Another active project's genuine root must not affect this project's uniqueness.
+    await world.db.create_project(Project(id="foreign", name="Other project"))
+    await world.db.create_repo(RepoConfig(
+        id="foreign-r", project_id="foreign", source_type=RepoSourceType.CLONE,
+        url=world.origin.url))
+    await world.db.update_project("foreign", integration_repository_id="foreign-r",
+                                  hierarchical_integration_mode="train")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), target=target, settling=True)
+    targets = await train.targets.targets(time.time())
+    assert {(t.target_ref, t.kind) for t in targets if t.project_id == "p"} == {
+        (target.target_ref, target.kind), ("refs/heads/staging", "promotion"),
+        ("refs/heads/main", "promotion"),
+    }
+    assert any(t.project_id == "foreign" and t.kind == "root" for t in targets)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    before_refs = git(world.origin.url, "show-ref")
+    preview = await handler._cmd_integration_seal_now({"project_id": "p"})
+    assert preview["success"] and preview["outcome"] == "preview", preview
+    assert preview["target_ref"] == target.target_ref and preview["members"] == ["a"]
+    async with world.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).first()
+        assert not (await conn.execute(select(task_metadata))).first()
+    assert git(world.origin.url, "show-ref") == before_refs
+
+    sealed = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": False})
+    assert sealed["success"] and sealed["outcome"] == "sealed", sealed
+    assert sealed["target_ref"] == target.target_ref and sealed["members"] == ["a"]
+    batch = await train.batches.current(target)
+    store = BatchStore(world.db)
+    frozen = await store.members(batch.id)
+    assert (batch.project_id, batch.repository_id, batch.target_ref) == target.key
+    assert [(m.task_id, m.source_sha) for m in frozen] == [("a", source)]
+    assert git(world.origin.url, "show-ref") == before_refs
+
+    await completed(world, "later", parent_ref="dev")
+    await store.set_intent(batch.id, "paused")
+    paused = await store.get(batch.id)
+    before_refs = git(world.origin.url, "show-ref")
+    for dry_run in (True, False):
+        result = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": dry_run})
+        assert result["success"], result
+        assert result["outcome"] == ("preview" if dry_run else "existing_batch")
+        assert result["batch_id"] == batch.id and result["intent"] == "paused"
+        assert result["target_ref"] == target.target_ref and result["members"] == ["a"]
+        assert await store.get(batch.id) == paused
+        assert await store.members(batch.id) == frozen
+    assert git(world.origin.url, "show-ref") == before_refs
+    async with world.db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches.c.id))).scalars().all() == [batch.id]
+
+
+@pytest.mark.parametrize("mode", ["train", "development"])
+@pytest.mark.parametrize("change", ["task", "target"])
+async def test_seal_now_with_promotions_revalidates_before_freeze(world, monkeypatch, mode, change):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    target = await promotion_control_target(world, mode)
+    source = await completed(world, "a", parent_ref="dev")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), target=target, settling=True)
+    service = (await train.lane_for(target)).service
+    freeze = service.freeze
+
+    async def changed(*args, **kwargs):
+        if change == "task":
+            await world.db.update_task("a", status=TaskStatus.READY)
+        else:
+            git(world.origin.clone, "push", "-q", "origin", f"{source}:refs/heads/dev")
+        return await freeze(*args, **kwargs)
+
+    monkeypatch.setattr(service, "freeze", changed)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    preview = await handler._cmd_integration_seal_now({"project_id": "p"})
+    assert preview["success"] and preview["members"] == ["a"], preview
+    protected = {ref: git(world.origin.url, "rev-parse", ref) for ref in ("main", "staging")}
+    result = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": False})
+    assert not result["success"] and result["outcome"] == "refused", result
+    assert ("not currently eligible" if change == "task" else "moved while sealing") in result["error"]
+    assert await train.batches.current(target) is None
+    async with world.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).first()
+    assert {ref: git(world.origin.url, "rev-parse", ref) for ref in protected} == protected
+
+
+@pytest.mark.parametrize("condition,code", [
+    ("red", "pr_checks_red"), ("old_head", "awaiting_pr"),
+    ("review", "pr_review_missing"), ("completion", "missing_git_provenance"),
+])
+async def test_seal_now_with_promotions_preserves_admission(world, monkeypatch, condition, code):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    target = await promotion_control_target(world, "train")
+    train, github, _ = await hosted_train(world, settling=True)
+    source = await completed(world, "a", parent_ref="dev", done=condition != "completion")
+    if condition == "completion":
+        await close(world.db, "a", [])
+    else:
+        pull_request = github.pull_request
+
+        async def dev_pull_request(url):
+            pull = await pull_request(url)
+            pull["base"]["ref"] = "dev"
+            if condition == "old_head":
+                pull["head"]["sha"] = git(world.origin.url, "rev-parse", "dev")
+            return pull
+
+        monkeypatch.setattr(github, "pull_request", dev_pull_request)
+        if condition == "red":
+            github.pr_runs[source] = "failure"
+        elif condition == "review":
+            project = await world.db.get_project("p")
+            policy = project.hierarchical_integration_policy
+            policy["root"]["admission"] = "reviewed"
+            await world.db.update_project("p", hierarchical_integration_policy=policy)
+    handler = IntegrationCommandsMixin()
+    handler.db = world.db
+    handler.orchestrator = SimpleNamespace(integration_train=train)
+    before_refs = git(world.origin.url, "show-ref")
+    for dry_run in (True, False):
+        result = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": dry_run})
+        assert result["success"] and result["outcome"] == (
+            "preview" if dry_run else "no_ready_work"), result
+        assert result["target_ref"] == target.target_ref and result["members"] == []
+        assert code in {blocker["code"] for blocker in result["blockers"]}, result
+        assert await train.batches.current(target) is None
+    assert git(world.origin.url, "show-ref") == before_refs
+
+
 @pytest.mark.parametrize("operator_id", ["human:local-operator", "service:integration-train"])
 async def test_worker_cannot_set_ejection_marker_or_release_aborted_sources(world, operator_id):
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
@@ -7028,17 +7175,27 @@ async def test_train_eject_preview_admits_live_own_project_and_global_supervisor
     assert (await BatchStore(world.db).get(visit.batch_id)).intent == "open"
 
 
-async def test_train_seal_now_with_only_epic_targets_refuses(world):
+@pytest.mark.parametrize("root_kinds", [(), ("root", "root"), ("root", "development")])
+async def test_train_seal_now_without_unique_default_root_refuses(world, root_kinds):
     from src.commands.integration_commands import IntegrationCommandsMixin
 
     targets = SimpleNamespace(targets=AsyncMock(return_value=[
-        TrainTarget("p", "r", "refs/heads/aq/epic", "epic")]))
+        TrainTarget("p", "r", "refs/heads/aq/epic", "epic"),
+        TrainTarget("p", "r", "refs/heads/staging", "promotion"),
+        TrainTarget("p", "r", "refs/heads/main", "promotion"),
+        TrainTarget("foreign", "foreign-r", "refs/heads/dev", "root"),
+        *(TrainTarget("p", f"r-{i}", "refs/heads/dev", kind)
+          for i, kind in enumerate(root_kinds)),
+    ]))
     handler = IntegrationCommandsMixin()
     handler.db = world.db
-    handler.orchestrator = SimpleNamespace(integration_train=SimpleNamespace(targets=targets))
+    lane_for = AsyncMock()
+    handler.orchestrator = SimpleNamespace(integration_train=SimpleNamespace(
+        targets=targets, lane_for=lane_for))
     for dry_run in (True, False):
         result = await handler._cmd_integration_seal_now({"project_id": "p", "dry_run": dry_run})
         assert result["outcome"] == "refused" and "root train target" in result["error"]
+    lane_for.assert_not_awaited()
 
 async def local_ci_policy(world, *, source="local", overrides=None):
     """Valid fixture policy; never change an operator project's policy."""
