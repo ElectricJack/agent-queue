@@ -762,6 +762,18 @@ class TaskProgressResponse(TaskDisplayFields):
     depth: int
 
 
+class TaskSplitResponse(BaseModel):
+    success: bool
+    task_id: str | None = None
+    moved_task_id: str | None = None
+    generation: int | None = None
+    impact: dict[str, Any] | None = None
+    code: str | None = None
+    error: str | None = None
+    owner: dict[str, Any] | None = None
+    safe_continuation: str | None = None
+
+
 class ReparentTaskResponse(BaseModel):
     success: bool
     task_id: str
@@ -1401,6 +1413,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_children": TaskChildrenResponse,
     "task_progress": TaskProgressResponse,
     "reparent_task": ReparentTaskResponse,
+    "task_split": TaskSplitResponse,
     "get_chain_health": GetChainHealthResponse,
     "list_active_tasks_all_projects": ListActiveTasksAllProjectsResponse,
     "task_recent_activity": TaskRecentActivityResponse,

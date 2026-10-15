@@ -1905,6 +1905,12 @@ from .task_show_response_display_state_type_0 import TaskShowResponseDisplayStat
 from .task_show_response_parent_type_0 import TaskShowResponseParentType0
 from .task_show_response_provenance_item import TaskShowResponseProvenanceItem
 from .task_show_response_route_type_0 import TaskShowResponseRouteType0
+from .task_split_request import TaskSplitRequest
+from .task_split_request_moved import TaskSplitRequestMoved
+from .task_split_response import TaskSplitResponse
+from .task_split_response_422 import TaskSplitResponse422
+from .task_split_response_impact_type_0 import TaskSplitResponseImpactType0
+from .task_split_response_owner_type_0 import TaskSplitResponseOwnerType0
 from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
@@ -3918,6 +3924,12 @@ __all__ = (
     "TaskShowResponseParentType0",
     "TaskShowResponseProvenanceItem",
     "TaskShowResponseRouteType0",
+    "TaskSplitRequest",
+    "TaskSplitRequestMoved",
+    "TaskSplitResponse",
+    "TaskSplitResponse422",
+    "TaskSplitResponseImpactType0",
+    "TaskSplitResponseOwnerType0",
     "TaskStatusSummary",
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",
