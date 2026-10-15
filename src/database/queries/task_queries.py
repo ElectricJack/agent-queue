@@ -1849,15 +1849,21 @@ class TaskQueryMixin:
         """Register the post-commit callback for ready-frontier entries (spec §9)."""
         self._ready_listener = cb
 
-    async def _notify_ready(self, entries: list[tuple[str, str]]) -> None:
+    async def _notify_ready(
+        self, entries: list[tuple[str, str]], *, frontier_checked: bool = False,
+    ) -> None:
         """Fire the ready listener, if any, with the ``(task_id, reason)`` pairs.
 
         Called from :meth:`transition_task` below, and also directly by
         ``DependencyQueryMixin`` (``add_dependency``, ``remove_dependency``)
         and ``GateQueryMixin.resolve_gate``, which reach the frontier without
         going through :meth:`_apply_transition`.
+
+        ``frontier_checked`` is for entries returned by
+        :meth:`_note_frontier_entry` in the caller's write transaction. Reuse
+        that hold check instead of opening another connection to repeat it.
         """
-        if entries and self._ready_listener is not None:
+        if entries and self._ready_listener is not None and not frontier_checked:
             # Callers outside ``_note_frontier_entry`` pass computed ids; an
             # ingestion batch member never emits ``task.ready`` (design §4).
             held = await self.ingest_held_task_ids({task_id for task_id, _ in entries})

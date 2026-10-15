@@ -329,6 +329,32 @@ async def test_recovery_hold_frontier_demand_diagnostics_and_claim_agree(
         assert (await db.get_task("held")).claim_epoch == 0
 
 
+@pytest.mark.parametrize("held", [False, True])
+async def test_release_notifies_only_unheld_frontier_entries(handler, db, tmp_path, held):
+    """Release reuses the transactional hold check and still wakes ready workers."""
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
+    if held:
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "t1")
+                               .values(held_batch_id="batch-held"))
+    listener = AsyncMock()
+    db.set_ready_listener(listener)
+
+    await db.release_claim(
+        sid, task_status=TaskStatus.READY, context="session_release", now=time.time(),
+    )
+
+    assert (await db.get_task("t1")).status == TaskStatus.READY
+    assert (await db.get_session(sid)).task_id is None
+    if held:
+        listener.assert_not_awaited()
+        assert await db.ingest_held_task_ids({"t1"}) == {"t1"}
+    else:
+        listener.assert_awaited_once_with([("t1", "released")])
+
+
 async def test_held_member_not_claimable(handler, db, tmp_path):
     """Status, routing and priority cannot override an ingestion batch hold."""
     from src.scheduler import PoolKey
