@@ -839,11 +839,12 @@ class GitOpsMixin:
 
         if not ctx.workspace_path or not await self._task_uses_git(ctx):
             return False
+        # A clean checkout has nothing to preserve; check it before any task lookup.
+        if await self.git.ahas_uncommitted_changes(ctx.workspace_path, strict=True) is not True:
+            return False
         items = await resolve_task_deliverables(self.db, ctx.task)
         review_only = bool(items) and all(item["kind"] == "review" for item in items)
         if not review_only and not await self._task_produces_no_code(ctx):
-            return False
-        if await self.git.ahas_uncommitted_changes(ctx.workspace_path, strict=True) is not True:
             return False
         message = (
             "Document-only/no-code task has uncommitted source-checkout files. "

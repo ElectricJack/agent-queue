@@ -1542,7 +1542,7 @@ class TestNoCodeTasksSkipThePrGate:
             {"id": "doc", "kind": "review", "target": "spec"},
             {"id": "code", "kind": "file", "target": "src/fix.py"},
         ])
-        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False, False])
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, True, False, False])
         sweep = AsyncMock(return_value=False)
         monkeypatch.setattr(orch, "_auto_remediate_uncommitted", sweep)
 
