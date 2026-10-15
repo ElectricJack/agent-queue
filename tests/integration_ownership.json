@@ -15509,6 +15509,7 @@
     }
   },
   "generic_dependencies": {
+    "src/database/queries/ingest_hold.py::not_ingest_held": "Generic ingestion admission predicate over tasks.held_batch_id, shared by claim demand and execution admission. It performs no integration delivery, publication or lifecycle mutation.",
     "src/agent_waits.py::AgentWaitReconciler": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/agents/configuration.py::apply_agent_overrides": "Generic dependency; integration-specific definitions in this file are charged independently.",
     "src/agents/configuration.py::ensure_supervisor_agent": "Generic dependency; integration-specific definitions in this file are charged independently.",
