@@ -4156,6 +4156,9 @@ class TestTaskShowClaimedBy:
 
 @pytest.mark.parametrize("cancel", [False, "request", "preparation"])
 async def test_prepare_timeout_waits_for_live_reset(handler, db, config, tmp_path, cancel, monkeypatch):
+    # This test cancels a live request explicitly. Keep its normal short HTTP
+    # response timeout from expiring during the intervening database checks.
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", float("inf"))
     await mktask(db, "t1", profile_id="worker")
     sid, _ = await pool_session(db, tmp_path)
     started, finish = asyncio.Event(), asyncio.Event()

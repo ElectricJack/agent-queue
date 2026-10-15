@@ -69,6 +69,9 @@ async def api(env, monkeypatch):
             task_id=None, project_id=project_id, elevated=elevated,
         )
     monkeypatch.setattr(dependencies, "_token_store", store)
+    # The live orchestrator takes precedence over the handler snapshot. Other
+    # app tests may leave one wired to an engine from their now-closed loop.
+    monkeypatch.setattr(dependencies, "_orchestrator", None)
     monkeypatch.setattr(dependencies, "_command_handler", handler)
     monkeypatch.setattr(dependencies, "_require_session_token", False)
     app = FastAPI()
