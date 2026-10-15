@@ -528,6 +528,27 @@ async def _check_continuous_promotion_lag(ctx: DoctorContext) -> CheckResult:
         data=report)
 
 
+async def _check_ci_producer(ctx: DoctorContext) -> CheckResult:
+    from src.integration.models import invalid_policy_producers
+
+    check_id = "integration.ci_producer"
+    if ctx.db is None:
+        return _unavailable(check_id)
+    invalid = [
+        {"project_id": project.id, **entry}
+        for project in await ctx.db.list_projects()
+        for entry in invalid_policy_producers(project.hierarchical_integration_policy)
+    ]
+    return CheckResult(
+        check_id, Severity.ERROR if invalid else Severity.OK,
+        "; ".join(f"{entry['project_id']}: {entry['field']}={entry['producer_id']!r} "
+                  "must be a positive decimal GitHub App ID (GitHub Actions: 15368); "
+                  "update with `aq project set <id> integration-policy`" for entry in invalid)
+        or "every configured CI producer is a numeric GitHub App ID",
+        data={"invalid": invalid},
+    )
+
+
 async def _check_ci_source(ctx: DoctorContext) -> CheckResult:
     """Name the runner producing each project's required checks, per target kind.
 
@@ -724,6 +745,7 @@ def integration_checks() -> list[DoctorCheck]:
             ("promotion_stranded", _check_promotion_stranded, 30.0, None),
             ("train_batches_stalled", _check_train_batches_stalled, 30.0, None),
             ("ci_source", _check_ci_source, 30.0, None),
+            ("ci_producer", _check_ci_producer, 30.0, None),
         )
     ]
 

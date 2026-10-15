@@ -318,6 +318,37 @@ def test_app_mode_check_is_registered():
 # ---------------------------------------------------------------------------
 
 
+async def test_ci_producer_reports_stored_slugs_on_both_boundaries(reuse_database):
+    from src.doctor.integration_checks import _BY_ID
+
+    check = _BY_ID["integration.ci_producer"]
+    assert check.id in {item.id for item in default_registry().checks()}
+    assert (await check.run(DoctorContext(config=SimpleNamespace()))).severity == Severity.INFO
+    db = await reuse_database("doctor-ci-producer")
+    for project_id, policy in {
+        "unconfigured": None,
+        "numeric": {"root": {"required_checks": {"producer_id": "15368"}}},
+        "broken": {"parent": {"required_checks": {"producer_id": "github-actions"}},
+                   "root": {"required_checks": {"producer_id": 15368}}},
+    }.items():
+        await db.create_project(Project(id=project_id, name=project_id,
+                                        hierarchical_integration_policy=policy))
+    ctx = DoctorContext(config=SimpleNamespace(), db=db)
+    result = await check.run(ctx)
+    assert result.severity == Severity.ERROR
+    assert result.fixable is False
+    assert result.data["invalid"] == [
+        {"project_id": "broken", "field": "parent.required_checks.producer_id",
+         "producer_id": "github-actions"},
+        {"project_id": "broken", "field": "root.required_checks.producer_id",
+         "producer_id": 15368},
+    ]
+    assert "GitHub Actions: 15368" in result.detail
+    assert "integration-policy" in result.detail
+    await db.update_project("broken", hierarchical_integration_policy=None)
+    assert (await check.run(ctx)).severity == Severity.OK
+
+
 async def test_ci_source_check_names_local_runners_and_invalid_blocks(reuse_database):
     from sqlalchemy import update
 
