@@ -2077,6 +2077,9 @@ async def test_retained_recovery_clean_fsck_closes_failed_incident_without_attem
 
     db, service, _source, _remote, repo = setup
     recovery_handler(setup, tmp_path)
+    # This scenario injects an fsck diagnostic without changing any object body;
+    # expire clean verification so the injected failure is actually observed.
+    monkeypatch.setattr('src.git.manager._RETAINED_VERIFY_TTL_SECONDS', 0.0)
     store = await service.store(repo)
     normal_run = service.git.arun_git_result
 
