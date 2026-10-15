@@ -1394,6 +1394,21 @@ class ClaimQueryMixin:
                 if expected_task_status is not None and out.row is None:
                     return out
                 epoch = (out.row or {}).get("claim_epoch")
+                if out.row is None and task_status is TaskStatus.READY and agent_id:
+                    # A status projection may have requeued this task before
+                    # teardown. The transition above then matches nothing,
+                    # but dropping the session must not strand its assignment.
+                    # Only this exact claim can be cleared; a successor stays held.
+                    epoch = (await conn.execute(
+                        update(tasks).where(
+                            tasks.c.id == task_id,
+                            tasks.c.status == TaskStatus.READY.value,
+                            tasks.c.assigned_agent_id == agent_id,
+                            tasks.c.claim_epoch == row["last_claim_epoch"],
+                        ).values(assigned_agent_id=None).returning(tasks.c.claim_epoch)
+                    )).scalar_one_or_none()
+                    if epoch is not None:
+                        out.ready.append((task_id, context))
                 if needs_attention:
                     await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
                 if out.row is not None:
