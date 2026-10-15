@@ -5769,8 +5769,19 @@ class TaskCommandsMixin:
             blockers = await self.db.get_blocking_dependencies(str(task_id))
         except Exception:
             blockers = []
+        delivery_targets = [b[0] for b in blockers if b[3] == DepType.DELIVERY_OF.value]
+        try:
+            delivery_failures = await self.db.delivery_failures(delivery_targets)
+        except Exception:
+            delivery_failures = {}
         for dep_id, dep_title, dep_status, dep_type, dep_project in blockers:
-            if dep_project and dep_project != task.project_id:
+            if dep_type == DepType.DELIVERY_OF.value:
+                # Unknown delivery (no receipt yet) and failed delivery both
+                # hold the root; a failure names its reason.
+                detail = f"waiting_for: delivery-of {dep_id}"
+                if dep_id in delivery_failures:
+                    detail += f" (delivery failed: {delivery_failures[dep_id]})"
+            elif dep_project and dep_project != task.project_id:
                 detail = (
                     f"blocked by {dep_type} dep '{dep_id}' ({dep_title}) "
                     f"status={dep_status} in project '{dep_project}'"
