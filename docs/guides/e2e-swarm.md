@@ -561,9 +561,13 @@ launch, and a canary nobody works holds that provider's launches for
 ### Readiness is not liveness
 
 `GET /api/health` is a static stub: it answers `{"status": "ok"}` as soon as
-uvicorn is listening and never touches the database. `GET /ready` runs the
-daemon's own health provider, so its `checks.database` entry is a real query
-through the engine the daemon is using.
+uvicorn is listening and never touches the database. `GET /ready` reads the
+daemon's background health snapshot, whose `checks.database` entry comes from a
+query through the engine the daemon is using. The kit requires overall readiness
+and a successful database check. A stale or unavailable snapshot cannot pass.
+Reusing a daemon and the final smoke preflight wait up to 15 seconds for an
+initializing, stale or timed-out snapshot to recover. An expired wait refuses
+scenarios and reports the snapshot state; a real database error fails immediately.
 
 The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
