@@ -3479,8 +3479,9 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:46efb5bf20f09e7ecc12aa3fc43d532791f2248ab907d7338d03b5d8e97c7f07",
+      "digest": "sha256:a9f8a5143c7ab0afd471ec1a3b8246a5ce0ebbf7c8fb304c5636d3ddfabde4c3",
       "imports": [
+        "src.api.auth",
         "src.api.models.session",
         "src.api.models.task",
         "src.claim_file",

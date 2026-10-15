@@ -3902,6 +3902,106 @@ class TestStaleClaimBinding:
         # The claim file is the handoff's evidence: it stays put.
         assert (wd / ".aq" / "claim.json").exists()
 
+    async def test_vetoed_unwind_reclassifies_the_held_recovery_incident(
+        self, handler, db, tmp_path
+    ):
+        """A real owner veto re-diagnoses the stopped writer; its hold survives.
+
+        The retained writer's attempt stopped as ``context_thrash`` and the
+        supervisor held it.  The refused unwind then records
+        ``claim_binding_stale`` on that SAME attempt: the scan must keep one
+        incident, its hold, provenance and budget, and send nothing new.
+        """
+        from dataclasses import asdict
+
+        from src.api.auth import RequestScope
+        from src.database.tables import messages
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        claimed = await settled_claim(h, {"next": True})
+        assert claimed["result"] == "claimed", claimed
+        now = time.time()
+        assert await db.finish_task_session_attempt(
+            sid, task_id="t1", ended_at=now, end_reason="context_thrash",
+        ) == 1
+        await db.transition_task(
+            "t1", TaskStatus.BLOCKED, context="test", force=True, assigned_agent_id=None
+        )
+        await db.set_task_meta("t1", "needs_attention", "context_thrash")
+        async with db.immediate() as conn:
+            await conn.execute(integration_branch_owners.insert().values(
+                id="retained-writer", repository_id="repo", ref="refs/heads/aq/t1",
+                owner_id="t1", owner_role="writer", fence_token=1,
+                handoff_state="attached", session_id=sid, workspace_id="ws-agent-1",
+                created_at=now, updated_at=now,
+            ))
+        await db.queue_task_recovery_notifications()
+        current = await db.get_task_meta("t1", "supervisor_recovery_incident")
+        assert current["reason"] == "context_thrash" and current["retry_allowed"] is False
+
+        await db.create_profile(AgentProfile(id="supervisor", name="Supervisor"))
+        await db.create_session(SessionRecord(
+            id="supervisor", project_id=PROJECT_ID, profile_id="supervisor",
+            harness="fake", provider="fake", name=f"n-supervisor--{PROJECT_ID}",
+            lifecycle="named", state="running", desired_state="running", epoch="e",
+            instance_token="supervisor", work_dir="/never-used", started_at=now,
+        ))
+        scope = asdict(RequestScope(
+            kind="session", session_id="supervisor", project_id=PROJECT_ID, elevated=True,
+        ))
+        hold = await handler.execute("task_recover", {
+            "task_id": "t1", "incident_id": current["id"], "decision": "hold",
+            "reason": "Owner still attached; keep the writer's work for review.",
+            "_scope": scope,
+        })
+        assert "error" not in hold, hold
+        held = await db.get_task_meta("t1", "supervisor_recovery_incident")
+        before = await db.get_task("t1")
+
+        scoped(handler, sid)
+        for _ in range(2):  # The refused unwind and its repeat.
+            res = await settled_claim(h, {"next": True})
+            assert res["result"] == "drain_requested", res
+        assert await db.get_task_meta("t1", "needs_attention") == "claim_binding_stale"
+        assert (await db.get_session(sid)).desired_state == "stopped"
+        assert (wd / ".aq" / "claim.json").exists()
+
+        await asyncio.gather(
+            db.queue_task_recovery_notifications(), db.queue_task_recovery_notifications(),
+        )
+        replay = await handler.execute(
+            "task_recovery_notify", {"task_id": "t1", "project_id": PROJECT_ID},
+        )
+        assert replay["incident_id"] == current["id"], replay
+        await db.queue_task_recovery_notifications()
+
+        after = await db.get_task_meta("t1", "supervisor_recovery_incident")
+        for key in ("id", "decision", "decision_reason", "decided_at", "decided_by",
+                    "decision_history", "attempt_id", "supervisor_recoveries"):
+            assert after.get(key) == held.get(key), key
+        assert (after["reason"], after["identity_reason"]) == (
+            "claim_binding_stale", "context_thrash",
+        )
+        assert len(after["reason_history"]) == 1
+        assert after["retry_allowed"] is False
+        assert await db.get_task_meta("t1", "supervisor_recovery_attempts") is None
+        task = await db.get_task("t1")
+        assert task.status == TaskStatus.BLOCKED
+        assert task.retry_count == before.retry_count
+        assert await db.count_ready_by_profile(PROJECT_ID) == {}
+        async with db._engine.connect() as conn:
+            notices = (await conn.execute(select(messages.c.id).where(
+                messages.c.body_kind == "task_recovery",
+            ))).scalars().all()
+        assert notices == ["msg-" + current["id"]]
+        comments = (await db.list_task_comments("t1"))["comments"]
+        assert sum("reclassified" in comment["body"] for comment in comments) == 1
+        async with db._engine.connect() as conn:
+            owner = (await conn.execute(select(integration_branch_owners))).mappings().one()
+        assert (owner["handoff_state"], owner["session_id"]) == ("attached", sid)
+
     async def test_a_reclaim_between_observation_and_release_is_left_alone(
         self, handler, db, tmp_path
     ):
