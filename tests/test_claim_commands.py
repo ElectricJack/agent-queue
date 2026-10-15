@@ -3809,6 +3809,46 @@ class TestStaleClaimBinding:
         )
         assert (await db.get_session(sid)).task_id == tid
 
+    @pytest.mark.parametrize("changed", ["none", "epoch", "agent", "owner"])
+    async def test_release_clears_only_its_own_already_ready_assignment(
+        self, handler, db, tmp_path, changed,
+    ):
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        first = await settled_claim(scoped(handler, sid), {"next": True})
+        if changed == "agent":
+            await pool_session(db, tmp_path, sid="s2", agent_id="agent-2")
+        await db.transition_task(
+            "t1", TaskStatus.READY, context="test", force=True,
+            assigned_agent_id="agent-2" if changed == "agent" else "agent-1",
+        )
+        if changed == "epoch":
+            await db.update_task("t1", claim_epoch=first["claim_epoch"] + 1)
+        elif changed == "owner":
+            async with db.immediate() as conn:
+                await conn.execute(integration_branch_owners.insert().values(
+                    id="owner", repository_id="repo", ref="aq/t1", owner_id="t1",
+                    owner_role="worker", handoff_state="handoff_pending", session_id=sid,
+                    workspace_id="ws-agent-1", fence_token=1, created_at=NOW, updated_at=NOW,
+                ))
+        before = await db.get_task("t1")
+
+        released = await db.release_claim(
+            sid, task_status=TaskStatus.READY, context="claim_binding_stale", now=time.time(),
+        )
+
+        assert released.released is (changed != "owner")
+        after = await db.get_task("t1")
+        assert after.status is TaskStatus.READY
+        assert after.claim_epoch == before.claim_epoch
+        assert after.retry_count == before.retry_count
+        assert after.assigned_agent_id == (None if changed == "none" else before.assigned_agent_id)
+        assert (await db.get_session(sid)).task_id == ("t1" if changed == "owner" else None)
+        if changed == "none":
+            assert "already_assigned" not in {
+                item["code"] for item in await db.claim_frontier_exclusions("t1")
+            }
+
     async def test_stale_binding_is_released_and_the_task_reclaimed(
         self, handler, db, tmp_path
     ):

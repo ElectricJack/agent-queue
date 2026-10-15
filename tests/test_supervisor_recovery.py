@@ -78,7 +78,8 @@ async def incident(env, sid="s", started=200, reason="stuck_timeout"):
     return await env.db.get_task_meta("t", "supervisor_recovery_incident")
 
 
-async def stopped_attempt(env, sid="s", started=200, reason="stuck_timeout", attention=True):
+async def stopped_attempt(env, sid="s", started=200, reason="stuck_timeout", attention=True,
+                          agent_id=None, lifecycle="task"):
     await env.db.create_session(
         SessionRecord(
             id=sid,
@@ -88,7 +89,8 @@ async def stopped_attempt(env, sid="s", started=200, reason="stuck_timeout", att
             harness="fake",
             provider="fake",
             name=sid,
-            lifecycle="task",
+            lifecycle=lifecycle,
+            agent_id=agent_id,
             state="running",
             desired_state="running",
             epoch="test",
@@ -600,6 +602,67 @@ async def test_release_only_preserves_task_and_other_guards(env, status):
     }
     assert "error" in await decide(env, current, "release", operator_release=True,
                                    expected_hold_at=held["decided_at"])
+
+
+@pytest.mark.parametrize("guard", [None, "provider_live", "live_session", "epoch", "instance",
+                                   "branch_owner", "operation", "lost_epoch", "wrong_holder"])
+async def test_hold_release_repairs_only_exact_stopped_assignment(env, guard):
+    await env.db.create_agent(Agent(id="old", name="Old", profile_id="worker"))
+    await stopped_attempt(env, reason="claim_binding_stale", agent_id="old", lifecycle="pool")
+    await env.db.update_session("s", last_claim_epoch=0)
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    held, _ = await supervisor_handoff_hold(env, current)
+    await env.db.transition_task(
+        "t", TaskStatus.READY, force=True, context="test", assigned_agent_id="old",
+    )
+    if guard == "provider_live":
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=AsyncMock(return_value=False)
+        )
+    elif guard == "live_session":
+        await env.db.create_session(SessionRecord(
+            id="other-worker", project_id="p", profile_id="worker", harness="fake",
+            provider="fake", name="other-worker", lifecycle="pool", state="sleeping",
+            desired_state="sleeping", agent_id="old", epoch="test", instance_token="other",
+            work_dir="/never-used", started_at=9000,
+        ))
+    elif guard == "epoch":
+        await env.db.update_task("t", claim_epoch=1)
+    elif guard == "instance":
+        async def replaced_during_probe(_):
+            await env.db.update_session("s", instance_token="replacement")
+            return True
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=replaced_during_probe
+        )
+    elif guard == "branch_owner":
+        async with env.db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="owner", repository_id="r", ref="aq/keep", owner_id="t",
+                owner_role="worker", handoff_state="handoff_pending", session_id="s",
+                fence_token=2, created_at=1, updated_at=8000,
+            ))
+    elif guard == "operation":
+        await bind_train_repair(env)
+    elif guard in {"lost_epoch", "wrong_holder"}:
+        await env.db.update_session("s", last_claim_epoch=None, task_id=None, claim_phase=None)
+        await env.db.set_task_meta("t", "claimed_by_session",
+                                   "s" if guard == "lost_epoch" else "someone-else")
+    before = await env.db.get_task("t")
+    result = await decide(env, current, "release", operator_release=True,
+                          expected_hold_at=held["decided_at"])
+    accepted = guard in (None, "branch_owner", "operation", "lost_epoch")
+    assert ("error" not in result) is accepted, result
+    after = await env.db.get_task("t")
+    cleared = guard in (None, "lost_epoch")
+    assert asdict(after) == {**asdict(before), "assigned_agent_id": None if cleared else "old"}
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert recorded["decision"] == ("release" if accepted else "hold")
+    if cleared:
+        assert "already_assigned" not in {
+            item["code"] for item in await env.db.claim_frontier_exclusions("t")
+        }
 
 
 @pytest.mark.parametrize("authority", ["global", "project", "stopped", "wrong_instance",
