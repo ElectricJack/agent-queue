@@ -1365,16 +1365,20 @@ class TestClaim:
         assert (await db.get_workspace("ws-agent-1")).enabled
         handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
 
+    @pytest.mark.parametrize("deferred", [False, True])
     @pytest.mark.parametrize("changed", [
         "instance", "epoch", "task", "active", "released", "preparation", "task_creation",
     ])
     async def test_failed_preparation_observation_refuses_stale_or_successor_claim(
-        self, handler, db, tmp_path, changed,
+        self, handler, db, tmp_path, changed, deferred, monkeypatch,
     ):
+        if deferred:
+            # Force the valid intermediate HTTP response without a wall-clock race.
+            monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0)
         await mktask(db, "t", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
         h = scoped(handler, sid)
-        claimed = await h._cmd_task_claim({"next": True})
+        claimed = await settled_claim(h, {"next": True})
         assert claimed["result"] == "claimed"
         await db.update_session(sid, claim_phase="preparing")
         observed = await db.get_session(sid)
