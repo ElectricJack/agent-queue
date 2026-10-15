@@ -671,18 +671,21 @@ async def settled_claim(handler, args):
     Real Git tests assert final ownership or recovery. A no-wait HTTP response
     may arrive before checkout finishes; it must not end the test's fixture.
     Tests that control a preparation barrier must call _cmd_task_claim directly
-    so they can inspect progress before releasing that barrier.
+    so they can inspect progress before releasing that barrier. A follow-up
+    that retries a moved target starts a new generation, which is settled too.
     """
     result = await handler._cmd_task_claim(args)
-    if result.get("result") != "claim_in_progress":
-        return result
-    scope = handler._current_scope or {}
-    key = (scope.get("session_id") or args.get("session_id"),
-           result["task_id"], result["claim_epoch"])
-    preparation = handler.orchestrator.claim_preparations.get(key)
-    if preparation is not None:
-        await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
-    return await handler._cmd_task_claim(args)
+    for _ in range(3):
+        if result.get("result") != "claim_in_progress":
+            return result
+        scope = handler._current_scope or {}
+        key = (scope.get("session_id") or args.get("session_id"),
+               result["task_id"], result["claim_epoch"])
+        preparation = handler.orchestrator.claim_preparations.get(key)
+        if preparation is not None:
+            await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+        result = await handler._cmd_task_claim(args)
+    return result
 
 
 class _CheckpointGit:
@@ -5351,9 +5354,21 @@ async def test_development_preparation_invalidates_old_admission(
     assert not (work_dir / ".aq" / "claim.json").exists()
 
 
+@pytest.mark.parametrize("wait", [None, 10], ids=["no_wait", "wait"])
+@pytest.mark.parametrize("response_seconds", [None, 0.0], ids=["in_window", "outlived"])
 async def test_development_moving_target_retries_and_claims_new_snapshot(
-    handler, db, tmp_path, development_admission
+    handler, db, tmp_path, development_admission, monkeypatch, response_seconds, wait
 ):
+    """The retry from new inputs must not depend on the response window.
+
+    ``outlived`` is the slow-runner order: the moved preparation settles after
+    the request answered ``claim_in_progress``, so the follow-up claim (or the
+    waiting request) retries instead of reporting ``no_ready_work``.
+    """
+    if response_seconds is not None:
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds
+        )
     env = development_admission
     env.git(env.source, "push", "origin", "prerequisite:main")
     sid, _ = await pool_session(db, tmp_path)
@@ -5372,8 +5387,9 @@ async def test_development_moving_target_retries_and_claims_new_snapshot(
     handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
         side_effect=reset
     )
-    result = await settled_claim(scoped(handler, sid), {"next": True})
-    assert result["result"] == "claimed"
+    args = {"next": True} if wait is None else {"next": True, "wait": wait}
+    result = await settled_claim(scoped(handler, sid), args)
+    assert result["result"] == "claimed", result
     assert resets == 2
     assert (await db.get_session(sid)).claims == 1
 
