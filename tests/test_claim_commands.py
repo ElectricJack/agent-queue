@@ -3075,13 +3075,26 @@ class TestClaim:
         await mktask(db, "t1", profile_id="worker")
         sid, _wd = await pool_session(db, tmp_path)
 
+        finish = asyncio.Event()
+
         async def replaced_then_timeout(*args, **kwargs):
+            await finish.wait()
             await db.update_session(sid, instance_token="replacement")
             raise TimeoutError()
 
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         reset.side_effect = replaced_then_timeout
-        result = await settled_claim(scoped(handler, sid), {"next": True})
+        h = scoped(handler, sid)
+        with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
+            progress = await h._cmd_task_claim({"next": True})
+        assert progress["result"] == "claim_in_progress", progress
+        preparation = handler.orchestrator.claim_preparations[
+            (sid, "t1", progress["claim_epoch"])
+        ]
+        finish.set()
+        # Observe the original job. A follow-up poll belongs to the replacement
+        # launch and must not replay this preparation's failure.
+        result = await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
         assert result["result"] == "prepare_failed"
         assert result["reason"].startswith("slot_reset: TimeoutError (no message)")
         session = await db.get_session(sid)
@@ -3090,6 +3103,9 @@ class TestClaim:
         record = await db.get_task_meta("t1", "prepare_failure")
         # The record names the instance that failed, not the replacement.
         assert (record["reason"], record["instance_token"]) == (result["reason"], "t")
+        cached = handler.orchestrator.claim_preparation_results[sid]
+        assert await h._take_completed_preparation(session) is None
+        assert handler.orchestrator.claim_preparation_results[sid] is cached
 
     async def test_claim_file_write_failure_releases_and_reports(
         self, handler, db, tmp_path, monkeypatch
