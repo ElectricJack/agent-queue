@@ -329,6 +329,125 @@ async def test_recovery_hold_frontier_demand_diagnostics_and_claim_agree(
         assert (await db.get_task("held")).claim_epoch == 0
 
 
+@pytest.mark.parametrize("held", [False, True])
+async def test_release_notifies_only_unheld_frontier_entries(handler, db, tmp_path, held):
+    """Release reuses the transactional hold check and still wakes ready workers."""
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
+    if held:
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "t1")
+                               .values(held_batch_id="batch-held"))
+    listener = AsyncMock()
+    db.set_ready_listener(listener)
+
+    await db.release_claim(
+        sid, task_status=TaskStatus.READY, context="session_release", now=time.time(),
+    )
+
+    assert (await db.get_task("t1")).status == TaskStatus.READY
+    assert (await db.get_session(sid)).task_id is None
+    if held:
+        listener.assert_not_awaited()
+        assert await db.ingest_held_task_ids({"t1"}) == {"t1"}
+    else:
+        listener.assert_awaited_once_with([("t1", "released")])
+
+
+async def test_held_member_not_claimable(handler, db, tmp_path):
+    """Status, routing and priority cannot override an ingestion batch hold."""
+    from src.scheduler import PoolKey
+
+    await mktask(db, "held", profile_id="worker", priority=1)
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "held")
+                           .values(held_batch_id="batch-held"))
+    sid, _ = await pool_session(db, tmp_path)
+    worker = scoped(handler, sid)
+    assert await db.count_ready_by_profile(PROJECT_ID) == {}
+    assert await db.count_ready_by_profile(PROJECT_ID, include_repair_counts=True) == {}
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
+    exclusions = await db.claim_frontier_exclusions("held")
+    assert [item["code"] for item in exclusions] == ["frontier_ingest_held"]
+    assert "member of ingestion batch batch-held awaiting fidelity review" in exclusions[0]["detail"]
+    assert (await settled_claim(worker, {"task_id": "held"}))["result"] == "claim_conflict"
+    assert (await settled_claim(worker, {"next": True}))["result"] == "no_ready_work"
+    await mktask(db, "available", profile_id="worker", priority=100)
+    assert await db.count_ready_by_profile(PROJECT_ID) == {"worker": 1}
+    following = await settled_claim(worker, {"next": True})
+    assert following["result"] == "claimed", following
+    assert following["task"]["id"] == "available"
+    task = await db.get_task("held")
+    assert (task.status, task.assigned_agent_id, task.claim_epoch) == (TaskStatus.READY, None, 0)
+
+
+async def test_take_task_rechecks_ingestion_hold_after_selection(db, tmp_path):
+    await mktask(db, "held", profile_id="worker")
+    await pool_session(db, tmp_path)
+    async with db.immediate() as conn:
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="agent-1",
+        ) == "held"
+        await conn.execute(update(tasks).where(tasks.c.id == "held")
+                           .values(held_batch_id="batch-held"))
+        assert await db.take_task(conn, "held", agent_id="agent-1", now=NOW) is None
+    task = await db.get_task("held")
+    assert (task.status, task.assigned_agent_id, task.claim_epoch) == (TaskStatus.READY, None, 0)
+    agent = await db.get_agent("agent-1")
+    assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
+
+
+async def test_activation_rechecks_ingestion_hold_without_admission(handler, db, tmp_path):
+    from src.database.queries.ingest_hold import IngestHeld
+
+    await mktask(db, "held", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
+    await db.update_session(sid, claim_phase="preparing")
+    await db.set_task_meta("held", "needs_attention", "preserved")
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "held")
+                           .values(held_batch_id="batch-held"))
+    task, before = await db.get_task("held"), await db.get_session(sid)
+    with pytest.raises(IngestHeld, match="ingest_held"):
+        await db.activate_claim(
+            sid, "held", epoch=task.claim_epoch, now=NOW,
+            branch_name="aq/must-not-record", clear_preparation_metadata=True,
+        )
+    after = await db.get_session(sid)
+    assert (after.claim_phase, after.claims) == (before.claim_phase, before.claims)
+    assert (await db.get_task("held")).branch_name == task.branch_name
+    assert await db.get_task_meta("held", "needs_attention") == "preserved"
+
+
+async def test_hold_during_preparation_returns_ingest_held(handler, db, tmp_path):
+    await mktask(db, "held", profile_id="worker")
+    sid, wd = await pool_session(db, tmp_path)
+
+    async def hold_during_reset(*args, **kwargs):
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "held")
+                               .values(held_batch_id="batch-held"))
+        return "aq/must-not-record"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.side_effect = (
+        hold_during_reset
+    )
+    result = await settled_claim(scoped(handler, sid), {"next": True})
+    assert (result["result"], result["reason"]) == ("no_ready_work", "ingest_held")
+    assert not (wd / ".aq" / "claim.json").exists()
+    task, session = await db.get_task("held"), await db.get_session(sid)
+    assert (task.status, task.assigned_agent_id, task.branch_name) == (TaskStatus.READY, None, None)
+    assert (session.task_id, session.claim_phase, session.claims) == (None, None, 0)
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(tasks.c.held_batch_id).where(tasks.c.id == "held")) == (
+            "batch-held"
+        )
+    assert await db.count_ready_by_profile(PROJECT_ID) == {}
+    assert await db.get_task_meta("held", "claim_prepare_backoff_attempts") is None
+
+
 async def ordinary_pool_repair(handler, db, tmp_path):
     from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
     from src.integration.lock import BranchLock
@@ -1365,16 +1484,20 @@ class TestClaim:
         assert (await db.get_workspace("ws-agent-1")).enabled
         handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
 
+    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["warm", "deferred"])
     @pytest.mark.parametrize("changed", [
         "instance", "epoch", "task", "active", "released", "preparation", "task_creation",
     ])
     async def test_failed_preparation_observation_refuses_stale_or_successor_claim(
-        self, handler, db, tmp_path, changed,
+        self, handler, db, tmp_path, changed, response_seconds, monkeypatch,
     ):
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
+        )
         await mktask(db, "t", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
         h = scoped(handler, sid)
-        claimed = await h._cmd_task_claim({"next": True})
+        claimed = await settled_claim(h, {"next": True})
         assert claimed["result"] == "claimed"
         await db.update_session(sid, claim_phase="preparing")
         observed = await db.get_session(sid)
@@ -1399,15 +1522,20 @@ class TestClaim:
         )
         assert (await db.get_session(sid)).failed_preparation is None
 
+    @pytest.mark.parametrize("response_seconds", [0.5, 0.0], ids=["warm", "deferred"])
     async def test_successful_retry_clears_failed_preparation_diagnostic(
-        self, handler, db, tmp_path,
+        self, handler, db, tmp_path, response_seconds, monkeypatch,
     ):
+        monkeypatch.setattr(
+            "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", response_seconds,
+        )
         await mktask(db, "t", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         reset.side_effect = RuntimeError("Bearer secret-token-value; password=secret-value")
         h = scoped(handler, sid)
-        failed = await h._cmd_task_claim({"next": True})
+        failed = await settled_claim(h, {"next": True})
+        assert failed["result"] == "prepare_failed", failed
         diagnostic = failed["session"]["failed_preparation"]
         assert diagnostic["task_id"] == "t"
         assert diagnostic["origin"] is None and diagnostic["checkpoint"] is None
@@ -1415,7 +1543,7 @@ class TestClaim:
         assert "secret-value" not in json.dumps(diagnostic)
         await expire_claim_refusal(db, sid, "t")
         reset.side_effect = None
-        claimed = await h._cmd_task_claim({"next": True})
+        claimed = await settled_claim(h, {"next": True})
         assert claimed["result"] == "claimed"
         assert (await db.get_session(sid)).failed_preparation is None
 

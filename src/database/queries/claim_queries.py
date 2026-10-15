@@ -44,6 +44,7 @@ from src.database.queries.hierarchy_queries import (
     open_epic_refresh_batches,
 )
 from src.database.queries.session_queries import _row_to_session
+from src.database.queries.ingest_hold import IngestHeld, not_ingest_held
 from src.database.queries.task_queries import (
     ManualPauseActive,
     TransitionResult,
@@ -128,6 +129,7 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         "dependency_blocked": tasks.c.is_blocked == 0,
         "already_assigned": tasks.c.assigned_agent_id.is_(None),
         "plan_subtask": tasks.c.is_plan_subtask == 0,
+        "ingest_held": not_ingest_held(),
         # Recovery decisions outlive status projection and daemon restarts.
         # retry_allowed is false for an accepted retry too; only hold blocks.
         "recovery_hold": ~exists(select(literal(1)).where(
@@ -557,6 +559,7 @@ FRONTIER_PREDICATE_DETAILS = {
     "dependency_blocked": "is_blocked must be false",
     "already_assigned": "assigned_agent_id must be empty",
     "plan_subtask": "is_plan_subtask must be false",
+    "ingest_held": "member of ingestion batch {batch_id} awaiting fidelity review",
     "recovery_hold": "the supervisor recovery hold needs an explicit fenced release",
     "origin_not_materialized": (
         "materialized_origin_when_hierarchical(): requires a materialized origin in the "
@@ -633,6 +636,7 @@ class ClaimQueryMixin:
         async with self._engine.connect() as conn:
             row = (await conn.execute(
                 select(
+                    tasks.c.held_batch_id,
                     *(predicate.label(name) for name, predicate in predicates.items()),
                     *(predicate.label("display_" + name)
                       for name, predicate in display_predicates.items()),
@@ -651,7 +655,7 @@ class ClaimQueryMixin:
                     f"for {name} is unknown (snapshot_unavailable)"
                     if name in display_predicates and row["display_" + name]
                     else "Pool claim frontier excludes this READY task: "
-                    + FRONTIER_PREDICATE_DETAILS[name]
+                    + FRONTIER_PREDICATE_DETAILS[name].format(batch_id=row["held_batch_id"])
                 ),
                 "ref": task_id,
             }
@@ -874,7 +878,7 @@ class ClaimQueryMixin:
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None:
         """Fence + epoch bump + status write in **one** statement (spec §15).
 
-        The fence (``READY``, unblocked, unassigned) rides the same UPDATE as
+        The fence (``READY``, unblocked, unassigned, no ingestion hold) rides the same UPDATE as
         the epoch bump and the ``IN_PROGRESS`` write, so exactly one racer
         can match it; a matched row proves the pre-state, which is what lets
         ``_apply_transition`` skip its pre-read (``assume_pre_state``).  The
@@ -921,6 +925,7 @@ class ClaimQueryMixin:
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.is_blocked == 0,
                 tasks.c.assigned_agent_id.is_(None),
+                not_ingest_held(),
                 ~container_flag_exists(),
                 ~exists(
                     select(literal(1)).where(
@@ -1124,6 +1129,7 @@ class ClaimQueryMixin:
         Task identity is immutable here, so FOR NO KEY UPDATE excludes status
         changes while permitting the slot reset's separate salvage transaction
         to take FK key-share locks when inserting task context or metadata.
+        The returned hold predicate observes the locked row without another query.
         """
         holder = (await conn.execute(
             select(sessions.c.id).where(
@@ -1137,7 +1143,8 @@ class ClaimQueryMixin:
         if holder is None:
             return None
         return (await conn.execute(
-            select(tasks.c.id, tasks.c.branch_name).where(
+            select(tasks.c.id, tasks.c.branch_name,
+                   not_ingest_held().label("not_ingest_held")).where(
                 tasks.c.id == task_id,
                 tasks.c.status == TaskStatus.IN_PROGRESS.value,
                 tasks.c.claim_epoch == epoch,
@@ -1155,6 +1162,8 @@ class ClaimQueryMixin:
         PostgreSQL's ``RETURNING`` supplies the response row without a re-read.
         All writes follow the session/task locks and admission guards; a
         rejected activation changes neither the branch nor diagnostics.
+        An ingestion hold added during preparation raises ``IngestHeld`` under
+        the task lock, so the command can release preparation with that reason.
 
         *branch_name* records the slot reset's branch in ``tasks.branch_name``
         in the activation transaction. A failed preparation leaves no branch
@@ -1174,6 +1183,8 @@ class ClaimQueryMixin:
             claim = await self.lock_claim_for_activation(c, session_id, task_id, epoch=epoch)
             if claim is None:
                 return None
+            if not claim.not_ingest_held:
+                raise IngestHeld()
             if admission is not None and (
                 not await admission.matches(conn=c, lock=True, task_id=task_id)
                 or (await c.execute(select(blocked_predicate()).where(
@@ -1483,7 +1494,9 @@ class ClaimQueryMixin:
     async def _after_release(self, out: TransitionResult) -> None:
         await self.log_blocked_flips(out.flipped)
         await self._notify_settled(out.settled)
-        await self._notify_ready(out.ready)
+        # _apply_transition records these through _note_frontier_entry, whose
+        # INSERT SELECT already excludes ingestion-held tasks on the write connection.
+        await self._notify_ready(out.ready, frontier_checked=True)
 
     async def release_claim(
         self,

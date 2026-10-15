@@ -2731,6 +2731,7 @@ class Orchestrator(
         # They still auto-complete correctly: settlement (spec §7) keys off
         # the container flag, not off is_plan_subtask.
         tasks = await self.db.list_tasks(status=TaskStatus.IN_PROGRESS)
+        held = await self.db.ingest_held_task_ids({t.id for t in tasks})
         for t in tasks:
             if t.id in skip_task_ids:
                 logger.info("Recovery: task '%s' kept IN_PROGRESS — its session was adopted", t.id)
@@ -2752,6 +2753,11 @@ class Orchestrator(
                     t.id,
                     t.title,
                 )
+                continue
+            if t.id in held:
+                # Held work never starts, so this breaks an invariant. Readying
+                # it would not release the hold either; leave it for an operator.
+                logger.error("Recovery: ingestion-held task '%s' is IN_PROGRESS; not readying", t.id)
                 continue
             logger.info(
                 "Recovery: resetting task '%s' (%s) from IN_PROGRESS to READY", t.id, t.title

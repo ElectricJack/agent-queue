@@ -24,6 +24,7 @@ from src.claim_timing import (
     ClaimTiming, claim_phase, claim_selection, current_claim_timing, timed_claim_phase,
 )
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+from src.database.queries.ingest_hold import IngestHeld
 from src.git.manager import ForeignSlotClaim
 from src.models import ClaimResult, TaskStatus
 from src.pool_claims import pool_claim_cap
@@ -1648,6 +1649,23 @@ class ClaimCommandsMixin:
                         )
             else:
                 fresh = await prepare_and_activate()
+        except IngestHeld:
+            remove_claim_file_if_matches(row.work_dir, task.id, epoch)
+            if hierarchy_attached and not await (
+                self.orchestrator.arelease_integration_writer_for_retry(
+                    task, reason="ingest_held", pool=True,
+                )
+            ):
+                # Keep the holder proof when managed ownership cannot detach.
+                await self.db.set_task_meta(task.id, "needs_attention", "ingest_held")
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(ClaimResult.PREPARE_FAILED, "ingest_held", row, cap)
+            await self.db.release_claim(
+                session.id, task_status=TaskStatus.READY, context="ingest_held",
+                now=time.time(), result="no_ready_work",
+            )
+            self._resolve_claim_waiters(session.id, epoch, "no_ready_work")
+            return self._simple(ClaimResult.NO_READY_WORK, "ingest_held", row, cap)
         except Exception as exc:
             if _retryable_preparation_error(exc):
                 # Retry only after the failed transaction unwinds; never run

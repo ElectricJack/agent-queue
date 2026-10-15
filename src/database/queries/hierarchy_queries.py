@@ -41,6 +41,7 @@ from src.database.queries.task_queries import (
     STALE_OPEN_ATTENTION,
     TransitionResult,
 )
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -225,13 +226,16 @@ def childless_held_open_container():
 def _settlement_clauses() -> list:
     """The §7 conditions both settlement legs share, correlated to ``tasks``.
 
-    Container flag ∧ no live session holds it ∧ no non-COMPLETED child ∧ not
-    a childless held-open container ∧ no hierarchy/train collection episode
-    owns its completion.  The caller joins ``projects`` and adds the status.
+    Container flag ∧ not an ingestion batch member awaiting fidelity review
+    (design §4: a held container never auto-settles) ∧ no live session holds
+    it ∧ no non-COMPLETED child ∧ not a childless held-open container ∧ no
+    hierarchy/train collection episode owns its completion.  The caller
+    joins ``projects`` and adds the status.
     """
     child = tasks.alias("child")
     return [
         container_flag_exists(),
+        not_ingest_held(),
         ~exists(
             select(literal(1)).where(
                 and_(
@@ -872,6 +876,7 @@ class HierarchyQueryMixin:
                             # One array bind avoids expanding the whole READY frontier
                             # into thousands of parameters on each scheduler tick.
                             tasks.c.id == any_(bindparam("task_ids", task_ids, type_=ARRAY(Text))),
+                            not_ingest_held(),
                             materialized_origin_when_hierarchical(),
                             delivered_prerequisites_for_projects(hierarchy_modes),
                         )

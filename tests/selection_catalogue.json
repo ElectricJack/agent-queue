@@ -92,12 +92,13 @@
       ]
     },
     "claims": {
-      "description": "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims and claim statement budgets.",
+      "description": "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims, claim statement budgets and the ingestion-hold admission ratchet.",
       "modules": [
         "tests/perf/test_claim_statements.py",
         "tests/test_claim_commands.py",
         "tests/test_cli_claim_restart.py",
         "tests/test_import_cycles.py",
+        "tests/test_ingest_hold_admission.py",
         "tests/test_preparation_failure.py"
       ]
     },
@@ -1230,6 +1231,7 @@
     "task-graph-creation": {
       "description": "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants.",
       "modules": [
+        "tests/test_batch_digest.py",
         "tests/test_create_task_graph_command.py",
         "tests/test_hierarchy_graph_creator.py",
         "tests/test_task_graph.py",
@@ -1632,8 +1634,9 @@
         "claims"
       ],
       "default_arm": false,
-      "digest": "sha256:419e9d29082a07949fe40455378c4205584ebe542229a4384f3e1315562c61c8",
+      "digest": "sha256:82545c2cafcb1a233a03479004d75a727cfc5cb349104ee2289c5a5176e2d62e",
       "imports": [
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
         "src.intelligence_classes",
@@ -3104,6 +3107,20 @@
       "markers": [],
       "summary": "The base checkout is never handed to a session."
     },
+    "tests/test_batch_digest.py": {
+      "areas": [
+        "task-graph-creation"
+      ],
+      "default_arm": true,
+      "digest": "sha256:6bab79ed88a8d5ed170b2ff3a2d0d31a6e2f28c66213f1ad94bb8dfc5dd8fab6",
+      "imports": [
+        "src.task_graph.batch_digest"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Review identity covers live graph semantics and survives cosmetic edits."
+    },
     "tests/test_blocked_state.py": {
       "areas": [
         "work-graph"
@@ -3480,7 +3497,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:46efb5bf20f09e7ecc12aa3fc43d532791f2248ab907d7338d03b5d8e97c7f07",
+      "digest": "sha256:3ffab93a066825f3db1d402344eec66df33d271e4b9a8b87d648e1873efd995a",
       "imports": [
         "src.api.models.session",
         "src.api.models.task",
@@ -3489,6 +3506,7 @@
         "src.commands.claim_commands",
         "src.commands.handler",
         "src.config",
+        "src.database.queries.ingest_hold",
         "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.pool_checks",
@@ -3621,7 +3639,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:9956615b68417252af5f6c2f9bbd47d26a93c3aefdcaad0df701c28cc3866be9",
+      "digest": "sha256:1dd33e1a808f6e3cee6a241febae15e085aa1cc397191a3ea0ebfc11810aa29a",
       "imports": [
         "src.cli.app",
         "src.cli.exceptions"
@@ -7624,7 +7642,7 @@
         "packaging"
       ],
       "default_arm": true,
-      "digest": "sha256:2dbe456fb5f46b16e0745d489821fbee509223ac1c97f696471a2bee3ae47f88",
+      "digest": "sha256:75918058942435fe4091afc2f13b7ecb064cd56a2a350b0143107abb1066c3b8",
       "imports": [
         "src.claim_file",
         "src.commands",
@@ -7654,6 +7672,28 @@
         "asyncio"
       ],
       "summary": "Tests for the aq-inbox plugin — auth parsing, allowlist classification, hot-reload."
+    },
+    "tests/test_ingest_hold_admission.py": {
+      "areas": [
+        "claims"
+      ],
+      "default_arm": true,
+      "digest": "sha256:dd12afc3b0faad40d70c860b436bd81b0bd967759539046cadd9f9b26c6d0e6a",
+      "imports": [
+        "src.config",
+        "src.database.queries.claim_queries",
+        "src.database.queries.hierarchy_queries",
+        "src.database.queries.routing_queries",
+        "src.database.tables",
+        "src.integration.delivery_observer",
+        "src.models",
+        "src.orchestrator",
+        "src.scheduler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Ingestion hold at every admission and activation path (ingestion design §4)."
     },
     "tests/test_install_cli.py": {
       "areas": [
@@ -11889,8 +11929,9 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:604813a4e78edc7213f77f5c97dd88012fb79acc625852ce2263d121e0afcd6e",
+      "digest": "sha256:670696b76bdcd94bde5fa66ef83cf8f8a262fdd02500cde3a25f5ac48fecff5b",
       "imports": [
+        "src.database.tables",
         "src.models"
       ],
       "markers": [],
@@ -13232,7 +13273,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:cf1825d1d8b9a91e8b2ff1a2fc7895a0a33e3a509adcb8f82c842f3cd1963c2b",
+      "digest": "sha256:896bcc7de1eb158cbe78ea6695eaab6faedce0ba2429d2d849efc0c24cc72ffe",
       "imports": [
         "src.git.manager",
         "src.llm.providers.errors",
@@ -15414,9 +15455,10 @@
         "scheduling"
       ],
       "default_arm": true,
-      "digest": "sha256:02378da97d15204955c35bb14649db1561aaabb37a0e3b863fe2bf38b1ba8bd0",
+      "digest": "sha256:5d5af0ef64f5290395aa9b1cc09a40f5f7019bf3f7485c3241971a05b6d08a76",
       "imports": [
         "src.assignment_routing",
+        "src.database.tables",
         "src.models",
         "src.scheduler"
       ],
@@ -18015,13 +18057,17 @@
         "playbook-engine"
       ],
       "default_arm": true,
-      "digest": "sha256:5efab90b8291602e1e78466c0b94078516e94379ec563261256840f25ee6eddc",
+      "digest": "sha256:b961d84cb3746a136879d36393eda5750899094abe5d9dd010affc57de8546ff",
       "imports": [
         "src.commands.contracts.models",
         "src.commands.principal",
+        "src.config",
         "src.database",
+        "src.database.tables",
         "src.doctor.models",
         "src.doctor.playbook_v2_checks",
+        "src.models",
+        "src.orchestrator",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors.base",
