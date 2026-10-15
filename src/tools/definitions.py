@@ -1385,7 +1385,10 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "reparent_task",
         "description": (
             "Move a task under another container (parent_id) or to the root (root=true). "
-            "Ids never change."
+            "Ids never change. In hierarchical projects the move is an integration "
+            "hierarchy mutation: live, owned or code-carrying work answers "
+            "needs_quiescence with its owner and safe continuation, and the optional "
+            "expected_*_generation fences refuse a stale parent."
         ),
         "input_schema": {
             "type": "object",
@@ -1393,6 +1396,14 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {"type": "string"},
                 "parent_id": {"type": "string"},
                 "root": {"type": "boolean", "default": False},
+                "expected_old_generation": {
+                    "type": "integer",
+                    "description": "Hierarchical projects: the old parent's integration generation.",
+                },
+                "expected_new_generation": {
+                    "type": "integer",
+                    "description": "Hierarchical projects: the new parent's integration generation.",
+                },
             },
             "required": ["task_id"],
         },

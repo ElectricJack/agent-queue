@@ -19443,6 +19443,8 @@
         "optional": [
           "--parent-id",
           "--root",
+          "--expected-old-generation",
+          "--expected-new-generation",
           "--json",
           "--brief",
           "--save-output",

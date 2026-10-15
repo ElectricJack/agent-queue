@@ -19692,8 +19692,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
-        "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change.",
+        "summary": "Move a task under another container (parent_id) or to the root (root=true). Ids never change. In hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying work answers needs_quiescence with its owner and safe continuation, and the optional expected_*_generation fences refuse a stale parent.",
+        "description": "Move a task under another container (parent_id) or to the root (root=true). Ids never change. In hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying work answers needs_quiescence with its owner and safe continuation, and the optional expected_*_generation fences refuse a stale parent.",
         "operationId": "reparent_task",
         "requestBody": {
           "content": {
@@ -66341,6 +66341,30 @@
             "title": "Root",
             "description": "",
             "default": false
+          },
+          "expected_old_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Old Generation",
+            "description": "Hierarchical projects: the old parent's integration generation."
+          },
+          "expected_new_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected New Generation",
+            "description": "Hierarchical projects: the new parent's integration generation."
           }
         },
         "type": "object",

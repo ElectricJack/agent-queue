@@ -419,6 +419,24 @@ class TestHierarchyCommands:
         res = await handler._cmd_reparent_task({"task_id": "a", "parent_id": "a"})
         assert res["code"] == "hierarchy.self_parent"
 
+    async def test_reparent_runs_dependency_on_ancestor(self, handler, db):
+        """A blocking edge onto the new parent chain would gate the task on itself."""
+        await mktask(db, "g", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await db.add_dependency("p", "g", "parent-child")
+        await mktask(db, "c")
+        await db.add_dependency("c", "g", "blocks")
+
+        res = await handler._cmd_reparent_task({"task_id": "c", "parent_id": "p"})
+
+        assert res["success"] is False
+        assert res["code"] == res["outcome"] == "dependency_on_ancestor", res
+        assert res["edges"] == [{"task_id": "c", "depends_on": "g", "dep_type": "blocks"}]
+        assert (await db.get_task("c")).parent_task_id is None
+        assert await db.get_typed_dependencies("c") == [("g", "blocks")]
+        res = await handler._cmd_get_schema({})
+        assert "dependency_on_ancestor" in res["enums"]["hierarchy_error"]
+
     @pytest.mark.parametrize("state", ["starting", "running", "draining"])
     async def test_reparent_refuses_live_parent_session_without_agent_pointer(
         self, handler, db, state

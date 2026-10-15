@@ -1371,6 +1371,17 @@ class TaskCommandsMixin:
                     "code": "hierarchy.reparent_out_of_scope",
                     "error": _REPARENT_SCOPE_ERROR,
                 }
+        fences = {
+            key: int(args[key])
+            for key in ("expected_old_generation", "expected_new_generation")
+            if args.get(key) is not None
+        }
+        # Hierarchical moves are integration mutations: a worker is authorised
+        # by its filing scope below, every other caller by the same delivery
+        # authority ``integration_mutate_hierarchy`` checks.
+        integration_authorized = worker or await self._integration_delivery_authorized(
+            task.project_id, "integration_mutate_hierarchy",
+        )
         delivery = await self.db.observe_removal_delivery([task_id], for_mutation=True)
         try:
             async with self.db.immediate() as conn:
@@ -1392,14 +1403,21 @@ class TaskCommandsMixin:
                     tasks.c.id == task_id,
                 ))
                 if mode in {"hierarchy", "train"} and old_parent != new_parent:
-                    _, result = await self._hierarchy_integration_service().reparent_on(
-                        conn, task_id, new_parent, delivery=delivery,
-                        reject_live_parent=new_parent != held_id,
+                    if not integration_authorized:
+                        return {
+                            "success": False,
+                            "code": "unauthorized",
+                            "error": "caller cannot mutate this hierarchy",
+                        }
+                    _, result = await self._hierarchy_integration_service().mutate_hierarchy_on(
+                        conn, task_id, "reparent", {"parent_id": new_parent, **fences},
+                        delivery=delivery, reject_live_parent=new_parent != held_id,
                     )
                 else:
                     result = await self.db.set_parent(
                         task_id, new_parent, conn=conn,
                         reject_live_parent=new_parent != held_id,
+                        check_ancestor_dependencies=True,
                     )
                 if provenance is not None and provenance != new_parent:
                     # The filing's only provenance was the parent-child edge
@@ -1441,6 +1459,16 @@ class TaskCommandsMixin:
                     )
                     result.flipped |= gate_flipped
         except HierarchyError as exc:
+            if exc.code in {"needs_quiescence", "dependency_on_ancestor"}:
+                # Graph-rule and §7 relocation refusals keep their contract
+                # names and carry the owner / safe continuation to act on.
+                return {
+                    "success": False,
+                    "code": exc.code,
+                    "outcome": exc.code,
+                    "error": f"{exc.code}: {exc.detail}",
+                    **exc.context,
+                }
             return {"error": f"hierarchy.{exc.code}: {exc.detail}", "code": f"hierarchy.{exc.code}"}
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)

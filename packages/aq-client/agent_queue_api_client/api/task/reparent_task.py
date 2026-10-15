@@ -65,9 +65,15 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ReparentTaskRequest,
 ) -> Response[ReparentTaskResponse | ReparentTaskResponse422]:
-    """Move a task under another container (parent_id) or to the root (root=true). Ids never change.
+    """Move a task under another container (parent_id) or to the root (root=true). Ids never change. In
+    hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying
+    work answers needs_quiescence with its owner and safe continuation, and the optional
+    expected_*_generation fences refuse a stale parent.
 
-     Move a task under another container (parent_id) or to the root (root=true). Ids never change.
+     Move a task under another container (parent_id) or to the root (root=true). Ids never change. In
+    hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying
+    work answers needs_quiescence with its owner and safe continuation, and the optional
+    expected_*_generation fences refuse a stale parent.
 
     Args:
         body (ReparentTaskRequest):
@@ -96,9 +102,15 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ReparentTaskRequest,
 ) -> ReparentTaskResponse | ReparentTaskResponse422 | None:
-    """Move a task under another container (parent_id) or to the root (root=true). Ids never change.
+    """Move a task under another container (parent_id) or to the root (root=true). Ids never change. In
+    hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying
+    work answers needs_quiescence with its owner and safe continuation, and the optional
+    expected_*_generation fences refuse a stale parent.
 
-     Move a task under another container (parent_id) or to the root (root=true). Ids never change.
+     Move a task under another container (parent_id) or to the root (root=true). Ids never change. In
+    hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying
+    work answers needs_quiescence with its owner and safe continuation, and the optional
+    expected_*_generation fences refuse a stale parent.
 
     Args:
         body (ReparentTaskRequest):
@@ -122,9 +134,15 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ReparentTaskRequest,
 ) -> Response[ReparentTaskResponse | ReparentTaskResponse422]:
-    """Move a task under another container (parent_id) or to the root (root=true). Ids never change.
+    """Move a task under another container (parent_id) or to the root (root=true). Ids never change. In
+    hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying
+    work answers needs_quiescence with its owner and safe continuation, and the optional
+    expected_*_generation fences refuse a stale parent.
 
-     Move a task under another container (parent_id) or to the root (root=true). Ids never change.
+     Move a task under another container (parent_id) or to the root (root=true). Ids never change. In
+    hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying
+    work answers needs_quiescence with its owner and safe continuation, and the optional
+    expected_*_generation fences refuse a stale parent.
 
     Args:
         body (ReparentTaskRequest):
@@ -151,9 +169,15 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ReparentTaskRequest,
 ) -> ReparentTaskResponse | ReparentTaskResponse422 | None:
-    """Move a task under another container (parent_id) or to the root (root=true). Ids never change.
+    """Move a task under another container (parent_id) or to the root (root=true). Ids never change. In
+    hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying
+    work answers needs_quiescence with its owner and safe continuation, and the optional
+    expected_*_generation fences refuse a stale parent.
 
-     Move a task under another container (parent_id) or to the root (root=true). Ids never change.
+     Move a task under another container (parent_id) or to the root (root=true). Ids never change. In
+    hierarchical projects the move is an integration hierarchy mutation: live, owned or code-carrying
+    work answers needs_quiescence with its owner and safe continuation, and the optional
+    expected_*_generation fences refuse a stale parent.
 
     Args:
         body (ReparentTaskRequest):

@@ -1601,6 +1601,7 @@ class HierarchyQueryMixin:
         completed_parent_for_repair: bool = False,
         reject_live_parent: bool = False,
         defer_projection: bool = False,
+        check_ancestor_dependencies: bool = False,
     ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
@@ -1620,6 +1621,13 @@ class HierarchyQueryMixin:
 
         ``defer_projection`` is for a task change set: the caller must
         recompute the final graph and settle both parents before committing.
+
+        ``check_ancestor_dependencies`` runs the graph rule
+        ``dependency_on_ancestor`` on the combined graph: no task in the moved
+        subtree may keep a gating edge onto *parent_id* or its ancestors,
+        because a container settles only after its children.  Operator and
+        worker reparents opt in; creation paths file their edges after the
+        validator already checked them.
         """
         task_row = (
             await conn.execute(
@@ -1700,6 +1708,8 @@ class HierarchyQueryMixin:
                 raise HierarchyError(
                     "cycle", f"{parent_id} already depends on {task_id} through blocking edges"
                 )
+            if check_ancestor_dependencies and old_parent != parent_id:
+                await self._refuse_dependency_on_ancestor(conn, task_id, parent_id)
             depth = await self.structural_depth(parent_id, conn=conn)
             height = await self.subtree_height(task_id, conn=conn)
             if depth + height > MAX_STRUCTURAL_DEPTH:
@@ -1917,6 +1927,46 @@ class HierarchyQueryMixin:
         settle_result = await self.settle_containers({parent_id} | old_parents, conn=conn)
         flipped |= settle_result.flipped
         return flipped, settle_result.settled
+
+    async def _refuse_dependency_on_ancestor(self, conn, task_id: str, parent_id: str) -> None:
+        """Refuse a move leaving *task_id*'s subtree gated on its new ancestors.
+
+        Membership edges (``parent-child``) are the structure itself and are
+        rewritten by the move; every other blocking type is the graph rule
+        ``dependency_on_ancestor`` (``src/task_graph/validator.py``).
+        """
+        from src.models import BLOCKING_DEP_TYPES
+
+        gating = sorted(set(BLOCKING_DEP_TYPES) - {"parent-child"})
+        subtree = self._descendant_cte(task_id)
+        ancestors = self._ancestor_cte(parent_id)
+        rows = (
+            await conn.execute(
+                select(
+                    task_dependencies.c.task_id,
+                    task_dependencies.c.depends_on_task_id,
+                    task_dependencies.c.dep_type,
+                )
+                .where(
+                    task_dependencies.c.task_id.in_(select(subtree.c.id)),
+                    task_dependencies.c.depends_on_task_id.in_(select(ancestors.c.id)),
+                    task_dependencies.c.dep_type.in_(gating),
+                )
+                .order_by(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id)
+            )
+        ).fetchall()
+        if rows:
+            edges = ", ".join(f"{r.task_id} {r.dep_type} {r.depends_on_task_id}" for r in rows)
+            raise HierarchyError(
+                "dependency_on_ancestor",
+                f"moving {task_id} under {parent_id} would gate it on its own parent chain "
+                f"({edges}); a container settles only after its children — drop the edge first",
+                context={"edges": [
+                    {"task_id": r.task_id, "depends_on": r.depends_on_task_id,
+                     "dep_type": r.dep_type}
+                    for r in rows
+                ]},
+            )
 
     async def _reaches_over_blocking_edges(self, conn, start: str, target: str) -> bool:
         """Is *target* reachable from *start* along blocking edges?

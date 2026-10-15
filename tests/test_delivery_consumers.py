@@ -1223,8 +1223,9 @@ async def test_git_first_reparent_guard_refuses_completed_work_without_receipts(
     async with db.immediate() as conn:
         with pytest.raises(HierarchyError) as refused:
             await hierarchy._assert_reparentable(conn, "done", repo, delivery=view)
-    assert refused.value.code == "delivery_target_fixed"
-    assert refused.value.detail == "task has a holder or completed work"
+    assert refused.value.code == "needs_quiescence"
+    assert refused.value.detail == "task has completed work"
+    assert refused.value.context["owner"]["kind"] == "delivery"
 
 
 @pytest.mark.parametrize("contained", [True, False])

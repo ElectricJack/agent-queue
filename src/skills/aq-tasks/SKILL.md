@@ -413,6 +413,12 @@ A successful `reparent` emits **`task.reparented`** on the bus, carrying
 `task_id`, `project_id`, `title`, `old_parent` and `new_parent` (either parent
 is `null` at the root). Playbooks can trigger on it.
 
+In a hierarchical or train project a reparent also checks ownership: a task
+with a claim, a live session or workspace, an active integration batch, a
+branch carrying commits, or landed or completed work answers
+`needs_quiescence` with the `owner` and the `safe_continuation` to follow
+instead of rewriting it.
+
 Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 `hierarchy_error` enum):
 
@@ -429,6 +435,7 @@ Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 | `has_children` | delete refused: the task is a container (use `--cascade`) |
 | `live_descendants` | abandon/cascade refused: a descendant has a live session |
 | `manually_paused_descendants` | abandon refused: resume hand-paused descendants first |
+| `dependency_on_ancestor` | reparent refused: the moved subtree has a blocking edge onto its new parent chain — drop the edge first (returned bare, not `hierarchy.`-prefixed) |
 | `cycle_check_skipped` | internal: the bulk graph-creation path was handed a task that is not a fresh leaf |
 | `parent_conflict` | `parent_key` was combined with `parent_id` or `root` — pass exactly one |
 | `parent_key_not_for_sessions` | `parent_key` is for automated creators; a worker files under the task it holds |

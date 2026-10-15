@@ -35,11 +35,14 @@ def _failure(outcome: str, error: str) -> dict[str, Any]:
     return {"success": False, "outcome": outcome, "error": error}
 
 
-#: Root-train subject commands an elevated live supervisor may re-drive.
+#: Root-train subject commands an elevated live supervisor may re-drive, plus
+#: the routine in-scope structure repair it keeps after release (ingestion
+#: design §7: ``integration_mutate_hierarchy``, behind ``reparent_task``).
 #: Sealing, scheduling and parent-delivery writers stay service/playbook-only.
 _SUPERVISOR_REDRIVE_CAPABILITIES = frozenset({
     "integration_ci_evidence",
     "integration_cleanup",
+    "integration_mutate_hierarchy",
     "integration_release",
     "integration_repair_close_current",
 })
@@ -2628,8 +2631,17 @@ class IntegrationCommandsMixin:
                 "delivery_target_fixed",
                 "reopen_required",
                 "invalid",
+                "needs_quiescence",
+                "stale_parent",
+                "dependency_on_ancestor",
             } else "invalid"
-            return _failure(outcome, str(exc))
+            failure = _failure(outcome, str(exc))
+            if outcome == "needs_quiescence":
+                failure |= {
+                    "owner": exc.context.get("owner"),
+                    "safe_continuation": exc.context.get("safe_continuation"),
+                }
+            return failure
         return {"success": True, **result}
 
     async def _cmd_integration_delivery_readiness(self, args: dict) -> dict:
