@@ -865,6 +865,157 @@ def assert_one_reason(result, session, record, events, *, stage, error_type):
 
 
 class TestClaim:
+    @pytest.mark.parametrize("changed", [
+        "instance", "reuse", "epoch", "task", "active", "preparation", "claiming",
+        "task_epoch", "task_creation", "requested_task", "scope_project", "scope_instance",
+        "stopped", "successor_cache", "replacement_during_read", "diagnostic_preparation",
+        "diagnostic_task",
+    ])
+    async def test_drain_poll_cannot_consume_mismatched_preparation(
+        self, handler, db, tmp_path, monkeypatch, changed,
+    ):
+        from dataclasses import replace
+
+        from src.claim_file import write_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        write_claim_file(wd, {
+            "task_id": "foreign", "claim_epoch": 7, "session_id": "foreign-session",
+        })
+        claim_bytes = (wd / ".aq" / "claim.json").read_bytes()
+        finish = asyncio.Event()
+        original = handler._prepare_and_activate
+
+        async def prepare(*args, **kwargs):
+            await finish.wait()
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(handler, "_prepare_and_activate", prepare)
+        monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01)
+        h = scoped(handler, sid)
+        initial = await h._cmd_task_claim({"next": True})
+        assert initial["result"] == "claim_in_progress"
+        job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
+        finish.set()
+        await job
+        results = handler.orchestrator.claim_preparation_results
+        cached = results[sid]
+        before = await db.get_session(sid)
+        changes = {
+            "instance": {"instance_token": "successor"},
+            "reuse": {"started_at": before.started_at + 1},
+            "epoch": {"last_claim_epoch": 2},
+            "task": {"task_id": "successor"},
+            "active": {"task_id": "t1", "claim_phase": "active"},
+            "preparation": {"task_id": "t1", "claim_phase": "preparing",
+                            "claim_phase_at": cached.preparation_started_at + 1},
+            "claiming": {"claim_phase": "claiming"},
+            "stopped": {"state": "stopped", "ended_at": time.time()},
+        }.get(changed, {})
+        if changed == "task":
+            await mktask(db, "successor", profile_id="worker")
+        if changes:
+            await db.update_session(sid, **changes)
+        args = {"next": True}
+        if changed == "task_epoch":
+            await db.update_task("t1", claim_epoch=2)
+        elif changed == "task_creation":
+            await db.update_task("t1", created_at=cached.task_created_at + 1)
+        elif changed == "requested_task":
+            args = {"task_id": "successor"}
+        elif changed == "scope_project":
+            h._current_scope["project_id"] = "another-project"
+        elif changed == "scope_instance":
+            h._current_scope["session_instance_token"] = "old-instance"
+        elif changed in {"diagnostic_preparation", "diagnostic_task"}:
+            diagnostic = {**before.failed_preparation}
+            if changed == "diagnostic_task":
+                diagnostic["task_id"] = "successor"
+            else:
+                diagnostic["preparation_started_at"] += 1
+            await db.update_session(sid, failed_preparation=diagnostic)
+        elif changed == "successor_cache":
+            cached = results[sid] = replace(cached, claim_epoch=2)
+        elif changed == "replacement_during_read":
+            get_state = db.completed_claim_preparation_state
+
+            async def replace_result(*args, **kwargs):
+                state = await get_state(*args, **kwargs)
+                results[sid] = replace(cached, claim_epoch=2)
+                return state
+
+            monkeypatch.setattr(db, "completed_claim_preparation_state", replace_result)
+
+        result = await h._cmd_task_claim(args)
+
+        assert result["result"] in {"drain_requested", "out_of_scope"}
+        assert "foreign claim" not in result.get("reason", "")
+        if changed == "replacement_during_read":
+            assert results[sid].claim_epoch == 2
+        else:
+            assert results[sid] is cached
+        after = await db.get_session(sid)
+        assert (after.claim_refusal, after.claim_failure_count, after.claims) == (
+            before.claim_refusal, before.claim_failure_count, before.claims,
+        )
+        assert (wd / ".aq" / "claim.json").read_bytes() == claim_bytes
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
+    @pytest.mark.parametrize("disabled", [False, True])
+    async def test_completed_foreign_refusal_survives_drain_poll(
+        self, handler, db, tmp_path, monkeypatch, disabled,
+    ):
+        """Force the deferred HTTP path; a warm checkout can hide this race."""
+        from src.claim_file import write_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        write_claim_file(wd, {
+            "task_id": "foreign", "claim_epoch": 7, "session_id": "foreign-session",
+        })
+        claim_bytes = (wd / ".aq" / "claim.json").read_bytes()
+        entered, finish = asyncio.Event(), asyncio.Event()
+        original = handler._prepare_and_activate
+
+        async def prepare(*args, **kwargs):
+            entered.set()
+            await finish.wait()
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(handler, "_prepare_and_activate", prepare)
+        monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01)
+        h = scoped(handler, sid)
+        initial = await h._cmd_task_claim({"next": True})
+        assert initial["result"] == "claim_in_progress"
+        await entered.wait()
+        key = (sid, initial["task_id"], initial["claim_epoch"])
+        job = handler.orchestrator.claim_preparations[key]
+        finish.set()
+        completed = await job
+        assert completed["result"] == "drain_requested"
+        assert "retains a foreign claim of task foreign" in completed["reason"]
+        before = await db.get_session(sid)
+        assert before.desired_state == "stopped"
+        if disabled:
+            await db.update_profile("worker", enabled=False)
+
+        result = await h._cmd_task_claim({"next": True})
+
+        assert result["result"] == completed["result"]
+        assert result["reason"] == completed["reason"]
+        assert "_refusal_recorded" not in result
+        assert sid not in handler.orchestrator.claim_preparation_results
+        again = await h._cmd_task_claim({"next": True})
+        assert (again["result"], again["reason"]) == ("drain_requested", "pool is draining")
+        after = await db.get_session(sid)
+        assert (after.claim_refusal, after.claim_failure_count, after.last_claim_epoch,
+                after.claims) == (before.claim_refusal, before.claim_failure_count,
+                                  before.last_claim_epoch, before.claims)
+        assert (await db.get_task("t1")).status == TaskStatus.READY
+        assert (wd / ".aq" / "claim.json").read_bytes() == claim_bytes
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
     async def test_foreign_claim_in_the_session_path_survives_preparation_refusal(
         self, handler, db, tmp_path,
     ):
@@ -6173,8 +6324,252 @@ async def test_completed_preparation_cannot_serve_a_changed_binding(handler, db,
         await db.update_task("t1", status=TaskStatus.READY, assigned_agent_id=None)
     else:
         await db.update_session(sid, instance_token="successor")
+    cached = handler.orchestrator.claim_preparation_results[sid]
     assert await handler._take_completed_preparation(await db.get_session(sid)) is None
-    assert sid not in handler.orchestrator.claim_preparation_results
+    # A caller with a mismatched binding has no authority to consume this
+    # response; bounded cache eviction handles abandoned entries.
+    assert handler.orchestrator.claim_preparation_results[sid] is cached
+
+
+@pytest.mark.parametrize("stop", ["drain", "disable"])
+async def test_completed_success_stays_behind_pool_admission(
+    handler, db, tmp_path, monkeypatch, stop,
+):
+    await mktask(db, "t1", profile_id="worker")
+    await mktask(db, "t2", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    finish = asyncio.Event()
+
+    async def reset(*args, **kwargs):
+        await finish.wait()
+        return "aq/t1"
+
+    reset_mock = AsyncMock(side_effect=reset)
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset_mock
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01)
+    h = scoped(handler, sid)
+    initial = await h._cmd_task_claim({"task_id": "t1"})
+    assert initial["result"] == "claim_in_progress"
+    job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
+    finish.set()
+    assert (await job)["result"] == "claimed"
+    cached = handler.orchestrator.claim_preparation_results[sid]
+    if stop == "drain":
+        await db.update_session(sid, desired_state="stopped")
+    else:
+        await db.update_profile("worker", enabled=False)
+
+    result = await h._cmd_task_claim({"next": True})
+
+    assert result["result"] == "drain_requested"
+    assert result["reason"] == ("pool is draining" if stop == "drain" else "pool is disabled")
+    assert handler.orchestrator.claim_preparation_results[sid] is cached
+    assert (await db.get_task("t2")).status == TaskStatus.READY
+    reset_mock.assert_awaited_once()
+
+
+async def test_late_preparation_cannot_overwrite_successor_response(
+    handler, db, tmp_path, monkeypatch,
+):
+    from dataclasses import replace
+
+    from src.claim_file import write_claim_file
+    from src.claim_preparation import CompletedClaimPreparation
+
+    await mktask(db, "t1", profile_id="worker")
+    sid, wd = await pool_session(db, tmp_path)
+    write_claim_file(wd, {
+        "task_id": "foreign", "claim_epoch": 7, "session_id": "foreign-session",
+    })
+    finish, refused, publish = (asyncio.Event() for _ in range(3))
+    prepare = handler._prepare_and_activate
+
+    async def gated_prepare(*args, **kwargs):
+        await finish.wait()
+        outcome = await prepare(*args, **kwargs)
+        refused.set()
+        await publish.wait()
+        return outcome
+
+    monkeypatch.setattr(handler, "_prepare_and_activate", gated_prepare)
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01)
+    initial = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert initial["result"] == "claim_in_progress"
+    job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
+    try:
+        finish.set()
+        await refused.wait()
+        original = await db.get_session(sid)
+        await db.update_session(sid, instance_token="successor")
+        successor = CompletedClaimPreparation(
+            session=replace(original, instance_token="successor"),
+            task_id="t1", claim_epoch=initial["claim_epoch"],
+            task_created_at=(await db.get_task("t1")).created_at,
+            preparation_started_at=initial["claim_phase_at"],
+            outcome={"success": False, "result": "drain_requested", "reason": "successor"},
+        )
+        handler.orchestrator.claim_preparation_results[sid] = successor
+        publish.set()
+        assert "foreign claim" in (await job)["reason"]
+        assert handler.orchestrator.claim_preparation_results[sid] is successor
+    finally:
+        finish.set()
+        publish.set()
+        await asyncio.gather(job, return_exceptions=True)
+
+
+@pytest.mark.parametrize("changed", ["instance", "epoch", "preparation", "diagnostic"])
+async def test_late_failure_cannot_charge_successor_refusal_budget(
+    handler, db, tmp_path, monkeypatch, changed,
+):
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    finish, failed, publish = (asyncio.Event() for _ in range(3))
+    prepare = handler._prepare_and_activate
+
+    async def gated_prepare(*args, **kwargs):
+        await finish.wait()
+        outcome = await prepare(*args, **kwargs)
+        failed.set()
+        await publish.wait()
+        return outcome
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.side_effect = (
+        RuntimeError("original refusal")
+    )
+    monkeypatch.setattr(handler, "_prepare_and_activate", gated_prepare)
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01)
+    initial = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert initial["result"] == "claim_in_progress"
+    job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
+    try:
+        finish.set()
+        await failed.wait()
+        successor_refusal = {
+            "result": "prepare_failed", "reason": "successor refusal", "count": 1,
+            "retry_at": time.time() - 1,
+        }
+        diagnostic = (await db.get_session(sid)).failed_preparation
+        changes = {
+            "instance": {"instance_token": "successor"},
+            "epoch": {"last_claim_epoch": 2},
+            "preparation": {"task_id": "t1", "claim_phase": "preparing",
+                            "claim_phase_at": initial["claim_phase_at"] + 1},
+            "diagnostic": {"failed_preparation": {
+                **diagnostic, "preparation_started_at": initial["claim_phase_at"] + 1,
+            }},
+        }[changed]
+        await db.update_session(sid, claim_refusal=successor_refusal, **changes)
+        publish.set()
+        assert (await job)["result"] == "prepare_failed"
+        current = await db.get_session(sid)
+        assert current.claim_refusal == successor_refusal
+        assert current.desired_state == "running"
+    finally:
+        finish.set()
+        publish.set()
+        await asyncio.gather(job, return_exceptions=True)
+
+
+@pytest.mark.parametrize("changed", ["instance", "epoch", "preparation"])
+async def test_waiting_caller_cannot_serve_replaced_preparation(
+    handler, db, tmp_path, monkeypatch, changed,
+):
+    from src.claim_file import write_claim_file
+
+    await mktask(db, "t1", profile_id="worker")
+    sid, wd = await pool_session(db, tmp_path)
+    write_claim_file(wd, {
+        "task_id": "foreign", "claim_epoch": 7, "session_id": "foreign-session",
+    })
+    claim_bytes = (wd / ".aq" / "claim.json").read_bytes()
+    finish, refused, publish, waiting = (asyncio.Event() for _ in range(4))
+    prepare = handler._prepare_and_activate
+    await_attempt = handler._await_attempt
+
+    async def gated_prepare(*args, **kwargs):
+        await finish.wait()
+        outcome = await prepare(*args, **kwargs)
+        refused.set()
+        await publish.wait()
+        return outcome
+
+    async def gated_wait(*args, **kwargs):
+        waiting.set()
+        return await await_attempt(*args, **kwargs)
+
+    monkeypatch.setattr(handler, "_prepare_and_activate", gated_prepare)
+    monkeypatch.setattr(handler, "_await_attempt", gated_wait)
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01)
+    h = scoped(handler, sid)
+    initial = await h._cmd_task_claim({"next": True})
+    assert initial["result"] == "claim_in_progress"
+    job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
+    request = asyncio.create_task(h._cmd_task_claim({"next": True, "wait": 5}))
+    try:
+        await waiting.wait()
+        finish.set()
+        await refused.wait()
+        changes = {
+            "instance": {"instance_token": "successor"},
+            "epoch": {"last_claim_epoch": 2},
+            "preparation": {"task_id": "t1", "claim_phase": "preparing",
+                            "claim_phase_at": initial["claim_phase_at"] + 1},
+        }[changed]
+        await db.update_session(sid, **changes)
+        publish.set()
+        result = await request
+        assert result["result"] == "out_of_scope"
+        assert result["task"] is None
+        assert sid in handler.orchestrator.claim_preparation_results
+        assert (wd / ".aq" / "claim.json").read_bytes() == claim_bytes
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+    finally:
+        finish.set()
+        publish.set()
+        await asyncio.gather(job, request, return_exceptions=True)
+
+
+@pytest.mark.parametrize("changed", ["instance", "reuse", "epoch"])
+async def test_wait_without_live_job_cannot_consume_successor_response(
+    handler, db, tmp_path, monkeypatch, changed,
+):
+    from dataclasses import replace
+
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    original_session = await db.get_session(sid)
+    finish = asyncio.Event()
+
+    async def reset(*args, **kwargs):
+        await finish.wait()
+        return "aq/t1"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01)
+    initial = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert initial["result"] == "claim_in_progress"
+    job = handler.orchestrator.claim_preparations[(sid, "t1", initial["claim_epoch"])]
+    finish.set()
+    await job
+    results = handler.orchestrator.claim_preparation_results
+    cached = results[sid]
+    changes = {
+        "instance": {"instance_token": "successor"},
+        "reuse": {"started_at": original_session.started_at + 1},
+        "epoch": {"last_claim_epoch": 2},
+    }[changed]
+    await db.update_session(sid, **changes)
+    successor = replace(
+        cached, session=await db.get_session(sid),
+        claim_epoch=2 if changed == "epoch" else cached.claim_epoch,
+    )
+    results[sid] = successor
+
+    result = await handler._await_attempt(original_session, initial, time.monotonic() + 1)
+
+    assert result["result"] == "out_of_scope"
+    assert results[sid] is successor
 
 
 async def test_live_preparation_cannot_restart_after_early_notification(handler, db, tmp_path):

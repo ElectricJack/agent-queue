@@ -372,7 +372,9 @@ class Orchestrator(
         # Daemon-owned preparation tasks, distinct from notification futures: a live
         # workspace reset must finish or be cancelled before reclaiming it.
         self.claim_preparations: dict[tuple[str, str, int | None], asyncio.Task] = {}
-        self.claim_preparation_results: dict[str, tuple[int, str, str, dict]] = {}
+        from src.claim_preparation import CompletedClaimPreparation
+
+        self.claim_preparation_results: dict[str, CompletedClaimPreparation] = {}
         self.claim_timings: dict = {}
         # Worker-pool sizing state (swarm-work-model §11), owned by
         # ``PoolsMixin``.  ``_pool_surplus_since`` tracks how long each
