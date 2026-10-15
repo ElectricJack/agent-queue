@@ -117,10 +117,13 @@ task, child, origin, ownership, remote ref and delivery target remain untouched.
 
 `invalid` identifies missing apply pins or malformed arguments. `refused`
 reports changed or missing identities, unresolved children, nonpassing or
-unpublished provenance, an active writer/episode/handoff, inactive Git-first,
-or changed authority. A fresh CLI preview provides the current diagnostic;
-investigate changed provenance before applying. Recovery does not satisfy
-exact-source review, hosted CI or normal train delivery gates.
+unpublished provenance, an active writer/episode/handoff, inactive Git-first, or
+changed authority. The CLI allows the preview or apply 300 seconds to answer,
+because the Git proof includes a retained fetch; a reply lost past that bound
+reports `outcome: unknown` and is never retried automatically, so rerun the
+read-only preview before any apply. A fresh CLI preview provides the current
+diagnostic; investigate changed provenance before applying. Recovery does not
+satisfy exact-source review, hosted CI or normal train delivery gates.
 
 ## Example step
 
