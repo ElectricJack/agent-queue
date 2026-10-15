@@ -8,16 +8,17 @@ readers never observe a gate change without its projection.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
 from typing import Iterable
 
-from sqlalchemy import and_, insert, select, update
+from sqlalchemy import and_, delete, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
-from src.database.tables import gates, task_dependencies, task_gates, tasks
+from src.database.tables import gates, task_dependencies, task_gates, task_metadata, tasks
 from src.models import DepType
 
 logger = logging.getLogger(__name__)
@@ -297,9 +298,7 @@ class GateQueriesMixin:
             )
         return row[0], False
 
-    async def attach_gate_waiters(
-        self, gate_id: str, task_ids: Iterable[str], *, conn
-    ) -> set[str]:
+    async def attach_gate_waiters(self, gate_id: str, task_ids: Iterable[str], *, conn) -> set[str]:
         """Make *task_ids* wait on the existing gate *gate_id*, on the caller's transaction.
 
         Idempotent: a task already waiting is left alone.  Recomputes the
@@ -310,6 +309,9 @@ class GateQueriesMixin:
         waiters = {str(t) for t in task_ids}
         if not waiters:
             return set()
+        # An explicit attachment owns the link even if completion inserted it
+        # earlier. Source admission must never remove that human decision.
+        await self._forget_generated_pr_links(conn, waiters, gate_id=gate_id)
         for tid in sorted(waiters):
             await conn.execute(
                 pg_insert(task_gates).values(task_id=tid, gate_id=gate_id).on_conflict_do_nothing()
@@ -329,14 +331,16 @@ class GateQueriesMixin:
         that then find none of it on the default branch.  The open
         ``pr-merged`` gate for *pr_url* -- reused when one exists, since open
         gates are unique per ``(project_id, gate_type, await_id)`` -- gains
-        every unstarted dependent as a waiter; the gate sweep resolves it once
-        the PR's work reaches the default branch.
+        every unstarted dependent as a waiter. Shared source admission may
+        retire generated links after proving delivery or an exact stack;
+        explicit waiter links remain under the gate sweep or operator.
 
         Runs on the caller's transaction and does **not** recompute: the
         caller's recompute of *task_id* reaches its direct dependents, so they
         never flip to unblocked in between.  Returns the gate id, or ``None``
         when there is nothing to hold.
         """
+        await self._upsert_meta(task_id, "pr_dependency_source", True, conn=conn)
         project_id = await conn.scalar(select(tasks.c.project_id).where(tasks.c.id == task_id))
         dependent = tasks.alias()
         waiters = (
@@ -379,10 +383,61 @@ class GateQueriesMixin:
                 .returning(gates.c.id)
             ) or await conn.scalar(open_gate)
         for tid in waiters:
-            await conn.execute(
-                pg_insert(task_gates).values(task_id=tid, gate_id=gate_id).on_conflict_do_nothing()
+            inserted = await conn.scalar(
+                pg_insert(task_gates)
+                .values(task_id=tid, gate_id=gate_id)
+                .on_conflict_do_nothing()
+                .returning(task_gates.c.task_id)
             )
+            if inserted:
+                await self._upsert_meta(
+                    tid, "pr_dependency_gate:" + gate_id, {"gate_id": gate_id}, conn=conn
+                )
         return gate_id
+
+    async def _forget_generated_pr_links(self, conn, task_ids, *, gate_id=None, detach=False):
+        rows = (
+            (
+                await conn.execute(
+                    select(task_metadata).where(
+                        task_metadata.c.task_id.in_(task_ids),
+                        task_metadata.c.key.startswith("pr_dependency_gate:", autoescape=True),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        touched = set()
+        for row in rows:
+            marker = json.loads(row["value"])
+            generated = marker["gate_id"]
+            if gate_id is not None and generated != gate_id:
+                continue
+            if detach:
+                await conn.execute(
+                    delete(task_gates).where(
+                        task_gates.c.task_id == row["task_id"],
+                        task_gates.c.gate_id == generated,
+                    )
+                )
+            await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == row["task_id"],
+                    task_metadata.c.key == row["key"],
+                )
+            )
+            touched.add(row["task_id"])
+        return touched
+
+    async def release_pr_dependency_gates(self, conn, task_ids):
+        """Retire only completion-owned links after current-source admission.
+
+        Caller holds and revalidates source/candidate inputs. Shared gates and
+        explicit waiters retain their status and associations.
+        """
+        touched = await self._forget_generated_pr_links(conn, task_ids, detach=True)
+        return await self.recompute_blocked(touched, conn=conn) if touched else set()
 
     async def resolve_gate(
         self,

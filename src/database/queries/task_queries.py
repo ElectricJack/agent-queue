@@ -1233,7 +1233,24 @@ class TaskQueryMixin:
         if not task_ids:
             return []
 
+        # PR containment is observed outside transactions. A graph-only ready
+        # notice must not announce a completed PR prerequisite as delivered.
+        pr_edge = task_dependencies.alias()
+        pr_source = task_metadata.alias()
+        pending_pr_source = (
+            select(pr_source.c.task_id)
+            .select_from(
+                pr_edge.join(pr_source, pr_source.c.task_id == pr_edge.c.depends_on_task_id)
+            )
+            .where(
+                pr_edge.c.task_id == tasks.c.id,
+                pr_edge.c.dep_type == "blocks",
+                pr_source.c.key == "pr_dependency_source",
+            )
+            .exists()
+        )
         frontier = and_(
+            ~pending_pr_source,
             tasks.c.id.in_(sorted(task_ids)),
             tasks.c.status == TaskStatus.READY.value,
             tasks.c.is_blocked == 0,
@@ -2340,7 +2357,6 @@ class TaskQueryMixin:
                 )
             )
         return ctx_id
-
 
     async def add_task_handoff(
         self,

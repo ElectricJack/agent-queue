@@ -275,15 +275,31 @@ transaction, and before the projection recomputes, it adds the task's
 unstarted `blocks` dependents as waiters on the PR's open `pr-merged` gate.
 The dependents it gates are those in `DEFINED`, `READY`, `BLOCKED` or `PAUSED`.
 If an open gate for that PR already exists it is reused; otherwise a new one is
-created. The dependents are released only when the sweep above resolves the
-gate.
+created. Completion-created gate associations are recorded separately from explicit
+waiters. Shared admission for readiness, pool demand, scheduling and claims is
+the authority for **every** `blocks` edge, including edges and graphs created
+after completion. For a completed `pull_request` source it authenticates the
+current PR against the configured repository, branch and latest completion
+head. A closed unmerged PR, unknown current source or unavailable observation
+withholds the dependent even if an older gate was resolved.
 
-Managed projects (`development`, `hierarchy`, `train`) are excluded because
-they deliver through their own admission paths. Known limits:
+Admission requires the current source (or its authenticated squash merge
+object) to be an ancestor of the repository default branch. Alternatively, a
+same-repository dependent's published branch may qualify as a stack when its
+observed tip contains the exact PR head. Claim preparation pins that tip and
+verifies ancestry in the actual checkout before activation; a branch name or
+old checkpoint alone grants nothing. Source, graph, configuration and remote
+observations are rechecked across preparation.
 
-- A dependency added after the completion is not gated.
-- A PR closed without merging leaves the gate open, so an operator must
-  resolve it.
+When this proof holds, admission removes only completion-owned gate links,
+including obsolete links from a replaced PR. It never resolves the shared gate
+or removes explicit human waiter links. Explicit attachment takes ownership of
+an existing generated link. Completion and graph notifications do not publish
+an intermediate ready event for a PR source awaiting admission.
+
+Managed projects (`development`, `hierarchy`, `train`) retain their own source
+delivery policies. Organizational sources with no branch, PR or completion
+artifact retain ordinary graph semantics.
 
 Before it merges anything, `pr_merge` asks what CI said. `integration.merge_ci_policy`
 (`off` / `warn` / `required`, shipped as `warn`) decides what a non-green
