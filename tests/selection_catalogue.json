@@ -3021,13 +3021,20 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:a1f57067bd626e419ced8eb175d3bb4006911bce6aedb27fc20b33d1b0e8f665",
+      "digest": "sha256:6f0b4127864250448846026ee05bc73dddc52370b73c52f13a74f1baf8b783e5",
       "imports": [
         "src.api.models",
         "src.asks.operations",
+        "src.commands",
+        "src.commands.principal",
+        "src.commands.spec_ingest_commands",
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
         "src.database.queries.proposal_queries",
         "src.database.tables",
-        "src.models"
+        "src.integration.outbox",
+        "src.models",
+        "src.orchestrator"
       ],
       "markers": [
         "parametrize"

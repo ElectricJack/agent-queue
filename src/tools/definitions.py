@@ -9091,6 +9091,7 @@ from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIn
 _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
+    "batch_reconcile": "task",
 })
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": "ensure_spec_ingest",
@@ -9101,6 +9102,9 @@ _ALL_TOOL_DEFINITIONS.extend([
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
     {"name": "spec_ingest_reconcile",
      "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "batch_reconcile",
+     "description": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
      "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "spec_ingest_legacy_inventory",
      "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",

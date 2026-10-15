@@ -3444,6 +3444,12 @@ class Orchestrator(
                     await handler.execute("ask_reconcile", {"apply": True, "limit": 100})
             except Exception:
                 logger.warning("Ask intake reconciliation failed", exc_info=True)
+            try:
+                from src.commands.principal import ExecutionPrincipal, principal_context
+                with principal_context(ExecutionPrincipal.service("batch-reconcile")):
+                    await handler.execute("batch_reconcile", {})
+            except Exception:
+                logger.warning("Batch reconciliation failed", exc_info=True)
         if now - self._last_conversation_maintenance < 3600:
             return
         self._last_conversation_maintenance = now

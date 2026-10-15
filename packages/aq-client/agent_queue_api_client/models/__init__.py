@@ -113,6 +113,11 @@ from .ask_update_context_request_expected import AskUpdateContextRequestExpected
 from .ask_version import AskVersion
 from .assignment_route_detail import AssignmentRouteDetail
 from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverrideType0
+from .batch_reconcile_request import BatchReconcileRequest
+from .batch_reconcile_response import BatchReconcileResponse
+from .batch_reconcile_response_422 import BatchReconcileResponse422
+from .batch_reconcile_response_errors_item import BatchReconcileResponseErrorsItem
+from .batch_reconcile_response_recovered_item import BatchReconcileResponseRecoveredItem
 from .benchmark_stage_record_request import BenchmarkStageRecordRequest
 from .benchmark_stage_record_response import BenchmarkStageRecordResponse
 from .benchmark_stage_record_response_422 import BenchmarkStageRecordResponse422
@@ -2137,6 +2142,11 @@ __all__ = (
     "AskVersion",
     "AssignmentRouteDetail",
     "AssignmentRouteDetailOverrideType0",
+    "BatchReconcileRequest",
+    "BatchReconcileResponse",
+    "BatchReconcileResponse422",
+    "BatchReconcileResponseErrorsItem",
+    "BatchReconcileResponseRecoveredItem",
     "BenchmarkStageRecordRequest",
     "BenchmarkStageRecordResponse",
     "BenchmarkStageRecordResponse422",
