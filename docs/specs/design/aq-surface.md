@@ -423,6 +423,14 @@ LLM calls and no writes.
 Slots 7–8 exist in the section model from day one so the memory comeback is a renderer
 change, not a protocol change.
 
+Task Context includes every comment on the current task, newest first, with author,
+timestamp and the complete quoted body. Read all project-scoped comment pages; neither
+the comment count nor body length is capped in prime. Worker context previews apply to
+other context, with comment history appended in full outside that budget. Comments remain
+labelled as historical reports, not instructions or approval. Prime and `aq task comment`
+help ask agents to keep comments concise: state what changed, decisions and blockers;
+link evidence instead of pasting logs or repeating status.
+
 Sections 1–2 render exactly the *prime-visible* profile headings —
 `## Role` bare, then `## Rules` under a `### Rules` sub-heading — and nothing
 else; `## Config`, `## Tools`, `## MCP Servers` and `## Reflection` stay

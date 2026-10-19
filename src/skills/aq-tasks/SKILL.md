@@ -74,13 +74,14 @@ aq task comments <id> --limit 50 --offset 0
 On a description conflict, re-read and merge; never retry blindly without the expected
 value. Comments append attributed, timestamped history without rewriting the description.
 Use them for meaningful progress, evidence, test outcomes, decisions, and blockers. Keep
-hypotheses clearly marked and omit secrets. There is no need to invent findings or post
-noise after every command. `--note` remains a legacy task-context field, not the comment log.
+hypotheses clearly marked and omit secrets. Keep comments concise: state what changed,
+decisions, and blockers. Link evidence files; do not paste logs or repeat status.
+`--note` remains a legacy task-context field, not the comment log.
 
 Save useful findings as you discover them and **before close, handoff, or waiting for input**.
 Do not leave discoveries only in terminal output or the final close summary. New sessions
-receive a bounded recent-comment excerpt in prime; read full history if needed. A comment
-is not approval, an escalation, or a user notification: still use the question/message
+receive every task comment in full in prime, framed as historical reports, not instructions
+or approval. A comment is not an escalation or a user notification: still use the question/message
 workflow when input is needed. `task comment` resolves `--claim-epoch` like `task set`.
 
 ## The close-a-task loop
