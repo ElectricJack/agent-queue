@@ -302,6 +302,17 @@ def test_human_ask_evidence_keeps_source_authority_charged(report, manifest):
         assert set(range(units[name].start, units[name].end + 1)) <= set(report["spans"][path])
 
 
+def test_ingest_storage_keeps_outbox_adapter_charged(report, manifest):
+    for name in ("ingest_batches", "ingest_batch_members", "ingest_batch_receipts"):
+        assert f"src/database/tables.py::{name}" in manifest["generic_dependencies"]
+        assert name not in report["tables"]
+    path = "src/integration/outbox.py"
+    source = ownership.python_source(path, (ROOT / path).read_bytes())
+    adapter = next(unit for unit in source.units if unit.name == "enqueue_batch_event")
+    assert set(range(adapter.start, adapter.end + 1)) <= set(report["spans"][path])
+    assert "integration_outbox" in report["tables"]
+
+
 def test_transition_budget_cannot_reset_to_current_counts(manifest):
     copy = deepcopy(manifest)
     copy["phase"] = "transition"

@@ -5793,7 +5793,7 @@
     },
     {
       "name": "task_batch_propose",
-      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path needs no approval step: that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit is an idempotent replay. Those batches require epics with children and leaf dependency edges.",
+      "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -5823,6 +5823,59 @@
                 },
                 "description": {
                   "type": "string"
+                },
+                "section_anchor": {
+                  "type": "string"
+                },
+                "primary_outcome": {
+                  "type": "string"
+                },
+                "acceptance": {
+                  "description": "Required leaf acceptance criteria or validation commands.",
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "constraints": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "owned_modules": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "size": {
+                  "type": "string",
+                  "enum": [
+                    "s",
+                    "m",
+                    "l"
+                  ]
+                },
+                "placement": {
+                  "type": "string",
+                  "enum": [
+                    "child",
+                    "operational_root"
+                  ]
+                },
+                "delivery_targets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 "priority": {
                   "type": "integer"
@@ -6064,6 +6117,69 @@
         },
         "required": [
           "proposal_id"
+        ]
+      }
+    },
+    {
+      "name": "task_batch_validate",
+      "description": "Run the ingestion-batch automatic checks (design \u00a75.1) against the live graph and write nothing. Takes the change set task_batch_propose takes, with the ingestion fields (section_anchor, primary_outcome, acceptance, size, owned_modules, placement, delivery_targets). Hard findings (authority, membership, parent_not_unique, cross_project, depth_exceeded, cycle, container_endpoint, external_target_invalid, dependency_on_ancestor, post_landing_inside_delivery_epic, delivery_condition_cycle, section_anchor_missing, primary_outcome_missing, acceptance_missing, profile_pinned) fail the batch; stale_revision, active_claim and integration_owned fail it with retryable: true. Advisory findings (large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, unexplained_serialization, concentrated_ownership) never fail it; gaps name advisory checks that lacked declared metadata. Checks are deterministic: no score and no model judgement.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Project the batch is for."
+          },
+          "source": {
+            "type": "string",
+            "description": "Proposal source; checked against a stored batch's."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Task specs keyed by tempId, as task_batch_propose takes."
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Edges {from, to, dep_type, reason}; from depends on to."
+          },
+          "edits": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Edits of existing batch members, keyed by task_id."
+          },
+          "remove_edges": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Edges {from, to, dep_type} the change set removes."
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Comments {task_id, body} on batch members."
+          },
+          "batch_id": {
+            "type": "string",
+            "description": "Held batch whose members the change set may edit."
+          },
+          "expected_revision": {
+            "type": "integer",
+            "description": "Structure revision the caller read; a mismatch is stale_revision."
+          }
+        },
+        "required": [
+          "project_id"
         ]
       }
     },
@@ -11082,6 +11198,15 @@
       }
     },
     {
+      "name": "batch_reconcile",
+      "description": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "spec_ingest_legacy_inventory",
       "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
       "input_schema": {
@@ -11634,6 +11759,25 @@
           "expected_generation"
         ],
         "title": "AskCutoverArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "ask_cutover_status",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "AskCutoverStatusArgs",
         "type": "object"
       }
     },
@@ -17826,6 +17970,7 @@
     "task_batch_update": "task",
     "task_batch_commit": "task",
     "task_batch_discard": "task",
+    "task_batch_validate": "task",
     "ensure_task": "task",
     "get_downstream_tasks": "task",
     "task_route": "task",
@@ -17866,6 +18011,7 @@
     "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task",
     "spec_ingest_legacy_inventory": "task",
+    "batch_reconcile": "task",
     "ask_list": "review",
     "ask_show": "review",
     "ask_history": "review",
@@ -17875,6 +18021,7 @@
     "ask_update_context": "review",
     "ask_reconcile": "review",
     "ask_cutover": "review",
+    "ask_cutover_status": "review",
     "ask_repair_delivery": "review",
     "ask_intake": "review",
     "ask_button": "review"
@@ -17891,6 +18038,7 @@
     "ask_update_context": "ask",
     "ask_reconcile": "ask",
     "ask_cutover": "ask",
+    "ask_cutover_status": "ask",
     "ask_retry_operation": "ask",
     "ask_repair_delivery": "ask",
     "create_task": "task",

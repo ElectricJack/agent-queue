@@ -35,6 +35,14 @@ an aggregate discrepancy and cannot identify excluded task IDs. Existing task
 explanations retain explicit dependency, gate and hold reasons; capacity-only
 explanations do not establish exclusion.
 
+Stale READY tasks whose `route_source` is `unrouted` receive an
+`UNROUTED-READY` diagnostic when their canonical explanation confirms a routing
+wait or failure. It includes the router's explanation even when a moving
+dependency also explains the wait. This uses the existing 20-minute READY
+threshold and scoped reads; it excludes containers through canonical routing
+explanations. The sweep only reports the observation. Explicit re-runs request
+routing immediately as specified in [task re-routing recovery](task-reroute-recovery.md).
+
 ## Auto-deploy stalls
 
 `scripts/operator-checks/aq-auto-deploy.sh` is the canonical copy of the cron job

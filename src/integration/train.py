@@ -762,6 +762,8 @@ class IntegrationTrain:
             blockers += tuple(item for item in completion if item.get("blocking") is not False)
             if events:
                 visit = replace(visit, detail={**(visit.detail or {}), "epic_completions": events})
+                if any(item.get("code") == "epic_delivered" for item in events):
+                    visit = replace(visit, state="delivered")
             if blockers and visit.state == "idle":
                 visit = replace(visit, state="blocked")
         if blockers:
