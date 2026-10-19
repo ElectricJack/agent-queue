@@ -326,7 +326,7 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     # Committed command edits: refresh dashboard snapshots without re-routing.
     "task.updated": {
         "required": ["task_id", "project_id", "title"],
-        "optional": ["seq", "status"],
+        "optional": ["seq", "status", "edited_fields"],
     },
     "task.deleted": {
         "required": ["task_id", "project_id", "title"],
@@ -2014,7 +2014,7 @@ _DASHBOARD_STATE_SCHEMAS: dict[str, EventSchema] = {
 
 # Verified waits and continuation events are declared before runtime activation.
 _WAIT_EVENT_NAMES = (
-    "wait.registered", "wait.satisfied", "wait.cancelled", "wait.escalated",
+    "wait.registered", "wait.satisfied", "wait.cancelled", "wait.source_unavailable", "wait.escalated",
     "wait.decided", "wait.lifted", "wait.evicted", "wait.loop_detected",
 )
 _CONTINUATION_EVENT_NAMES = (
@@ -2045,6 +2045,13 @@ _CONTINUATION_SCHEMAS: dict[str, EventSchema] = {
                   "generation": int},
     }
     for name in _CONTINUATION_EVENT_NAMES
+}
+# Loop detection accepts a registration before checkpoint creates a continuation.
+# A later suspended/queued event identifies the actual continuation generation.
+_CONTINUATION_SCHEMAS["continuation.loop_detected"] = {
+    "required": ["wait_id", "project_id", "task_id", "registrations"],
+    "optional": ["continuation_id", "generation", "reason", "occurred_at"],
+    "types": {"wait_id": str, "project_id": str, "task_id": str, "registrations": list},
 }
 
 EVENT_SCHEMAS: dict[str, EventSchema] = {

@@ -14,6 +14,7 @@ writers must not acquire that fence after locking a source task.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import uuid
 from dataclasses import replace
@@ -24,6 +25,7 @@ from src.database.tables import (
     agents,
     admission_reservations,
     continuations,
+    events,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -145,6 +147,7 @@ async def register_wait(
     claimed: str | None = None,
     escalate_after_seconds: float | None = None,
     loop_check=None,
+    on_loop_detected=None,
 ) -> dict:
     """Register and return a stable receipt, or a structured refusal.
 
@@ -274,7 +277,11 @@ async def register_wait(
     scope = await verify_owner(conn, scope)
     if await would_create_cycle(conn, edges):
         raise WaitError("wait.cycle", "condition would create a semantic dependency cycle")
-    decision = await loop_check(conn, scope, evidence, now) if loop_check else None
+    if loop_check:
+        decision = await loop_check(conn, scope, evidence, now)
+    else:
+        from src.waits.loops import detect
+        decision = await detect(conn, scope, evidence, now, policy=policy)
     if decision is None:
         decision = decide_sleep(cond, evidence)
     if not isinstance(decision, SleepDecision) or decision.mode not in {"in_place", "hibernate"}:
@@ -288,6 +295,8 @@ async def register_wait(
             invalid("an agent may only shorten a non-human escalation deadline")
         seconds = escalate_after_seconds
     escalate_at = (deadlines.due_at or now) + seconds if seconds is not None else None
+    if decision.reason == "wait.loop_detected":
+        escalate_at = now
     ceiling_at = (
         now + policy.in_place_ceiling_seconds
         if decision.mode == "in_place" and cond.kind not in {"human", "resource"}
@@ -402,6 +411,28 @@ async def register_wait(
         )
         await clear_edges(conn, wait_id, now=now)
     await recompute_from(conn, changed_keys, now=now)
+    await conn.execute(insert(events).values(
+        event_type="wait.registered", project_id=scope.project_id,
+        task_id=scope.owner_id if scope.owner_kind == "task" else None,
+        timestamp=now, payload=json.dumps({"wait_id": wait_id, "project_id": scope.project_id,
+                                         "condition": cond.as_dict(),
+                                         "decision": receipt["decision"]}),
+    ))
+    if receipt["success"] and decision.reason == "wait.loop_detected":
+        payload = {"wait_id": wait_id, "project_id": scope.project_id,
+                   "task_id": scope.owner_id, "registrations": [
+            *decision.inputs.get("loop_registrations", []),
+            {"wait_id": wait_id, "registered_at": now},
+        ]}
+        for kind in ("wait.loop_detected", "continuation.loop_detected"):
+            await conn.execute(insert(events).values(
+                event_type=kind, project_id=scope.project_id, task_id=scope.owner_id,
+                timestamp=now, payload=json.dumps(payload),
+            ))
+        callback = on_loop_detected or getattr(registry, "loop_handler", None)
+        if callback:
+            wait = await get_wait(conn, wait_id, project_id=scope.project_id)
+            await callback(conn, wait, now=now)
     return receipt
 
 

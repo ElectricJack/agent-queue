@@ -41,6 +41,7 @@
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
         "tests/test_wait_commands.py",
+        "tests/test_wait_decisions.py",
         "tests/test_wait_dispatch.py",
         "tests/test_wait_graph.py",
         "tests/test_wait_hibernation.py",
@@ -18343,6 +18344,29 @@
         "parametrize"
       ],
       "summary": "Verified wait surfaces, principal fences and dormant runtime composition."
+    },
+    "tests/test_wait_decisions.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:dc5accba4cdb745e213ea3054efc2532b25de09c89374388435b161dffafcbe9",
+      "imports": [
+        "src.config",
+        "src.database.queries.continuation_queries",
+        "src.database.tables",
+        "src.event_schemas",
+        "src.handoffs",
+        "src.messages.delivery",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.holding",
+        "src.waits.mail"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operational deadlines never wake workers; only fenced supervisor decisions do."
     },
     "tests/test_wait_dispatch.py": {
       "areas": [

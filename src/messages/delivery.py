@@ -263,7 +263,7 @@ class MessageDeliveryEngine:
             "Message wake submitted message_id=%s recipient=%s:%s",
             msg.id, to_kind, to_id,
         )
-        if msg.body_kind == "wait_outcome":
+        if msg.body_kind in {"wait_outcome", "wait_decision"}:
             await self._db.mark_wait_wake_delivered(msg.id, now=now)
         if scheduled:
             await self.cron_service.finish_delivery(msg.id, delivered=True)
@@ -555,7 +555,7 @@ def _render_nudge(batch: list[Message]) -> str:
     if batch[0].body_kind == "schedule_prompt":
         schedule_id = batch[0].id.split(":")[1]
         return f"Handle `aq cron show {shlex.quote(schedule_id)} --consume --json`."
-    if batch[0].body_kind in {"wait_result", "wait_outcome"}:
+    if batch[0].body_kind in {"wait_result", "wait_outcome", "wait_decision"}:
         # The durable message identity is also the wait pointer. Worker
         # grants include wait_get; no generic message command is needed.
         wait_id = batch[0].id.removeprefix("wait:").removesuffix(":result").removesuffix(":outcome")

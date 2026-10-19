@@ -165,6 +165,10 @@ class EscalationCommandsMixin:
         )
 
     async def _cmd_escalation_create(self, args: dict[str, Any]) -> dict[str, Any]:
+        return await self._create_escalation(args)
+
+    async def _create_escalation(self, args: dict[str, Any], *, conn=None) -> dict[str, Any]:
+        """Shared creation boundary; wait deadlines supply their owned transaction."""
         if error := self._reject_authority_args(args):
             return error
         required = (
@@ -184,7 +188,7 @@ class EscalationCommandsMixin:
         if missing:
             return _error("invalid_request", "required fields: " + ", ".join(missing))
         project_id = args["project_id"]
-        principal, error = await self._authorize_escalation_project(project_id)
+        principal, error = await self._authorize_escalation_project(project_id, conn=conn)
         if error:
             return error
         if args["severity"] not in {"critical", "high", "medium", "low"}:
@@ -199,6 +203,23 @@ class EscalationCommandsMixin:
         if await self.db.get_project(project_id) is None:
             return _error("not_found", "project not found")
         task_id = args.get("task_id")
+        if args["source_kind"] == "wait":
+            # Only the timer/loop command can bind an operational wait incident.
+            # A caller cannot manufacture a wait escalation through the generic API.
+            if conn is None or principal.kind is not PrincipalKind.SERVICE:
+                return _error("invalid_binding", "wait incidents require the wait transaction")
+            from sqlalchemy import select
+            from src.database.tables import wait_records
+
+            wait_id, separator, generation = args["source_identity"].rpartition(":")
+            wait = (await conn.execute(select(wait_records).where(
+                wait_records.c.id == wait_id, wait_records.c.project_id == project_id,
+                wait_records.c.outcome == "pending",
+            ))).mappings().first()
+            if (not separator or not generation.isdecimal() or int(generation) < 1
+                    or not wait or args["incident_key"] != f"wait:{wait_id}:{generation}"
+                    or task_id != (wait["owner_id"] if wait["owner_kind"] == "task" else None)):
+                return _error("invalid_binding", "wait incident does not match its generation")
         if args["source_kind"] == "question":
             question = await self.db.get_agent_question(args["source_identity"])
             if question is None or question["project_id"] != project_id:
@@ -242,26 +263,38 @@ class EscalationCommandsMixin:
         if not isinstance(values["task_title"], str) or not values["task_title"].strip():
             return _error("invalid_request", "task_title is required when no task supplies a title")
         try:
-            incident, created = await self.db.create_escalation(**values)
+            incident, created = await self.db.create_escalation(conn=conn, **values)
         except EscalationConflict as exc:
             return _error("identity_conflict", str(exc))
         except ValueError as exc:
             return _error("invalid_request", str(exc))
-        if created:
+        created_payload = {
+            "version": 1,
+            "escalation_id": incident["id"],
+            "project_id": incident["project_id"],
+            "task_id": incident.get("task_id"),
+            "source_kind": incident["source_kind"],
+            "source_identity": incident["source_identity"],
+            "incident_key": incident["incident_key"],
+            "state": incident["state"],
+            "revision": incident["revision"],
+        }
+        if created and conn is not None:
+            import json
+            import time
+            from sqlalchemy import insert
+            from src.database.tables import events
+
+            await conn.execute(insert(events).values(
+                event_type="escalation.created.v1", project_id=project_id, task_id=task_id,
+                timestamp=time.time(), payload=json.dumps(created_payload),
+            ))
+        elif created:
             await self._emit_escalation(
                 "escalation.created.v1",
-                {
-                    "escalation_id": incident["id"],
-                    "project_id": incident["project_id"],
-                    "task_id": incident.get("task_id"),
-                    "source_kind": incident["source_kind"],
-                    "source_identity": incident["source_identity"],
-                    "incident_key": incident["incident_key"],
-                    "state": incident["state"],
-                    "revision": incident["revision"],
-                },
+                created_payload,
             )
-        if incident["source_kind"] not in {"question", "gate", "task_recovery"}:
+        if incident["source_kind"] not in {"question", "gate", "task_recovery", "wait"}:
             from src.asks.models import SourceIdentity
             ask = await self._publish_source_ask(SourceIdentity(
                 project_id, "free_text", incident["id"], {"id": incident["id"]},

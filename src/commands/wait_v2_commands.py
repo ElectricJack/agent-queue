@@ -38,6 +38,24 @@ def refusal(code, message, **details):
 
 
 class WaitV2CommandsMixin:
+    async def wait_reroute_target(self, project_id, target):
+        """Keep routing policy and command dependencies out of the waits package."""
+        if not self._validate_routing_class(target):
+            return {"class_hint": target}, None
+        from src.commands.routing_commands import validate_route_preference
+
+        (preference, mode), error = await validate_route_preference(
+            self, project_id, target, "strict",
+        )
+        return {"prefer_target": preference, "prefer_mode": mode}, error
+
+    async def wait_escalation_create(self, conn, args):
+        """Internal escalation_create boundary, atomic with deadline/loop registration."""
+        if not self._wait_v2_enabled():
+            raise WaitError("wait.disabled", "verified wait writes are disabled")
+        with principal_context(ExecutionPrincipal.service("waits-driver")):
+            return await self._create_escalation(args, conn=conn)
+
     async def wait_service_command(self, name, args):
         """Bind service authority here, keeping the waits package independent."""
         with principal_context(ExecutionPrincipal.service("waits-driver")):

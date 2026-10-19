@@ -2,7 +2,7 @@
 
 No terminal I/O, detached transaction or task launch happens here. Missing graph,
 transition or escalation owners refuse the batch, preserving its leased cursor.
-Supervisor decision semantics are deliberately not implemented here.
+Source outcomes and supervisor wakes share the same terminal transaction.
 """
 
 from __future__ import annotations
@@ -11,18 +11,19 @@ import json
 import time
 from dataclasses import replace
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, or_, select, update
 
 from src.database.queries.continuation_queries import wait_outcome_envelope
-from src.database.queries.wait_queries import verify_owner
 from src.database.tables import (
-    continuations, events, messages, sessions, tasks, wait_deadlines, wait_edges,
+    continuations, events, messages, tasks, wait_deadlines, wait_edges,
     wait_escalations, wait_measurements, wait_records, wait_source_events,
 )
-from src.waits.conditions import Condition, Scope, SourceEvent, WaitError
+from src.waits.conditions import Condition, SourceEvent, WaitError
 from src.waits.explain import owner_key
 from src.waits.graph import clear_edges, lock_component_tasks, lock_graph, recompute_from
 from src.waits.listener import ListenerUnavailable
+from src.waits.loops import progress
+from src.waits.ownership import fence_owner
 from src.waits.sources import execute_task_status_mutation, insert_message_with_source_event
 
 
@@ -94,40 +95,13 @@ class WakeDispatcher:
         source = adapter.source_key(cond)
         if (source.identity, source.generation) != (row["source_key"], row["source_generation"]):
             return {"success": True, "committed": False}
-        delivery = (row["decision_inputs"] or {}).get("delivery", {})
-        scope = Scope(row["project_id"], row["owner_kind"], row["owner_id"],
-                      row["session_id"], delivery.get("instance_token"), row["claim_epoch"],
-                      principal="agent" if row["session_id"] else "service",
-                      elevated=row["owner_kind"] == "session")
-        continuation = None
-        if task and task["status"] == "HIBERNATED" and row["sleep_decision"] == "hibernate":
-            stopped = await conn.scalar(select(sessions.c.id).where(
-                sessions.c.id == row["session_id"],
-                sessions.c.instance_token == delivery.get("instance_token"),
-                sessions.c.state == "stopped", sessions.c.desired_state == "stopped",
-                sessions.c.end_reason == "hibernated",
-            ))
-            if (not stopped or task["assigned_agent_id"] is not None
-                    or task["claim_epoch"] <= row["claim_epoch"]):
-                return {"success": True, "committed": False}
-            continuation = (await conn.execute(select(continuations).where(
-                continuations.c.wait_id == row["id"],
-                continuations.c.task_id == task["id"],
-                continuations.c.resume_state == "sleeping",
-                continuations.c.stopped_at.is_not(None),
-                continuations.c.hold_reason.is_(None),
-            ).with_for_update())).mappings().first()
-            if not continuation or task["project_id"] != row["project_id"]:
-                return {"success": True, "committed": False}
-        else:
-            try:
-                scope = await verify_owner(conn, scope)
-            except WaitError:
-                return {"success": True, "committed": False}
-            if row["sleep_decision"] == "hibernate":
-                # Hibernation owns the stop-before/after-outcome race. Retain
-                # the source event until its transition owner can commit it.
-                raise ListenerUnavailable("hibernation transition is not parked")
+        try:
+            scope, continuation = await fence_owner(conn, row, task, parked_required=True)
+        except WaitError as exc:
+            if exc.code == "wait.unavailable":
+                # Retain the cursor until the hibernation transition has parked.
+                raise ListenerUnavailable(str(exc)) from exc
+            return {"success": True, "committed": False}
         if row["verification_state"] != "verified":
             return {"success": True, "committed": False}
         if cond.kind == "resource":
@@ -147,12 +121,32 @@ class WakeDispatcher:
             source, observed.revision, observed.result_ref or f"wait:{row['id']}:unavailable",
             dict(observed.facts),
         ))
+        return await self.finish(
+            conn, row, outcome=outcome, result_ref=result_ref, event=event,
+            task=task, continuation=continuation, changed_keys=changed_keys,
+        )
+
+    async def finish(self, conn, row, *, outcome, result_ref, event, task,
+                     continuation, changed_keys, decision=None, deliver=True):
+        """Finish an already fenced wait on the caller's transaction.
+
+        The source listener and wait_decide hold the same graph/task/source/wait
+        locks and prove the current process or stopped continuation before entry.
+        ``deliver=False`` is the supervisor's explicit cancellation, never a wake.
+        """
+        cond = Condition.from_record(row["condition"])
+        adapter = self.registry.adapter(cond.kind)
         now = self.clock()
+        inputs = dict(row["decision_inputs"] or {})
+        inputs["wake_progress"] = await progress(conn, row, task=task, continuation=continuation)
+        if decision:
+            inputs["supervisor_decision"] = decision
         changed = await conn.scalar(update(wait_records).where(
             wait_records.c.id == row["id"], wait_records.c.version == row["version"],
             wait_records.c.outcome == "pending",
         ).values(outcome=outcome, result_ref=result_ref, resolved_at=now,
-                 blocking=False, version=row["version"] + 1).returning(wait_records.c.id))
+                 blocking=False, decision_inputs=inputs,
+                 version=row["version"] + 1).returning(wait_records.c.id))
         if not changed:
             return {"success": True, "committed": False}
         await conn.execute(update(wait_deadlines).where(
@@ -164,7 +158,9 @@ class WakeDispatcher:
             raise ListenerUnavailable("transactional priority recomputation is required")
         await self.recompute_priority(conn, changed_keys | old_endpoints, now=now)
         escalated = (await conn.execute(select(wait_escalations).where(
-            wait_escalations.c.wait_id == row["id"], wait_escalations.c.decided_at.is_(None),
+            wait_escalations.c.wait_id == row["id"],
+            or_(wait_escalations.c.decided_at.is_(None),
+                wait_escalations.c.decision == "escalate_to_human"),
         ))).mappings().all()
         if escalated:
             if self.resolve_escalation is None:
@@ -184,10 +180,17 @@ class WakeDispatcher:
         await conn.execute(insert(events).values(
             event_type=f"wait.{outcome}", project_id=row["project_id"],
             task_id=row["owner_id"] if row["owner_kind"] == "task" else None,
-            timestamp=now, payload=json.dumps({"wait_id": row["id"], "result_ref": result_ref,
-                                             "source_seq": event["seq"]}),
+            timestamp=now, payload=json.dumps({"wait_id": row["id"],
+                                             "project_id": row["project_id"],
+                                             "result_ref": result_ref,
+                                             "source_seq": event.get("seq"),
+                                             "decision": decision}),
         ))
-        if continuation:
+        if not deliver:
+            await conn.execute(update(wait_records).where(wait_records.c.id == row["id"]).values(
+                cleared_at=now,
+            ))
+        elif continuation:
             await conn.execute(update(continuations).where(
                 continuations.c.id == continuation["id"],
                 continuations.c.version == continuation["version"],
@@ -203,11 +206,14 @@ class WakeDispatcher:
             envelope = wait_outcome_envelope(
                 {**row, "outcome": outcome, "result_ref": result_ref},
                 held_messages=[message["id"] for message in held],
+                decision=decision,
             )
             await insert_message_with_source_event(conn, insert(messages).values(
                 id=f"wait:{row['id']}:outcome", project_id=row["project_id"],
                 from_kind="system", from_id="wait-dispatcher", to_kind="session",
-                to_id=row["session_id"], body_kind="wait_outcome", body=json.dumps(envelope),
+                to_id=row["session_id"],
+                body_kind="wait_decision" if decision else "wait_outcome",
+                body=json.dumps(envelope),
                 created_at=now,
             ))
         else:

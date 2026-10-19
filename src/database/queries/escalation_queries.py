@@ -29,6 +29,7 @@ from src.database.tables import (
     messages,
     projects,
     supervisor_report_requests,
+    wait_records,
 )
 
 
@@ -330,6 +331,18 @@ class EscalationQueriesMixin:
             incident["source_kind"] == "supervisor_delivery"
             or incident["state"] not in OPEN_ESCALATION_STATES
         ):
+            return
+        if incident["source_kind"] == "wait":
+            # Operational deadlines go to the supervisor. Only an explicit
+            # escalate_to_human decision creates a human delivery for this source.
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
+                id="msg-" + incident["id"], project_id=incident["project_id"],
+                from_kind="system", from_id="wait-dispatcher", to_kind="session",
+                to_id=incident["supervisor_owner"], subject=incident["summary"],
+                body=(f"{incident['summary']}\n{incident['investigation']}\n"
+                      f"{incident['decision_requested']}\nIncident: {incident['id']}"),
+                thread_id=incident["id"], body_kind="wait_escalation", created_at=now,
+            ).on_conflict_do_nothing(index_elements=["id"]))
             return
         has_root = await conn.scalar(select(exists().where(
             escalation_deliveries.c.escalation_id == incident["id"],
@@ -647,6 +660,23 @@ class EscalationQueriesMixin:
                 "created_at": now,
             }
             await conn.execute(pg_insert(escalation_messages).values(**reply_values))
+            if not terminal and incident["source_kind"] == "wait":
+                # Only an explicitly converted human wait consumes this verified
+                # transport reply. Operational supervisor discussion is not proof.
+                human_wait = (await conn.execute(select(wait_records).where(
+                    wait_records.c.project_id == incident["project_id"],
+                    wait_records.c.condition_kind == "human",
+                    wait_records.c.outcome == "pending",
+                    wait_records.c.decision_inputs["human_escalation_id"].astext == escalation_id,
+                ))).mappings().first()
+                if human_wait:
+                    await insert_message_with_source_event(conn, pg_insert(messages).values(
+                        id=f"msg-wait-human-{reply_id}", project_id=incident["project_id"],
+                        from_kind="user", from_id=verified_actor,
+                        to_kind=human_wait["owner_kind"], to_id=human_wait["owner_id"],
+                        thread_id=escalation_id, body=text, body_kind="escalation_reply",
+                        created_at=now,
+                    ))
             updated = dict(incident)
             if not terminal:
                 next_revision = int(incident["revision"]) + 1

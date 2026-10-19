@@ -197,7 +197,8 @@ def wait_outcome_envelope(wait, continuation=None, *, held_messages=(), decision
         "outcome": wait["outcome"],
         "condition": Condition.from_record(wait["condition"]).as_dict(),
         "result_ref": wait["result_ref"],
-        "decision": decision,
+        "decision": (decision if decision is not None
+                     else (wait.get("decision_inputs") or {}).get("supervisor_decision")),
         "summary_ref": f"continuation:{continuation['id']}" if continuation else None,
         "held_messages": list(held_messages),
         "next_action": "ack_then_continue",

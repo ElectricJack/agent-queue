@@ -1912,7 +1912,8 @@ class TestAllEventTypesHaveSchemas:
 _CANONICAL_PAYLOADS.update({
     name: {"wait_id": "wait-1", "project_id": "p-1", "generation": 1}
     for name in (
-        "wait.registered", "wait.satisfied", "wait.cancelled", "wait.escalated",
+        "wait.registered", "wait.satisfied", "wait.cancelled", "wait.source_unavailable",
+        "wait.escalated",
         "wait.decided", "wait.lifted", "wait.evicted", "wait.loop_detected",
     )
 })
@@ -1923,6 +1924,10 @@ _CANONICAL_PAYLOADS.update({
         "continuation.acknowledged", "continuation.held", "continuation.loop_detected",
     )
 })
+_CANONICAL_PAYLOADS["continuation.loop_detected"] = {
+    "wait_id": "wait-1", "project_id": "p-1", "task_id": "t-1",
+    "registrations": [{"wait_id": "wait-1", "registered_at": 1800000000.0}],
+}
 
 
 class TestAllCanonicalPayloadsPassValidation:

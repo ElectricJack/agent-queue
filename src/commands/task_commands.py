@@ -1032,6 +1032,9 @@ class TaskCommandsMixin:
         if event_type == "task.updated":
             details["status"] = task.status.value
             payload = json.dumps({"status": task.status.value})
+            if details.get("edited_fields"):
+                payload = json.dumps({"status": task.status.value,
+                                      "edited_fields": details["edited_fields"]})
         try:
             seq = await self.db.log_event(
                 event_type, project_id=pid, task_id=task.id, payload=payload,
@@ -4233,7 +4236,7 @@ class TaskCommandsMixin:
                 "deprecated and now behaves identically to 'exclusive')."
             )
         refreshed = await self.db.get_task(task.id) or task
-        await self._emit_task_graph_change("task.updated", refreshed)
+        await self._emit_task_graph_change("task.updated", refreshed, edited_fields=all_fields)
         if updates.get("project_id", task.project_id) != task.project_id:
             await self._emit_task_graph_change(
                 "task.updated", refreshed, project_id=task.project_id

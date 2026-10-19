@@ -104,7 +104,7 @@ async def active_wait_for(db, session, *, include_acknowledged=False):
 def wake_already_delivered():
     return select(wait_records.c.id).where(
         messages.c.id == "wait:" + wait_records.c.id + ":outcome",
-        messages.c.body_kind == "wait_outcome",
+        messages.c.body_kind.in_(("wait_outcome", "wait_decision")),
         wait_records.c.wake_delivered_at.is_not(None),
     ).correlate(messages).exists()
 
@@ -115,4 +115,13 @@ def stale_wait_wake():
         messages.c.id == "wait:" + wait_records.c.id + ":outcome",
         wait_records.c.outcome != "pending",
     ).correlate(messages).exists()
-    return and_(messages.c.body_kind.is_not(None), messages.c.body_kind == "wait_outcome", ~current)
+    suspend_current = execution_waits().where(
+        messages.c.id == "wait:" + wait_records.c.id + ":human-suspend",
+        wait_records.c.outcome == "pending", wait_records.c.condition_kind == "human",
+        wait_records.c.sleep_decision == "hibernate",
+    ).correlate(messages).exists()
+    return and_(messages.c.body_kind.is_not(None), or_(
+        and_(messages.c.body_kind.in_(("wait_outcome", "wait_decision")), ~current),
+        and_(messages.c.body_kind == "wait_suspend",
+             messages.c.id.like("wait:%:human-suspend"), ~suspend_current),
+    ))
