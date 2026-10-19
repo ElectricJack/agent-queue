@@ -1336,6 +1336,7 @@ class TaskQueryMixin:
         _integration_wake_token=None,
         accepted_close: dict | None = None,
         integration_delivery=None,
+        allow_missing_provenance_reopen: bool = False,
         _defer_recovery_supersession: bool = False,
         pr_merge_gate: str | None = None,
         **kwargs,
@@ -1465,6 +1466,10 @@ class TaskQueryMixin:
         ):
             await self.guard_integration_mutation(
                 task_id, "reopen", conn=conn, delivery=integration_delivery,
+                allow_missing_provenance_reopen=(
+                    allow_missing_provenance_reopen and context == "reopen_with_feedback"
+                    and new_status == TaskStatus.READY
+                ),
             )
         if context == "abandoned_by_container":
             await self.guard_integration_mutation(

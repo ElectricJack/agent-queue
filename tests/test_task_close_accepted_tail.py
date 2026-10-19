@@ -35,6 +35,7 @@ from tests.test_pool_lifecycle_integration import (
     only_pool_session,
     ready,
     scoped,
+    settled_claim,
     single_worker_pool,
 )
 
@@ -67,8 +68,9 @@ async def _claimed(orch, db, handler, tid="t1"):
     await orch._reconcile_pools()
     await orch.wait_for_pool_launches()
     session = await only_pool_session(db)
-    res = await scoped(handler, session.id)._cmd_task_claim({"next": True, "wait": 2})
-    assert (res["result"], res["task"]["id"]) == ("claimed", tid), res
+    res = await settled_claim(scoped(handler, session.id), {"next": True, "wait": 2})
+    assert res["result"] == "claimed", res
+    assert res["task"]["id"] == tid, res
     return session, res["claim_epoch"]
 
 
@@ -152,6 +154,25 @@ class TestCancelledCaller:
 
 
 class TestClaimDuringAcceptedClose:
+    async def test_setup_waits_for_retained_preparation(self, orch, db, handler, monkeypatch):
+        # A busy runner can exhaust the claim response window before setup
+        # finishes. Exercise that boundary without depending on runner speed.
+        monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0)
+        real_claim = handler._cmd_task_claim
+        outcomes = []
+
+        async def expired_response(args):
+            result = await real_claim({**args, "wait": 0})
+            outcomes.append(result["result"])
+            return result
+
+        monkeypatch.setattr(handler, "_cmd_task_claim", expired_response)
+        session, epoch = await _claimed(orch, db, handler)
+        assert outcomes == ["claim_in_progress", "claimed"]
+        held = await db.get_session(session.id)
+        assert (held.task_id, held.claim_phase) == ("t1", "active")
+        assert (await db.get_task("t1")).claim_epoch == epoch
+
     async def test_same_session_claim_leaves_the_binding_to_the_close(
         self, orch, db, handler, monkeypatch
     ):

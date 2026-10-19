@@ -666,6 +666,19 @@ branchless task with no recorded artifact is organizational. The stale
 `development_publisher_skip` still clears once git proves the work, and a failed origin
 fetch is unknown, never an empty source.
 
+**Recovering an unlabelled completion.** In Git-first hierarchy/train mode, an
+explicit `reopen_with_feedback` by the local operator or a live authorized
+supervisor may reopen a completed task whose own current, revalidated Git
+observation is `missing_git_provenance`. This repairs a completion; it does not
+establish delivery or waive provenance, checks or review on the next close.
+The branch and descendants remain intact. Containment on branches inside that
+subtree does not prevent reopening only its aggregate. Sealed batches, external
+delivery receipts or proven external containment still fix the identity; missing
+descendant provenance, stale observations, repository mismatches and Git failures
+still refuse the control. Reopening invalidates the task's aggregate checkpoint
+and its immediate parent's verification in the same transaction. Ordinary status
+writes and reviewer controls retain the unknown-delivery guard.
+
 **Delivered commits-less work after branch cleanup.** A completed task whose close lists
 no commits, such as a plan or docs task whose branch is its base, is released by its
 development delivery receipt, not by its branch. The manifest names the task (with no

@@ -5479,9 +5479,11 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:4e4f690e99540ef93d25afc94c9624cfae7e896b5aa5549c4fdb4bdba06888ef",
+      "digest": "sha256:0596c73e6955dd449533527c2273912b8e2c1e08df5ab414993f41d49ac7fc63",
       "imports": [
         "src.commands.handler",
+        "src.commands.principal",
+        "src.commands.task_commands",
         "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
@@ -5505,7 +5507,8 @@
         "src.integration.source_trailer",
         "src.integration.status",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.profiles.capabilities"
       ],
       "markers": [
         "parametrize"
