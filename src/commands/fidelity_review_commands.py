@@ -12,8 +12,12 @@ Nothing here releases a batch.  A reviewer that fails its retries, or a
 dispatch that exceeds its bound, leaves the batch ``held`` and raises one ask.
 """
 
+from pydantic import ValidationError
 from sqlalchemy import select, update
 
+from src.api.auth import RequestScope
+from src.api.scope import fidelity_review_task_for_session, held_task_for_session
+from src.asks.batch_scope import scope_ask, scope_source
 from src.asks.models import AskError
 from src.asks.operations import (
     FIDELITY_REVIEW_DISPATCH,
@@ -28,6 +32,9 @@ from src.commands.principal import (
     current_principal,
     principal_context,
 )
+from src.commands import task_changes
+from src.commands.contracts.builtin import TaskBatchReviewRecordArgs
+from src.database.queries import ingest_batch_queries as batches
 from src.database.queries.ingest_batch_queries import (
     assign_reviewer,
     get_batch,
@@ -38,6 +45,7 @@ from src.database.queries.ingest_batch_queries import (
 )
 from src.database.tables import escalation_actions, tasks
 from src.models import DepType
+from src.integration.outbox import enqueue_batch_event
 from src.review_keys import FIDELITY_REVIEWER_PROFILE_ID, fidelity_review_dedup_key
 
 #: ``task_metadata`` key naming the batch a reviewer task reviews.
@@ -66,6 +74,116 @@ class _ReviewerExhausted(Exception):
 
 
 class FidelityReviewCommandsMixin:
+    async def _cmd_task_batch_review_record(self, args):
+        """Attest the current graph; scope answers never substitute for review."""
+        try:
+            request = TaskBatchReviewRecordArgs.model_validate(args)
+        except ValidationError as exc:
+            return {"success": False, "error_code": "invalid_receipt", "error": str(exc)}
+        principal = current_principal() or TRUSTED_LOCAL
+        async with self.db._engine.connect() as conn:
+            batch = await get_batch(conn, request.batch_id)
+        if batch is None:
+            return {"success": False, "error_code": "batch_not_found", "error": "Batch not found"}
+        if (request.project_id not in (None, batch["project_id"])
+                or principal.project_id not in (None, batch["project_id"])):
+            return {"success": False, "error_code": "not_authorized",
+                    "error": "out of scope: project mismatch"}
+        # Even a trusted caller must name a live, server-assigned reviewer. No
+        # caller-supplied reviewer/session id is accepted as receipt authority.
+        session_id = (principal.session_id if principal.kind is PrincipalKind.SESSION
+                      else batch["reviewer_session_id"])
+        scope = RequestScope(
+            kind="session", session_id=session_id, project_id=batch["project_id"],
+            session_instance_token=principal.session_instance_token,
+            task_id=principal.task_id or batch["reviewer_task_id"],
+        )
+        reviewer = await fidelity_review_task_for_session(self.db, scope, request.batch_id)
+        if reviewer is None:
+            return {"success": False, "error_code": "not_authorized",
+                    "error": "Only the live assigned fidelity reviewer may attest this batch"}
+        try:
+            async with task_changes.boundary(self.db, batch["project_id"]) as conn:
+                batch = await get_batch(conn, request.batch_id, lock=True)
+                current = await held_task_for_session(self.db, scope)
+                if (current is None or current.id != reviewer.id
+                        or batch["state"] not in batches.HELD_STATES
+                        or batch["reviewer_task_id"] != current.id
+                        or batch["reviewer_session_id"] != session_id
+                        or batch["reviewer_claim_epoch"] != current.claim_epoch):
+                    raise AskError("not_authorized", "Fidelity reviewer assignment changed")
+                stale = batches._stale(
+                    batch, request.expected_revision, request.expected_digest,
+                    await batches.live_digest(conn, request.batch_id, lock=True),
+                )
+                if stale:
+                    return stale
+                active = await members(conn, request.batch_id, state="active", lock=True)
+                required = {m["section_anchor"] for m in active}
+                if not required or required - request.section_verdicts.keys():
+                    return {"success": False, "error_code": "incomplete_review",
+                            "error": "Every active section requires a verdict",
+                            "missing_sections": sorted(required - request.section_verdicts.keys())}
+                passing = "scope_question" not in (
+                    *request.section_verdicts.values(), request.reverse_coverage_verdict,
+                    request.walkthrough_verdict,
+                )
+                ask = await scope_ask(self.db, conn, batch)
+                if passing and (batch["state"] == "needs_scope" or ask and (
+                        ask["decision_state"] != "answered" or ask["application_state"] != "applied"
+                )):
+                    return {"success": False, "error_code": "needs_scope",
+                            "error": "A scope answer is required before a fresh attestation"}
+                if not passing:
+                    if await passing_receipt(conn, request.batch_id, request.expected_revision):
+                        raise AskError("receipt_exists", "This revision already has a passing receipt")
+                    if ask and ask["decision_state"] == "answered":
+                        raise AskError("scope_answered", "Revise the graph for a new scope question")
+                # Freeze lineage in the existing JSONB envelope: these values
+                # remain evidence even if the batch or document later changes.
+                findings = {
+                    "findings": request.structural_findings,
+                    "lineage": {key: batch[key] for key in (
+                        "source_review_id", "source_revision", "source_content_sha256",
+                        "design_review_id", "design_revision", "design_content_sha256",
+                        "lineage_kind", "decision_id",
+                    )},
+                    "last_diff": (batch["check_results"] or {}).get("last_diff"),
+                }
+                recorded = await batches.record_receipt(
+                    conn, request.batch_id, structure_revision=request.expected_revision,
+                    structure_digest=request.expected_digest, reviewer_task_id=current.id,
+                    reviewer_session_id=session_id, passing=passing,
+                    section_verdicts=request.section_verdicts,
+                    reverse_coverage_verdict=request.reverse_coverage_verdict,
+                    walkthrough_verdict=request.walkthrough_verdict, structural_findings=findings,
+                )
+                if not recorded["success"]:
+                    return recorded
+                if not passing and ask and not recorded["replayed"]:
+                    raise AskError("scope_question_exists",
+                                   "This revision already has a different scope question")
+                state = "reviewing" if passing else "needs_scope"
+                await batches.set_state(conn, request.batch_id, state)
+                batch = {**batch, "state": state}
+                if not passing:
+                    publication = await self._ask_service().publish(scope_source(batch), conn=conn)
+                    if publication.reconciliation_case_ids:
+                        # Commit the quarantine created by AskService so the
+                        # supervisor can reconcile it; the batch stays held.
+                        return {"success": False, "error_code": "ask.idempotency_conflict",
+                                "error": "Scope ask identity conflicts",
+                                "ask_id": publication.ask["id"]}
+                    ask = publication.ask
+                await enqueue_batch_event(
+                    conn, batch, "batch.receipt_recorded" if passing else "batch.needs_scope",
+                )
+                return {"success": True, "batch_id": request.batch_id, "state": state,
+                        "passing": passing, "receipt": recorded["receipt"],
+                        "replayed": recorded["replayed"], "ask_id": ask["id"] if ask else None}
+        except AskError as exc:
+            return {"success": False, "error_code": exc.code, "error": str(exc)}
+
     async def _cmd_ensure_fidelity_review(self, args):
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is PrincipalKind.SESSION:

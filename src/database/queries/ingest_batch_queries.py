@@ -26,7 +26,7 @@ import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -42,6 +42,7 @@ from src.database.tables import (
     tasks,
 )
 from src.task_graph.batch_digest import compute_structure_digest
+from src.review_keys import FIDELITY_REVIEWER_PROFILE_ID, fidelity_review_dedup_key
 
 HELD_STATES = frozenset({"held", "reviewing", "needs_scope"})
 SETTABLE_STATES = frozenset({"held", "reviewing", "needs_scope", "retired"})
@@ -406,6 +407,8 @@ async def hydrate_structure(
     The result is :func:`src.task_graph.batch_digest.compute_structure_digest`
     input. *lock* takes ``FOR UPDATE`` on the membership and task rows, as
     release requires (spec P3 L3.1 step 2).
+    Informational links from the server-assigned fidelity reviewer are excluded:
+    dispatching review does not change the graph being reviewed.
     """
     stmt = (
         select(
@@ -465,6 +468,19 @@ async def hydrate_structure(
         ).where(or_(
             task_dependencies.c.task_id.in_(ids),
             task_dependencies.c.depends_on_task_id.in_(ids),
+        ), ~and_(
+            # Reviewer assignment is control-plane bookkeeping, not a work
+            # graph edit. Include execution edges even from these tasks; omit
+            # only informational links from this batch's server-routed role.
+            task_dependencies.c.dep_type == "related",
+            task_dependencies.c.task_id.in_(select(tasks.c.id).where(
+                tasks.c.project_id == select(ingest_batches.c.project_id).where(
+                    ingest_batches.c.batch_id == batch_id,
+                ).scalar_subquery(),
+                tasks.c.route_source == "role",
+                tasks.c.profile_id == FIDELITY_REVIEWER_PROFILE_ID,
+                tasks.c.dedup_key == fidelity_review_dedup_key(batch_id),
+            )),
         ))
     )).mappings()]
     return rows, edges
@@ -576,6 +592,7 @@ async def record_receipt(
     The command validates authority and verdict coverage and derives
     *passing*. A batch holds one passing receipt per revision: an identical
     passing receipt replays, a different one is refused ``receipt_exists``.
+    Identical nonpassing receipts also replay without creating duplicate evidence.
     """
     batch = await get_batch(conn, batch_id, lock=True)
     if batch is None:
@@ -606,6 +623,16 @@ async def record_receipt(
                 f"{structure_revision}",
                 batch_id=batch_id, receipt_id=existing["receipt_id"],
             )
+    else:
+        existing_rows = (await conn.execute(select(ingest_batch_receipts).where(
+            ingest_batch_receipts.c.batch_id == batch_id,
+            ingest_batch_receipts.c.structure_revision == structure_revision,
+            ingest_batch_receipts.c.structure_digest == structure_digest,
+            ingest_batch_receipts.c.passing.is_(False),
+        ))).mappings()
+        for existing in existing_rows:
+            if all(existing[key] == values[key] for key in _RECEIPT_IDENTITY):
+                return {"success": True, "replayed": True, "receipt": dict(existing)}
     receipt_id = "rcpt-" + uuid.uuid4().hex[:16]
     await conn.execute(ingest_batch_receipts.insert().values(
         receipt_id=receipt_id, batch_id=batch_id, structure_revision=structure_revision,

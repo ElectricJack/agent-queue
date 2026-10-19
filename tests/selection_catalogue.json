@@ -6863,7 +6863,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:aacdecce893d2558866f0785b8361e91ddba91b15bf98e44aa8a97f220646a5f",
+      "digest": "sha256:9d62ffb4baa056bc9556a0d7143267a4d7ad39e361363f3695b103dc7311c486",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -6878,7 +6878,9 @@
         "src.profiles.capabilities",
         "src.review_keys"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``ensure_fidelity_review``: one role reviewer per held batch, bounded, never a release."
     },
     "tests/test_file_command_handlers.py": {
