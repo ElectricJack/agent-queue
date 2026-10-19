@@ -14445,6 +14445,48 @@
         }
       }
     },
+    "/api/review/ask-cutover-status": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_cutover_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskCutoverStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskCutoverStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/ask-decide": {
       "post": {
         "tags": [
@@ -18148,6 +18190,53 @@
         }
       }
     },
+    "/api/task/batch-reconcile": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
+        "description": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
+        "operationId": "batch_reconcile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchReconcileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/benchmark-stage-record": {
       "post": {
         "tags": [
@@ -20209,8 +20298,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path needs no approval step: that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit is an idempotent replay. Those batches require epics with children and leaf dependency edges.",
-        "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph, without creating anything live. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved vault path needs no approval step: that batch is applied live in the same call and returns its task_ids, and a later task_batch_commit is an idempotent replay. Those batches require epics with children and leaf dependency edges.",
+        "summary": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
+        "description": "Propose a transactional change set of creates, edits, edge changes and comments as one reviewable graph. Ordinary proposals stage changes for human approval. Tasks are identified by caller-chosen ``tempId``s that edges reference; edges may also point at existing task ids. The proposal is rejected up front if the shape is wrong, if it references tasks that do not exist, or if it would introduce a dependency cycle against the project's current graph. Returns a proposal_id for task_batch_update / _commit / _discard. A live spec-ingest role holding the matching approved document materializes the implementation graph held for fidelity review and returns batch_id, revision, digest and members. task_batch_commit refuses held batches; authorized release is separate. Design approval creates an already released epic and authoring leaf. Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance.",
         "operationId": "task_batch_propose",
         "requestBody": {
           "content": {
@@ -20276,6 +20365,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskBatchAckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/batch-validate": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Run the ingestion-batch automatic checks (design \u00a75.1) against the live graph and write nothing. Takes the change set task_batch_propose takes, with the ingestion fields (section_anchor, primary_outcome, acceptance, size, owned_modules, placement, delivery_targets). Hard findings (authority, membership, parent_not_unique, cross_project, depth_exceeded, cycle, container_endpoint, external_target_invalid, dependency_on_ancestor, post_landing_inside_delivery_epic, delivery_condition_cycle, section_anchor_missing, primary_outcome_missing, acceptance_missing, profile_pinned) fail the batch; stale_revision, active_claim and integration_owned fail it with retryable: true. Advisory findings (large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, unexplained_serialization, concentrated_ownership) never fail it; gaps name advisory checks that lacked declared metadata. Checks are deterministic: no score and no model judgement.",
+        "description": "Run the ingestion-batch automatic checks (design \u00a75.1) against the live graph and write nothing. Takes the change set task_batch_propose takes, with the ingestion fields (section_anchor, primary_outcome, acceptance, size, owned_modules, placement, delivery_targets). Hard findings (authority, membership, parent_not_unique, cross_project, depth_exceeded, cycle, container_endpoint, external_target_invalid, dependency_on_ancestor, post_landing_inside_delivery_epic, delivery_condition_cycle, section_anchor_missing, primary_outcome_missing, acceptance_missing, profile_pinned) fail the batch; stale_revision, active_claim and integration_owned fail it with retryable: true. Advisory findings (large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, unexplained_serialization, concentrated_ownership) never fail it; gaps name advisory checks that lacked declared metadata. Checks are deterministic: no score and no model judgement.",
+        "operationId": "task_batch_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchValidateResponse"
                 }
               }
             }
@@ -24607,6 +24743,70 @@
         ],
         "title": "AskControlResponse"
       },
+      "AskCutoverDestination": {
+        "properties": {
+          "destination": {
+            "type": "string",
+            "title": "Destination"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation"
+          },
+          "migrated": {
+            "type": "boolean",
+            "title": "Migrated"
+          },
+          "first_switch_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Switch Utc"
+          },
+          "compatibility_deadline": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compatibility Deadline"
+          },
+          "compatibility_deadline_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compatibility Deadline Utc"
+          }
+        },
+        "type": "object",
+        "required": [
+          "destination",
+          "mode",
+          "generation",
+          "migrated",
+          "first_switch_utc",
+          "compatibility_deadline",
+          "compatibility_deadline_utc"
+        ],
+        "title": "AskCutoverDestination"
+      },
       "AskCutoverRequest": {
         "properties": {
           "project_id": {
@@ -24668,6 +24868,63 @@
           "expected_generation"
         ],
         "title": "AskCutoverRequest"
+      },
+      "AskCutoverStatusRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "AskCutoverStatusRequest"
+      },
+      "AskCutoverStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "result": {
+            "$ref": "#/components/schemas/AskCutoverStatusResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "title": "AskCutoverStatusResponse"
+      },
+      "AskCutoverStatusResult": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "configured_destination": {
+            "type": "string",
+            "title": "Configured Destination"
+          },
+          "destinations": {
+            "items": {
+              "$ref": "#/components/schemas/AskCutoverDestination"
+            },
+            "type": "array",
+            "title": "Destinations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "configured_destination",
+          "destinations"
+        ],
+        "title": "AskCutoverStatusResult"
       },
       "AskDecideRequest": {
         "properties": {
@@ -25777,6 +26034,46 @@
         ],
         "title": "AssignmentRouteDetail",
         "description": "A routed task's route, as ``aq task explain`` prints it (mandatory routing \u00a710)."
+      },
+      "BatchReconcileRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "BatchReconcileRequest"
+      },
+      "BatchReconcileResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "recovered": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Recovered"
+          },
+          "errors": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "recovered",
+          "errors"
+        ],
+        "title": "BatchReconcileResponse"
       },
       "BenchmarkStageRecordRequest": {
         "properties": {
@@ -74686,6 +74983,189 @@
           "payload"
         ],
         "title": "TaskBatchUpdateRequest"
+      },
+      "TaskBatchValidateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project the batch is for."
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source",
+            "description": "Proposal source; checked against a stored batch's."
+          },
+          "tasks": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tasks",
+            "description": "Task specs keyed by tempId, as task_batch_propose takes."
+          },
+          "edges": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edges",
+            "description": "Edges {from, to, dep_type, reason}; from depends on to."
+          },
+          "edits": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edits",
+            "description": "Edits of existing batch members, keyed by task_id."
+          },
+          "remove_edges": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remove Edges",
+            "description": "Edges {from, to, dep_type} the change set removes."
+          },
+          "comments": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comments",
+            "description": "Comments {task_id, body} on batch members."
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id",
+            "description": "Held batch whose members the change set may edit."
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision",
+            "description": "Structure revision the caller read; a mismatch is stale_revision."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "TaskBatchValidateRequest"
+      },
+      "TaskBatchValidateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "passed": {
+            "type": "boolean",
+            "title": "Passed",
+            "default": false
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable",
+            "default": false
+          },
+          "hard": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Hard"
+          },
+          "advisory": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Advisory"
+          },
+          "gaps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Gaps"
+          }
+        },
+        "type": "object",
+        "title": "TaskBatchValidateResponse",
+        "description": "``task_batch_validate`` \u2014 the automatic-check report; nothing is written."
       },
       "TaskChildrenRequest": {
         "properties": {

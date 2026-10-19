@@ -13,6 +13,7 @@ import pytest
     "module_name,constructor_name",
     [
         ("test_sync_and_merge", "git_repo"),
+        ("test_concurrent_merge_and_push", "two_agent_clones"),
         ("test_git_manager", "git_repo"),
         ("test_git_mutex", "git_repo"),
         ("test_force_with_lease", "git_repo"),

@@ -1347,6 +1347,7 @@ class HierarchyQueryMixin:
         abandon_undelivered: bool = False,
         delivery=None,
         obsolete_integration_delegate: bool = False,
+        allow_missing_provenance_reopen: bool = False,
     ) -> bool:
         """Fence hierarchy/lifecycle writers; return whether hierarchy delivery applies.
 
@@ -1356,6 +1357,8 @@ class HierarchyQueryMixin:
         BranchDiscardService). Omitted policy refuses materialized origins explicitly.
         The caller observes delivery before this transaction; unknown Git evidence
         refuses mutation, and archive requires proof on the configured default target.
+        An authorized explicit reopen may repair only this task's missing provenance,
+        retaining internal child delivery and invalidating aggregate verification.
         """
         if branch_policy not in (None, "keep", "discard"):
             raise ValueError(f"unknown branch_policy: {branch_policy!r}")
@@ -1461,19 +1464,27 @@ class HierarchyQueryMixin:
                 )
             )
         from src.integration.delivery_observer import delivery_sensitive_ids, prerequisite_observer
-        from src.integration.delivery_truth import DeliveryState
+        from src.integration.delivery_truth import MISSING_PROVENANCE, DeliveryState
 
+        recovering_provenance = False
         if prerequisite_observer(self) is not None and mutation != "archive":
             sensitive = await delivery_sensitive_ids(conn, ids, hierarchical=True)
             verified = await delivery.verified_on(conn, sensitive) if delivery is not None else {}
+            own_proof = verified.get(task_id)
+            recovering_provenance = bool(
+                mutation == "reopen" and allow_missing_provenance_reopen
+                and own_proof is not None and own_proof.state is DeliveryState.UNKNOWN
+                and own_proof.reason == MISSING_PROVENANCE
+            )
             if sensitive - verified.keys() or any(
                 proof.state is DeliveryState.UNKNOWN for proof in verified.values()
+                if not (recovering_provenance and proof.request.task_id == task_id)
             ):
                 raise HierarchyError(
                     "delivery_unknown", f"{mutation} requires current Git delivery evidence",
                 )
             internal_refs = set()
-            if rollover_operation is not None:
+            if rollover_operation is not None or recovering_provenance:
                 branches = (await conn.execute(select(tasks.c.branch_name).where(
                     tasks.c.id.in_(ids), tasks.c.branch_name.is_not(None),
                 ))).scalars()
@@ -1484,6 +1495,15 @@ class HierarchyQueryMixin:
                 and proof.request.target_ref not in internal_refs
                 for proof in verified.values()
             )
+            if recovering_provenance:
+                # Reopening only the aggregate preserves its children's internal
+                # deliveries. An existing receipt leaving the subtree still fixes
+                # its identity even when this completion cannot be located in Git.
+                external_receipt = delivered_stmt.where(or_(
+                    task_delivery_receipts.c.target_task_id.is_(None),
+                    task_delivery_receipts.c.target_task_id.not_in(ids),
+                ))
+                delivered = delivered or (await conn.execute(external_receipt.limit(1))).first()
         elif prerequisite_observer(self) is not None:
             delivered = False  # Archive already proved default-target delivery above.
         else:
@@ -1565,7 +1585,7 @@ class HierarchyQueryMixin:
                         updated_at=now,
                     )
                 )
-        if rollover_operation is not None:
+        if rollover_operation is not None or recovering_provenance:
             await conn.execute(
                 update(task_integration_checkpoints)
                 .where(task_integration_checkpoints.c.task_id == task_id)
@@ -1580,7 +1600,10 @@ class HierarchyQueryMixin:
                     updated_at=time.time(),
                 )
             )
-        elif mutation in {"reopen", "disposition"} and task_row.parent_task_id:
+        if (
+            mutation in {"reopen", "disposition"} and task_row.parent_task_id
+            and (rollover_operation is None or recovering_provenance)
+        ):
             # Reopening or changing the terminal disposition makes the
             # parent's previously observed child aggregate stale even when
             # no delivery receipt exists yet.  The transition and this

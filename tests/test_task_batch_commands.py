@@ -166,6 +166,25 @@ async def test_propose_rejects_unknown_existing_task_ref(handler):
     assert "unknown" in r["error"].lower()
 
 
+@pytest.mark.parametrize("invalid", ["cycle", "parent"])
+async def test_propose_checks_operational_root_delivery_edges(handler, invalid):
+    await handler.execute("create_project", {"id": "p1", "name": "p1"})
+    root = {"tempId": "observe", "title": "Observe", "description": "Observe delivery",
+            "placement": "operational_root", "delivery_targets": ["deliver"]}
+    edge = {"from": "deliver", "to": "observe", "dep_type": "blocks"}
+    if invalid == "parent":
+        root["parent_id"] = "deliver"
+        edge = {"from": "observe", "to": "deliver", "dep_type": "parent-child"}
+    result = await handler.execute("task_batch_propose", {
+        "project_id": "p1", "source": "spec:foo", "tasks": [root,
+            {"tempId": "deliver", "title": "Deliver", "description": "Deliver API"}],
+        "edges": [edge],
+    })
+    assert not result["success"]
+    assert invalid in result["error"]
+    assert await _proposal_rows(handler) == []
+
+
 async def test_propose_ready_emits_event(handler):
     await handler.execute("create_project", {"id": "p1", "name": "p1"})
     r = await handler.execute(
@@ -1221,7 +1240,7 @@ async def _ingest_assignment(handler, spec_kind="implementation", *, feedback=No
 
 
 def _implementation_graph(path, decision):
-    return {
+    graph = {
         "project_id": "p1", "source": f"spec:decision:{decision['decision_id']}",
         "tasks": [
             {"tempId": "core", "title": "Core epic", "description": str(path)},
@@ -1242,6 +1261,13 @@ def _implementation_graph(path, decision):
                                   ("draft", "docs"), ("final", "docs")]
         ] + [{"from": "final", "to": "api", "dep_type": "blocks"}],
     }
+
+    for spec in graph["tasks"]:
+        spec.update(section_anchor=f"Implementation / {spec['tempId']}",
+                    primary_outcome=spec["title"], acceptance=["Verify " + spec["title"]],
+                    constraints=["Preserve ordinary proposal approval"], size="s",
+                    owned_modules=["src/" + spec["tempId"] + ".py"])
+    return graph
 
 
 async def _ingest_propose(handler, path, scope, decision, graph=None):
@@ -1273,39 +1299,54 @@ async def _proposal_rows(handler, project_id="p1"):
         return [tuple(row) for row in rows]
 
 
-async def test_approved_implementation_spec_publishes_live_tasks_without_a_commit_call(handler):
-    """The graph an approved spec describes goes live in the call that stages it.
+async def test_approved_implementation_spec_materializes_held_without_a_commit_call(handler):
+    """Real rows and their routing gates remain inert until fidelity release."""
+    from sqlalchemy import select
+    from src.database.queries import ingest_batch_queries as batches
+    from src.database.tables import integration_outbox, tasks
+    from src.asks.operations import get_operation
 
-    Nothing waits on a second command: no ready proposal, no human gate, no
-    operator running ``task_batch_commit`` by hand.
-    """
     path, scope, decision = await _ingest_assignment(handler)
     result = await _ingest_propose(handler, path, scope, decision)
-
-    assert result["committed"] is True
+    assert result["status"] == "held" and result["structure_revision"] == 1
     assert len(result["task_ids"]) == 6
+    assert set(result["members"].values()) == set(result["task_ids"])
     proposal = await get_proposal(handler.db, result["proposal_id"])
-    assert proposal["status"] == "committed"
+    assert proposal["status"] == "held"
     assert proposal["payload"]["spec_ingest"]["task_ids"] == result["task_ids"]
-    # Every proposed task is a real row the graph already serves.
     assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {
         scope.task_id, *result["task_ids"]
     }
-    assert await existing_graph_edges(handler.db, "p1")
-    emitted = [event for event in _emitted(handler) if event[0].startswith("proposal")]
-    assert not [event for event in emitted if event[0] == "proposal.ready"]
-    assert ("proposal.status_changed", {
-        "project_id": "p1", "proposal_id": result["proposal_id"], "status": "committed",
-    }) in emitted
-    # A later commit is the idempotent replay of that same receipt.
+    async with handler.db.immediate() as conn:
+        batch = await batches.get_batch(conn, result["batch_id"])
+        assert batch["structure_digest"] == await batches.live_digest(conn, result["batch_id"])
+        assert batch["check_results"]["passed"]
+        holds = (await conn.execute(select(tasks.c.held_batch_id).where(
+            tasks.c.id.in_(result["task_ids"]),
+        ))).scalars().all()
+        assert holds == [result["batch_id"]] * 6
+        op = await get_operation(conn, decision["decision_id"], "fidelity_review.dispatch")
+        assert op["status"] == "pending" and op["parameters"]["batch_id"] == result["batch_id"]
+        event = (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "batch.held",
+        ))).mappings().one()
+        assert event["payload"]["structure_digest"] == batch["structure_digest"]
+    assert not [event for event in _emitted(handler) if event[0] == "proposal.ready"]
     replay = await _ingest_commit(handler, result["proposal_id"], scope)
-    assert replay["already_committed"] and replay["task_ids"] == result["task_ids"]
+    assert not replay["success"] and replay["error_code"] == "fidelity_review_required"
+    assert replay["batch_id"] == result["batch_id"]
+    again = await _ingest_propose(handler, path, scope, decision)
+    assert again["replayed"] and again["members"] == result["members"]
 
 
-async def test_design_ingestion_only_files_implementation_spec_for_review(handler):
+async def test_design_batch_released_with_server_receipt(handler):
     path, scope, decision = await _ingest_assignment(handler, "design")
     # Even a recorded implementation graph cannot implement an explicit design.
     result = await _ingest_propose(handler, path, scope, decision)
+    assert result["status"] == "released"
+    assert result["release_receipt"] == {"kind": "design_authoring_shape"}
+    replay = await _ingest_commit(handler, result["proposal_id"], scope)
+    assert replay["already_committed"] and replay["release_receipt"] == result["release_receipt"]
     assert not [event for event in _emitted(handler) if event[0] == "proposal.ready"]
     epic, child = [await handler.db.get_task(tid) for tid in result["task_ids"]]
     assert child.parent_task_id == epic.id
@@ -1326,7 +1367,7 @@ async def test_design_ingestion_only_files_implementation_spec_for_review(handle
     assert len(await handler.db.list_tasks(project_id="p1")) == 3
 
 
-async def test_implementation_ingestion_commits_epics_and_leaf_dependencies_without_gate(handler):
+async def test_implementation_ingestion_holds_epics_and_leaf_dependencies_without_gate(handler):
     path, scope, decision = await _ingest_assignment(handler)
     result = await _ingest_propose(handler, path, scope, decision)
     ids = dict(zip(["core", "api", "ui", "docs", "draft", "final"], result["task_ids"], strict=True))
@@ -1340,18 +1381,14 @@ async def test_implementation_ingestion_commits_epics_and_leaf_dependencies_with
     assert nonstructural == [(ids["final"], ids["api"])]
     assert not ({ids["core"], ids["docs"]} & {endpoint for edge in nonstructural for endpoint in edge})
     assert detect_cycles(edges, [], []) == []
-    # Promotion releases containers before it promotes their independent children.
     await handler.orchestrator._check_defined_tasks()
     await handler.orchestrator._check_defined_tasks()
-    assert {task.id for task in await handler.db.list_tasks(project_id="p1")
-            if task.status == TaskStatus.READY} == {ids["api"], ids["ui"], ids["draft"]}
-    assert not (await handler.db.get_task(ids["api"])).is_blocked
-    assert not (await handler.db.get_task(ids["ui"])).is_blocked
-    assert not (await handler.db.get_task(ids["draft"])).is_blocked
-    assert (await handler.db.get_task(ids["final"])).is_blocked
+    # READY is a dependency state; the independent hold fences actual admission.
+    eligible = await handler.db.list_active_tasks(exclude_held_ready=True)
+    assert not {task.id for task in eligible if task.status == TaskStatus.READY}
+    assert await handler.db.ingest_held_task_ids(set(result["task_ids"])) == set(result["task_ids"])
     replay = await _ingest_commit(handler, result["proposal_id"], scope)
-    assert replay["already_committed"]
-    assert replay["task_ids"] == result["task_ids"]
+    assert not replay["success"] and replay["error_code"] == "fidelity_review_required"
 
 
 async def test_ingest_transaction_hides_partial_graph_and_rolls_back_every_row(handler, monkeypatch):
@@ -1387,7 +1424,7 @@ async def test_ingest_transaction_hides_partial_graph_and_rolls_back_every_row(h
     monkeypatch.setattr(handler.db, "create_task", original)
     monkeypatch.setattr(handler.db, "recompute_blocked", original_recompute)
     retried = await _ingest_propose(handler, path, scope, decision)
-    assert retried["committed"] is True
+    assert retried["status"] == "held"
 
 
 @pytest.mark.parametrize(
@@ -1452,7 +1489,7 @@ async def test_ingestion_scope_pins_project_session_and_approved_source(handler)
     refused = await handler.execute(
         "task_batch_propose", {**_implementation_graph(path, decision), "_scope": asdict(scope)},
     )
-    assert refused["success"] and refused["committed"], refused
+    assert refused["success"] and refused["status"] == "held", refused
 
 
 async def test_ingest_packet_is_pinned_scoped_and_replay_deduplicates_archived_graph(handler):
@@ -1477,7 +1514,7 @@ async def test_ingest_packet_is_pinned_scoped_and_replay_deduplicates_archived_g
         if await handler.db.get_task(tid):
             assert await handler.db.archive_task(tid)
     replay = await _ingest_propose(handler, path, scope, decision)
-    assert replay["already_committed"] and replay["task_ids"] == result["task_ids"]
+    assert replay["replayed"] and replay["members"] == result["members"]
     assert len(await handler.db.list_tasks(project_id="p1")) == 1
     await handler.db.update_task(scope.task_id, status=TaskStatus.COMPLETED)
     await handler.db.update_session(scope.session_id, state="stopped", desired_state="stopped")
@@ -1599,13 +1636,20 @@ async def test_invalid_external_prerequisite_refuses_entire_graph(handler, damag
 
 async def test_legacy_assignment_only_replays_its_existing_committed_receipt(handler):
     from sqlalchemy import delete, update
-    from src.database.tables import task_metadata, task_proposals
+    from src.database.tables import ingest_batch_members, ingest_batches, task_metadata, task_proposals
 
-    path, scope, decision = await _ingest_assignment(handler)
+    path, scope, decision = await _ingest_assignment(handler, "design")
     result = await _ingest_propose(handler, path, scope, decision)
     proposal = await get_proposal(handler.db, result["proposal_id"])
     proposal["payload"]["spec_ingest"] = {"task_id": scope.task_id, "spec_path": str(path)}
     async with handler.db.immediate() as conn:
+        # Historical committed proposals predate both batch tables.
+        await conn.execute(delete(ingest_batch_members).where(
+            ingest_batch_members.c.batch_id == result["batch_id"],
+        ))
+        await conn.execute(delete(ingest_batches).where(
+            ingest_batches.c.batch_id == result["batch_id"],
+        ))
         await conn.execute(delete(task_metadata).where(
             task_metadata.c.task_id == scope.task_id, task_metadata.c.key == "spec_ingest",
         ))
@@ -1620,3 +1664,142 @@ async def test_legacy_assignment_only_replays_its_existing_committed_receipt(han
         **_implementation_graph(path, decision), "_scope": asdict(scope),
     })
     assert not refused["success"], refused
+
+
+@pytest.mark.parametrize("missing,code", [
+    ("section_anchor", "section_anchor_missing"),
+    ("primary_outcome", "primary_outcome_missing"),
+    ("acceptance", "acceptance_missing"),
+])
+async def test_ingest_propose_hard_failure_creates_nothing(handler, missing, code):
+    from sqlalchemy import select
+    from src.database.tables import ingest_batches, ingest_batch_members, integration_outbox
+
+    path, scope, decision = await _ingest_assignment(handler)
+    graph = _implementation_graph(path, decision)
+    del graph["tasks"][1][missing]
+    result = await handler.execute("task_batch_propose", {**graph, "_scope": asdict(scope)})
+    assert not result["success"] and result["code"] == code
+    assert await _proposal_rows(handler) == []
+    assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {scope.task_id}
+    async with handler.db.immediate() as conn:
+        for table in (ingest_batches, ingest_batch_members):
+            assert not (await conn.execute(select(table))).all()
+        assert not (await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "batch.held",
+        ))).all()
+
+
+async def test_ingest_operational_root_has_hold_membership_and_delivery_condition(handler):
+    from sqlalchemy import select
+    from src.database.queries import ingest_batch_queries as batches
+    from src.database.tables import tasks
+
+    path, scope, decision = await _ingest_assignment(handler)
+    graph = _implementation_graph(path, decision)
+    graph["tasks"].append({
+        "tempId": "observe", "title": "Observe deployment", "description": "Observe landed API",
+        "section_anchor": "Rollout", "primary_outcome": "Verify deployed behavior",
+        "acceptance": "Observe the deployed API", "placement": "operational_root",
+        "delivery_targets": ["api"], "size": "s", "constraints": ["Wait for delivery"],
+        "owned_modules": [],
+    })
+    result = await _ingest_propose(handler, path, scope, decision, graph)
+    root, api = result["members"]["observe"], result["members"]["api"]
+    assert (await handler.db.get_task(root)).parent_task_id is None
+    assert await handler.db.get_task_meta(root, "delivery_condition") == {
+        "kind": "delivery-of", "targets": [api],
+    }
+    assert (root, api, "delivery-of") in await existing_graph_edges(handler.db, "p1")
+    async with handler.db.immediate() as conn:
+        assert (await batches.batch_of_task(conn, root))["role"] == "operational_root"
+        assert (await conn.execute(select(tasks.c.held_batch_id).where(
+            tasks.c.id == root,
+        ))).scalar_one() == result["batch_id"]
+    assert await handler.db.get_task_meta(api, "owned_modules") == ["src/api.py"]
+
+
+@pytest.mark.parametrize("state", ["held", "reviewing", "needs_scope"])
+async def test_ingest_commit_and_discard_preserve_held_batch(handler, state):
+    from src.database.queries import ingest_batch_queries as batches
+
+    path, scope, decision = await _ingest_assignment(handler)
+    result = await _ingest_propose(handler, path, scope, decision)
+    async with handler.db.immediate() as conn:
+        assert (await batches.set_state(conn, result["batch_id"], state))["success"]
+    committed = await _ingest_commit(handler, result["proposal_id"], scope)
+    assert not committed["success"] and committed["error_code"] == "fidelity_review_required"
+    assert committed["state"] == state
+    discarded = await handler.execute("task_batch_discard", {"proposal_id": result["proposal_id"]})
+    assert not discarded["success"] and discarded["error_code"] == "batch_retire_required"
+    assert (await get_proposal(handler.db, result["proposal_id"]))["status"] == "held"
+
+
+async def test_ingest_concurrent_propose_creates_one_batch(handler):
+    import asyncio
+    from sqlalchemy import select
+    from src.database.tables import ingest_batches, integration_outbox
+
+    path, scope, decision = await _ingest_assignment(handler)
+    args = {**_implementation_graph(path, decision), "_scope": asdict(scope)}
+    one, two = await asyncio.gather(*(handler.execute("task_batch_propose", args) for _ in range(2)))
+    assert one["success"] and two["success"], (one, two)
+    assert one["batch_id"] == two["batch_id"] and one["members"] == two["members"]
+    assert one["replayed"] != two["replayed"]
+    async with handler.db.immediate() as conn:
+        assert len((await conn.execute(select(ingest_batches))).all()) == 1
+        assert len((await conn.execute(select(integration_outbox).where(
+            integration_outbox.c.event_type == "batch.held",
+        ))).all()) == 1
+
+
+async def test_changed_approved_source_returns_previous_receipt_without_duplicating_work(handler):
+    from dataclasses import replace
+
+    path, scope, decision = await _ingest_assignment(handler)
+    original = await _ingest_propose(handler, path, scope, decision)
+    path.write_text("---\nstatus: approved\nspec_kind: implementation\n---\n# Revised spec\n")
+    revised = await handler.execute("spec_approve", {"project_id": "p1", "spec_path": str(path)})
+    assert revised["success"], revised
+    ensured = await handler.execute("ensure_spec_ingest", {
+        "project_id": "p1", "decision_id": revised["decision_id"],
+        "packet_sha256": revised["packet_sha256"],
+    })
+    assert ensured["success"] and ensured["task_id"] != scope.task_id
+    await handler.db.update_task(scope.task_id, status=TaskStatus.COMPLETED, assigned_agent_id=None)
+    await handler.db.update_task(ensured["task_id"], status=TaskStatus.IN_PROGRESS,
+                                 assigned_agent_id="ingester")
+    await handler.db.update_agent("ingester", current_task_id=ensured["task_id"])
+    await handler.db.update_session(scope.session_id, task_id=ensured["task_id"])
+    scope = replace(scope, task_id=ensured["task_id"])
+    result = await handler.execute("task_batch_propose", {
+        **_implementation_graph(path, revised), "_scope": asdict(scope),
+    })
+    assert not result["success"] and result["error_code"] == "incremental_plan_required", result
+    assert result["previous_receipt"]["members"] == original["members"]
+    assert await _proposal_rows(handler) == [(original["proposal_id"], "held")]
+
+
+async def test_ingest_dispatch_failure_rolls_back_batch_graph_and_hold(handler, monkeypatch):
+    from src.commands import proposal_commands
+    from sqlalchemy import select
+    from src.database.tables import ingest_batches, ingest_batch_members
+
+    path, scope, decision = await _ingest_assignment(handler)
+    original = proposal_commands.enqueue_integration_event
+
+    async def refuse_dispatch(*args, **kwargs):
+        raise RuntimeError("outbox insertion failed")
+
+    monkeypatch.setattr(proposal_commands, "enqueue_integration_event", refuse_dispatch)
+    failed = await handler.execute("task_batch_propose", {
+        **_implementation_graph(path, decision), "_scope": asdict(scope),
+    })
+    assert not failed["success"] and "outbox insertion failed" in failed["error"]
+    assert await _proposal_rows(handler) == []
+    assert {task.id for task in await handler.db.list_tasks(project_id="p1")} == {scope.task_id}
+    async with handler.db.immediate() as conn:
+        assert not (await conn.execute(select(ingest_batches))).all()
+        assert not (await conn.execute(select(ingest_batch_members))).all()
+    monkeypatch.setattr(proposal_commands, "enqueue_integration_event", original)
+    assert (await _ingest_propose(handler, path, scope, decision))["status"] == "held"

@@ -384,6 +384,19 @@ for pid, t in candidates:
             if why is None:
                 continue
             rows = (why.get("reasons") or []) if isinstance(why, dict) else []
+            # These canonical routing reasons exclude containers. Report old
+            # unrouted READY work even when dependency/gate handling below
+            # explains why the periodic candidate scan has not picked it up.
+            route_rows = [r for r in rows if r["code"] in {
+                "awaiting_route", "route_failed", "route_no_candidates", "route_held",
+                "router_not_ready", "router_unbound",
+            }]
+            if status == "READY" and t.get("route_source") == "unrouted" and route_rows:
+                findings.append(
+                    f"UNROUTED-READY {pid} {tid} [{age(t['updated_at'])}] "
+                    f"route_source=unrouted; {route_rows[0]['detail']} "
+                    "-> inspect the router's activation, routing events and runs"
+                )
             repair_alarm = next(
                 (r for r in rows if r["code"] == "train_repair_capacity_wait"), None
             )

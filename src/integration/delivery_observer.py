@@ -119,7 +119,9 @@ async def gating_delivery_ids(conn, project_id: str, *, limit: int = STATUS_DELI
     """Completed development work that open work waits on, newest first.
 
     What the scheduler and settlement wait for: the prerequisite of a
-    ``blocks`` edge whose dependent is still open, and the child of a
+    ``blocks`` or ``delivery-of`` edge whose dependent is still open (the
+    observation of a delivery-of target is what recomputes its dependents),
+    and the child of a
     container that has not finished.  Returns ``(ids, total)`` with *ids*
     bounded by *limit*, so a status read stays one bounded git pass.
     """
@@ -134,7 +136,7 @@ async def gating_delivery_ids(conn, project_id: str, *, limit: int = STATUS_DELI
         .select_from(edge.join(dependent, dependent.c.id == edge.c.task_id))
         .where(
             edge.c.depends_on_task_id == tasks.c.id,
-            edge.c.dep_type == "blocks",
+            edge.c.dep_type.in_(("blocks", "delivery-of")),
             dependent.c.status.not_in(finished),
         )
         .correlate(tasks)
@@ -942,5 +944,23 @@ class DeliveryObserver:
             view = DeliveryView(self.db, evidence, targets, tuple(snapshots), self.request_loader,
                                 target_loader)
             if cached_only or max_age > 0 or await view.fresh():
-                return view
+                break
+        if not cached_only:
+            await self._admit_delivery_dependents(view)
         return view
+
+    async def _admit_delivery_dependents(self, view: DeliveryView) -> None:
+        """Recompute ``delivery-of`` dependents of each task git shows delivered.
+
+        The projection itself reads only the durable landing receipt, so a
+        target seen delivered before its receipt commits stays blocking until
+        a later observation; nothing here unblocks without the receipt.
+        """
+        recompute = getattr(self.db, "recompute_delivery_dependents", None)
+        delivered = sorted(task_id for task_id in view.evidence if view.satisfied(task_id))
+        if recompute is None or not delivered:
+            return
+        try:
+            await recompute(delivered)
+        except Exception:
+            logger.warning("delivery-of recompute failed for %s", delivered, exc_info=True)
