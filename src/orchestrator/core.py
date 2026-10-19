@@ -3826,6 +3826,7 @@ class Orchestrator(
 
     async def _run_daily_git_branch_sweep(self, scheduled_date: str | None = None) -> None:
         """Run each project's backstop and deliver its counts to its supervisor."""
+        import hashlib
         from datetime import UTC, datetime
 
         from functools import partial
@@ -3838,6 +3839,7 @@ class Orchestrator(
         )
         from src.integration.delivery_branches import live_branch_references
         from src.integration.provenance_migration import ProvenanceMigration
+        from src.integration.repository_recovery import ensure_retained_origin
         from src.models import RepoSourceType
 
         try:
@@ -3887,6 +3889,7 @@ class Orchestrator(
                 repositories, workspaces = [], []
             extra_paths = [getattr(project, "workspace_path", None)]
             repository_origins = []
+            retained_origins = {}
             for repository in repositories:
                 origin = repository.url
                 if getattr(repository, "source_type", None) is RepoSourceType.LINK:
@@ -3905,11 +3908,17 @@ class Orchestrator(
                 if origin:
                     repository_origins.append((repository, origin))
                 extra_paths.append(repository.checkout_base_path)
-                if retirement is not None:
-                    extra_paths.append(str(retirement.retained_store(repository.id)))
+                digest = hashlib.sha256(repository.id.encode()).hexdigest()
+                retained_paths = [
+                    Path(self.config.data_dir) / "integration-repositories" / f"{digest}.git",
+                ]
                 publisher = getattr(self, "development_integration", None)
                 if publisher is not None:
-                    extra_paths.append(str(publisher._store_path(repository)))
+                    retained_paths.append(publisher._store_path(repository))
+                for path in retained_paths:
+                    extra_paths.append(str(path))
+                    if origin:
+                        retained_origins[str(Path(path).resolve())] = origin
             # A checkout no registration matches falls back to the project's own
             # repository: its repo_url, or with neither, the checkout's origin.
             project_url = getattr(project, "repo_url", "") or ""
@@ -3947,6 +3956,9 @@ class Orchestrator(
                 if common_path in seen_common_dirs:
                     continue
                 try:
+                    retained_origin = retained_origins.get(str(Path(checkout).resolve()))
+                    if retained_origin:
+                        await ensure_retained_origin(self.git, checkout, retained_origin)
                     repository_url = await self.git._arun(
                         ["config", "--get", "remote.origin.url"], cwd=checkout
                     )

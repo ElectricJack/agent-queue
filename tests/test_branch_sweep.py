@@ -395,6 +395,63 @@ async def test_daily_backstop_resolves_linked_source_and_shared_origin(
     assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
 
 
+@pytest.mark.parametrize("origin_state", ["missing", "empty", "conflicting"])
+async def test_daily_backstop_restores_retained_store_origin_from_registration(
+    guarded_repo, tmp_path, origin_state,
+):
+    from src.integration.branch_discard import BranchDiscardService
+
+    db, git, checkout, origin = guarded_repo
+    # Only the retained store is registered as a checkout for this test. Its
+    # configured repository URL, rather than a project-wide guess, is authority.
+    await db.update_repo("repo", checkout_base_path="")
+    await db.update_project("p", repo_url=str(tmp_path / "wrong-project.git"))
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+    store = BranchDiscardService(db, data_dir=orchestrator.config.data_dir).retained_store("repo")
+    store.parent.mkdir(parents=True)
+    _git(tmp_path, "init", "--bare", "--initial-branch=main", str(store))
+    # A local-only branch with unique work must survive the recovered sweep.
+    _commit(checkout, "retained work", "local.txt", "keep\n")
+    head = _git(checkout, "rev-parse", "HEAD")
+    _git(store, "fetch", str(checkout), f"{head}:refs/heads/aq/local-only")
+    conflicting = str(tmp_path / "foreign.git")
+    if origin_state != "missing":
+        _git(store, "config", "remote.origin.url", conflicting if origin_state == "conflicting" else "")
+    await BranchLock(db).acquire(
+        BranchKey(repository_id="repo", branch="aq/candidate"), "live-owner",
+    )
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert _git(store, "remote", "get-url", "origin") == (
+        conflicting if origin_state == "conflicting" else str(origin)
+    )
+    assert await git.arev_parse(str(store), "refs/heads/aq/local-only") == head
+    assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+    if origin_state == "conflicting":
+        assert "Checkouts: 0;" in body and "origin differs" in body
+    else:
+        assert "Checkouts: 1;" in body and "Failures" not in body
+
+
+async def test_daily_backstop_does_not_guess_origin_for_unregistered_checkout(
+    guarded_repo, tmp_path,
+):
+    db, git, checkout, origin = guarded_repo
+    _git(checkout, "remote", "remove", "origin")
+    await db.update_project("p", repo_url=str(origin))
+    orchestrator = _reporting_orchestrator(tmp_path / "state", {"success": True})
+    orchestrator.db, orchestrator.git = db, git
+
+    await orchestrator._run_daily_git_branch_sweep("2026-10-09")
+
+    assert _git(checkout, "remote") == ""
+    body = orchestrator._command_handler.execute.call_args.args[1]["body"]
+    assert "origin unavailable" in body and "Checkouts: 0;" in body
+
+
 @pytest.mark.parametrize("binding", ["bound-repo", None, "mismatched-repo"])
 async def test_daily_backstop_uses_project_binding_only_among_origin_matches(
     guarded_repo, tmp_path, binding,

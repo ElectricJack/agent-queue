@@ -3166,7 +3166,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:6e5dc5af15d2cb09fea81b1550ec6eacb89b587c73b5eb9200845d2b75b56456",
+      "digest": "sha256:ac6b0482dac99ec8da9a18da82d5ed163af0ed7baa346aeacf7983a6de5da94f",
       "imports": [
         "src.database.tables",
         "src.git.github_app",
@@ -3174,7 +3174,9 @@
         "src.integration.branch_discard",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The drain that removes branches an operator asked to discard."
     },
     "tests/test_branch_isolated_workspace.py": {
@@ -3220,11 +3222,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:9735d18a14c64b32ad5a47b8a28e9c175b6837ea0c9ddedab44c5dae2a1e4be8",
+      "digest": "sha256:4712135f0f3e7055ed6a73f979616acc8bdaa0b32ea92c4df58bd5dba0ae91cf",
       "imports": [
         "src.database.tables",
         "src.git.manager",
         "src.integration",
+        "src.integration.branch_discard",
         "src.integration.branch_sweep",
         "src.integration.lock",
         "src.integration.models",
@@ -5537,7 +5540,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:b5a7e4d289fee8791e8954dcbd18c2acaba6d070f0064c906d3c991b67859076",
+      "digest": "sha256:06c7336f0935b37dc2215fb582639fa266ac83fb2b456be2b8b77c01a15577f7",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -5552,6 +5555,7 @@
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.models",
+        "src.integration.promotion_contracts",
         "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.repository_incidents",

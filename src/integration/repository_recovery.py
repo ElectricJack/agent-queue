@@ -34,6 +34,29 @@ _RETAINED_CONFIG = (("core.fsync", "committed"), ("core.fsyncMethod", "fsync"),
 MAX_ATTEMPTS = 2
 
 
+async def ensure_retained_origin(git, store, origin_url, *, lock_held=False):
+    """Repair an absent origin from configuration without rebinding another remote."""
+    if not origin_url:
+        raise GitError("retained repository origin is not configured")
+    async with _transaction(git, store, lock_held):
+        configured = await git.arun_git_result(
+            ["config", "--get", "remote.origin.url"], cwd=str(store), lock_held=True,
+        )
+        if configured.returncode not in {0, 1}:
+            raise GitError("retained repository origin cannot be read")
+        current = configured.stdout.strip()
+        if current:
+            if current != origin_url:
+                raise GitError("retained repository origin differs from configured repository")
+            return
+        result = await git.arun_git_result(
+            ["config", "--local", "remote.origin.url", origin_url],
+            cwd=str(store), lock_held=True,
+        )
+        if result.returncode:
+            raise GitError("retained repository origin could not be restored")
+
+
 def _git_dir(store: Path) -> Path:
     if store.is_symlink():
         raise GitError("retained repository must be an isolated clone")

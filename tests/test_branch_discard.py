@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import pytest
@@ -102,6 +103,11 @@ class _Git:
         self.commands: list[tuple[str, ...]] = []
         self.ancestor_calls = 0
         self.list_heads_calls = 0
+        self.origins = {}
+
+    @asynccontextmanager
+    async def arepository_transaction(self, checkout):
+        yield
 
     async def afetch_repository_oid(
         self, checkout, *, repository, oid, destination_ref
@@ -122,7 +128,7 @@ class _Git:
         self.ancestor_calls += 1
         return self.ancestor
 
-    async def arun_git_result(self, args: list[str], *, cwd):
+    async def arun_git_result(self, args: list[str], *, cwd, lock_held=False):
         self.commands.append(tuple(args))
         for key in self.error_commands:
             if key in args:
@@ -130,6 +136,11 @@ class _Git:
                     self.list_heads_calls += 1
                 raise GitError(f"simulated failure: {key}")
         if args[0] == "init":
+            return _Completed()
+        if args[:3] == ["config", "--get", "remote.origin.url"]:
+            return _Completed(stdout=self.origins.get(cwd, ""))
+        if args[:3] == ["config", "--local", "remote.origin.url"]:
+            self.origins[cwd] = args[3]
             return _Completed()
         if args[0] == "update-ref" and "-d" in args:
             self.refs.pop(args[1], None)
@@ -164,6 +175,7 @@ async def db(tmp_path, reuse_database):
             project_id="p",
             source_type=RepoSourceType.LINK,
             source_path=str(tmp_path),
+            url="https://github.com/owner/repository.git",
             default_branch="main",
         )
     )
@@ -515,6 +527,8 @@ async def test_concurrent_store_initializers_never_share_a_git_init_directory(tm
     both_arrived = asyncio.Event()
 
     class GatedGit:
+        arepository_transaction = real.arepository_transaction
+
         async def arun_git_result(self, args, **kwargs):
             if args[:2] == ["init", "--bare"]:
                 initialized.append(args[-1])
@@ -528,9 +542,61 @@ async def test_concurrent_store_initializers_never_share_a_git_init_directory(tm
         for _ in range(2)
     ]
     store = services[0].retained_store("repo")
+    repository = RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url=str(tmp_path / "origin.git"),
+    )
 
-    await asyncio.gather(*(service._ensure_store(store) for service in services))
+    await asyncio.gather(*(service._ensure_store(store, repository) for service in services))
 
     assert len(set(initialized)) == 2
     assert (store / "HEAD").is_file()
     assert list(store.parent.iterdir()) == [store]
+    assert await real._arun(["remote", "get-url", "origin"], cwd=str(store)) == repository.url
+
+
+@pytest.mark.parametrize("existing_origin", [None, "", "other.git"])
+async def test_existing_discard_store_restores_only_missing_origin(tmp_path, existing_origin):
+    git = GitManager()
+    service = BranchDiscardService(None, data_dir=tmp_path, git_manager=git)
+    store = service.retained_store("repo")
+    store.parent.mkdir(parents=True)
+    await git._arun(["init", "--bare", "--template=", str(store)])
+    repository = RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url=str(tmp_path / "origin.git"),
+    )
+    if existing_origin is not None:
+        await git._arun(["config", "remote.origin.url", existing_origin], cwd=str(store))
+    # Local-only refs survive repair, even when there is no reachable remote.
+    saved = tmp_path / "saved.txt"
+    saved.write_text("saved")
+    blob = await git._arun(["hash-object", "-w", str(saved)], cwd=str(store))
+    await git._arun(["update-ref", "refs/aq/saved", blob], cwd=str(store))
+
+    if existing_origin:
+        with pytest.raises(GitError, match="origin differs"):
+            await service._ensure_store(store, repository)
+    else:
+        await service._ensure_store(store, repository)
+
+    assert await git._arun(["remote", "get-url", "origin"], cwd=str(store)) == (
+        existing_origin or repository.url
+    )
+    assert await git.arev_parse(str(store), "refs/aq/saved") == blob
+
+
+async def test_discard_store_resolves_linked_repository_origin(tmp_path):
+    git = GitManager()
+    service = BranchDiscardService(None, data_dir=tmp_path, git_manager=git)
+    source, origin = tmp_path / "linked.git", str(tmp_path / "origin.git")
+    await git._arun(["init", "--bare", "--template=", str(source)])
+    await git._arun(["remote", "add", "origin", origin], cwd=str(source))
+    repository = RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.LINK, source_path=str(source),
+    )
+    store = service.retained_store(repository.id)
+
+    await service._ensure_store(store, repository)
+
+    assert await git._arun(["remote", "get-url", "origin"], cwd=str(store)) == origin
