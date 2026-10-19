@@ -1816,3 +1816,143 @@ async def test_global_backlog_alert_counts_unread_across_aliases_and_survives_re
     assert "51 unread" in alert.body
     assert alert.project_id is None
     assert all([(await db.get_message(msg.id)).read_at is None for msg in sent])
+
+
+async def _supervisor_delivery_incident(db, *, task_id=None):
+    incident, _ = await db.create_escalation(
+        id="notice-incident", project_id="p1", task_id=task_id,
+        source_kind="supervisor_delivery", source_identity="task_recovery:notice-source",
+        incident_key="supervisor-unavailable:notice-source",
+        supervisor_owner="supervisor-p1", summary="Supervisor unavailable",
+        investigation="A recovery notice could not be delivered",
+        decision_requested="Inspect delivery", severity="low",
+        supervisor_delivery_body_kind="task_recovery",
+    )
+    return incident
+
+
+@pytest.mark.parametrize("state", ["resolved", "cancelled", "stale"])
+@pytest.mark.parametrize("kind", ["supervisor_delivery", "escalation_reply",
+                                  "escalation_owner_reminder"])
+async def test_terminal_escalation_notice_is_never_redelivered(db, monkeypatch, state, kind):
+    incident = await _supervisor_delivery_incident(db)
+    if kind == "supervisor_delivery":
+        notice = await db.get_message("msg-" + incident["id"])
+    else:
+        await db.archive_messages(["msg-" + incident["id"]])
+        notice = await _send(db, body_kind=kind, thread_id=incident["id"])
+    # Notify the live incident once; restart delivery after it settles.
+    monkeypatch.setattr("src.messages.delivery.NOTIFICATION_RETRY_SECONDS", 0)
+    first_manager = FakeSessionManager(
+        activity_map={("session", "supervisor-p1", "p1"): "idle"},
+    )
+    await make_engine(db, first_manager).run_delivery_pass()
+    assert len(first_manager.nudges) == 1 and notice.id in first_manager.nudges[0][3]
+    unrelated = await _send(db, thread_id=incident["id"], body="Keep this user conversation")
+    if state == "resolved":
+        closed = await db.resolve_escalation_on_recovery(
+            incident["id"], expected_revision=0, source_kind="supervisor_delivery",
+            terminal_outcome="Delivery recovered", terminal_evidence={"pending": 0},
+        )
+    else:
+        closed = await db.transition_escalation(
+            incident["id"], expected_revision=0, new_state=state,
+            terminal_outcome="No further action needed",
+        )
+    assert closed["state"] == state
+    # Queries and CAS must refuse even before the expiry sweep runs.
+    assert notice.id not in {msg.id for msg in await db.get_pending_messages(
+        "session", "supervisor-p1",
+    )}
+    assert not await db.claim_message_notification(notice.id, now=time.time(), retry_delay=0)
+    assert await db.escalate_unread_message(notice.id) is None
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "sleeping"})
+    for _ in range(2):
+        await make_engine(db, manager).run_delivery_pass()
+    stored = await db.get_message(notice.id)
+    assert stored.archived_at is not None and stored.via == "expired-source-notice"
+    assert stored.read_at is None and stored.delivered_at is None
+    assert stored.notification_attempts == 1
+    assert all(notice.id not in nudge[3] for nudge in manager.nudges)
+    assert (await db.get_message(unrelated.id)).archived_at is None
+
+
+@pytest.mark.parametrize("status", [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED])
+async def test_escalation_notice_expires_with_completed_source_task(db, status):
+    await db.create_task(Task(id="source-task", project_id="p1", title="Source", description="Work", status=status))
+    incident = await _supervisor_delivery_incident(db, task_id="source-task")
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "sleeping"})
+    await make_engine(db, manager).run_delivery_pass()
+    stored = await db.get_message("msg-" + incident["id"])
+    assert (stored.archived_at is not None) == (status == TaskStatus.COMPLETED)
+    assert bool(manager.ensure_started_calls) == (status != TaskStatus.COMPLETED)
+    assert (await db.get_escalation(incident["id"]))["state"] == "needs_human"
+
+
+@pytest.mark.parametrize("settlement", ["read", "resolved"])
+@pytest.mark.parametrize("stage", ["selection", "startup"])
+async def test_notice_settled_after_selection_cannot_cold_start_supervisor(db, settlement, stage):
+    incident = await _supervisor_delivery_incident(db)
+    notice_id = "msg-" + incident["id"]
+    manager = FakeSessionManager()
+
+    async def settle(**kwargs):
+        if settlement == "read":
+            await db.mark_read(notice_id)
+        else:
+            await db.resolve_escalation_on_recovery(
+                incident["id"], expected_revision=0, source_kind="supervisor_delivery",
+                terminal_outcome="Recovered during selection", terminal_evidence={},
+            )
+        return "sleeping"
+
+    if stage == "selection":
+        manager.activity = settle
+    else:
+        manager.activity_map[("session", "supervisor-p1", "p1")] = "sleeping"
+
+        async def start(**kwargs):
+            manager.ensure_started_calls.append(kwargs)
+            await settle()
+            return True
+
+        manager.ensure_started = start
+    await make_engine(db, manager).run_delivery_pass()
+    assert bool(manager.ensure_started_calls) == (stage == "startup")
+    assert manager.nudges == []
+    assert (await db.get_message(notice_id)).notification_attempts == (stage == "startup")
+
+
+@pytest.mark.parametrize("state,status,expired", [
+    ("supervisor", TaskStatus.IN_PROGRESS, False),
+    ("supervisor", TaskStatus.COMPLETED, True),
+    ("answered", TaskStatus.IN_PROGRESS, True),
+    ("resolved", TaskStatus.IN_PROGRESS, True),
+])
+async def test_worker_question_notice_skips_settled_question_or_task(db, state, status, expired):
+    await db.create_task(Task(id="question-task", project_id="p1", title="Source", description="Work", status=status))
+    await db.create_agent_question(
+        id="question-notice", session_id="worker", session_name="worker",
+        instance_token="token", task_id="question-task", project_id="p1", agent_id="agent",
+        claim_epoch=1, turn_id="turn", question="May I proceed?", requires_human=False,
+        state="supervisor", created_at=1, updated_at=1, source_ts=1,
+    )
+    await db.queue_agent_question_supervisor("question-notice", "May I proceed?", "supervisor-p1", 1)
+    if state != "supervisor":
+        await db.transition_agent_question("question-notice", ("supervisor",), state=state)
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "sleeping"})
+    await make_engine(db, manager).run_delivery_pass()
+    assert bool(manager.ensure_started_calls) == (not expired)
+    assert (await db.get_message("msg-question-notice")).read_at is None
+
+
+async def test_legacy_acknowledged_undelivered_message_never_wakes(db):
+    notice = await _send(db)
+    async with db._engine.begin() as conn:
+        await conn.execute(sa_update(messages).where(messages.c.id == notice.id)
+                           .values(read_at=time.time()))
+    manager = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "sleeping"})
+    assert await db.get_pending_recipients() == []
+    assert await db.get_pending_messages("session", "supervisor-p1") == []
+    await make_engine(db, manager).run_delivery_pass()
+    assert manager.ensure_started_calls == [] and manager.nudges == []

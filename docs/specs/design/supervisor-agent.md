@@ -298,6 +298,15 @@ Concurrent engine passes are skipped while one is in flight.
    whose subject identifies a completed or missing task in the notice's project.
    Preserve user mail and notices for failed or otherwise unfinished tasks;
    expiry is archival, never a recipient acknowledgment.
+   Apply the same archival policy to supervisor escalation notices, replies and
+   owner reminders whose durable thread identifies a terminal escalation or a
+   completed source task. Worker question notices identified by `msg-<question-id>`
+   expire when the question leaves supervisor handling or its source task completes.
+   Preserve unrelated user conversations and failed-task recovery. Pending selection
+   excludes acknowledged and obsolete notices; notification reservation rechecks
+   these conditions before starting or nudging a recipient, so a source settled
+   after selection cannot trigger another wake. Archival preserves the original body
+   and existing delivery receipts without inventing a read acknowledgment.
    More than 50 unread, unarchived messages across the global supervisor's logical
    addresses also queues a durable alert to `user:dashboard`, even if the session
    is busy or absent. Anchor its identity to the oldest unread message so delivery
@@ -361,6 +370,12 @@ turn was about. It fails closed instead:
   answer. On 2026-10-12 a supervisor's general progress about another task was posted as
   the reply to two workers' requests and cleared one worker's wait. Agents receive only
   explicit replies (`aq message reply`, `aq agent message --reply-to`).
+  `aq agent message` from a current named launch of the target's own project
+  supervisor is signed `session:supervisor-<project>`, so the worker's
+  `aq message reply` returns to that mailbox on the same thread. Any other
+  caller (the operator CLI, automation, the global supervisor, a stale launch)
+  signs `system:supervisor`, which stays unanswerable. A worker replies only
+  to its own mailboxes' messages, as that mailbox.
 - **One turn binds to at most one conversation.** If any row from another conversation
   (a different project, thread or sender, of any kind and including archived rows) was
   delivered to the same recipient within one window length either side of the request's

@@ -123,6 +123,20 @@ Rules the daemon enforces:
   waive it with `--deliverable-unmet 'review: <reason>'` when there is no
   document.
 
+## Recovery holds
+
+Recovery holds require the exact incident id and prior `decided_at` timestamp.
+Only a local operator or live global supervisor can run `aq task recover
+--operator-release --decision release --task-id TASK --incident-id INCIDENT
+--expected-hold-at DECIDED_AT --reason WHY`. This lifts only the hold, retaining
+task state, counters and integration ownership. For ordinary BLOCKED tasks they
+may choose `--decision retry` to authorize a reviewed nonautomatic failure while
+retaining fresh stopped-worker proof, routing, gate, resource and budget guards.
+Project supervisors must request that authority. Supervisor-authored train repair
+and `slot_reset_failed` holds escalate after 15 minutes; execution remains held
+until audited release. Explicit human holds never expire. Never delete metadata
+or reset counters to release a hold.
+
 ## Subtasks
 
 A subtask is a durable checklist row local to the task you hold — never

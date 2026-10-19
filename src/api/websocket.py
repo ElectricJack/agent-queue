@@ -60,6 +60,7 @@ _FORWARDED_PREFIXES: tuple[str, ...] = (
     "metrics.",
     "dashboard_state.",
     "review.",
+    "ask.",
     "project.paused",
     "project.resumed",
     # Run lifecycle from the V2 engine ("playbook.v2.run.started" and

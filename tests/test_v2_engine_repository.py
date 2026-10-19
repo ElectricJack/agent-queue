@@ -378,7 +378,9 @@ async def test_a_suspension_writes_the_wait_row_in_the_same_boundary(db):
 async def test_resuming_a_wait_clears_its_row_and_advances_the_run(db):
     engine, _adapter, ref = await build_for(db, "wait-kinds.artifact.json")
     outcome = await engine.run_rule(ref, "gate", event("task-completed-code"), TRUSTED_LOCAL)
-    resumed = await engine.resume(outcome.run_id, HumanDecision(decision="approve"), TRUSTED_LOCAL)
+    resumed = await engine.resume(outcome.run_id, HumanDecision(decision="approve", expected_wait_id=outcome.snapshot.wait.wait_id,
+                          expected_artifact_sha256=outcome.snapshot.artifact_sha256,
+                          decision_id="decision-approve"), TRUSTED_LOCAL)
     assert resumed.lifecycle is RunLifecycle.COMPLETED
     assert await db.list_active(outcome.run_id) == []
     stored = await db.load_run(outcome.run_id)

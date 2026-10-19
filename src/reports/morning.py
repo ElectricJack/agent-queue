@@ -258,6 +258,7 @@ async def collect_morning_evidence(
     window: dict,
     now: float,
     project_ids: tuple[str, ...] | None = None,
+    channel_id: str | None = None,
     previous_heads: dict[str, str] | None = None,
     reported_keys: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
@@ -268,7 +269,8 @@ async def collect_morning_evidence(
     proposed cursor. No model, reservation, message, transport, or file write.
     """
     snapshot = await db.collect_morning_report_sources(
-        since=window["replay_since"], until=window["until"], project_ids=project_ids
+        since=window["replay_since"], until=window["until"], project_ids=project_ids,
+        **({"channel_id": channel_id} if channel_id is not None else {})
     )
     sources = snapshot["sources"]
     gaps = list(snapshot["gaps"])
@@ -419,6 +421,11 @@ async def collect_morning_evidence(
                 "unresolved": row["status"] in ("FAILED", "BLOCKED"),
             },
         )
+    for row in sources.get("asks", []):
+        add("ask", row, at=float(row["updated_at"]), detail={
+            "summary": row["context"].get("title", ""), "severity": row["severity"],
+            "unresolved": True, "ask_id": row["id"],
+        })
     for row in sources.get("escalations", []):
         add(
             "escalation",
@@ -502,7 +509,7 @@ async def collect_morning_evidence(
                 "failures": [
                     fact["key"]
                     for fact in local_facts
-                    if fact["source"] in ("incident", "escalation", "attempt")
+                    if fact["source"] in ("incident", "escalation", "ask", "attempt")
                     or fact["detail"].get("outcome") == "fail"
                 ],
             }
@@ -510,6 +517,7 @@ async def collect_morning_evidence(
     brief = {
         "version": 1,
         "kind": "morning",
+        "needs_you": snapshot.get("needs_you", {"count": None, "source_health": "refreshing"}),
         "window": window,
         "facts": facts,
         "projects": project_briefs,

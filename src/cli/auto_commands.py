@@ -26,7 +26,10 @@ from src.tools.command_catalogue import load_command_catalogue
 
 _CATALOGUE = load_command_catalogue()
 _ALL_TOOL_DEFINITIONS = _CATALOGUE["explicit"]
-_CATEGORY_DESCRIPTIONS = _CATALOGUE["categories"]
+_CATEGORY_DESCRIPTIONS = {
+    **_CATALOGUE["categories"],
+    "ask": "Human requests, discussion and prepared decisions.",
+}
 _CLI_CATEGORY_OVERRIDES = _CATALOGUE["cli_category_overrides"]
 _TOOL_CATEGORIES = _CATALOGUE["tool_categories"]
 
@@ -149,10 +152,12 @@ HANDCRAFTED_COVERAGE = {
     "integration_reevaluate_repair",
     "integration_release_owner",
     "integration_reserve_owner",
+    "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_redrive_root",
     "integration_authorize_root",
     "integration_redrive_child",
+    "integration_recover_completed_container",
     "integration_reopen_collection",
     "integration_close_delivered_pr",
     "integration_record_root_noop",
@@ -433,6 +438,8 @@ def _strip_category_prefix(cmd_name: str, category: str) -> str:
 
     Falls back to the full name if stripping would leave nothing useful.
     """
+    if cmd_name == "ask_prepare_decision" and category == "ask":
+        return "prepare"
     singular = category.rstrip("s")
     plural = singular + "s"
 
@@ -709,10 +716,10 @@ def register_auto_commands(cli_group: click.Group, console: Console) -> None:
     for cmd_name, defn in tool_map.items():
         if cmd_name in HANDCRAFTED_COVERAGE or cmd_name in EXCLUDED:
             continue
-        # Determine category: check _TOOL_CATEGORIES, then overrides, then plugins
+        # CLI overrides intentionally take precedence over the shared API/MCP category.
         cat = (
-            _TOOL_CATEGORIES.get(cmd_name)
-            or _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            _CLI_CATEGORY_OVERRIDES.get(cmd_name)
+            or _TOOL_CATEGORIES.get(cmd_name)
             or plugin_categories.get(cmd_name)
         )
         if cat:

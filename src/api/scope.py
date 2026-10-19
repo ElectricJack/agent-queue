@@ -157,6 +157,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "review_withdraw",
         "review_reopen",
         "review_comment",
+        "review_feedback_complete",
         "report_get",
         "report_list",
         "morning_report_preview",
@@ -207,9 +208,11 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_reevaluate_repair",
         "integration_release_owner",
         "integration_release_stale_owners",
+        "integration_clear_retained_recovery",
         "integration_redrive_root",
         "integration_authorize_root",
         "integration_redrive_child",
+        "integration_recover_completed_container",
         "integration_reopen_collection",
         "integration_close_delivered_pr",
         "integration_transfer_owner",
@@ -290,12 +293,23 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     ``args`` is mutated in place (same object /api/execute forwards to
     ``ch.execute``).
     """
+    from src.commands.contracts.ask import ASK_ARGS, GATEWAY_COMMANDS, OPERATOR_COMMANDS
+    if command in GATEWAY_COMMANDS:
+        return "out of scope: ask intake requires the authenticated daemon gateway"
     if scope.kind == "local":
         return None
+    if command in OPERATOR_COMMANDS:
+        return "out of scope: ask gateway and operator controls are daemon/local only"
+    if command in ASK_ARGS and not scope.elevated:
+        return "out of scope: workers have no human ask authority"
+    if command == "ask_reply":
+        return "out of scope: human discussion requires an authenticated human"
     if command == "supervisor_inbox_post":
         return "out of scope: conversation intake is daemon-internal"
-    if command == "supervisor_inbox_reply" and not (scope.elevated and scope.project_id is None):
-        return "out of scope: conversation replies require local operator or global supervisor"
+    # The command verifies the live launch and exact stored message recipient.
+    # Project supervisors already own conversations selected by the named router.
+    if command == "supervisor_inbox_reply" and not scope.elevated:
+        return "out of scope: conversation replies require local operator or supervisor"
     if command in {"supervisor_inbox_status", "supervisor_inbox_history"} and not (
         scope.elevated and scope.project_id is None
     ):
@@ -341,6 +355,10 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         command in {"message_send", "message_inbox"}
         and args.get("to_kind") == "session"
         and args.get("to_id") == "supervisor-global"
+        # A report retains the sender's project. The handler verifies the
+        # persisted named supervisor launch and derives its sender identity;
+        # this preliminary gate never admits reading the global mailbox.
+        and not (command == "message_send" and scope.elevated and scope.project_id is not None)
     )
     if system_message and not (scope.elevated and scope.project_id is None):
         return "out of scope: system messages require global admin"
@@ -539,11 +557,11 @@ _PLAYBOOK_COMPILER_COMMANDS = frozenset(
 )
 
 _SPEC_INGEST_COMMANDS = frozenset({
-    "list_tasks", "get_downstream_tasks", "task_batch_propose", "task_batch_commit",
+    "list_tasks", "get_downstream_tasks", "task_batch_propose", "task_batch_commit", "approved_spec_packet",
 })
 
 
-async def spec_ingest_task_for_session(db, scope: RequestScope):
+async def spec_ingest_task_for_session(db, scope: RequestScope, *, legacy_receipt=False):
     """A live, server-assigned ingestion role; client hints grant no authority."""
     if db is None or not scope.session_id or not scope.project_id:
         return None
@@ -554,6 +572,28 @@ async def spec_ingest_task_for_session(db, scope: RequestScope):
     if (task is None or task.profile_id != "spec-ingest" or task.route_source != "role"
             or not (task.dedup_key or "").startswith("spec-ingest:")):
         return None
+    from src.asks.ingestion import approved_packet, task_stamp
+    from src.asks.models import AskError
+    from src.asks.operations import get_operation
+
+    async with db.immediate() as conn:
+        stamp = await task_stamp(conn, task.id)
+        if (not stamp and legacy_receipt
+                and not task.dedup_key.startswith("spec-ingest:decision:")):
+            # Compatibility grants only a previously committed receipt. The caller
+            # must still verify its exact proposal; no path confers new approval.
+            return task
+        if not stamp or task.dedup_key != f"spec-ingest:decision:{stamp.get('decision_id')}":
+            return None
+        try:
+            await approved_packet(db, stamp["decision_id"], stamp["packet_sha256"],
+                                  scope.project_id, conn=conn)
+            receipt = await get_operation(conn, stamp["decision_id"], "ingestion")
+            if (not receipt or receipt["status"] != "succeeded"
+                    or (receipt["receipt"] or {}).get("task_id") != task.id):
+                return None
+        except (AskError, KeyError):
+            return None
     return task
 
 # A reviewer task's whole job is a verdict on *another* task: read it, and
@@ -851,7 +891,9 @@ async def check_request_scope(
     if (error := _canonicalise_reroute_args(command, args, scope)) is not None:
         return error
     if scope.kind == "session" and not scope.elevated and command in _SPEC_INGEST_COMMANDS:
-        held = await spec_ingest_task_for_session(db, scope)
+        held = await spec_ingest_task_for_session(
+            db, scope, legacy_receipt=command == "task_batch_commit",
+        )
         if held is not None:
             if args.get("session_id") not in (None, scope.session_id):
                 return "out of scope: session_id mismatch"
@@ -866,6 +908,9 @@ async def check_request_scope(
                     return "out of scope: proposal mismatch"
                 if (proposal["payload"].get("spec_ingest") or {}).get("task_id") != held.id:
                     return "out of scope: proposal does not belong to held ingestion task"
+                if (not held.dedup_key.startswith("spec-ingest:decision:")
+                        and proposal["status"] != "committed"):
+                    return "out of scope: legacy ingestion only permits committed receipts"
             if command == "get_downstream_tasks":
                 task = await db.get_task(args.get("task_id"))
                 if task is None or task.project_id != scope.project_id:

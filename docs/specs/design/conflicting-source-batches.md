@@ -11,7 +11,7 @@ the exact PR dirty, missing PR CI does not prevent freezing that source alongsid
 other compatible completions targeting the same delivery branch. It is never a
 passing check. A running workflow, red required checks, malformed or unavailable
 observations and unknown mergeability keep their existing admission gates.
-An exact daemon-bound source CI repair is the sole exception for a red source:
+Historical daemon-bound source CI repairs remain the sole exception for a red source:
 both the source and its independently admitted repair freeze in the same batch,
 source first, with all configured review authorizations intact. A stale binding,
 unavailable repair, red repair or unfinished repair prerequisite keeps the pair
@@ -51,9 +51,49 @@ expected-old publication. Green source checks, a passing worker close, or checks
 on a partial candidate cannot advance the target. Historical delivery proofs
 remain readable and do not authorize a new publication.
 
+A passing ordinary repair close reseals its still-open batch and wakes the
+batch's delivery target, using the immutable repair input and current allocation
+number. It does not replace frozen members, spend another attempt, release a
+pause or abort, or declare the candidate green. The next target visit repeats
+this idempotent handoff if close was interrupted after task completion; archived
+completed repairs remain recoverable. Fresh Git and exact checks still decide
+whether the repaired candidate can publish.
+
+Doctor and the stall sweep flag an open sealed batch that has made no progress
+past its train settling cap (30 minutes by default). The deadline starts at the
+latest batch change, completed repair, or observed candidate/target/check-state
+change. Live bounded visits and announced retry deadlines receive their bounded
+grace; unfinished repair tasks retain their existing capacity diagnostics.
+Paused, aborted and terminal batches are excluded. Observations never advance
+delivery or authorize an automatic abort.
+
 Acceptance uses real Git and disposable PostgreSQL: multiple sources conflicting
 with main and one another; generated-only overlaps rebuilt once from the full
 union; suppressed PR CI; genuine source red and unavailable CI; explicit review
 gates; aborted inputs and prerequisites; an incomplete repair with source
 trailers; one repair across repeat visits; and publication only after final
 candidate checks on the complete ancestry.
+
+## Bounded source CI recovery
+
+New source-CI failures reopen the original completed leaf in place, retaining its
+branch, existing PR and explicit route; derived routes are recomputed normally.
+The command revalidates exact source identity,
+policy generation, authorization, delivery and stopped ownership before the
+transaction that records feedback and makes the task READY. One automatic repair
+is allowed per original task, across source heads and checkpoint generations.
+A further genuine failure, or red CI on a historical repair delegate, sends one
+durable supervisor notification and creates no new task or PR. Existing delegates
+keep their delivery, retirement and writer protections; no successor is filed.
+Containers retain their completed state and notify the supervisor once to
+coordinate repair of the original branch with its existing owner.
+The new `source-ci-reopen` vault template seeds on existing installs without
+overwriting customized or historical `source-ci-repair` delegate instructions.
+The supervisor closes obsolete historical repair PRs after their source lands.
+Cancellation-only observations keep their bounded infrastructure rerun policy.
+
+Ownership and storage-sink inventory drift is advisory in ordinary CI. The
+source inventory still discovers and charges all owned code, including relocated
+code and unreviewed sinks. Fixed size/table ceilings and the prohibition on new
+integration storage categories remain enforced. Factory-policy page length is
+advisory; its normative content and role references remain required.

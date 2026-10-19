@@ -21,6 +21,7 @@ without keeping exceptions or rendering their tracebacks for each root.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -45,6 +46,11 @@ _UNREAD = object()
 #: GitHub computes a PR's mergeability in the background after a read; the
 #: first ``null`` is looked at again this soon rather than after the backoff.
 MERGEABILITY_RETRY_SECONDS = 15
+
+#: A red root's recovery waits behind the delivery observer's per-repository
+#: fetch queue. A visit waits this long for it, then defers that root and goes
+#: on; the recovery keeps running and a later visit takes its outcome.
+ROOT_PR_RECOVERY_WAIT_SECONDS = 30.0
 
 
 def pull_request_mismatch(pull, binding, *, branch, base_ref, head_sha):
@@ -80,6 +86,8 @@ class RootPullRequestGate:
         self.review_requirements = review_requirements
         self.failure_handler = failure_handler
         self._deferred = {}
+        self._recoveries = {}
+        self._running = set()
 
     async def __call__(self, target, member):
         return await self._observe(target, member)
@@ -124,9 +132,15 @@ class RootPullRequestGate:
         for stale in list(self._deferred):
             if stale[:2] == key[:2] and stale != key:
                 del self._deferred[stale]
+        for stale in list(self._recoveries):
+            if stale[:2] == key[:2] and stale != key:
+                # A superseded observation could only answer stale; at most one
+                # recovery runs per target and root.
+                self._recoveries.pop(stale).cancel()
         previous = self._deferred.get(key)
         now = self.clock()
-        if (previous and now < previous["retry_at"]
+        recovered = key in self._recoveries and self._recoveries[key].done()
+        if (previous and now < previous["retry_at"] and not recovered
                 and not (repaired_source and previous["code"] == "pr_checks_red")):
             return previous
 
@@ -206,7 +220,7 @@ class RootPullRequestGate:
                     # Workflow-level failure, absent checks and cancellations do
                     # not establish a failed required job that a worker can fix.
                     if any(check.conclusion is Conclusion.FAILURE for check in result.checks):
-                        recovery = await self.failure_handler(RootPRCheckFailure(
+                        recovery = await self._recover(key, RootPRCheckFailure(
                             request=request, source_sha=member.source_sha,
                             source_base_sha=member.source_base_sha, pr_url=url,
                             policy_generation=row["hierarchical_integration_generation"],
@@ -230,6 +244,36 @@ class RootPullRequestGate:
             if rate_limit_cause(exc) is not None:
                 raise
             return defer("unknown", reason=str(exc))
+
+    async def _recover(self, key, observation):
+        """Wait a bounded time for the recovery; it outlives a visit that stops waiting.
+
+        Recovery reads delivery truth for mutation, which queues on the
+        observer's per-repository fetch. Awaiting that inside admission let the
+        visit deadline cancel it before the root was deferred, so every visit
+        repeated the wait and no other member of the target was admitted.
+        """
+        task = self._recoveries.get(key)
+        if task is None:
+            task = asyncio.ensure_future(self.failure_handler(observation))
+            self._recoveries[key] = task
+            self._running.add(task)
+            task.add_done_callback(self._settled)
+        if not task.done():
+            await asyncio.wait({task}, timeout=ROOT_PR_RECOVERY_WAIT_SECONDS)
+        if not task.done():
+            logger.info("root %s PR check recovery still running after %.0fs; deferring",
+                        observation.request.task_id, ROOT_PR_RECOVERY_WAIT_SECONDS)
+            return {"success": False, "outcome": "pending",
+                    "detail": "root PR check recovery is still running"}
+        del self._recoveries[key]
+        return task.result()
+
+    def _settled(self, task):
+        self._running.discard(task)
+        if not task.cancelled() and task.exception() is not None \
+                and task not in self._recoveries.values():
+            logger.warning("root PR check recovery failed", exc_info=task.exception())
 
 
 @dataclass

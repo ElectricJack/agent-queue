@@ -181,6 +181,59 @@ async def _run_scheduler_cycles(
             unsubscribe()
 
 
+async def _bind_report_outbox(orch, transport, config, *, handler, bot):
+    """Bind the shared notification pump after its external transport is ready."""
+    from src.asks.delivery import AskDeliveryAdapter
+    from src.delivery.scheduler import DeliveryScheduler
+    from src.digest import DigestScheduleService
+
+    conversation_adapter = _bind_conversation_outbox(orch, transport, config)
+    rate_guard = _bot_rate_guard(bot)
+    lease_owner = f"daemon-{os.getpid()}"
+    # Hourly digest (discord-simplification §8) shares the destination and
+    # rate guard with escalations, while retaining its own durable outbox.
+    orch.digest_schedule = DigestScheduleService(
+        orch.db,
+        transport,
+        config=config,
+        lease_owner=lease_owner,
+        links=orch.dashboard_links,
+        rate_guard=rate_guard,
+        escalation_priority=orch.db.count_due_escalation_deliveries,
+        event_bus=orch.bus,
+        include_outbound=True,
+        pump_enabled=False,
+        conversation_adapter=conversation_adapter,
+        authoring_ready=lambda: bool(
+            orch.playbook_manager is not None
+            and orch.playbook_manager.is_active("supervisor-hourly-report")
+        ),
+    )
+    ask_adapter = (
+        AskDeliveryAdapter(handler, transport, lease_owner=lease_owner, links=orch.dashboard_links)
+        if handler is not None else None
+    )
+    orch.delivery_scheduler = DeliveryScheduler(
+        orch.db,
+        transport,
+        config=config,
+        lease_owner=lease_owner,
+        digest=orch.digest_schedule,
+        conversation_adapter=conversation_adapter,
+        ask_adapter=ask_adapter,
+        links=orch.dashboard_links,
+        rate_guard=rate_guard,
+    )
+    if handler is not None:
+        handler.ask_delivery = ask_adapter
+    logger.info("Digest scheduler wired to the Discord transport")
+    # READY may have attempted recovery before this binding existed.
+    # Its fail-closed pass leaves cursors untouched; recover now.
+    recover = getattr(bot, "_run_conversation_backfill", None)
+    if config.discord.conversation.enabled and recover is not None:
+        await recover()
+
+
 def _freeze_startup_heap() -> None:
     """Keep the objects built at startup out of every later full collection.
 
@@ -420,8 +473,6 @@ async def run(
         if discord_transport is not None and config.discord.channel_id:
             from src.escalations import EscalationDeliveryService
 
-            conversation_adapter = _bind_conversation_outbox(orch, discord_transport, config)
-
             handler = orch._get_handler()
             # Every link names the dashboard server's configured origin
             # (dashboard.server.public_url), resolved per new payload --
@@ -439,34 +490,7 @@ async def run(
             )
             logger.info("Escalation delivery service wired to the Discord transport")
 
-            # Hourly digest (discord-simplification §8).  It shares the
-            # transport, the rate guard and the destination with escalations
-            # but keeps its own durable outbox, and it stands down whenever an
-            # escalation is still owed a send.
-            from src.digest import DigestScheduleService
-
-            orch.digest_schedule = DigestScheduleService(
-                orch.db,
-                discord_transport,
-                config=config,
-                lease_owner=f"daemon-{os.getpid()}",
-                links=orch.dashboard_links,
-                rate_guard=_bot_rate_guard(bot),
-                escalation_priority=orch.db.count_due_escalation_deliveries,
-                event_bus=orch.bus,
-                include_outbound=True,
-                conversation_adapter=conversation_adapter,
-                authoring_ready=lambda: bool(
-                    orch.playbook_manager is not None
-                    and orch.playbook_manager.is_active("supervisor-hourly-report")
-                ),
-            )
-            logger.info("Digest scheduler wired to the Discord transport")
-            # READY may have attempted recovery before this binding existed.
-            # Its fail-closed pass leaves cursors untouched; recover now.
-            recover = getattr(bot, "_run_conversation_backfill", None)
-            if config.discord.conversation.enabled and recover is not None:
-                await recover()
+            await _bind_report_outbox(orch, discord_transport, config, handler=handler, bot=bot)
         elif bot is not None:
             logger.warning(
                 "Discord cutover is not ready or has no explicit shared channel; core "

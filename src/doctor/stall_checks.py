@@ -597,6 +597,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _continuous_promotion_findings(ctx, active, now),
         _escalation_delivery_findings(ctx, active, now),
         _slot_capacity_findings(ctx, active),
+        _train_batch_findings(ctx, active, now),
     )
     findings = [item for group in groups for item in group]
     findings.extend(_route_findings(tasks) + flock_findings + conversation + delivery_engines)
@@ -636,6 +637,15 @@ async def _slot_capacity_findings(ctx: DoctorContext, active: set[str]) -> list[
         for entry in await find_capacity_shortfalls(ctx.db)
         if entry["project_id"] in active
     ]
+
+
+async def _train_batch_findings(ctx, active, now):
+    from src.doctor.integration_checks import stalled_train_batches
+
+    return [_finding("train_batch_stalled", item["project_id"], item["detail"],
+                     **{key: value for key, value in item.items()
+                        if key not in {"project_id", "detail"}})
+            for item in await stalled_train_batches(ctx, project_ids=active, now=now)]
 
 
 async def _escalation_delivery_findings(ctx, active, now):

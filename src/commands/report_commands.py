@@ -103,6 +103,7 @@ class ReportCommandsMixin:
                             self.db,
                             self.orchestrator.git,
                             window=context["window"],
+                            channel_id=str(self.orchestrator.config.discord.channel_id),
                             now=claimed["created_at"],
                             project_ids=tuple(claimed["config_snapshot"]["project_ids"]) or None,
                             previous_heads=context["previous_heads"],
@@ -264,7 +265,8 @@ class ReportCommandsMixin:
             since = float(args["since"]) if args.get("since") is not None else None
             window = report_window(since, until, int(args.get("max_lookback_hours", 72)))
             result = await collect_morning_evidence(
-                self.db, self.orchestrator.git, window=window, now=now, project_ids=scope
+                self.db, self.orchestrator.git, window=window, now=now, project_ids=scope,
+                channel_id=str(self.orchestrator.config.discord.channel_id)
             )
         except (TypeError, ValueError, OverflowError):
             return _error("report.invalid", "invalid UTC window or report settings")

@@ -29,6 +29,7 @@ class RepositoryGit:
         self.data_dir = Path(data_dir)
         self.git = git_manager
         self.repository_resolver = repository_resolver
+        self._retained_repositories = {}
 
     async def _get_repo(self, repository_id: str) -> RepoConfig | None:
         result = (
@@ -59,11 +60,13 @@ class RepositoryGit:
         if not origin:
             raise PromotionInvariantError("canonical repository has no immutable origin")
         digest = hashlib.sha256(repository_id.encode("utf-8")).hexdigest()
-        return ResolvedRepository(
+        resolved = ResolvedRepository(
             repo=repo,
             origin_url=origin,
             retained_git_dir=self.data_dir / "integration-repositories" / f"{digest}.git",
         )
+        self._retained_repositories[resolved.retained_git_dir] = repo
+        return resolved
 
 
     async def _ensure_retained_repository(self, repository: ResolvedRepository) -> None:
@@ -94,13 +97,20 @@ class RepositoryGit:
                 or configured.stdout.strip() != repository.origin_url
             ):
                 raise PromotionInvariantError("retained repository identity changed")
+            from src.integration.repository_recovery import harden_retained_repository
+
+            await harden_retained_repository(self.git, store, lock_held=True)
 
 
     async def _fetch_all_heads(self, store: Path, origin_url: str) -> None:
+        from src.integration.repository_recovery import fetch_retained_origin
+
+        repository = self._retained_repositories.get(store)
         try:
-            await self.git.afetch_origin(
+            await fetch_retained_origin(self.git,
                 str(store), repository_url=origin_url, lock_held=True,
-                all_heads=True,
+                project_id=repository.project_id if repository else None,
+                repository_id=repository.id if repository else None,
             )
         except (GitError, GitHubAccessError) as exc:
             raise PromotionRuntimeError(f"git fetch failed: {exc}") from exc

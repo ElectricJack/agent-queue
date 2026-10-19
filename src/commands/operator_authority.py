@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 OPERATOR_CLASSES = frozenset({"standard-high", "deep-high"})
 OPERATOR_HARNESSES = frozenset({"claude", "codex"})
 OPERATOR_FORBIDDEN = frozenset({
+    "ask_prepare_decision", "ask_decide", "ask_retry_operation",
     "review_decide", "review_delegate", "decision_record", "promote_approve",
     "promote_prepare", "promote_request", "promote_hotfix", "delivery_promote",
     "integration_promote_main", "pr_merge", "git_merge", "integration_app_setup",

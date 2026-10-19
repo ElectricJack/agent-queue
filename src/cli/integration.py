@@ -355,15 +355,18 @@ def integration_reevaluate_repair(ctx, operation_id, apply, head, episode, gener
 @click.option("--task-id")
 @click.option("--owner-row-id")
 @click.option("--dry-run", is_flag=True)
+@click.option("--apply", is_flag=True, help="Preserve work and release the proved stopped owner.")
 @click.pass_context
 @_handle_errors
 def integration_release_owner(
-    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool
+    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool, apply: bool
 ) -> None:
-    """Release a stranded branch owner after proving its writer and branch safe."""
+    """Preview a stranded owner's recovery; use --apply to preserve and release."""
     if (task_id is None) == (owner_row_id is None):
         raise click.UsageError("provide exactly one of --task-id or --owner-row-id")
-    args: dict[str, Any] = {"dry_run": dry_run}
+    if dry_run and apply:
+        raise click.UsageError("--dry-run and --apply are mutually exclusive")
+    args: dict[str, Any] = {"dry_run": not apply}
     if task_id is not None:
         args["task_id"] = task_id
     else:
@@ -378,6 +381,21 @@ def integration_release_owner(
 def integration_reserve_owner(ctx: click.Context, task_id: str) -> None:
     """Restore a stopped train task's missing canonical branch reservation."""
     _execute(ctx, "integration_reserve_owner", {"task_id": task_id})
+
+
+@integration.command("clear-retained-recovery")
+@click.option("--project-id", required=True)
+@click.option("--incident-id", default=None, help="Clear only this incident.")
+@click.pass_context
+@_handle_errors
+def integration_clear_retained_recovery(
+    ctx: click.Context, project_id: str, incident_id: str | None
+) -> None:
+    """Lift a retained Git cache admission hold once a full fsck is clean."""
+    args = {"project_id": project_id}
+    if incident_id is not None:
+        args["incident_id"] = incident_id
+    _execute(ctx, "integration_clear_retained_recovery", args)
 
 
 @integration.command("release-stale-owners")
@@ -554,6 +572,41 @@ def integration_redrive_child(
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_redrive_child", args)
+
+
+@integration.command("recover-completed-container")
+@click.argument("task_id")
+@click.option("--project", "project_id", required=True)
+@click.option("--repository", "repository_id", required=True)
+@click.option("--branch", required=True, help="Exact task branch.")
+@click.option("--apply", is_flag=True, help="Apply the previewed checkpoint repair.")
+@click.option("--head", "expected_head_sha")
+@click.option("--completion", "expected_completion_id")
+@click.option("--generation", "expected_generation", type=click.IntRange(min=0))
+@click.option("--version", "expected_version", type=click.IntRange(min=0))
+@click.option("--origin-sha256", "expected_origin_sha256")
+@click.option("--snapshot-sha256", "expected_snapshot_sha256")
+@click.option("--reason")
+@click.pass_context
+@_handle_errors
+def integration_recover_completed_container(ctx: click.Context, task_id: str, **options) -> None:
+    """Preview a completed container's stale checkpoint repair from exact pass provenance.
+
+    Apply requires every identity printed by the preview and an audit reason.
+    Recovery changes only checkpoint provenance. Exact-source review, hosted CI
+    and normal train admission still control delivery.
+    """
+    apply = options.pop("apply")
+    if apply and any(options.get(key) is None for key in (
+        "expected_head_sha", "expected_completion_id", "expected_generation", "expected_version",
+        "expected_origin_sha256", "expected_snapshot_sha256", "reason",
+    )):
+        raise click.UsageError("--apply requires --head, --completion, --generation, --version, "
+                               "--origin-sha256, --snapshot-sha256 and --reason from preview")
+    _execute(ctx, "integration_recover_completed_container", {
+        "task_id": task_id, "dry_run": not apply,
+        **{key: value for key, value in options.items() if value is not None},
+    })
 
 
 @integration.command("reopen-collection")

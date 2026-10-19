@@ -272,7 +272,7 @@ class IntegrationStatusService:
     async def control_status(self, project_id: str) -> dict[str, Any] | None:
         """Current project inputs and subject schedules, without remote I/O."""
         if self.git_first == "active":
-            return await self.train_status(project_id)
+            return await self.train_status(project_id, observe=False)
         async with self._consistent_snapshot() as conn:
             return await self._control_status_on(conn, project_id)
 
@@ -640,8 +640,15 @@ class IntegrationStatusService:
 
     # -- git_first: active ---------------------------------------------------
 
-    async def train_status(self, project_id: str) -> dict[str, Any] | None:
-        """The train's targets and open batches, from Git, checks, reviews and intent."""
+    async def train_status(
+        self, project_id: str, *, observe: bool = True
+    ) -> dict[str, Any] | None:
+        """The train's targets and open batches, from Git, checks, reviews and intent.
+
+        ``observe=False`` is the control-only read: the durable batches, the last
+        visits and their cached evidence, with no default-branch fetch and no epic
+        distance, so ``epics`` is omitted rather than reported empty.
+        """
         async with self._consistent_snapshot() as conn:
             project = await self._one(
                 conn, select(projects).where(projects.c.id == project_id)
@@ -666,8 +673,8 @@ class IntegrationStatusService:
         from src.integration.train_sources import project_snapshot
 
         epics = []
-        repository = await self.db.get_repo(project["integration_repository_id"]) if project[
-            "integration_repository_id"] else None
+        repository = await self.db.get_repo(project["integration_repository_id"]) if (
+            observe and project["integration_repository_id"]) else None
         if repository is not None:
             default = "refs/heads/" + repository.default_branch.removeprefix("refs/heads/")
             observed = await project_snapshot(self.db, TrainTarget(
@@ -700,7 +707,7 @@ class IntegrationStatusService:
             "operator_decisions": decisions,
             "targets": [{**visit, **evidence.get(key, {})} for key, visit in visits.items()],
             "batches": batches,
-            "epics": epics,
+            **({"epics": epics} if observe else {}),
             "blockers": _sorted_blockers(blockers),
             "promotion_flow": promotion_flow,
             # Which runner produces each target kind's required checks.

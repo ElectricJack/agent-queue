@@ -128,6 +128,35 @@ async def test_a_non_numeric_channel_is_an_actionable_configuration_fault():
         await transport.post_root(channel_id="agent-queue", content="x")
 
 
+async def test_read_root_requires_the_exact_bot_owned_message():
+    from unittest.mock import AsyncMock
+
+    transport, _ = make_transport()
+    message = SimpleNamespace(author=SimpleNamespace(id=10), content='confirmed operation marker')
+    channel = SimpleNamespace(send=AsyncMock(), fetch_message=AsyncMock(return_value=message))
+    transport._bot.user = SimpleNamespace(id=10)
+    transport._bot.get_channel = lambda _id: channel
+    assert await transport.read_root(channel_id='424242424242424242', root_message_id='7') == message.content
+    channel.fetch_message.assert_awaited_once_with(7)
+    message.author.id = 11
+    with pytest.raises(TransportUnavailable, match='not owned'):
+        await transport.read_root(channel_id='424242424242424242', root_message_id='7')
+
+
+async def test_read_root_distinguishes_deleted_from_unavailable():
+    from unittest.mock import AsyncMock
+
+    transport, _ = make_transport()
+    channel = SimpleNamespace(send=AsyncMock(), fetch_message=AsyncMock())
+    transport._bot.get_channel = lambda _id: channel
+    channel.fetch_message.side_effect = discord.NotFound(SimpleNamespace(status=404, reason='Gone'), 'Gone')
+    with pytest.raises(TransportMissing):
+        await transport.read_root(channel_id='424242424242424242', root_message_id='7')
+    channel.fetch_message.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason='Denied'), 'Denied')
+    with pytest.raises(TransportUnavailable):
+        await transport.read_root(channel_id='424242424242424242', root_message_id='7')
+
+
 async def test_posts_and_edits_share_one_budget_across_transport_instances():
     from unittest.mock import AsyncMock
 

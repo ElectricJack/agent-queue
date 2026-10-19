@@ -47,8 +47,8 @@ from src.playbooks.validation import (
 )
 from tests.playbook_v2_engine_helpers import artifact_ref_for
 
-BUNDLE = Path("tests/fixtures/playbooks/v2/agent-queue-root-train")
-TEMPLATE = Path("tests/fixtures/playbooks/v2/root-train")
+BUNDLE = Path("tests/fixtures/playbooks/historical-v2/agent-queue-root-train")
+TEMPLATE = Path("tests/fixtures/playbooks/historical-v2/root-train")
 BASE = "a" * 40
 HEAD = "b" * 40
 

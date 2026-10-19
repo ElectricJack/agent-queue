@@ -28,6 +28,10 @@ DELIVERY_STALE_S = 6 * 3600
 STALE_OPEN_S = 2 * 3600  # BLOCKED/PAUSED/FAILED this long needs a premise check, not a skip
 DAEMON_CHECKOUT = "/home/jkern/dev/agent-queue2"
 LOG_PATH = "/home/jkern/.agent-queue/logs/agent-queue.log"
+AUTO_DEPLOY_LOG = os.environ.get(
+    "AQ_AUTO_DEPLOY_LOG", "/home/jkern/.agent-queue/logs/aq-auto-deploy.log")
+AUTO_DEPLOY_STALL_S = 30 * 60  # six 5-minute auto-deploy runs
+AUTO_DEPLOY_GAP_S = 15 * 60  # skips further apart than this are separate stalls
 VALIDATION_CONTAINER = "aq-triage-test-20260831"
 DESIGN_HINT = re.compile(r"\b(designs?|specs?|architecture|plans?|roadmaps?)\b", re.I)
 PANE_TROUBLE = re.compile(
@@ -826,6 +830,62 @@ def development_checks():
         hits = [line for line in log_tail.splitlines() if pattern in line]
         if hits:
             findings.append(f"PUBLISHER {hits[-1][:200]}")
+
+    auto_deploy_check()
+
+
+def _auto_deploy_skips():
+    """The trailing run of ``skip:`` lines in the auto-deploy log, oldest first,
+    as (epoch, reason). A deploy, a rollback or a gap longer than one missed run
+    ends the run; nothing-to-deploy runs log nothing."""
+    try:
+        with open(AUTO_DEPLOY_LOG, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 65536))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    run = []
+    for line in reversed(lines):
+        m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (.*)", line)
+        if not m:
+            continue  # output of a command the script ran
+        if not m.group(2).startswith("skip: "):
+            if m.group(2).startswith(("deployed ", "BLOCKED:")):
+                break
+            continue
+        ts = datetime.datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.UTC).timestamp()
+        if (run[-1][0] if run else NOW) - ts > AUTO_DEPLOY_GAP_S:
+            break
+        run.append((ts, m.group(2)[len("skip: "):]))
+    return run[::-1]
+
+
+def auto_deploy_check():
+    """The 5-minute auto-deploy (scripts/operator-checks/aq-auto-deploy.sh)
+    skips while the live checkout is dirty, off dev or diverged. Uncommitted
+    edits there stalled every deploy for ~17 hours with nothing but a log line
+    (2026-10-14), so a skip run past 30 minutes is a finding, and so is a dirty
+    checkout behind origin/dev the log does not explain."""
+    behind = sh(["git", "-C", DAEMON_CHECKOUT, "rev-list", "--count", "HEAD..origin/dev"]).strip()
+    if not behind.isdigit() or int(behind) == 0:
+        return
+    dirty = [line[3:] for line in sh(["git", "-C", DAEMON_CHECKOUT, "status", "--porcelain",
+                                      "--untracked-files=no"]).splitlines() if line.strip()]
+    run = _auto_deploy_skips()
+    if run and NOW - run[0][0] >= AUTO_DEPLOY_STALL_S:
+        why = f"auto-deploy has skipped every run for {age(run[0][0])} (last: {run[-1][1]})"
+    elif dirty and not run:
+        why = f"the live checkout is dirty and {AUTO_DEPLOY_LOG} records no recent skip"
+    else:
+        return
+    edits = f" Uncommitted edits: {', '.join(dirty[:5])}." if dirty else ""
+    findings.append(
+        f"AUTO-DEPLOY-STALLED {DAEMON_CHECKOUT} is {behind} commits behind origin/dev: {why}.{edits} "
+        "Agents must never edit the live checkout -> save the edits (rescue branch + "
+        "~/.agent-queue/backups/), never discard them, then restore a clean tree on dev; "
+        "the next run deploys")
 
 
 if DEV_CHECKS:
