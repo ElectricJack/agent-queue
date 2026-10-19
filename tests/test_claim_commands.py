@@ -1442,7 +1442,7 @@ class TestClaim:
             return await prepare(*args, **kwargs)
 
         monkeypatch.setattr(handler, "_prepare_and_activate_locked", raced)
-        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        result = await settled_claim(scoped(handler, sid), {"next": True})
         assert result["result"] == "prepare_failed"
         assert (await db.get_session(sid)).claim_phase != "active"
         assert (await db.get_task("t1")).branch_name is None

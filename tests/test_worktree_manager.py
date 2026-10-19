@@ -712,10 +712,10 @@ class TestAbandonedMergeRecovery:
         slot, _, merge_path = await self._merge(mgr, base_ws, kind)
         run = mgr.git._arun_unlocked
 
-        async def fail_abort(args, **kwargs):
+        async def fail_abort(args, cwd=None, timeout=None):
             if args == ["merge", "--abort"]:
                 raise GitError("abort failed")
-            return await run(args, **kwargs)
+            return await run(args, cwd, timeout)
 
         monkeypatch.setattr(mgr.git, "_arun_unlocked", fail_abort)
         with pytest.raises(GitError, match="abort failed"):
