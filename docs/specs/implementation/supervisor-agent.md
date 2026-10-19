@@ -253,6 +253,26 @@ These auto-expose through the existing MCP registration and
 mounted at `src/api/app.py:83–85`) — no bespoke plumbing. `message_send`,
 `message_reply`, `message_inbox` join the slim task-scoped MCP allowlist (G.2).
 
+**Ordinary send identity.** Omitted sender flags on `aq message send` are omitted
+from the request. `CommandHandler` derives `session:<UUID>` from the authenticated
+execution principal, verifying the persisted live launch, project and (for task
+or pool workers) held task and agent. Pool sends require the current claim epoch.
+Explicit session senders must name that UUID; a live named supervisor may also
+use its own canonical logical/runtime address. A session cannot send as a user,
+another session or a foreign supervisor. A live global supervisor may explicitly
+issue nonreplyable system notices. Local human/operator/script calls without a
+session principal retain `user:cli` when omitted and their explicit sender options.
+Service callers retain explicit human/system attribution. Existing collaboration
+and scoped global-report attribution remain server-derived by those routes.
+
+A worker's ordinary report and the supervisor's `aq message reply <id> "..."`
+share the original thread and reply linkage; the reply addresses the worker's
+session UUID. Its durable message wait therefore retains the existing project
+and ownership checks without a visibility grant. Before this source is deployed,
+workers can explicitly supply `--from-kind session --from-id <held-session-UUID>`
+using `.aq/claim.json` or prime as identity evidence, retaining `--claim-epoch`
+for a pool claim. A successful source test does not change the running daemon.
+
 **Mailbox fence** (`_inbox_mailbox_scope_error`): `message_inbox` is not a pure
 read — `inject=true` marks the returned rows delivered, and
 `get_pending_messages` has no project filter. A non-elevated session token may

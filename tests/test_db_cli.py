@@ -503,6 +503,7 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         Table("projects", restored_metadata, Column("id", Text, primary_key=True))
         Table("messages", restored_metadata, Column("id", Text, primary_key=True))
         for name in (
+            "task_proposals",
             "doc_reviews", "doc_review_revisions", "doc_review_comments",
             "escalations", "escalation_messages", "escalation_actions",
             "supervisor_conversations", "conversation_inputs", "outbound_deliveries",
@@ -571,6 +572,7 @@ async def test_restore_older_schema_removes_newer_tables_and_resets_stamp(fixtur
         )) == 1
         assert await conn.scalar(text("SELECT to_regclass('public.agent_cron')")) == "agent_cron"
         assert await conn.scalar(text("SELECT to_regclass('public.ask_decisions')")) == "ask_decisions"
+        assert await conn.scalar(text("SELECT to_regclass('public.ingest_batches')")) == "ingest_batches"
         assert await conn.scalar(text("SELECT id FROM tasks")) == "original"
 
 

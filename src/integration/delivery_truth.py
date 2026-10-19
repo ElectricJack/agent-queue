@@ -890,7 +890,8 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         if not target_ref.startswith("refs/heads/"):
             raise GitError("invalid_target")
         await _run(git, store, "check-ref-format", target_ref)
-        await fetch_retained_origin(git, store, repository_url=repository_url)
+        await fetch_retained_origin(git, store, repository_url=repository_url,
+                                    project_id=project_id, repository_id=repository_id)
         refs = await _run(
             git, store, "for-each-ref", "--format=%(refname) %(objectname)",
             "refs/remotes/origin/", "refs/aq/provenance/",

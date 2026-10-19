@@ -260,7 +260,7 @@ WORKSPACE_MODE_VALUES = frozenset(m.value for m in WorkspaceMode)
 class DepType(Enum):
     """Typed dependency edge kinds on ``task_dependencies.dep_type``.
 
-    See docs/specs/design/work-graph.md §3.  The first four are *blocking*
+    See docs/specs/design/work-graph.md §3.  The first five are *blocking*
     edges — they feed the ``tasks.is_blocked`` projection, each with its own
     satisfaction rule.  The rest are provenance/association only and never
     affect readiness.
@@ -279,12 +279,16 @@ class DepType(Enum):
     ``CONDITIONAL_BLOCKS``
         satisfied only on *terminal* failure of the dependency: status
         BLOCKED, or FAILED with ``retry_count >= max_retries``.
+    ``DELIVERY_OF``
+        satisfied by a verified landed delivery receipt for the code leaf,
+        independently of task completion (held-ingestion design §3.1).
     """
 
     BLOCKS = "blocks"
     PARENT_CHILD = "parent-child"
     WAITS_FOR = "waits-for"
     CONDITIONAL_BLOCKS = "conditional-blocks"
+    DELIVERY_OF = "delivery-of"
     DISCOVERED_FROM = "discovered-from"
     RELATED = "related"
     DUPLICATES = "duplicates"
@@ -300,6 +304,7 @@ BLOCKING_DEP_TYPES = frozenset(
         DepType.PARENT_CHILD.value,
         DepType.WAITS_FOR.value,
         DepType.CONDITIONAL_BLOCKS.value,
+        DepType.DELIVERY_OF.value,
     }
 )
 """Edge kinds that gate readiness — everything else is informational."""

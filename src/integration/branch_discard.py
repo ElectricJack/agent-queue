@@ -41,6 +41,7 @@ from sqlalchemy import or_, select, update
 from src.database.tables import integration_branch_owners, task_branch_origins
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError
+from src.models import RepoSourceType
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +363,10 @@ class BranchDiscardService:
         repository_id = row["repository_id"]
         now = self.clock()
         store = self.retained_store(repository_id)
-        await self._ensure_store(store)
+        repository = await self.db.get_repo(repository_id)
+        if repository is None:
+            raise GitError("discard repository is unavailable")
+        await self._ensure_store(store, repository)
         # The retained store may not hold the head or the default-branch head
         # yet; both must be local before anything can be proven, bundled or
         # deleted against.
@@ -413,9 +417,18 @@ class BranchDiscardService:
             raise GitError(result.stderr or result.stdout or "Git command failed")
         return result.stdout.strip()
 
-    async def _ensure_store(self, store: Path) -> None:
+    async def _ensure_store(self, store: Path, repository) -> None:
+        from src.integration.repository_recovery import ensure_retained_origin
+
+        origin = repository.url
+        if not origin:
+            if (repository.source_type is not RepoSourceType.LINK
+                    or not repository.source_path or not Path(repository.source_path).is_dir()):
+                raise GitError("discard repository origin is not configured")
+            origin = await self._run_git(Path(repository.source_path), "remote", "get-url", "origin")
         store.parent.mkdir(parents=True, exist_ok=True)
         if store.exists():
+            await ensure_retained_origin(self.git, store, origin)
             return
         # Concurrent discard passes can all find the store missing, and two
         # ``git init`` runs on one directory race on its config lock.  Each
@@ -428,6 +441,7 @@ class BranchDiscardService:
             )
             if result.returncode != 0:
                 raise GitError(result.stderr or "retained store initialization failed")
+            await ensure_retained_origin(self.git, staging, origin)
             try:
                 staging.rename(store)
             except OSError:
@@ -436,6 +450,7 @@ class BranchDiscardService:
         finally:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
+        await ensure_retained_origin(self.git, store, origin)
 
     # -- bookkeeping ----------------------------------------------------
 

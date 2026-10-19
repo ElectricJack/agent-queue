@@ -279,6 +279,15 @@ class BatchStore:
             ):
                 raise ValueError("batch id already names a different promotion request")
             return Batch.from_row(existing)
+        from src.integration.repository_incidents import admission_holds_on
+
+        # Same row lock as CommandHandler's incident writer: a new admission
+        # cannot slip through a concurrent recovery pause. Replays stay intact.
+        await conn.execute(select(projects.c.id).where(
+            projects.c.id == batch.project_id,
+        ).with_for_update())
+        if await admission_holds_on(conn, batch.project_id):
+            raise ValueError("project batch admission held by retained Git recovery")
         manifest = hashlib.sha256(repr(members).encode()).hexdigest()
         policy = await conn.scalar(select(projects.c.hierarchical_integration_policy).where(
             projects.c.id == batch.project_id,

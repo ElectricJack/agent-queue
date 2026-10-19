@@ -468,6 +468,11 @@ These are command forms, not control actions executed for this documentation.
 | `aq integration eject --batch BATCH --task TASK --reason "isolate failure"` | Preview aborting the old batch and freezing its remainder under a new ID; `--apply` requires a nonblank reason. The ejected member returns to pending with its PR and approval intact. |
 | `aq integration seal-now --project PROJECT` | Preview eligible inputs; `--apply` freezes them immediately, returns an existing batch, or reports `no_ready_work`. It cannot admit a member that fails its gate. |
 
+Seal-now selects the project's unique active default integration root (`root`
+or `development` kind). Epic branches and configured promotion targets such as
+staging and main are excluded. An absent or ambiguous default root still refuses
+both preview and apply; promotion lanes keep their own request and approval controls.
+
 Eject refuses a promoted batch, changed source/candidate evidence, or removal
 of an undelivered prerequisite needed by the remainder. It never edits frozen
 membership in place. Keep the returned `replacement_batch_id`; the old ID

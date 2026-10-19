@@ -1,7 +1,6 @@
 """Real Git/PostgreSQL invariants for the shared retained-clone primitives."""
 
 import asyncio
-import shutil
 import subprocess
 import sys
 from dataclasses import replace
@@ -197,10 +196,9 @@ class LocalGit(GitManager):
             raise GitError("lost successful delete response")
 
 
-@pytest.fixture(scope="session")
-def git_history_template(tmp_path_factory):
-    """Seed history once, then copy both repositories before each scenario."""
-    tmp_path = tmp_path_factory.mktemp("gitops-history")
+@pytest.fixture
+def git_history_template(tmp_path):
+    """Build fresh repositories and history for this scenario."""
     remote = tmp_path / "remote.git"
     init_bare_seed(remote)
     store = tmp_path / "retained"
@@ -215,12 +213,7 @@ def git_history_template(tmp_path_factory):
 
 @pytest.fixture
 async def setup(tmp_path, reuse_database, git_history_template):
-    source_remote, source_store, base, head = git_history_template
-    remote = tmp_path / "remote.git"
-    store = tmp_path / "retained"
-    shutil.copytree(source_remote, remote)
-    shutil.copytree(source_store, store)
-    git(store, "remote", "set-url", "origin", str(remote))
+    remote, store, base, head = git_history_template
     db = await reuse_database("gitops")
     async with db._engine.begin() as conn:
         await conn.execute(

@@ -416,6 +416,17 @@ elsewhere: reconciliation detaches the stale pointer without changing the new
 holder's task. An active claim or attached integration writer still retains its
 ownership fence until release completes.
 
+`aq session sleep <session-id>` drains a live pool worker through that same
+claim lifecycle. Sleeping an already stopped pool leaves its intent `stopped`:
+pool history cannot wake, and must not fence a checkout as though it could
+still write. For a legacy `stopped`/`sleeping` row, this control can normalize
+the intent without signalling a process. It requires fresh provider and process
+proof for the exact instance, no task, claim phase or retained preparation, and
+rechecks the instance and claim generation under a database lock. Ambiguous
+rows remain fenced. Owner recovery still needs its own preview and guarded
+release; sleep never releases claims, integration owners or workspace locks.
+Named sessions retain their sleep/wake behavior.
+
 `aq pool scale --now` is the exception: it terminates idle sessions above the
 new effective max immediately, oldest first, skipping the grace window.
 

@@ -20,7 +20,7 @@ from tests.alembic_revisions import previous_revision
 from tests.pg_dsn import create_scratch_database
 
 ROOT = Path(__file__).resolve().parent.parent
-REVISION = "a00000000101"
+REVISION = "a00000000103"
 TABLES = (
     "wait_records",
     "wait_edges",
@@ -228,9 +228,9 @@ def assert_unique_semantics(bind):
 @pytest.mark.parametrize("legacy", [True, False], ids=["pre-v2", "fresh-baseline"])
 async def test_upgrade_twice_repairs_indexes_preserves_data_and_retains_downgrade(legacy):
     engine = create_async_engine(await create_scratch_database("waitmigration"))
-    revision = import_module("migrations.versions.a00000000101_wait_records")
-    compatibility = import_module("migrations.versions.a00000000102_base_claim_frontier_indexes")
-    predecessor = import_module("migrations.versions.a00000000100_workspace_kind_limits")
+    revision = import_module("migrations.versions.a00000000103_wait_records")
+    compatibility = import_module("migrations.versions.a00000000104_base_claim_frontier_indexes")
+    predecessor = import_module("migrations.versions.a00000000102_workspace_kind_limits")
     try:
         await migrate(engine, previous_revision(previous_revision(REVISION)))
         async with engine.begin() as conn:

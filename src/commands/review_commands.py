@@ -917,7 +917,7 @@ class ReviewCommandsMixin:
         # Authors can already be archived, and a task comment alone never
         # reaches the project supervisor. Queue a durable recovery notice.
         try:
-            notice = await self._cmd_message_send({
+            notice = await self._queue_message_notification({
                 "project_id": review["project_id"], "to_kind": "session",
                 "to_id": f"supervisor-{review['project_id']}", "from_kind": "system",
                 "from_id": f"review:{review['id']}",

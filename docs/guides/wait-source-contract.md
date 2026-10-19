@@ -107,7 +107,7 @@ a floor after all old rows are purged and a reader restarts with a fresh pool.
 The wait-schema prerequisite replaced the frontier indexes' base `priority` keys
 with `effective_priority`. The inactive claim selector still orders by base priority;
 that mismatch sorted every probe, including the urgent-repair and affinity probes,
-and scanned the full ordinary frontier. Revision `a00000000098` adds the original
+and scanned the full ordinary frontier. Revision `a00000000104` adds the original
 base-priority index shapes under `idx_tasks_base_claim_frontier*`, retaining the
 effective-priority indexes. This preserves current claim ordering, repair priority
 and all admission predicates without activating priority propagation or reservations.

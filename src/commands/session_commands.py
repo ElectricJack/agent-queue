@@ -61,6 +61,9 @@ VALID_WORK_OUTCOMES = ("shipped", "no-op", "blocked", "abandoned")
 #: landed; refusing that would make the protocol racy for no benefit.
 _CLOSEABLE = (TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED)
 
+#: Strong references to ordinary closes running past a cancelled caller.
+_CLOSE_ATTEMPTS: set[asyncio.Future] = set()
+
 
 class SessionCommandsMixin:
     """Session command methods mixed into CommandHandler."""
@@ -738,9 +741,47 @@ class SessionCommandsMixin:
 
         This cancels the instance's cron schedules with the intent write.
         The reconciler stops named sessions on the next tick, independently
-        of idle timeout. Pool sessions drain through their claim lifecycle.
+        of idle timeout. Pool sessions drain through their claim lifecycle;
+        stopped pool history stays stopped. Legacy stopped/sleeping pools
+        can normalize only after fresh proof that their exact instance is gone.
         """
-        return await self._set_desired_state(args, "sleeping")
+        session, err = await self._resolve_session(args)
+        if err:
+            return err
+        if (denied := self._session_project_scope_error(session)) is not None:
+            return denied
+        stopped_confirmed = False
+        if (session.lifecycle == "pool" and session.state == "stopped"
+                and session.desired_state == "sleeping"):
+            if (not session.instance_token or session.task_id is not None
+                    or session.claim_phase is not None or session.failed_preparation is not None):
+                return {"error": "Stopped pool session retains work or lacks an instance token"}
+            provider = self._provider_for_session(session)
+            if provider is None:
+                return {"error": "Provider unavailable; cannot confirm pool instance is inactive"}
+            try:
+                if not await provider.confirm_instance_stopped(self._session_handle(session)):
+                    return {"error": "Pool instance is still live; sleep intent was not changed"}
+                from src.sessions.proctable import scan_by_env_marker
+
+                if any(process.marker == session.instance_token
+                       for process in await scan_by_env_marker("AQ_INSTANCE_TOKEN")):
+                    return {"error": "Pool instance still has live marked processes"}
+                stopped_confirmed = True
+            except Exception:
+                return {"error": "Could not verify pool instance is inactive"}
+        try:
+            current = await self.db.request_session_sleep(
+                session, stopped_confirmed=stopped_confirmed,
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {
+            "success": True,
+            "session_id": current.id,
+            "desired_state": current.desired_state,
+            "state": current.state,
+        }
 
     async def _cmd_session_wake(self, args: dict) -> dict:
         """Mark a sleeping named session as wanted again.
@@ -788,18 +829,6 @@ class SessionCommandsMixin:
             "desired_state": "running",
             "state": session.state,
             "note": "the next reconciler tick starts it",
-        }
-
-    async def _set_desired_state(self, args: dict, desired: str) -> dict:
-        session, err = await self._resolve_session(args)
-        if err:
-            return err
-        await self.db.update_session(session.id, desired_state=desired)
-        return {
-            "success": True,
-            "session_id": session.id,
-            "desired_state": desired,
-            "state": session.state,
         }
 
     async def _cmd_session_drain_ack(self, args: dict) -> dict:
@@ -1058,6 +1087,26 @@ class SessionCommandsMixin:
             }
         if dispositions:
             return await self._close_task_obsolete(args, dispositions[0])
+        # Once started, an ordinary close runs to its end whatever happens to
+        # its caller.  Its terminal transition can commit before the slow
+        # tail (record, writer handoff, claim release) runs, and an HTTP
+        # client that gives up already leaves the request running; a
+        # cancelled in-process caller (embedded MCP, a test harness) must
+        # not instead strand an accepted close half-finished, holding its
+        # claim until a daemon restart (amber-flare-10).  ``--claim-next``
+        # stays outside: a caller that is gone must not be handed a task.
+        attempt = asyncio.ensure_future(self._close_task_ordinary(args))
+        _CLOSE_ATTEMPTS.add(attempt)
+        attempt.add_done_callback(_CLOSE_ATTEMPTS.discard)
+        response = await asyncio.shield(attempt)
+        if response.get("success") and args.get("claim_next"):
+            response["next"] = await self._cmd_task_claim(
+                {"next": True, "wait": int(args.get("wait") or 0)}
+            )
+        return response
+
+    async def _close_task_ordinary(self, args: dict) -> dict:
+        """The body of ``task close`` without a disposition or ``--claim-next``."""
         task_id = args.get("task_id") or await self._scoped_held_task_id()
         if not task_id:
             return {
@@ -1359,7 +1408,10 @@ class SessionCommandsMixin:
             and await self.db.get_children(task_id, limit=1)
         )
         if outcome == "pass":
-            from src.integration.completion_ci import verify_completion_ci
+            from src.integration.completion_ci import (
+                describe_completion_ci,
+                verify_completion_ci,
+            )
 
             ci = await verify_completion_ci(
                 self.db, getattr(self.orchestrator, "git", None), self.config, task, project,
@@ -1370,8 +1422,8 @@ class SessionCommandsMixin:
                     "success": False, "result": "verification_failed",
                     "code": "completion.required_ci", "ci": ci,
                     "error": (
-                        f"Required CI is {ci['state']} on {ci.get('head_sha') or 'unknown head'}. "
-                        "Keep this claim, resolve the named checks or wait for CI, then retry close."
+                        f"{describe_completion_ci(ci)} Keep this claim, resolve the named "
+                        "stage or checks or wait for CI, then retry close."
                     ),
                 }
         abandoned: list[str] = []
@@ -1871,10 +1923,6 @@ class SessionCommandsMixin:
         if claim_release_declined:
             response["claim_released"] = False
             response["needs_attention"] = "claim_release_declined"
-        if args.get("claim_next"):
-            response["next"] = await self._cmd_task_claim(
-                {"next": True, "wait": int(args.get("wait") or 0)}
-            )
         return response
 
     async def _cmd_task_heartbeat(self, args: dict) -> dict:

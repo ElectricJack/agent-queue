@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+from pathlib import Path
 
 from sqlalchemy import and_, case, delete, func, insert, nulls_first, or_, select, true, update
 
@@ -184,6 +186,72 @@ class WorkspaceQueryMixin:
         async with self._engine.begin() as conn:
             await conn.execute(
                 delete(workspaces).where(workspaces.c.id == workspace_id, unpinned_workspace())
+            )
+
+    async def remove_missing_workspace_registration(
+        self, workspace_id: str, *, expected_path: str,
+    ) -> None:
+        """Remove missing inventory and its unused repo identities in one audited transaction."""
+        from src.database.tables import repos
+        from src.workspace_registration import path_is_missing
+
+        async with self._engine.begin() as conn:
+            ws = (await conn.execute(select(workspaces).where(
+                workspaces.c.id == workspace_id,
+            ).with_for_update())).mappings().one_or_none()
+            if ws is None:
+                raise ValueError("workspace registration no longer exists")
+            if (ws["workspace_path"] != expected_path or ws["slot_index"] is not None
+                    or not path_is_missing(expected_path)):
+                raise ValueError("workspace path or presence changed; diagnose again before removal")
+            if ws["locked_by_agent_id"] or ws["locked_by_task_id"] or ws["job_pin_count"]:
+                raise ValueError("workspace is locked or pinned; release its owner first")
+            if (await conn.execute(select(sessions.c.id).where(
+                sessions.c.work_dir == expected_path, sessions.c.ended_at.is_(None),
+            ).limit(1))).first():
+                raise ValueError("a live session still names the workspace; reconcile it first")
+            if (await conn.execute(select(workspaces.c.id).where(
+                workspaces.c.base_workspace_id == workspace_id,
+            ).limit(1))).first():
+                raise ValueError("workspace still has child slots; reconcile them first")
+
+            path = Path(expected_path).resolve()
+            # Repository rows have no workspace FK. Match only the actual local
+            # source/base path, never a similar name, URL, or another project.
+            other_paths = (await conn.execute(select(workspaces.c.workspace_path).where(
+                workspaces.c.project_id == ws["project_id"], workspaces.c.id != workspace_id,
+            ))).scalars().all()
+            repo_ids = []
+            if not any(Path(p).resolve() == path for p in other_paths):
+                candidates = (await conn.execute(select(repos).where(
+                    repos.c.project_id == ws["project_id"],
+                ).with_for_update())).mappings().all()
+                for repo in candidates:
+                    local = (repo["source_path"] if repo["source_type"] == "link"
+                             else repo["checkout_base_path"])
+                    if local and Path(local).resolve() == path:
+                        repo_ids.append(repo["id"])
+            if repo_ids:
+                # Some retained history/owner tables intentionally have soft
+                # repository references. A missing checkout does not authorize
+                # orphaning those identities, even after task archival.
+                for table in repos.metadata.tables.values():
+                    for name in ("repo_id", "repository_id", "parent_repository_id",
+                                 "integration_repository_id"):
+                        column = table.c.get(name)
+                        if column is not None and (await conn.execute(
+                            select(column).where(column.in_(repo_ids)).limit(1),
+                        )).first():
+                            raise ValueError(f"matching repository is referenced by {table.name}")
+                # Foreign keys additionally refuse task/lease references, rolling
+                # back both deletes and the audit entry on any failure.
+                await conn.execute(delete(repos).where(repos.c.id.in_(repo_ids)))
+            await conn.execute(delete(workspaces).where(workspaces.c.id == workspace_id))
+            await self.log_event(
+                "workspace.registration_removed", project_id=ws["project_id"],
+                payload=json.dumps({"workspace_id": workspace_id, "path": expected_path,
+                                    "repository_ids": repo_ids, "reason": "missing_path"}),
+                conn=conn,
             )
 
     async def acquire_workspace(

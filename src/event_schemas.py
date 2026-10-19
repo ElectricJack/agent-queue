@@ -2048,6 +2048,16 @@ _CONTINUATION_SCHEMAS: dict[str, EventSchema] = {
 }
 
 EVENT_SCHEMAS: dict[str, EventSchema] = {
+    "integration.completed_container_checkpoint_recovered": {
+        "required": ["id", "operator_id", "reason", "task_id", "project_id", "repository_id",
+                     "branch", "head_sha", "completion_id", "origin_sha256", "snapshot_sha256",
+                     "generation", "version", "old_head_sha", "tree_sha", "remote_head_sha",
+                     "before", "after", "before_snapshot_sha256", "after_snapshot_sha256",
+                     "owner", "origin_id", "children", "observed_at", "delivery"],
+        "optional": [],
+        "types": {"id": str, "operator_id": str, "reason": str, "before": dict, "after": dict,
+                  "owner": dict, "children": list, "observed_at": (float, int), "delivery": bool},
+    },
     "ask.input_received": {
         "required": ["ask_id", "project_id", "input_id"], "optional": [],
         "types": {"ask_id": str, "project_id": str, "input_id": str},

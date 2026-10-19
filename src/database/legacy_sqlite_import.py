@@ -208,6 +208,9 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # External ask bindings, action tokens and destination modes were
         # introduced in PostgreSQL transport revision 93, never in SQLite.
         "human_communication_modes", "ask_external_bindings", "ask_action_tokens",
+        # Held ingestion batches and review receipts arrived in PostgreSQL
+        # revision 100; no legacy SQLite source can contain these ledgers.
+        "ingest_batches", "ingest_batch_members", "ingest_batch_receipts",
         # Durable record/knowledge tables shipped after SQLite removal in
         # revision 55. Legacy files have no record identities, revisions,
         # informational links or outbox state; backfill/import is explicit.
@@ -266,6 +269,7 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
 # Nullable columns added after the legacy source format was retired. Missing
 # provenance stays unknown; all other missing source columns still fail closed.
 _POSTGRES_ONLY_COLUMNS = {
+    "tasks": frozenset({"held_batch_id"}),
     "archived_tasks": frozenset({"route"}),
     "token_ledger": frozenset({"session_id", "attempt_id", "call_id", "model_source"}),
     "doc_reviews": frozenset({"pending_decision_id"}),
