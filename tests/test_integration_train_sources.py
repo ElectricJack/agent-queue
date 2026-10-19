@@ -3355,6 +3355,65 @@ async def test_prerequisite_with_delivery_identity_still_requires_proof(world, r
                 if "prerequisite" in item["code"]]
 
 
+@pytest.mark.parametrize("mode", ["train", "hierarchy", "development"])
+async def test_paused_project_names_finished_undelivered_work_without_visits(world, mode):
+    await completed(world, "waiting")
+    await completed(world, "landed", land=True)
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            status="PAUSED", hierarchical_integration_mode=mode,
+        ))
+    assert await DatabaseTargets(world.db).targets(time.time()) == []
+    service = IntegrationStatusService(world.db, git_first="active")
+    for result in (await service.status("p"), await service.control_status("p")):
+        assert result["targets"] == []
+        [blocker] = result["blockers"]
+        assert blocker["code"] == "project_paused" and blocker["ref"] == "p"
+        assert "project paused" in blocker["detail"]
+        assert blocker["pending"] == ["waiting"]
+        assert blocker["unknown"] == []
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(status="ACTIVE"))
+    assert not (await service.control_status("p"))["blockers"]
+
+
+@pytest.mark.parametrize("mode,finished", [("train", False), ("disabled", True),
+                                          ("observe", True)])
+async def test_paused_project_without_train_backlog_has_no_pause_blocker(world, mode, finished):
+    await completed(world, "source", done=finished)
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            status="PAUSED", hierarchical_integration_mode=mode,
+        ))
+    result = await IntegrationStatusService(world.db, git_first="active").control_status("p")
+    assert result["blockers"] == []
+
+
+async def test_paused_control_status_names_unknown_delivery_without_fetch(world, monkeypatch):
+    await completed(world, "waiting")
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(status="PAUSED"))
+
+    async def no_fetch(*args, **kwargs):
+        raise AssertionError("control-only status fetched Git evidence")
+
+    monkeypatch.setattr(world.truth.git, "afetch_origin", no_fetch)
+    result = await IntegrationStatusService(world.db, git_first="active").control_status("p")
+    [blocker] = result["blockers"]
+    assert blocker["code"] == "project_paused"
+    assert blocker["pending"] == []
+    assert blocker["unknown"] == ["waiting"]
+
+
+async def test_paused_project_with_only_delivered_work_has_no_pause_blocker(world):
+    await completed(world, "landed", land=True)
+    async with world.db._engine.begin() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(status="PAUSED"))
+    service = IntegrationStatusService(world.db, git_first="active")
+    assert not (await service.status("p"))["blockers"]
+    assert not (await service.control_status("p"))["blockers"]
+
+
 async def test_active_control_status_reads_no_git_and_omits_epic_distance(world, monkeypatch):
     """Control-only status is the durable train projection: no fetch, no rev-list."""
     from src.integration import stacked_branches
