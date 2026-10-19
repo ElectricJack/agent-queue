@@ -161,6 +161,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_reopen_collection",
     "integration_close_delivered_pr",
     "integration_record_root_noop",
+    "integration_supersede_completion",
     # plugins.py (all plugin commands are hand-crafted with direct-DB access)
     "plugin_list",
     "plugin_info",

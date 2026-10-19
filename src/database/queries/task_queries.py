@@ -1332,6 +1332,7 @@ class TaskQueryMixin:
         _defer_projection: bool = False,
         _integration_completion_token=None,
         _operator_adoption_token=None,
+        _obsolete_supersession_token=None,
         _integration_wake_token=None,
         accepted_close: dict | None = None,
         integration_delivery=None,
@@ -1589,10 +1590,19 @@ class TaskQueryMixin:
                         )
                     )
                 ).scalar_one_or_none()
+                obsolete_supersession = False
+                if context == "closed_obsolete" and _obsolete_supersession_token is not None:
+                    from src.integration.superseded_completion import SupersessionSettlement
+
+                    obsolete_supersession = (
+                        isinstance(_obsolete_supersession_token, SupersessionSettlement)
+                        and await _obsolete_supersession_token.valid_on(conn, task_id)
+                    )
                 if (
                     managed_parent is not None
                     and _operator_adoption_token is not _OPERATOR_ADOPTION_TOKEN
                     and _integration_completion_token is not _INTEGRATION_COMPLETION_TOKEN
+                    and not obsolete_supersession
                     and not await in_development_mode()
                 ):
                     from src.database.queries.hierarchy_queries import HierarchyError
