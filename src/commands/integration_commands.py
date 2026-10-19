@@ -132,6 +132,21 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_off(self, args: dict) -> dict:
+        from src.commands.contracts.integration import IntegrationOffArgs
+        from src.integration.manual_control import ManualIntegration
+
+        principal = current_principal()
+        if principal is None or principal.kind is not PrincipalKind.LOCAL:
+            return _failure("refused", "manual integration controls require the local operator")
+        request = IntegrationOffArgs.model_validate(args)
+        try:
+            result = await ManualIntegration(self.db).run(
+                request, operator_id="human:local-operator")
+        except (ValueError, HierarchyError, GitError, BranchBusy, TimeoutError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_migrate_provenance_refs(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationMigrateProvenanceRefsArgs
         from src.integration.provenance_migration import ProvenanceMigration

@@ -168,8 +168,9 @@ class SupersedeMemberUnavailable(ValueError):
 class BatchStore:
     """Intent/input writes invoked by commands; legacy columns retire at stage four."""
 
-    def __init__(self, db, *, clock=time.time):
+    def __init__(self, db, *, clock=time.time, require_enabled=False):
         self.db, self.clock = db, clock
+        self.require_enabled = require_enabled
 
     async def get(self, batch_id: str) -> Batch | None:
         async with self.db._engine.connect() as conn:
@@ -202,6 +203,18 @@ class BatchStore:
                                              promotion=promotion)
 
     async def _freeze_locked(self, conn, batch, members, *, trees, exclusive_target, promotion):
+        if self.require_enabled:
+            from src.database.tables import projects
+
+            await self.db.lock_hierarchy_project(conn, batch.project_id)
+            enabled = await conn.scalar(select(projects.c.id).where(
+                projects.c.id == batch.project_id,
+                projects.c.integration_repository_id == batch.repository_id,
+                projects.c.status == "ACTIVE",
+                projects.c.hierarchical_integration_mode.in_(("train", "hierarchy", "development")),
+            ).with_for_update())
+            if enabled is None:
+                raise ValueError("automatic integration is off")
         await self._target_lock(conn, batch)
         if exclusive_target:
             await self._exclusive_target(conn, batch)

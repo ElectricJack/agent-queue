@@ -72,6 +72,7 @@ from src.integration.epics import EpicGraphReader, EpicPolicy, EpicReadinessEval
 from src.integration.git_truth import GitTruth, GitTruthSnapshot
 from src.integration.gitops import GitOperations, RetainedRepository, SubjectGitAuthority
 from src.integration.lock import BranchLock
+from src.integration.manual_control import train_write
 from src.integration.models import (
     BranchKey, IntegrationTrainPolicy, RepairPolicy, integration_ci_policy,
 )
@@ -2013,6 +2014,7 @@ class LeasedPublish:
         self.holder, self.ttl_seconds = holder, ttl_seconds
         self.clock = clock
 
+    @train_write
     async def __call__(
         self, repo: RetainedRepository, ref: str, *, expected_old_oid: str, new_oid: str,
         authorize: Callable[[], Awaitable[bool]],
@@ -2029,6 +2031,7 @@ class LeasedPublish:
         finally:
             await self.locks.release(fence)
 
+    @train_write
     async def qualified(self, repo, target_ref, ref, *, expected_old_oid, new_oid, authorize):
         """An immutable tag write shares the promotion target's branch fence."""
         from src.integration.lock import CRITICAL_SECTION_SECONDS, PublishWithdrawn
@@ -2051,6 +2054,7 @@ class LeasedPublish:
         finally:
             await self.locks.release(fence)
 
+    @train_write
     async def delete(self, repo, ref, *, expected_old_oid, authorize):
         """Cleanup of a private promotion head shares the managed-ref fence."""
         from src.integration.lock import CRITICAL_SECTION_SECONDS, PublishWithdrawn
@@ -2128,7 +2132,7 @@ class DaemonLanes:
         self.orchestrator, self.batches, self.clock = orchestrator, batches, clock
         self.db, self.git = orchestrator.db, orchestrator.git
         self.truth = GitTruth(orchestrator.git, share_fetches=True)
-        self.store = BatchStore(self.db, clock=clock)
+        self.store = BatchStore(self.db, clock=clock, require_enabled=True)
         self.publish = LeasedPublish(self.db, self.git, clock=clock)
         if self.batches is not None and self.batches.pr_gate is None:
             from src.integration.github_review_poll import RootPullRequestGate

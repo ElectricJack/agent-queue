@@ -39,6 +39,9 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_record_delivered",
         "integration_quiesce",
         "integration_supersede_completion",
+
+
+        "integration_off",
         "integration_retire_legacy_park",
         "integration_migrate_provenance_refs",
         "integration_reconcile_expired_mutation",
@@ -964,6 +967,28 @@ class IntegrationSupersedeCompletionValue(CommandValue):
     journal_seq: int | None = None
     cleanup: dict[str, Any] | None = None
     dry_run: bool = True
+
+
+class IntegrationOffArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    dry_run: bool = True
+    expected_plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def exact_control(self):
+        if not self.reason.strip():
+            raise ValueError("reason must be nonblank")
+        if not self.dry_run and self.expected_plan_digest is None:
+            raise ValueError("apply requires the exact preview plan digest")
+        return self
+
+
+class IntegrationManualValue(CommandValue):
+    project_id: str | None = None
+    dry_run: bool = True
+    plan: dict[str, Any] | None = None
+    plan_digest: str | None = None
 
 
 class IntegrationQuiesceArgs(CommandArgs):
@@ -2370,6 +2395,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         registry.register(CommandRegistration(
             name, contract, cutover_control, None if read_only else cutover_preview))
     for name, args_model, applied, value_model in (
+        ("integration_off", IntegrationOffArgs, "disabled", IntegrationManualValue),
         ("integration_migrate_provenance_refs", IntegrationMigrateProvenanceRefsArgs, "migrated",
          IntegrationMigrateProvenanceRefsValue),
         ("integration_retire_legacy_park", IntegrationRetireLegacyParkArgs, "retired",
@@ -2413,6 +2439,19 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model,
             supports_preview=True,
         )
+        if name == "integration_off":
+            subject = EffectSubject.INTEGRATION_OPERATION
+            contract = contract.model_copy(update={
+                "execution": contract.execution.model_copy(update={"effects": (
+                    ReadClause(subject=subject),
+                    UpdateClause(subject=subject,
+                                 when=ClausePredicate(arg_equals=("dry_run", False))),
+                )}),
+                "presentation": CommandPresentation(
+                    title="Disable automatic integration",
+                    summary="Local operator applies an exact preview while preserving sources and frozen work.",
+                ),
+            })
         if name == "integration_migrate_provenance_refs":
             contract = contract.model_copy(update={
                 "execution": contract.execution.model_copy(update={"effects": (

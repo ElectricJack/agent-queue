@@ -537,6 +537,7 @@
         "tests/test_doctor_integration_checks.py",
         "tests/test_integration_app_mode.py",
         "tests/test_integration_legacy_park_retirement.py",
+        "tests/test_integration_manual_control.py",
         "tests/test_integration_protection.py",
         "tests/test_integration_troubleshooting_doc.py",
         "tests/test_integration_trust_manifest.py"
@@ -8752,6 +8753,32 @@
         "parametrize"
       ],
       "summary": "Adversarial lease expiry and publication races on real PostgreSQL and Git."
+    },
+    "tests/test_integration_manual_control.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f7002df4ae4889b67e4ccd00548bf6a0ed165889df2d1b556fd32da07367824a",
+      "imports": [
+        "src.commands",
+        "src.commands.contracts.integration",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.integration.batches",
+        "src.integration.gitops",
+        "src.integration.lock",
+        "src.integration.manual_control",
+        "src.integration.ownership",
+        "src.integration.train_sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Guarded manual integration over PostgreSQL and real Git."
     },
     "tests/test_integration_mode.py": {
       "areas": [

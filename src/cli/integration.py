@@ -68,6 +68,21 @@ def integration_supersede_completion(ctx, task_id, project_id, subject_id, expec
     })
 
 
+@integration.command("off")
+@click.argument("project_id")
+@click.option("--reason", required=True)
+@click.option("--apply/--dry-run", default=False)
+@click.option("--expected-plan-digest")
+@click.pass_context
+@_handle_errors
+def integration_off(ctx, project_id, reason, apply, expected_plan_digest):
+    """Preview manual mode while preserving frozen work and sources."""
+    if apply and not expected_plan_digest:
+        raise click.UsageError("--apply requires --expected-plan-digest from preview")
+    _execute(ctx, "integration_off", {"project_id": project_id, "reason": reason,
+             "dry_run": not apply, "expected_plan_digest": expected_plan_digest})
+
+
 @integration.command("migrate-provenance-refs")
 @click.argument("project_id")
 @click.option("--apply/--dry-run", default=False, help="Copy verified refs, then delete old heads.")
