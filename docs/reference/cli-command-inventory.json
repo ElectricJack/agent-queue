@@ -17666,6 +17666,54 @@
       }
     },
     {
+      "path": "aq task batch-validate",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_validate",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--source",
+          "--tasks",
+          "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments",
+          "--batch-id",
+          "--expected-revision",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--tasks",
+          "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments"
+        ],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq task benchmark-stage-record",
       "registration": "generated",
       "owner_kind": "core",

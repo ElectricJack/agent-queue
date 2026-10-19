@@ -20298,6 +20298,53 @@
         }
       }
     },
+    "/api/task/batch-validate": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Run the ingestion-batch automatic checks (design \u00a75.1) against the live graph and write nothing. Takes the change set task_batch_propose takes, with the ingestion fields (section_anchor, primary_outcome, acceptance, size, owned_modules, placement, delivery_targets). Hard findings (authority, membership, parent_not_unique, cross_project, depth_exceeded, cycle, container_endpoint, external_target_invalid, dependency_on_ancestor, post_landing_inside_delivery_epic, delivery_condition_cycle, section_anchor_missing, primary_outcome_missing, acceptance_missing, profile_pinned) fail the batch; stale_revision, active_claim and integration_owned fail it with retryable: true. Advisory findings (large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, unexplained_serialization, concentrated_ownership) never fail it; gaps name advisory checks that lacked declared metadata. Checks are deterministic: no score and no model judgement.",
+        "description": "Run the ingestion-batch automatic checks (design \u00a75.1) against the live graph and write nothing. Takes the change set task_batch_propose takes, with the ingestion fields (section_anchor, primary_outcome, acceptance, size, owned_modules, placement, delivery_targets). Hard findings (authority, membership, parent_not_unique, cross_project, depth_exceeded, cycle, container_endpoint, external_target_invalid, dependency_on_ancestor, post_landing_inside_delivery_epic, delivery_condition_cycle, section_anchor_missing, primary_outcome_missing, acceptance_missing, profile_pinned) fail the batch; stale_revision, active_claim and integration_owned fail it with retryable: true. Advisory findings (large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, unexplained_serialization, concentrated_ownership) never fail it; gaps name advisory checks that lacked declared metadata. Checks are deterministic: no score and no model judgement.",
+        "operationId": "task_batch_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskBatchValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskBatchValidateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/children": {
       "post": {
         "tags": [
@@ -74320,6 +74367,189 @@
           "payload"
         ],
         "title": "TaskBatchUpdateRequest"
+      },
+      "TaskBatchValidateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project the batch is for."
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source",
+            "description": "Proposal source; checked against a stored batch's."
+          },
+          "tasks": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tasks",
+            "description": "Task specs keyed by tempId, as task_batch_propose takes."
+          },
+          "edges": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edges",
+            "description": "Edges {from, to, dep_type, reason}; from depends on to."
+          },
+          "edits": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edits",
+            "description": "Edits of existing batch members, keyed by task_id."
+          },
+          "remove_edges": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remove Edges",
+            "description": "Edges {from, to, dep_type} the change set removes."
+          },
+          "comments": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comments",
+            "description": "Comments {task_id, body} on batch members."
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id",
+            "description": "Held batch whose members the change set may edit."
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision",
+            "description": "Structure revision the caller read; a mismatch is stale_revision."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "TaskBatchValidateRequest"
+      },
+      "TaskBatchValidateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "passed": {
+            "type": "boolean",
+            "title": "Passed",
+            "default": false
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable",
+            "default": false
+          },
+          "hard": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Hard"
+          },
+          "advisory": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Advisory"
+          },
+          "gaps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Gaps"
+          }
+        },
+        "type": "object",
+        "title": "TaskBatchValidateResponse",
+        "description": "``task_batch_validate`` \u2014 the automatic-check report; nothing is written."
       },
       "TaskChildrenRequest": {
         "properties": {
