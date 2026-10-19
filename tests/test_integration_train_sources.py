@@ -101,7 +101,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -4803,6 +4803,161 @@ async def test_collected_two_child_epic_gets_completion_and_lands_via_root(colle
     for source in [head, *case.children]:
         git(case.origin.url, "merge-base", "--is-ancestor", source, tip)
     assert (await case.train.visit(MAIN)).state == "idle"
+
+
+async def test_completed_epic_verifies_despite_selection_window_blocker(collected_epic):
+    """Contained child origins still fill the rotating selection window."""
+    case = collected_epic
+    head = await collect_epic(case)
+    await review_epic(case)
+    case.train.batches.limit = 1
+    assert case.target in await DatabaseTargets(case.db).targets(time.time())
+    visit = await case.train.request_visit(case.target)
+    assert visit is not None and visit.batch_id is None
+    assert "selection_deferred" in {b["code"] for b in visit.detail["blockers"]}
+    completion = await case.db.get_task_completion("epic")
+    assert completion is not None and completion.outcome == "pass"
+    assert completion.commits == [head]
+    assert git(case.origin.url, "rev-parse", "main") == case.base
+
+
+async def test_reverify_completed_epic_with_released_owner_preserves_gates(collected_epic):
+    from src.database.tables import integration_branch_owners, task_integration_checkpoints
+
+    case = collected_epic
+    head = await collect_epic(case)
+    async with case.db.immediate() as conn:
+        owner = (await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == "r",
+            integration_branch_owners.c.ref == "aq/epic",
+        ))).mappings().one()
+        assert owner["handoff_state"] == "released" and owner["holder"] is None
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="epic", repository_id="r", branch="aq/epic", generation=1,
+            checkpoint_sha=case.base, state="working", version=0, updated_at=time.time(),
+        ))
+    checkpoint = await case.db.get_integration_checkpoint("epic")
+    children = {child.id: child.status for child in await case.db.get_children("epic")}
+    controls = TrainControls(case.db, train=case.train,
+                             snapshot=lambda db, target: snapshot(case.world, target))
+    preview = await controls.reverify_epic("epic", dry_run=True, operator_id="supervisor")
+    assert preview["outcome"] == "preview" and preview["head_sha"] == head
+    assert preview["completion_id"] is None
+    assert await case.db.get_task_completion("epic") is None
+    assert not case.train.status()
+    apply = dict(dry_run=False, operator_id="supervisor", expected_head_sha=head,
+                 reason="verify the collected aggregate")
+    blocked = await controls.reverify_epic("epic", **apply)
+    assert blocked["outcome"] == "visited" and blocked["state"] == "blocked"
+    assert "review_missing" in {b["code"] for b in blocked["blockers"]}
+    assert blocked["completion_id"] is None
+    await review_epic(case)
+    verified = await controls.reverify_epic("epic", **apply)
+    assert verified["outcome"] == "visited" and verified["state"] == "idle"
+    assert verified["completion_id"] == (await case.db.get_task_completion("epic")).id
+    assert (await case.db.get_task_completion("epic")).commits == [head]
+    assert (await controls.reverify_epic("epic", **apply))["completion_id"] == verified["completion_id"]
+    assert len(await case.db.get_task_completions("epic")) == 1
+    assert await case.db.get_integration_checkpoint("epic") == checkpoint
+    assert {child.id: child.status for child in await case.db.get_children("epic")} == children
+    assert git(case.origin.url, "rev-parse", "main") == case.base
+    async with case.db._engine.connect() as conn:
+        receipts = (await conn.execute(select(events.c.payload).where(
+            events.c.task_id == "epic",
+            events.c.event_type == "integration.epic_reverification_observed",
+        ).order_by(events.c.id))).scalars().all()
+    assert len(receipts) == 3
+    assert {json.loads(item)["operator_id"] for item in receipts} == {"supervisor"}
+    assert {json.loads(item)["head_sha"] for item in receipts} == {head}
+
+
+async def test_reopened_container_settlement_still_owes_aggregate_completion(collected_epic):
+    from src.integration.delivery_truth import load_delivery_requests
+    from src.integration.epics import EpicGraphReader
+    from src.integration.train_sources import epic_policy_on, epic_source_base_on
+
+    case = collected_epic
+    head = await collect_epic(case)
+    await case.db.set_task_meta("epic", "container", True)
+    # Historical completed container with no retained aggregate Git provenance,
+    # as reported for bright-grove-21.15. Keep its immutable audit history.
+    await close(case.db, "epic", [head], close_id="stale-epic")
+    previous = await case.db.get_task_completion("epic")
+    children = {child.id: child.status for child in await case.db.get_children("epic")}
+    await case.db.transition_task("epic", TaskStatus.READY, context="reopen_with_feedback",
+                                  allow_missing_provenance_reopen=True)
+    await case.db.transition_task("epic", TaskStatus.IN_PROGRESS)
+    async with case.db.immediate() as conn:
+        await case.db.settle_containers({"epic"}, conn=conn)
+    assert (await case.db.get_task("epic")).status is TaskStatus.COMPLETED
+    # The supported missing-provenance recovery can reopen and settle a
+    # container, but settlement alone never manufactures aggregate evidence.
+    assert (await case.db.get_task_completion("epic")).id == previous.id
+    for reduced in (False, True):
+        requests = await load_delivery_requests(case.db, ["epic"], repository_id="r",
+                                                target_ref=MAIN.target_ref, reduced=reduced)
+        assert requests["epic"].completion_id != previous.id
+        assert requests["epic"].completed_at is None
+    reader = EpicGraphReader(policy_on=epic_policy_on, source_base_on=epic_source_base_on)
+    async with case.db._engine.connect() as conn:
+        graph = await reader.read_on(conn, "epic")
+    assert graph.node("epic").request.completion_id != previous.id
+    controls = TrainControls(case.db, train=case.train,
+                             snapshot=lambda db, target: snapshot(case.world, target))
+    preview = await controls.reverify_epic("epic", dry_run=True, operator_id="supervisor")
+    assert preview["previous_completion_id"] == previous.id
+    assert preview["completion_id"] is None
+    assert case.target in await DatabaseTargets(case.db).targets(time.time())
+    await review_epic(case)
+    assert (await case.train.request_visit(case.target)).state == "idle"
+    current = await case.db.get_task_completion("epic")
+    assert current.id != previous.id and current.commits == [head]
+    assert current.outcome == "pass"
+    assert {child.id: child.status for child in await case.db.get_children("epic")} == children
+
+
+async def test_reverify_epic_reports_deferred_admission_without_a_pass(collected_epic):
+    case = collected_epic
+    head = await collect_epic(case)
+    train = SimpleNamespace(request_visit=AsyncMock(return_value=None), wake=Mock())
+    controls = TrainControls(case.db, train=train,
+                             snapshot=lambda db, target: snapshot(case.world, target))
+    result = await controls.reverify_epic("epic", dry_run=False, operator_id="supervisor",
+        expected_head_sha=head, reason="retry aggregate")
+    assert result["outcome"] == "pending" and result["state"] == "queued"
+    assert result["completion_id"] is None
+    assert await case.db.get_task_completion("epic") is None
+    train.wake.assert_called_once_with(*case.target.key)
+    train.request_visit.assert_awaited_once_with(case.target)
+
+
+@pytest.mark.parametrize("refusal", ["moved_head", "live_owner", "open_task", "leaf", "project"])
+async def test_reverify_epic_refuses_stale_or_unheld_source(collected_epic, refusal):
+    case = collected_epic
+    head = await collect_epic(case)
+    train = SimpleNamespace(request_visit=AsyncMock(), wake=Mock())
+    controls = TrainControls(case.db, train=train,
+                             snapshot=lambda db, target: snapshot(case.world, target))
+    task_id = "epic"
+    if refusal == "live_owner":
+        await BranchLock(case.db).acquire(BranchKey(repository_id="r", branch="aq/epic"),
+                                          holder="another-writer", ttl_seconds=120)
+    elif refusal == "open_task":
+        async with case.db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="READY"))
+    elif refusal == "leaf":
+        task_id = "child-a"
+    if refusal == "moved_head":
+        result = await controls.reverify_epic(task_id, dry_run=False, operator_id="operator",
+            expected_head_sha="f" * 40, reason="retry")
+        assert result["outcome"] == "changed" and result["head_sha"] == head
+    else:
+        with pytest.raises(ValueError):
+            await controls.reverify_epic(task_id, dry_run=False, operator_id="operator",
+                expected_head_sha=head, reason="retry",
+                expected_project_id="other" if refusal == "project" else "p")
+    train.request_visit.assert_not_awaited()
+    assert await case.db.get_task_completion("epic") is None
 
 
 @pytest.mark.parametrize("blocker", ["open_child", "checks", "rejection", "hold"])

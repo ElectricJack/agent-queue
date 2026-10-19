@@ -65,6 +65,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_seal_now",
         "integration_retire_origin",
         "integration_refresh_epic",
+        "integration_reverify_epic",
         "integration_trust_manifest",
         "integration_app_verify",
         "integration_eject",
@@ -200,6 +201,19 @@ class IntegrationRefreshEpicArgs(CommandArgs):
     dry_run: bool = True
 
 
+class IntegrationReverifyEpicArgs(IntegrationRefreshEpicArgs):
+    expected_head_sha: str | None = None
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def require_preview_source(self):
+        if not self.dry_run and (
+            not is_valid_git_oid(self.expected_head_sha or "") or not self.reason.strip()
+        ):
+            raise ValueError("apply requires the preview head and a nonblank reason")
+        return self
+
+
 class IntegrationSealNowArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     dry_run: bool = True
@@ -225,6 +239,14 @@ class IntegrationRefreshEpicValue(IntegrationTrainControlValue):
     default_sha: str | None = None
     ahead: int | None = None
     behind: int | None = None
+    state: str | None = None
+    detail: dict[str, Any] | None = None
+
+
+class IntegrationReverifyEpicValue(IntegrationTrainControlValue):
+    head_sha: str | None = None
+    completion_id: str | None = None
+    previous_completion_id: str | None = None
     state: str | None = None
     detail: dict[str, Any] | None = None
 
@@ -2365,6 +2387,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         ("integration_seal_now", IntegrationSealNowArgs, "sealed", IntegrationTrainControlValue),
         ("integration_retire_origin", IntegrationRetireOriginArgs, "retired", IntegrationTrainControlValue),
         ("integration_refresh_epic", IntegrationRefreshEpicArgs, "refreshed", IntegrationRefreshEpicValue),
+        ("integration_reverify_epic", IntegrationReverifyEpicArgs, "visited",
+         IntegrationReverifyEpicValue),
     ):
         if registry.get(name) is not None:
             continue
@@ -2381,6 +2405,9 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         elif name == "integration_refresh_epic":
             outcomes += ("pending", "current")
             successes.update({"pending", "current"})
+        elif name == "integration_reverify_epic":
+            outcomes += ("pending", "changed")
+            successes.add("pending")
         contract = _operational_contract(
             name, args_model, outcomes, successes=frozenset(successes),
             side_effect=SideEffectClass.COMPOSITE, result_model=value_model,

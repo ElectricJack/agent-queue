@@ -154,7 +154,11 @@ the same database transaction as the `COMPLETED` transition. Git provenance is
 already retained before that transition. Delivery readers use this current id
 even while the full task completion record is being saved after close hooks;
 an earlier generation's record must never stand in for a reopened close. The
-transition out of `COMPLETED` clears the current id.
+transition out of `COMPLETED` clears the current id. A descriptive close older
+than the task's `integration_rework_at` fence remains historical even if
+automatic container settlement returns the task to `COMPLETED`. Delivery
+requests and recursive aggregate readers withhold that old close until a fresh
+completion supplies the new generation's evidence.
 
 Claim selection receives an ephemeral allowed set and retains priority, age,
 affinity and `SKIP LOCKED` exclusivity. Keyset paging continues past withheld

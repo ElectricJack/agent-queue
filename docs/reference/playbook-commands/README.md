@@ -125,6 +125,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_resume_batch`](integration_resume_batch.md) | Integration Resume Batch | Authenticated hierarchical integration operational control. |
 | [`integration_retire_legacy_park`](integration_retire_legacy_park.md) | Retire a historical parked operation | Local operator abandons every explicitly selected source under an exact journal fence. |
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
+| [`integration_reverify_epic`](integration_reverify_epic.md) | Integration Reverify Epic | Authenticated hierarchical integration operational control. |
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
 | [`integration_supersede_completion`](integration_supersede_completion.md) | Supersede one retained completion | Operator or owning supervisor retires an exact stopped Subject with original verified human evidence. |

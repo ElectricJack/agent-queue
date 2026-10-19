@@ -189,6 +189,32 @@ def test_reevaluate_repair_apply_requires_exact_preview():
     client.execute.assert_not_awaited()
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_reverify_epic_control_forwards_preview_source(apply):
+    from src.cli.app import cli
+
+    client = _client({"success": True, "outcome": "visited" if apply else "preview"})
+    args = ["integration", "reverify-epic", "epic"]
+    if apply:
+        args += ["--apply", "--head", "a" * 40, "--reason", "verify aggregate"]
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert client.execute.call_args.args == ("integration_reverify_epic", {
+        "task_id": "epic", "dry_run": not apply,
+        "expected_head_sha": "a" * 40 if apply else None,
+        "reason": "verify aggregate" if apply else "",
+    })
+
+
+def test_reverify_epic_apply_requires_preview_source_and_reason():
+    from src.cli.app import cli
+
+    client = _client({})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", "reverify-epic", "epic", "--apply"])
+    assert result.exit_code == 2 and "--head and --reason" in result.output
+    client.execute.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

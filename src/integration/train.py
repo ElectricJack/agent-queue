@@ -751,8 +751,14 @@ class IntegrationTrain:
         else:
             visit = await self._visit_batch(target, lane, snapshot, opened.batch, opened.members)
         blockers = opened.blockers
-        if target.kind == "epic" and lane.complete_epic and visit.state in {"idle", "delivered"}:
+        window_deferred = (opened.batch is None and opened.blockers and all(
+            item["code"] == "selection_deferred" for item in opened.blockers))
+        if (target.kind == "epic" and lane.complete_epic
+                and (visit.state in {"idle", "delivered"} or window_deferred)):
             _progress("settle_epic")
+            # A bounded selection window is not an aggregate verdict. The
+            # full evaluator still examines every required child. Other
+            # admission refusals (such as repository recovery) retain authority.
             # Publication moved the ref; readiness must examine the collected
             # head, rather than the snapshot from before the child batch landed.
             if visit.state == "delivered":

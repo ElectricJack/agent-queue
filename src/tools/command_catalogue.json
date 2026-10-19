@@ -14569,6 +14569,47 @@
         "type": "object"
       }
     },
+    "integration_reverify_epic": {
+      "name": "integration_reverify_epic",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "minLength": 1,
+            "title": "Task Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Head Sha"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "IntegrationReverifyEpicArgs",
+        "type": "object"
+      }
+    },
     "integration_seal_now": {
       "name": "integration_seal_now",
       "description": "Authenticated hierarchical integration operational control.",

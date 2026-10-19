@@ -238,6 +238,7 @@ start code work, tests or QA from a digest author turn.
     "integration_seal_now",
     "integration_record_root_noop",
     "integration_refresh_epic",
+    "integration_reverify_epic",
     "integration_retire_origin",
     "integration_reopen_collection",
     "integration_redrive_root",
