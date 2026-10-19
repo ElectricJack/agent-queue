@@ -753,6 +753,127 @@ class TestOperatorHandoffCheckpoint:
             operator_handoff=True, **kwargs,
         )
 
+    @pytest.mark.parametrize("owned_branch", ["aq/tsk-1", "aq/epic/owned"])
+    @pytest.mark.parametrize("preserve", [False, True])
+    @pytest.mark.parametrize("orphan", [False, True])
+    async def test_owned_checkpoint_ancestor_restores_from_foreign_checkout(
+        self, mgr, base_ws, kind, owned_branch, preserve, orphan,
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind, dirty=True)
+        _git(["switch", "-C", owned_branch, saved["head"]], path)
+        (path / "owned.txt").write_text("owned progress\n")
+        _git(["add", "owned.txt"], path)
+        _git(["commit", "-m", "advance owned branch"], path)
+        tip = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", owned_branch], path)
+        _git(["switch", "--orphan", "aq/foreign"] if orphan else
+             ["switch", "-c", "aq/foreign", saved["head"]], path)
+        (path / "foreign.txt").write_text("other task\n")
+        _git(["add", "foreign.txt"], path)
+        _git(["commit", "-m", "foreign slot head"], path)
+        foreign = _git(["rev-parse", "HEAD"], path)
+
+        branch = await mgr.reset_slot_for_task(
+            slot, FakeTask(), target_branch=owned_branch,
+            base_branch=saved["head"] if preserve else tip, preserve_branch=preserve,
+        )
+
+        assert branch == owned_branch
+        assert _git(["branch", "--show-current"], path) == owned_branch
+        assert _git(["rev-parse", "HEAD"], path) == tip
+        assert (path / "owned.txt").read_text() == "owned progress\n"
+        assert not (path / "foreign.txt").exists()
+        assert _git(["rev-parse", "aq/foreign"], path) == foreign
+        assert _git(["show", ":staged.txt"], path) == "saved stage"
+        assert (path / "staged.txt").read_text() == "saved unstaged\n"
+        assert (path / "binary.bin").read_bytes() == b"\x00saved\xff"
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+        assert _git(["rev-parse", saved["ref"]], path) == saved["commit"]
+
+    @pytest.mark.parametrize("advanced", [False, True])
+    @pytest.mark.parametrize("published", [False, True])
+    async def test_owned_checkpoint_restores_missing_local_ref_from_origin(
+        self, mgr, base_ws, kind, advanced, published,
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        branch = "aq/epic/remote-owned"
+        _git(["switch", "-c", branch], path)
+        if advanced:
+            (path / "owned.txt").write_text("published progress\n")
+            _git(["add", "owned.txt"], path)
+            _git(["commit", "-m", "published owned progress"], path)
+        tip = _git(["rev-parse", "HEAD"], path)
+        _git(["push", "origin", branch], path)
+        _git(["switch", "-c", "aq/foreign", saved["head"]], path)
+        _git(["branch", "-D", branch], path)
+        _git(["update-ref", "-d", f"refs/remotes/origin/{branch}"], path)
+        if not published:
+            _git(["push", "origin", "--delete", branch], path)
+            _git(["update-ref", f"refs/remotes/origin/{branch}", tip], path)
+        # The foreign branch is already merged into the preserved base.
+        task = FakeTask()
+        task.branch_name = None
+
+        if not published:
+            with pytest.raises(GitError, match="no proved continuation"):
+                await mgr.reset_slot_for_task(
+                    slot, task, target_branch=branch,
+                    base_branch=saved["head"], preserve_branch=True,
+                )
+            assert _git(["branch", "--show-current"], path) == "aq/foreign"
+            assert _git(["rev-parse", "HEAD"], path) == saved["head"]
+            assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+            return
+
+        restored = await mgr.reset_slot_for_task(
+            slot, task, target_branch=branch, base_branch=saved["head"], preserve_branch=True,
+        )
+
+        assert restored == branch
+        assert _git(["branch", "--show-current"], path) == branch
+        assert _git(["rev-parse", "HEAD"], path) == tip
+        assert _git(["status", "--porcelain"], path) == ""
+        if advanced:
+            assert (path / "owned.txt").read_text() == "published progress\n"
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+
+    @pytest.mark.parametrize("unproved", [False, True])
+    async def test_owned_checkpoint_refusal_names_compared_heads_and_preserves_slot(
+        self, mgr, base_ws, kind, monkeypatch, unproved,
+    ):
+        from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
+
+        slot, path, saved = await self._checkpoint(mgr, base_ws, kind)
+        _git(["branch", "aq/owned", saved["head"]], path)
+        (path / "checkpoint-only.txt").write_text("checkpoint branch progress\n")
+        _git(["add", "checkpoint-only.txt"], path)
+        _git(["commit", "-m", "checkpoint branch diverges"], path)
+        await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
+        saved = await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META)
+        _git(["switch", "-c", "aq/foreign", "aq/owned"], path)
+        slot_head = _git(["rev-parse", "HEAD"], path)
+        (path / "keep.txt").write_text("destination edits\n")
+        if unproved:
+            monkeypatch.setattr(mgr.git, "ais_ancestor", AsyncMock(return_value=None))
+        before = _git(["status", "--porcelain"], path)
+
+        with pytest.raises(GitError) as caught:
+            await mgr.reset_slot_for_task(
+                slot, FakeTask(), target_branch="aq/owned", base_branch=slot_head,
+            )
+
+        reason = str(caught.value)
+        for fact in (saved["head"], saved["commit"], "aq/owned", slot_head, "slot HEAD", "aq/foreign"):
+            assert fact in reason
+        assert _git(["status", "--porcelain"], path) == before
+        assert _git(["branch", "--show-current"], path) == "aq/foreign"
+        assert (path / "keep.txt").read_text() == "destination edits\n"
+        assert await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META) == saved
+
     @pytest.mark.parametrize("dirty", [False, True])
     async def test_old_checkpoint_keeps_preserved_commit_and_saved_dirty_layers(
         self, mgr, base_ws, kind, dirty

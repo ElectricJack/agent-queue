@@ -158,6 +158,20 @@ restoration retains the original checkpoint metadata/ref until execution starts;
 pause restoration keeps its existing changed-branch refusal. All handoff proof and owner
 fencing checks still run before this reconciliation.
 
+Exact owned-branch preparation also reconciles a manual-pause checkpoint against
+the owned continuation, rather than the branch currently checked out in the reused
+slot. A saved branch label may differ: the checkpoint HEAD must be proved reachable
+from the owned branch tip or its proved continuation commit. If the local owned ref
+is absent, use its exact origin ref after an authorized fresh fetch; a checkpoint
+equal to that tip or the base is valid even with no task commits. Related local progress
+is retained, and the saved index and worktree layers are reconciled separately on
+that continuation before any reset. Child preparation uses the child's owned tip
+for this proof, then merges its prerequisite as usual. Divergent or unknown history
+and conflicting snapshot contents refuse without changing the checkout or snapshots.
+An ownership/ancestry refusal names the saved HEAD and snapshot commit, saved branch,
+owned branch and observed tip, proved continuation, and slot HEAD. The slot HEAD is
+diagnostic evidence, never the authority for checkpoint reachability.
+
 Stack preparation compares an existing local child tip with the freshly observed
 published child tip in the observation store. Equal tips use the published tip;
 if the published tip is an ancestor of the local tip, preparation retains the
