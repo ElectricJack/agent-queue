@@ -58,6 +58,7 @@ from .archive_settings_response import ArchiveSettingsResponse
 from .archive_settings_response_422 import ArchiveSettingsResponse422
 from .archive_settings_response_blocked_item import ArchiveSettingsResponseBlockedItem
 from .archive_task_request import ArchiveTaskRequest
+from .archive_task_request_rewire_type_0 import ArchiveTaskRequestRewireType0
 from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_delivery_type_0 import ArchiveTaskResponseDeliveryType0
 from .archive_task_response_undelivered_item import ArchiveTaskResponseUndeliveredItem
@@ -2095,6 +2096,7 @@ __all__ = (
     "ArchiveSettingsResponse422",
     "ArchiveSettingsResponseBlockedItem",
     "ArchiveTaskRequest",
+    "ArchiveTaskRequestRewireType0",
     "ArchiveTaskResponse",
     "ArchiveTaskResponseDeliveryType0",
     "ArchiveTaskResponseUndeliveredItem",
