@@ -42,11 +42,9 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
-async def db(tmp_path, request):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, request, reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 async def _seed_project(

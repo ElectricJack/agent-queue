@@ -12,7 +12,9 @@ Owns the delivery policy in supervisor-agent §5/§7:
   ``messages.reply_timeout`` and, if the recipient's transcript shows a
   completed assistant **prose** turn inside
   ``reply_window_multiplier x reply_timeout`` of ``delivered_at``,
-  materialise it as a reply (``via="transcript_tail"``).
+  materialise it as a reply (``via="transcript_tail"``) — only for a human
+  sender, and only when no other conversation reached that recipient inside
+  the window, because a transcript turn names no message it answers.
 
 Kept intentionally small: the engine reads/writes only through the
 public :class:`~src.database.queries.message_queries.MessageQueriesMixin`
@@ -198,17 +200,9 @@ class MessageDeliveryEngine:
         if activity == "sleeping":
             if pending[0].body_kind == "schedule_prompt":
                 return result
-            if all(msg.body_kind == "conversation_input" for msg in pending):
+            if all(msg.body_kind in {"conversation_input", "ask_input"} for msg in pending):
                 return result
             if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
-                return result
-            if not await self._sessions.ensure_started(
-                kind=kind, target_id=target_id, project_id=resolved_project
-            ):
-                logger.warning(
-                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
-                    pending[0].id, to_kind, to_id,
-                )
                 return result
 
         if activity == "absent":
@@ -232,6 +226,20 @@ class MessageDeliveryEngine:
             if scheduled:
                 await self.cron_service.finish_delivery(msg.id, delivered=False)
             return result
+        # Recheck durable eligibility before a cold start as well as a nudge.
+        if activity == "sleeping":
+            if not await self._sessions.ensure_started(
+                kind=kind, target_id=target_id, project_id=resolved_project
+            ):
+                if scheduled:
+                    await self.cron_service.finish_delivery(msg.id, delivered=False)
+                logger.warning(
+                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
+                    msg.id, to_kind, to_id,
+                )
+                return result
+            if not await self._db.message_notification_is_pending(msg.id):
+                return result
         try:
             ok = await self._sessions.nudge(
                 kind=kind, target_id=target_id, project_id=resolved_project,
@@ -273,6 +281,11 @@ class MessageDeliveryEngine:
         qualified forever, so a supervisor resuming after a restart
         fabricated a reply per backlog message from whatever it said next —
         tool calls included (2026-10-05).
+
+        A transcript turn names no message it answers, so the fallback fails
+        closed wherever attribution is a guess: an agent sender (its waits
+        would clear on the fabricated reply) and a request whose window
+        overlaps another conversation's delivery to the same recipient.
         """
         if not self._config.transcript_tail_fallback:
             return 0
@@ -307,6 +320,13 @@ class MessageDeliveryEngine:
             # waiting for a reply to them, so the tail would only ever be
             # invented.
             if _is_system_sender(msg):
+                continue
+            # Only a human's chat is recovered. A reply addressed to an agent
+            # lands in a mailbox that satisfies its durable message waits and
+            # reads as the supervisor's answer, so a supervisor's prose about
+            # other work cleared a worker's wait (2026-10-12). Agents get an
+            # explicit reply (`aq message reply`, `aq agent message --reply-to`).
+            if msg.from_kind != "user":
                 continue
             if msg.delivered_at is None or msg.delivered_at > cutoff:
                 continue
@@ -343,20 +363,13 @@ class MessageDeliveryEngine:
             if not is_model_prose(tail):
                 continue
             seen_threads.add(thread_key)
-            reply = await self._db.create_message(
-                project_id=msg.project_id,
-                from_kind="session",
-                from_id=msg.to_id,
-                to_kind=msg.from_kind,
-                to_id=msg.from_id,
-                body=tail,
-                thread_id=msg.thread_id,
-                reply_to_id=msg.id,
+            # The insert re-checks under the request's row lock: a native
+            # reply that won the race, and any other conversation delivered
+            # to this recipient inside the window, leave the turn unbound.
+            reply = await self._db.create_transcript_tail_reply(
+                msg, body=tail, attribution_window=window - msg.delivered_at,
             )
-            claimed = await self._db.mark_delivered(reply.id, via="transcript_tail")
-            if not claimed:
-                # CAS lost — another actor already delivered this reply row.
-                # Skip both events; don't count as resolved.
+            if reply is None:
                 continue
             await self._emit(
                 "message.replied",
@@ -371,10 +384,9 @@ class MessageDeliveryEngine:
             )
             # Platform renderers (e.g. Discord's _on_message_sent) subscribe
             # to message.sent, not message.replied — so tail-recovered
-            # replies addressed to a user must fan out the same envelope
-            # _deliver_to_user emits, otherwise Discord never posts them.
-            if reply.to_kind == "user":
-                await self._emit("message.sent", _message_sent_payload(reply))
+            # replies, which are always addressed to a user, must fan out the
+            # same envelope _deliver_to_user emits, or Discord never posts them.
+            await self._emit("message.sent", _message_sent_payload(reply))
             resolved += 1
         return resolved
 
@@ -402,7 +414,7 @@ class MessageDeliveryEngine:
         now = time.time()
         parked = 0
         for msg in pending:
-            if msg.to_kind != "session" or msg.body_kind == "conversation_input":
+            if msg.to_kind != "session" or msg.body_kind in {"conversation_input", "ask_input"}:
                 continue
             if (now - msg.created_at) < PARK_AFTER_SECONDS:
                 continue

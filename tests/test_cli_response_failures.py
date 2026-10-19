@@ -85,7 +85,7 @@ async def test_health_transport_failure_closes_client_before_command_submission(
     assert client._http is None
 
 
-@pytest.mark.parametrize("command", ["pool_status", "explain_task"])
+@pytest.mark.parametrize("command", ["pool_status", "explain_task", "provider_reroute"])
 async def test_fleet_diagnostics_allow_more_than_default_read_budget(command):
     calls = []
 
@@ -101,6 +101,26 @@ async def test_fleet_diagnostics_allow_more_than_default_read_budget(command):
     ) as transport:
         client._http = transport
         assert await client.execute(command) == {"success": True}
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_release_owner_allows_provider_and_git_verification_read_budget(dry_run):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        assert request.extensions["timeout"]["read"] == 300.0
+        return httpx.Response(200, json={"ok": True, "result": {"success": True}})
+
+    client = CLIClient(base_url="http://test")
+    async with httpx.AsyncClient(
+        base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as transport:
+        client._http = transport
+        assert await client.execute(
+            "integration_release_owner", {"owner_row_id": "owner", "dry_run": dry_run}
+        ) == {"success": True}
     assert len(calls) == 1
 
 
@@ -324,3 +344,197 @@ def test_prime_json_refusal_preserves_budget_diagnostics(monkeypatch, argv):
     }
     # No prime body/bundle, delivery receipt, retry, or actual daemon request.
     assert calls == [{"command": "prime", "args": {"task_id": "test-task"}}]
+
+
+# A controlled preview with every identity an apply must echo back.
+_RECOVERY_PREVIEW = {
+    "success": True,
+    "outcome": "preview",
+    "task_id": "container",
+    "project_id": "p",
+    "repository_id": "r",
+    "branch": "aq/container",
+    "head_sha": "a" * 40,
+    "completion_id": "completion-1",
+    "origin_sha256": "b" * 64,
+    "snapshot_sha256": "c" * 64,
+    "generation": 3,
+    "version": 7,
+    "old_head_sha": "d" * 40,
+    "tree_sha": "e" * 40,
+    "remote_head_sha": "a" * 40,
+}
+
+
+@pytest.fixture
+def delayed_command_server():
+    """Real HTTP server whose answer to each command arrives after a set delay."""
+    commands = []
+    replies = {}  # command -> (delay seconds, HTTP status, JSON body)
+    release = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            body = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            assert self.path == "/api/execute"
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            commands.append(request)
+            delay, status, payload = replies[request["command"]]
+            # The client's read timeout ends the wait early; the server never retries.
+            release.wait(delay)
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except OSError:
+                pass
+            self.close_connection = True
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", commands, replies
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+# The server's delay stands in for a guarded Git proof longer than the 30s
+# default; the default is shortened in proportion so the test stays fast.
+_SHORT_DEFAULT = 0.25
+_PROOF_DELAY = 1.0
+
+
+def test_recovery_preview_declares_a_guarded_git_proof_budget():
+    from src.cli.client import _COMMAND_TIMEOUTS, _DEFAULT_TIMEOUT
+
+    assert _DEFAULT_TIMEOUT == 30.0
+    assert _COMMAND_TIMEOUTS["integration_recover_completed_container"] == 300.0
+    # Control-only status is a bounded database read and keeps the default.
+    assert "integration_status" not in _COMMAND_TIMEOUTS
+
+
+async def test_recovery_preview_outlasting_default_returns_exact_proof(
+    delayed_command_server, monkeypatch,
+):
+    url, commands, replies = delayed_command_server
+    monkeypatch.setattr("src.cli.client._DEFAULT_TIMEOUT", _SHORT_DEFAULT)
+    replies["integration_recover_completed_container"] = (
+        _PROOF_DELAY, 200, {"ok": True, "result": _RECOVERY_PREVIEW},
+    )
+    replies["integration_status"] = (0, 200, {"ok": True, "result": {"success": True}})
+    read_budgets = []
+
+    async def record(request):
+        read_budgets.append((json.loads(request.content)["command"],
+                             request.extensions["timeout"]["read"]))
+
+    args = {"task_id": "container", "dry_run": True, "project_id": "p",
+            "repository_id": "r", "branch": "aq/container"}
+    async with CLIClient(base_url=url) as client:
+        client._http.event_hooks["request"].append(record)
+        assert await client.execute("integration_recover_completed_container", args) == (
+            _RECOVERY_PREVIEW
+        )
+        # An ordinary short read is unaffected by the longer budget.
+        status = await client.execute(
+            "integration_status", {"project_id": "p", "control_only": True}
+        )
+        assert status == {"success": True}
+    assert read_budgets == [
+        ("integration_recover_completed_container", 300.0),
+        ("integration_status", _SHORT_DEFAULT),
+    ]
+    assert commands == [
+        {"command": "integration_recover_completed_container", "args": args},
+        {"command": "integration_status", "args": {"project_id": "p", "control_only": True}},
+    ]
+
+
+def _run_cli(url, argv, *, default_timeout):
+    code = (
+        "import src.cli.client as client\n"
+        f"client._DEFAULT_TIMEOUT = {default_timeout!r}\n"
+        "from src.cli.app import main\n"
+        "main()\n"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", code, "--json", *argv],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "AQ_API_URL": url},
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+
+
+def test_recovery_preview_entry_point_prints_delayed_proof(delayed_command_server):
+    url, commands, replies = delayed_command_server
+    replies["integration_recover_completed_container"] = (
+        _PROOF_DELAY, 200, {"ok": True, "result": _RECOVERY_PREVIEW},
+    )
+    proc = _run_cli(url, [
+        "integration", "recover-completed-container", "container",
+        "--project", "p", "--repository", "r", "--branch", "aq/container",
+    ], default_timeout=_SHORT_DEFAULT)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(proc.stdout)["data"] == _RECOVERY_PREVIEW
+    assert commands == [{"command": "integration_recover_completed_container", "args": {
+        "task_id": "container", "dry_run": True, "project_id": "p",
+        "repository_id": "r", "branch": "aq/container",
+    }}]
+
+
+def test_stuck_control_status_still_reports_unknown_outcome_once(delayed_command_server):
+    url, commands, replies = delayed_command_server
+    replies["integration_status"] = (30, 200, {"ok": True, "result": {"success": True}})
+    proc = _run_cli(
+        url, ["integration", "status", "p", "--control-only"], default_timeout=_SHORT_DEFAULT,
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    error = json.loads(proc.stdout)["error"]
+    assert error["code"] == "command_error"
+    assert error["details"] == {
+        "outcome": "unknown",
+        "automatic_retry": False,
+        "failure_kind": "ReadTimeout",
+        "read_timeout_seconds": _SHORT_DEFAULT,
+    }
+    assert commands == [
+        {"command": "integration_status", "args": {"project_id": "p", "control_only": True}}
+    ]
+    assert "Start the daemon?" not in proc.stdout
+    assert "Traceback" not in proc.stderr
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_recovery_preview_scope_denial_is_not_retried(delayed_command_server, status):
+    url, commands, replies = delayed_command_server
+    replies["integration_recover_completed_container"] = (
+        0, status, {"ok": False, "error": "out of scope: integration_recover_completed_container"},
+    )
+    proc = _run_cli(url, [
+        "integration", "recover-completed-container", "container",
+        "--project", "p", "--repository", "r", "--branch", "aq/container",
+    ], default_timeout=_SHORT_DEFAULT)
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+    error = json.loads(proc.stdout)["error"]
+    assert error["code"] == "out_of_scope"
+    assert "out of scope" in error["message"]
+    assert len(commands) == 1

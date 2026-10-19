@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     epic_dependencies,
     projects,
@@ -19,13 +18,11 @@ from src.integration.root_pull_requests import EpicPullRequestService, render_bo
 from src.integration.records import ParentEpisodeRecords
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("epic-pr.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("epic-pr.db")
     await database.create_project(Project(id="p", name="epic pr project"))
     await database.create_repo(
         RepoConfig(
@@ -70,7 +67,6 @@ async def db():
                 )
             )
     yield database
-    await database.close()
 
 
 def test_body_lists_children_and_carries_the_epic_trailer():

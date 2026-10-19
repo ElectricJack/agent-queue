@@ -343,6 +343,24 @@ async def test_cutover_rejects_an_epic_origin_changed_since_preview(cutover_worl
     port.prepare.assert_not_awaited()
 
 
+async def test_cutover_blocks_legacy_task_without_origin(cutover_world):
+    from src.models import Task, TaskStatus
+
+    db, service, port = cutover_world
+    await db.create_task(Task(id="legacy-ready", project_id="p", title="legacy", description="",
+                              status=TaskStatus.READY))
+    before = await cutover_rows(db)
+    plan = await service.plan("p", FLOW)
+    assert plan["ready"] is False
+    assert {"code": "branch_origins_missing", "task_ids": ["legacy-ready"],
+            "control": "aq doctor --check integration.branch_origins --fix"} in plan["blockers"]
+    result = await apply_cutover(service, "p", FLOW, dry_run=False, expected_generation=7,
+                                 operator_id="operator")
+    assert result["outcome"] == "blocked"
+    assert await cutover_rows(db) == before
+    port.prepare.assert_not_awaited()
+
+
 @pytest.mark.parametrize("intent,lifecycle,blocked", [
     ("open", "building", True), ("paused", "testing", True),
     ("open", "promoted", False), ("aborted", "aborted", False),

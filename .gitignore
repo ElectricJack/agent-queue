@@ -1,6 +1,7 @@
 .envrc
 .worktrees/
 __pycache__/
+.hypothesis/
 *.egg-info/
 .venv/
 *.pyc

@@ -24,6 +24,7 @@ from src.integration.promotion_steps import (
     StepPullRequestGate,
     frozen_required_checks, promotion_ref, promotion_task_defect, settle_promotion,
 )
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 from tests.test_integration_train_sources import HostedGitHub
 

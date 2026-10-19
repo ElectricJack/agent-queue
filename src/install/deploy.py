@@ -29,6 +29,7 @@ class DeploySelection:
     commit: str
     tag_oid: str | None = None
     kind: str = "unreleased"
+    breaking_migrations: tuple[dict, ...] = ()
 
 
 def newest_tag(tags: dict[str, tuple[str, str | None]], glob: str) -> str | None:
@@ -73,6 +74,7 @@ class DeploySelector:
             else:
                 tags[name] = (oid, None)
         tags = {name: (oid, peeled.get(name)) for name, (oid, _) in tags.items()}
+        self.tags = tags
         selected = ref.removeprefix("refs/tags/") if ref else newest_tag(tags, tag_glob or "v*")
         if selected is None:
             raise DeployRefused(f"deploy_tag_invalid: no release tag matches {tag_glob!r}")
@@ -126,6 +128,78 @@ class DeploySelector:
             )
         return DeploySelection(selected, commit, tag_oid, "release")
 
+    def migration_boundaries(self, *, head: str) -> tuple[dict, ...]:
+        """Read pinned annotations, including skipped releases, without a daemon."""
+        # Selecting an explicit ref or changing the deployment glob must not hide
+        # a breaking release on this same code history.
+        candidates = self.tags
+        if len(candidates) > 2000:
+            raise DeployRefused("migration_evidence_invalid: release tag inventory exceeds 2000")
+        boundaries = []
+        for name, (oid, commit) in sorted(candidates.items()):
+            if commit is None:
+                continue
+            # Fetch by the exact advertised object, never a mutable local tag name.
+            present = self.execute(["git", "-C", str(self.checkout), "cat-file", "-e", oid],
+                                   timeout=300.0)
+            if not present.ok:
+                self.git("fetch", "--quiet", self.remote,
+                         f"{oid}:refs/aq/deploy-migration-tags/{oid}")
+            if self.git("cat-file", "-t", oid) != "tag" or self.git("rev-parse", oid + "^{commit}") != commit:
+                raise DeployRefused("migration_evidence_invalid: release tag object does not match inventory")
+            if not self.execute(["git", "-C", str(self.checkout), "merge-base",
+                                 "--is-ancestor", commit, head], timeout=300.0).ok:
+                continue
+            body = self.git("cat-file", "-p", oid).partition("\n\n")[2]
+            records = [line.removeprefix("AQ-Migration-Admission: ") for line in body.splitlines()
+                       if line.startswith("AQ-Migration-Admission: ")]
+            if not records:
+                continue  # Tags created before migration admission have no evidence.
+            try:
+                if len(records) != 1 or len(records[0]) > 65_536:
+                    raise ValueError("unbounded or duplicate admission")
+                admission = json.loads(records[0])
+                if admission["schema"] != "aq.migration-admission.v1" or admission["range"]["current"] != commit:
+                    raise ValueError("admission does not name the tagged commit")
+                if admission["status"] not in {"additive", "breaking"}:
+                    raise ValueError("unknown admission status")
+                if (type(admission["finding_count"]) is not int or admission["finding_count"] < 0
+                        or not isinstance(admission["findings"], list)
+                        or len(admission["findings"]) > 100
+                        or not re.fullmatch(r"[0-9a-f]{64}", admission["findings_sha256"])):
+                    raise ValueError("invalid bounded migration findings")
+                if admission["status"] == "additive" and (
+                    admission["finding_count"] != 0 or admission["override"] is not None
+                ):
+                    raise ValueError("additive admission contains breaking findings or override")
+                if admission["status"] == "breaking":
+                    boundary = {"tag": name, "tag_oid": oid, "commit": commit, "admission": admission}
+                    validate_boundary(boundary)
+                    boundaries.append(boundary)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise DeployRefused(f"migration_evidence_invalid: {name}: {exc}") from exc
+        return tuple(boundaries)
+
+
+def validate_boundary(boundary: dict) -> None:
+    """Fail closed on corrupt persisted breaking-boundary records."""
+    try:
+        admission = boundary["admission"]
+        override = admission["override"]
+        if (admission["schema"] != "aq.migration-admission.v1"
+                or admission["status"] != "breaking"
+                or admission["range"]["current"] != boundary["commit"]
+                or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", boundary["commit"])
+                or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", boundary["tag_oid"])
+                or not isinstance(boundary["tag"], str)
+                or override["identity"] != "human:local-operator"
+                or not isinstance(override["github_login"], str) or not override["github_login"]
+                or not isinstance(override["recorded_at"], (int, float))
+                or type(admission["finding_count"]) is not int or admission["finding_count"] < 1):
+            raise ValueError("invalid breaking migration override identity/range")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DeployRefused(f"migration_evidence_invalid: {exc}") from exc
+
 
 def read_record(state_dir: Path) -> dict | None:
     path = state_dir / DEPLOY_RECORD
@@ -137,6 +211,10 @@ def read_record(state_dir: Path) -> dict | None:
             raise ValueError("missing selector")
         if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", str(record.get("commit", ""))):
             raise ValueError("missing or invalid commit OID")
+        if not isinstance(record.get("breaking_migrations", []), list):
+            raise ValueError("invalid breaking migration boundaries")
+        for boundary in record.get("breaking_migrations", []):
+            validate_boundary(boundary)
         return record
     except (OSError, ValueError) as error:
         raise DeployRefused(f"could not read {path}: {error}") from error

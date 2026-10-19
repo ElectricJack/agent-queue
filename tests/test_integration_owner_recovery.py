@@ -287,6 +287,60 @@ async def test_stopped_writer_on_a_clean_published_checkout_is_released(env):
     assert remote_sha(env.origin, "aq/preserved/o1") is None
 
 
+async def test_thrash_disposition_and_real_owner_recovery_serialize(env):
+    import asyncio
+
+    from src.models import Agent, AgentState
+    from src.sessions.worker_recovery import (
+        STREAK_KEY,
+        pool_recovery_disposition,
+        record_failure,
+    )
+
+    tip = env.branch("aq/thrash")
+    await env.task("thrash", status=TaskStatus.IN_PROGRESS)
+    await env.db.create_agent(Agent(
+        id="writer-agent", name="Writer", profile_id="worker", state=AgentState.BUSY,
+        current_task_id="thrash",
+    ))
+    await env.db.update_task(
+        "thrash", assigned_agent_id="writer-agent", branch_name="aq/thrash", repo_id="r",
+        claim_epoch=1,
+    )
+    slot = await env.slot(
+        "thrash-slot", "aq/thrash", locked_by_task_id="thrash", locked_by_agent_id="writer-agent",
+    )
+    await env.session(
+        "thrash-writer", work_dir=slot, task_id="thrash", agent_id="writer-agent",
+        state="running", desired_state="running", claim_phase="active", last_claim_epoch=1,
+    )
+    await env.owner(
+        "thrash-owner", "aq/thrash", "thrash", session_id="thrash-writer", workspace_id="ws-slot",
+    )
+    session = await env.db.get_session("thrash-writer")
+    task = await env.db.get_task("thrash")
+    failure = await record_failure(env.db, session, task, "context_thrash", now=time.time())
+    await env.db.update_session(
+        session.id, state="stopped", desired_state="stopped", end_reason="context_thrash",
+    )
+    receipt, released = await asyncio.wait_for(asyncio.gather(
+        pool_recovery_disposition(env.db, session, task, failure),
+        env.service().recover("thrash-owner", principal="sweep"),
+    ), timeout=15)
+    assert released.outcome == "released", released
+    assert released.evidence["origin_sha"] == tip
+    assert released.evidence["stop_proof"]["instance_token"] == session.instance_token
+    assert (await env.row("thrash-owner"))["handoff_state"] == "released"
+    assert (await env.db.get_task_meta("thrash", STREAK_KEY))["count"] == 1
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id is None
+    assert (await env.db.get_session(session.id)).task_id is None
+    # Either serial order is safe. A deferred disposition can precede release;
+    # an owner release that wins first produces an actually ready continuation.
+    assert receipt["disposition"] in {"handoff_deferred", "retry_ready"}
+    expected = TaskStatus.BLOCKED if receipt["disposition"] == "handoff_deferred" else TaskStatus.READY
+    assert (await env.db.get_task("thrash")).status is expected
+
+
 async def test_a_local_branch_ahead_of_origin_is_preserved_then_released(env):
     tip = env.branch("aq/t2", extra=1)
     await env.task("t2")
@@ -431,6 +485,32 @@ async def test_a_branch_checked_out_where_a_live_session_works_is_refused(env):
     assert result.evidence["worktree"] == str(slot)
     assert not detached(slot)
     assert (await env.row("o7"))["handoff_state"] == "attached"
+
+
+async def test_stale_base_attachment_releases_without_touching_operator_checkout(env):
+    env.branch("aq/base-owner")
+    env.branch("aq/unrelated")
+    await env.slot("unrelated-slot", "aq/unrelated")
+    await env.session("old", work_dir=env.tmp / "gone")
+    await env.session("supervisor", work_dir=env.base, state="running", desired_state="running")
+    await env.owner("base-owner", "aq/base-owner", "old-task",
+                    session_id="old", workspace_id="ws-base")
+    (env.base / "operator.txt").write_text("uncommitted operator work\n")
+    before = git(env.base, "status", "--porcelain")
+
+    result = await env.service().recover("base-owner", principal="supervisor")
+
+    assert result.outcome == "released", result
+    assert result.evidence["ignored_base_workspace"] == "ws-base"
+    assert result.evidence["workspace_unlocked"] is False
+    assert git(env.base, "branch", "--show-current") == "main"
+    assert git(env.base, "status", "--porcelain") == before
+    assert not result.evidence.get("snapshots")
+    row = await env.row("base-owner")
+    assert row["workspace_id"] is None
+    assert row["confirmed_workspace_id"] is None
+    workspace = await env.db.get_workspace("ws-base")
+    assert workspace.enabled
 
 
 async def test_an_unreachable_origin_is_refused(env):
@@ -691,7 +771,9 @@ async def test_failed_operator_stop_release_reroute_resume_preserves_successor_g
     )
     await env.db.set_task_meta("producer", "needs_attention", "session_not_live")
     await env.db.queue_task_recovery_notifications()
-    released = await handler.execute("integration_release_owner", {"task_id": "producer"})
+    released = await handler.execute(
+        "integration_release_owner", {"task_id": "producer", "dry_run": False},
+    )
     assert released["outcome"] == "preserved_and_released", released
     assert remote_sha(env.origin, "aq/producer") == tip
     await env.db.update_task(
@@ -1140,6 +1222,62 @@ async def _pool_daemon(env, tmp_path, slot):
     return provider, registry, orchestrator, handler, cfg
 
 
+@pytest.mark.parametrize("legacy_intent", [False, True], ids=["canonical", "legacy-sleeping"])
+async def test_sleep_of_stopped_idle_pool_does_not_fence_owner_recovery(
+    env, tmp_path, monkeypatch, legacy_intent,
+):
+    """An unrelated stopped pool row used to fence this idle checkout forever."""
+    from src.sessions.provider import SessionHandle
+
+    tip = env.branch("aq/producer")
+    slot = await env.slot("slot", "aq/producer")
+    await env.task("producer", TaskStatus.READY)
+    await env.session("original", work_dir=slot)
+    await env.owner(
+        "owner", "aq/producer", "producer", session_id="original", workspace_id="ws-slot",
+    )
+    await env.session("writer", work_dir=slot, state="running", desired_state="running")
+    provider, _, orch, handler, _ = await _pool_daemon(env, tmp_path, slot)
+    await orch._terminate_pool_session(await env.db.get_session("writer"), reason="claim_loop_stalled")
+    stopped = await env.db.get_session("writer")
+    assert (stopped.state, stopped.desired_state) == ("stopped", "stopped")
+    if legacy_intent:
+        # The old public sleep control produced exactly this invalid pair.
+        await env.db.update_session("writer", desired_state="sleeping")
+        blocked = await handler.execute("integration_release_owner", {"task_id": "producer"})
+        assert blocked["outcomes"][0]["reason"] == "checkout_in_use", blocked
+        assert (await env.row("owner"))["fence_token"] == 3
+
+    task_before = await env.db.get_task("producer")
+    owner_before = await env.row("owner")
+    workspace_before = await env.db.get_workspace("ws-slot")
+    stop = AsyncMock(side_effect=AssertionError("sleep must never signal an ended instance"))
+    monkeypatch.setattr(provider, "stop", stop)
+    slept = await handler.execute("session_sleep", {"session_id": "writer"})
+    assert slept["success"] and slept["desired_state"] == "stopped", slept
+    current = await env.db.get_session("writer")
+    assert current == stopped
+    assert await env.db.get_task("producer") == task_before
+    assert await env.row("owner") == owner_before
+    assert await env.db.get_workspace("ws-slot") == workspace_before
+    stop.assert_not_awaited()
+    assert await provider.confirm_stopped(SessionHandle("n-writer", "fake", "tok-writer"))
+
+    # Normalizing intent grants no owner-release authority of its own.
+    assert (await env.row("owner"))["handoff_state"] == "attached"
+    preview = await handler.execute("integration_release_owner", {"task_id": "producer"})
+    assert preview["outcome"] == "released", preview
+    assert (await env.row("owner"))["fence_token"] == 3
+    released = await handler.execute(
+        "integration_release_owner", {"task_id": "producer", "dry_run": False},
+    )
+    assert released["outcome"] == "released", released
+    owner = await env.row("owner")
+    assert (owner["handoff_state"], owner["fence_token"]) == ("released", 4)
+    assert (await env.db.get_task("producer")).status is TaskStatus.READY
+    assert remote_sha(env.origin, "aq/producer") == tip
+
+
 async def _unprepared_writer(env, tmp_path, *, mode="train", phase="preparing"):
     """A retained failed preparation, still detached at the published default tip."""
     from src.database.tables import task_branch_origins, task_integration_checkpoints
@@ -1186,6 +1324,138 @@ async def _unprepared_writer(env, tmp_path, *, mode="train", phase="preparing"):
     return slot, base_sha, await _pool_daemon(env, tmp_path, slot)
 
 
+@pytest.mark.parametrize("mode", ["train", "hierarchy"])
+@pytest.mark.parametrize("initial_state", ["running", "stopped"])
+async def test_orphan_sweep_preserves_and_requeues_dead_train_writer(
+    env, tmp_path, mode, initial_state,
+):
+    from src.claim_file import write_claim_file
+    from src.models import AgentState
+    from src.sessions.provider import SessionHandle
+    from src.sessions.reconciler import SessionReconciler
+
+    slot, _, (provider, registry, orch, _, cfg) = await _unprepared_writer(
+        env, tmp_path, mode=mode, phase="active",
+    )
+    git(slot, "switch", "aq/producer")
+    (slot / "progress.txt").write_text("unsaved orphan progress\n")
+    write_claim_file(str(slot), {"task_id": "producer", "claim_epoch": 7, "session_id": "writer"})
+    provider.script_death("n-writer")
+    if initial_state == "stopped":
+        await provider.stop(SessionHandle("n-writer", "fake", "tok-writer"), grace=0)
+        await env.db.update_session("writer", state="stopped", desired_state="stopped")
+    reconciler = SessionReconciler(
+        env.db, cfg, registry, bus=orch.bus, orchestrator=orch, epoch="e",
+    )
+    await reconciler.tick(now=time.time())
+
+    task = await env.db.get_task("producer")
+    assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+    assert task.branch_name == "aq/producer" and task.claim_epoch == 7
+    writer = await env.db.get_session("writer")
+    assert (writer.state, writer.task_id, writer.claim_phase) == ("stopped", None, None)
+    assert (await env.db.get_agent("worker")).state is AgentState.IDLE
+    assert (await env.row("owner"))["handoff_state"] == "released"
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id is None
+    assert not (slot / ".aq" / "claim.json").exists()
+    assert (slot / "progress.txt").read_text() == "unsaved orphan progress\n"
+    assert git(env.origin, "show", "aq/producer:progress.txt") == "unsaved orphan progress"
+    assert len(await env.audits("owner")) == 1
+    assert any("Orphan sweep recovered" in body for body in await env.comments("producer"))
+    await reconciler.tick(now=time.time())
+    assert len(await env.audits("owner")) == 1
+
+
+@pytest.mark.parametrize("blocker", [
+    "alive", "unknown", "disabled", "epoch", "workspace", "agent", "manual_pause", "origin",
+])
+async def test_orphan_sweep_retains_unproven_train_attachment(env, tmp_path, monkeypatch, blocker):
+    from src.git.manager import GitError
+    from src.sessions.provider import SessionHandle
+    from src.sessions.reconciler import SessionReconciler
+
+    slot, _, (provider, registry, orch, _, cfg) = await _unprepared_writer(
+        env, tmp_path, phase="active",
+    )
+    git(slot, "switch", "aq/producer")
+    (slot / "progress.txt").write_text("retained progress\n")
+    await env.db.update_session("writer", state="stopped", desired_state="stopped")
+    if blocker != "alive":
+        await provider.stop(SessionHandle("n-writer", "fake", "tok-writer"), grace=0)
+    if blocker == "unknown":
+        monkeypatch.setattr(provider, "confirm_stopped", AsyncMock(side_effect=RuntimeError("probe")))
+    elif blocker == "disabled":
+        cfg.integration.owner_recovery_sweep = False
+    elif blocker == "epoch":
+        await env.db.update_task("producer", claim_epoch=8)
+    elif blocker == "workspace":
+        await env.db.update_workspace("ws-slot", locked_by_agent_id=None)
+    elif blocker == "agent":
+        await env.db.update_agent("worker", current_task_id=None)
+    elif blocker == "manual_pause":
+        await env.db.set_task_meta("producer", "manual_pause", True)
+    elif blocker == "origin":
+        monkeypatch.setattr(orch.git, "afetch_origin", AsyncMock(side_effect=GitError("offline")))
+    reconciler = SessionReconciler(
+        env.db, cfg, registry, bus=orch.bus, orchestrator=orch, epoch="e",
+    )
+    await reconciler.tick(now=time.time())
+
+    task = await env.db.get_task("producer")
+    assert task.status is TaskStatus.IN_PROGRESS and task.assigned_agent_id == "worker"
+    assert (await env.row("owner"))["handoff_state"] == "attached"
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "producer"
+    assert (await env.db.get_session("writer")).task_id == "producer"
+    assert (slot / "progress.txt").read_text() == "retained progress\n"
+    assert not any("Orphan sweep recovered" in body for body in await env.comments("producer"))
+
+
+async def test_orphan_recovery_retains_agent_with_another_live_instance(env, tmp_path):
+    from src.sessions.provider import SessionHandle
+
+    slot, _, (provider, _, _, handler, _) = await _unprepared_writer(
+        env, tmp_path, phase="active",
+    )
+    await provider.stop(SessionHandle("n-writer", "fake", "tok-writer"), grace=0)
+    await env.db.update_session("writer", state="stopped", desired_state="stopped")
+    await env.session(
+        "replacement", work_dir=tmp_path / "other", agent_id="worker",
+        state="running", desired_state="running",
+    )
+    result = await handler.recover_orphaned_integration_task(
+        "producer", await env.db.get_session("writer"),
+    )
+    assert result["outcome"] == "retained"
+    assert (await env.row("owner"))["handoff_state"] == "attached"
+    assert (await env.db.get_task("producer")).status is TaskStatus.IN_PROGRESS
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "producer"
+    assert await env.audits("owner") == []
+
+
+async def test_release_owner_command_previews_by_default_without_runtime_coupling(env, tmp_path):
+    from src.sessions.provider import SessionHandle
+
+    slot, _, (provider, _, orch, handler, _) = await _unprepared_writer(
+        env, tmp_path, phase="active",
+    )
+    await provider.stop(SessionHandle("n-writer", "fake", "tok-writer"), grace=0)
+    await env.db.update_session("writer", state="stopped", desired_state="stopped")
+    assert getattr(orch, "development_integration", None) is None
+    preview = await handler.execute("integration_release_owner", {"task_id": "producer"})
+    assert preview["outcome"] == "released", preview
+    assert preview["outcomes"][0]["dry_run"] is True
+    assert (await env.row("owner"))["handoff_state"] == "attached"
+    assert (await env.db.get_task("producer")).status is TaskStatus.IN_PROGRESS
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "producer"
+    assert await env.audits("owner") == []
+    applied = await handler.execute(
+        "integration_release_owner", {"task_id": "producer", "dry_run": False},
+    )
+    assert applied["outcome"] == "released", applied
+    assert (await env.db.get_task("producer")).status is TaskStatus.READY
+    assert (await env.row("owner"))["handoff_state"] == "released"
+
+
 @pytest.mark.parametrize("mode", ["hierarchy", "train"])
 @pytest.mark.parametrize("handoff_state", ["attached", "handoff_pending"])
 async def test_prepare_failed_stop_restart_releases_exact_claim(
@@ -1198,7 +1468,9 @@ async def test_prepare_failed_stop_restart_releases_exact_claim(
     )
     reset = AsyncMock(side_effect=RuntimeError("reset failed before task checkout"))
     monkeypatch.setattr(
-        orch, "_worktree_slots", lambda: SimpleNamespace(reset_slot_for_task=reset),
+        orch, "_worktree_slots", lambda: SimpleNamespace(
+            ensure_slot_checkout=AsyncMock(), reset_slot_for_task=reset,
+        ),
     )
     # An unavailable exit-time proof models the retained historical incident.
     # Stop must recover it once proof is available, without a task recovery incident.
@@ -1374,7 +1646,7 @@ async def test_supervisor_preserves_failed_preparation_without_recovery_incident
     scope = asdict(RequestScope(
         kind="session", session_id="sup", project_id="p", elevated=True,
     ))
-    args = {"task_id": "producer", "_scope": scope}
+    args = {"task_id": "producer", "_scope": scope, "dry_run": False}
     live = await handler.execute("integration_release_owner", args)
     assert (live["outcome"], live["outcomes"][0]["reason"]) == ("not_eligible", "writer_live")
 
@@ -1441,7 +1713,7 @@ async def test_supervisor_releases_hard_failed_writer_only_after_provider_confir
     scope = asdict(RequestScope(
         kind="session", session_id="sup", project_id="p", elevated=True,
     ))
-    args = {"task_id": "failed", "_scope": scope}
+    args = {"task_id": "failed", "_scope": scope, "dry_run": False}
 
     # A stopped database row alone never proves a live process gone.
     refused = await handler.execute("integration_release_owner", args)

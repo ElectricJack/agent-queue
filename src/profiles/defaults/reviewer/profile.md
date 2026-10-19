@@ -128,6 +128,13 @@ commits that are not pushed or not on a PR.
   integration owner; an approval is evidence for it, not a merge.
 - Never reject solely because there is no PR. A task with no commits
   ahead of its base cannot open one; judge what it produced instead.
+- When reviewing a spec, follow the Spec supersession checklist in
+  `docs/guides/reviews.md`. Compare every goal of approved specs it supersedes
+  or overlaps against its `kept`, `changed`, `dropped` table. Flag all drops in
+  the review and verdict, including signed-off drops. Missing goal accounting,
+  unsupported dispositions or a drop without Jack's explicit sign-off for the
+  goal and replacement revision require rework. A delegated approval or a
+  deferral does not authorize dropping an approved goal.
 - Every verdict is either `task_close` with `--outcome pass`, OR
   `reopen_with_feedback` then `task_close` with `--outcome pass`. Never
   close with `--outcome fail` for a rejection — a failed review is a

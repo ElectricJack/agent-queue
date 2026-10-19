@@ -17,7 +17,6 @@ import time
 
 import pytest
 
-from src.database import Database
 from src.models import (
     Agent,
     AgentProfile,
@@ -31,7 +30,6 @@ from src.models import (
     WorkspaceKind,
 )
 from src.orchestrator.workspace_attachments import AcquisitionFailed, acquire_for_task
-from tests.db_fixtures import lease_dsn
 
 
 def _now() -> float:
@@ -39,9 +37,8 @@ def _now() -> float:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id="p1", name="test"))
     # Mirror a real install: the workspaces-v2 migration provisions a vault
     # workspace per project, and vault auto-attaches to every task.
@@ -56,7 +53,6 @@ async def db(tmp_path):
         )
     )
     yield database
-    await database.close()
 
 
 async def _mktask(db, *, task_id="t1", preferred=None) -> Task:

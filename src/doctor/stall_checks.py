@@ -38,6 +38,7 @@ _PARENT_PR_PROBE_BUDGET_SECONDS = 10.0
 _COMPLETED_UNDELIVERED_BUDGET_SECONDS = 30.0
 _CONTINUOUS_PROMOTION_BUDGET_SECONDS = 15.0
 _READY_AGE = 20 * 60
+_TRAIN_REPAIR_CAPACITY_AGE = 30 * 60
 _DEFINED_AGE = 30 * 60
 _DELIVERY_LAG = 45 * 60
 _SESSION_IDLE = 15 * 60
@@ -120,6 +121,10 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
     ]
     # One daemon round trip per candidate, bounded to eight concurrent calls.
     explanations = await asyncio.gather(*(explains.get(t.id) for t in candidates))
+    repairs = await _waiting_train_repairs(ctx, [
+        t.id for t in candidates
+        if t.status is TaskStatus.READY and now - t.updated_at > _TRAIN_REPAIR_CAPACITY_AGE
+    ])
     findings: list[dict] = []
     completions: dict[str, float | None] = {}
     for task, why in zip(candidates, explanations):
@@ -146,6 +151,25 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
         if deps and not old_completed and all(r.get("code") in _WAITING for r in reasons):
             continue
         kind = "undelivered_blocker" if old_completed else "unclaimed_work"
+        capacity_codes = {
+            "route_waiting_for_compatible_agent", "awaiting_pool_session",
+            "train_repair_capacity_wait",
+        }
+        if (task.id in repairs and now - task.updated_at > _TRAIN_REPAIR_CAPACITY_AGE and reasons
+                and all(r.get("code") in capacity_codes for r in reasons)
+                and not any(
+                    text in r.get("detail", "") for r in reasons
+                    for text in ("quarantined", "swarm.enabled is false", "is not what pool")
+                )):
+            findings.append(_finding(
+                "train_repair_capacity_wait", task.project_id,
+                f"train repair {task.id} has waited {int((now-task.updated_at)/60)}m "
+                f"for worker capacity on {task.profile_id}; "
+                + "; ".join(r.get("detail", "") for r in reasons[:2]),
+                task_id=task.id, profile_id=task.profile_id,
+                age_seconds=now-task.updated_at, reasons=reasons[:5], **repairs[task.id],
+            ))
+            continue
         findings.append(_finding(
             kind, task.project_id,
             f"{task.id} has been {task.status.value} for {int((now-task.updated_at)/60)}m; "
@@ -153,6 +177,23 @@ async def _work_findings(ctx: DoctorContext, tasks: list, now: float, explains: 
             task_id=task.id, blockers=old_completed, reasons=reasons[:5],
         ))
     return findings
+
+
+async def _waiting_train_repairs(ctx: DoctorContext, task_ids: list[str]) -> dict[str, dict]:
+    """Read active batch/stage bindings once for the aged READY candidates."""
+    if not task_ids:
+        return {}
+    from src.database.queries.claim_queries import active_train_repair_bindings
+
+    bindings = active_train_repair_bindings()
+    async with ctx.db._engine.connect() as conn:
+        rows = await _mapping_rows(conn, bindings.where(
+            bindings.selected_columns.repair_task_id.in_(task_ids),
+        ))
+    return {
+        row["repair_task_id"]: {"operation_id": row["operation_id"], "batch_id": row["batch_id"]}
+        for row in rows
+    }
 
 
 def _route_findings(tasks: list) -> list[dict]:
@@ -555,6 +596,8 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _worker_relaunch_findings(ctx, tasks),
         _continuous_promotion_findings(ctx, active, now),
         _escalation_delivery_findings(ctx, active, now),
+        _slot_capacity_findings(ctx, active),
+        _train_batch_findings(ctx, active, now),
     )
     findings = [item for group in groups for item in group]
     findings.extend(_route_findings(tasks) + flock_findings + conversation + delivery_engines)
@@ -580,6 +623,29 @@ async def _container_dependency_findings(ctx: DoctorContext, active: set[str]) -
             "container dependency report capped at 50 edges; resolve findings and rerun",
         ))
     return findings
+
+
+async def _slot_capacity_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    """Enabled worktree slots < cap: disabled slots silently cap the pool."""
+    from src.doctor.worktree_checks import describe_shortfall, find_capacity_shortfalls
+
+    return [
+        _finding("slot_capacity_short", entry["project_id"],
+                 f"enabled slots < cap — {describe_shortfall(entry)}; "
+                 "aq doctor --check worktrees.capacity",
+                 **{key: value for key, value in entry.items() if key != "project_id"})
+        for entry in await find_capacity_shortfalls(ctx.db)
+        if entry["project_id"] in active
+    ]
+
+
+async def _train_batch_findings(ctx, active, now):
+    from src.doctor.integration_checks import stalled_train_batches
+
+    return [_finding("train_batch_stalled", item["project_id"], item["detail"],
+                     **{key: value for key, value in item.items()
+                        if key not in {"project_id", "detail"}})
+            for item in await stalled_train_batches(ctx, project_ids=active, now=now)]
 
 
 async def _escalation_delivery_findings(ctx, active, now):

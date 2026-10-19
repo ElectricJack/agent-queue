@@ -11,20 +11,16 @@ import time
 import pytest
 from sqlalchemy import insert, update
 
-from src.database import Database
 from src.database.queries.session_queries import InvalidSessionTransition
 from src.database.tables import integration_batches, playbook_artifacts, playbook_v2_runs
 from src.models import Project, ProjectStatus, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id="p1", name="P1"))
     yield database
-    await database.close()
 
 
 def _session(**overrides) -> SessionRecord:

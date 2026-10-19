@@ -39,14 +39,9 @@ CHECK_ID = "providers.claude_usage"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-    from tests.db_fixtures import lease_dsn
-
-    database = Database(lease_dsn(tmp_path / "test.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("test.db")
     yield database
-    await database.close()
 
 
 def _config(*, enabled: bool = True, stale_after: int | None = None):

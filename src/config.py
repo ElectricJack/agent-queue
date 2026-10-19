@@ -1731,6 +1731,9 @@ class SessionsConfig:
     provider: str = "subprocess"  # tmux | subprocess | fake
     tmux_socket: str = "aq"
     lease_ttl_seconds: int = 480
+    #: Bound on a pool holder's explicitly completed, unregistered idle turn.
+    #: Independent of terminal repaints; 0 disables this additional backstop.
+    idle_claim_timeout_seconds: int = 900
     #: Grace before the reconciler stops a session that has nothing left to
     #: do -- its task closed, or its claim budget is spent -- even though the
     #: harness never exited.  ``sessions.last_activity`` cannot measure that
@@ -1824,6 +1827,7 @@ class SessionsConfig:
                 pass
         for name in (
             "lease_ttl_seconds",
+            "idle_claim_timeout_seconds",
             "idle_stop_grace_seconds",
             "stop_intent_report_seconds",
             "stall_max_nudges",
@@ -1909,6 +1913,8 @@ class WorktreesConfig:
     merge_slot_ttl_seconds: int = 600
     prune_remote_branches: bool = False
     setup_timeout_seconds: int = 900
+    slot_reset_git_timeout_seconds: int = 600
+    slot_reset_git_timeouts: dict[str, int] = field(default_factory=dict)
     salvage_dirty: bool = True
     # Upper bound on one archived salvage patch, in bytes.  Past it the patch
     # is replaced by its ``--stat`` summary: a slot can hold an arbitrarily
@@ -1929,6 +1935,20 @@ class WorktreesConfig:
             errors.append(ConfigError("worktrees", "merge_slot_ttl_seconds", "must be > 0"))
         if self.setup_timeout_seconds <= 0:
             errors.append(ConfigError("worktrees", "setup_timeout_seconds", "must be > 0"))
+        if (type(self.slot_reset_git_timeout_seconds) is not int
+                or self.slot_reset_git_timeout_seconds <= 0):
+            errors.append(ConfigError(
+                "worktrees", "slot_reset_git_timeout_seconds", "must be a positive integer",
+            ))
+        if not isinstance(self.slot_reset_git_timeouts, dict) or any(
+            not isinstance(key, str) or not key.strip()
+            or type(value) is not int or value <= 0
+            for key, value in self.slot_reset_git_timeouts.items()
+        ):
+            errors.append(ConfigError(
+                "worktrees", "slot_reset_git_timeouts",
+                "must map non-empty project IDs to positive integers",
+            ))
         return errors
 
 
@@ -2274,12 +2294,15 @@ class WorkGraphConfig:
         container whose children are all delivered; ``0`` disables.
     ``lifecycle_sweep_interval_seconds``
         Cadence of the lifecycle sweep: the stale-open re-evaluation and the
-        retry of obsolete-close cleanup left pending behind a publishing batch
-        or a refused owner release; ``0`` disables both.
+        READY frontier rejection check and retry of obsolete-close cleanup left
+        pending behind a publishing batch or a refused owner release; ``0`` disables all.
     ``stale_open_after_seconds``
         A BLOCKED or PAUSED task unchanged this long is re-evaluated: unblocked
         when its recorded blocker is gone, else flagged
         ``needs_attention=stale_open`` for the supervisor; ``0`` disables.
+    ``frontier_rejected_after_seconds``
+        Continuous READY frontier rejection this long raises an advisory
+        supervisor notice naming the rules; ``0`` disables.
     """
 
     gate_sweep_interval_seconds: int = 30
@@ -2287,6 +2310,7 @@ class WorkGraphConfig:
     container_sweep_interval_seconds: int = 60
     lifecycle_sweep_interval_seconds: int = 300
     stale_open_after_seconds: int = 6 * 3600
+    frontier_rejected_after_seconds: int = 600
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2295,6 +2319,7 @@ class WorkGraphConfig:
             "container_sweep_interval_seconds",
             "lifecycle_sweep_interval_seconds",
             "stale_open_after_seconds",
+            "frontier_rejected_after_seconds",
         ):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("work_graph", key, "must be >= 0"))
@@ -5252,6 +5277,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "provider": str,
                     "tmux_socket": str,
                     "lease_ttl_seconds": int,
+                    "idle_claim_timeout_seconds": int,
                     "idle_stop_grace_seconds": int,
                     "stop_intent_report_seconds": int,
                     "stall_max_nudges": int,
@@ -5288,6 +5314,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "merge_slot_ttl_seconds": int,
                     "prune_remote_branches": bool,
                     "setup_timeout_seconds": int,
+                    "slot_reset_git_timeout_seconds": int,
+                    "slot_reset_git_timeouts": lambda value: value,
                     "salvage_dirty": bool,
                     "salvage_max_bytes": int,
                     "spawn_conflict_continuation": bool,
@@ -5388,6 +5416,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 wg.get("lifecycle_sweep_interval_seconds", 300)
             ),
             stale_open_after_seconds=int(wg.get("stale_open_after_seconds", 6 * 3600)),
+            frontier_rejected_after_seconds=int(wg.get("frontier_rejected_after_seconds", 600)),
         )
 
     if "integration" in raw and isinstance(raw["integration"], dict):

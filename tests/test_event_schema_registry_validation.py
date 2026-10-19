@@ -72,6 +72,16 @@ def _register_typed_schemas(monkeypatch):
 
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
+    "ask.input_received": {
+        "ask_id": "ask-1",
+        "project_id": "proj-1",
+        "input_id": "cinput-1",
+    },
+    "ask.discussion_replied": {
+        "ask_id": "ask-1",
+        "project_id": "proj-1",
+        "input_id": "cinput-1",
+    },
     "conversation.reply_queued.v1": {
         "conversation_id": "conv-1",
         "input_id": "cinput-1",
@@ -505,6 +515,22 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "path": "/repos/myrepo/.aq/worktrees/slot-3",
         "reason": "cap_shrunk",
     },
+    "worktree.restored": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-2",
+        "slot": "slot-2",
+        "path": "/repos/myrepo/.aq/worktrees/slot-2",
+        "action": "recreated",
+        "previous_reason": "worktree_removed: deleting task t-1 removed it",
+    },
+    "worktree.quarantined": {
+        "project_id": "proj-1",
+        "workspace_id": "ws-slot-3",
+        "slot": "slot-3",
+        "path": "/repos/myrepo/.aq/worktrees/slot-3",
+        "reason": "quarantined_dirty: 2 uncommitted path(s)",
+        "dirty_paths": ["src/a.py", "notes.txt"],
+    },
     # Playbook
     "playbook.run.completed": {
         "playbook_id": "code-quality-gate",
@@ -741,6 +767,22 @@ _CANONICAL_PAYLOADS["integration.resolution_push_observed"][
 # ``cleanup_requested``) and the cascade's ``route_needed.py``.
 _CANONICAL_PAYLOADS.update(
     {
+        "integration.completed_container_checkpoint_recovered": {
+            "id": "recovery-1", "operator_id": "human:local-operator",
+            "reason": "repair accepted final source", "task_id": "container-1",
+            "project_id": "proj-1", "repository_id": "repo-1", "branch": "aq/container-1",
+            "head_sha": "a" * 40, "completion_id": "completion-1",
+            "origin_sha256": "b" * 64, "snapshot_sha256": "c" * 64,
+            "generation": 3, "version": 4, "old_head_sha": "d" * 40,
+            "tree_sha": "e" * 40, "remote_head_sha": "a" * 40,
+            "before": {"checkpoint_sha": "d" * 40, "version": 4},
+            "after": {"checkpoint_sha": "a" * 40, "version": 5},
+            "before_snapshot_sha256": "c" * 64, "after_snapshot_sha256": "f" * 64,
+            "owner": {"owner_id": "container-1", "handoff_state": "reserved", "fence": 1},
+            "origin_id": "origin-1",
+            "children": [{"task_id": "child-1", "completion_id": "completion-2", "head_sha": "d" * 40}],
+            "observed_at": 123.0, "delivery": False,
+        },
         "integration.candidate_green": {
             "project_id": "proj-1",
             "operation_id": "op-1",
@@ -905,6 +947,14 @@ _CANONICAL_PAYLOADS["pool.scaled"] = {
     "profile_id": "worker",
     "kind": "start",
     "count": 1,
+}
+_CANONICAL_PAYLOADS["pool.scaler_stalled"] = {
+    "profile_id": "worker",
+    "desired": 1,
+    "live": 0,
+    "ready": 1,
+    "ticks": 3,
+    "recovery": "reconcile",
 }
 _CANONICAL_PAYLOADS["pool.session_started"] = {
     "project_id": "proj-1",
@@ -1195,6 +1245,11 @@ _CANONICAL_PAYLOADS.update(
 _CANONICAL_PAYLOADS.update(
     {
         "spec.approved": {
+            "decision_id": "decision-1",
+            "packet_sha256": "a" * 64,
+            "review_id": "review-1",
+            "revision": 1,
+            "spec_kind": "implementation",
             "project_id": "my-app",
             "spec_path": "/vault/projects/my-app/specs/feature-x.md",
         },

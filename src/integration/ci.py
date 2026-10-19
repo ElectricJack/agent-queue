@@ -35,6 +35,7 @@ from src.git.github_contracts import (
     GitHubCredentialMode,
     credential_identity_from_client,
 )
+from src.integration.row_query import select_row
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.owner_guards import parent_engine_guard
@@ -816,60 +817,36 @@ class CIService:
     async def _lock_parent_subject_on(
         self, conn: Any, subject: ParentCISubject
     ) -> IntegrationTrustManifest | IntegrationCITrust | None:
-        parent = (
-            await conn.execute(select(tasks).where(tasks.c.id == subject.parent_task_id))
-        ).mappings().one_or_none()
+        parent = await select_row(conn, tasks, tasks.c.id == subject.parent_task_id)
         project = None
         if parent is not None:
-            project = (
-                await conn.execute(
-                    select(projects).where(projects.c.id == parent["project_id"])
-                )
-            ).mappings().one_or_none()
+            project = await select_row(conn, projects, projects.c.id == parent["project_id"])
         if not self._enabled_project_repository(project):
             return None
         await self.db.lock_hierarchy_project(conn, project["id"])
-        project = (
-            await conn.execute(
-                select(projects)
-                .where(projects.c.id == project["id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        parent = (
-            await conn.execute(
-                select(tasks)
-                .where(tasks.c.id == subject.parent_task_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        project = await select_row(conn, projects, projects.c.id == project["id"], lock=True)
+        parent = await select_row(conn, tasks, tasks.c.id == subject.parent_task_id, lock=True)
         if (
             not self._enabled_project_repository(project)
             or parent is None
             or parent["project_id"] != project["id"]
         ):
             return None
-        checkpoint = (
-            await conn.execute(
-                select(task_integration_checkpoints)
-                .where(task_integration_checkpoints.c.task_id == subject.parent_task_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        checkpoint = await select_row(
+            conn,
+            task_integration_checkpoints,
+            task_integration_checkpoints.c.task_id == subject.parent_task_id,
+            lock=True,
+        )
         operation = None
         if checkpoint is not None and checkpoint["episode_id"] is not None:
-            operation = (
-                await conn.execute(
-                    select(integration_repair_operations)
-                    .where(
-                        integration_repair_operations.c.parent_task_id
-                        == subject.parent_task_id,
-                        integration_repair_operations.c.episode_id
-                        == checkpoint["episode_id"],
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            operation = await select_row(
+                conn,
+                integration_repair_operations,
+                integration_repair_operations.c.parent_task_id == subject.parent_task_id,
+                integration_repair_operations.c.episode_id == checkpoint["episode_id"],
+                lock=True,
+            )
         declared_trust = self._operation_trust(operation, "parent")
         if (
             operation is None
@@ -892,61 +869,37 @@ class CIService:
     async def _lock_candidate_subject_on(
         self, conn: Any, subject: CandidateCISubject
     ) -> bool:
-        initial_batch = (
-            await conn.execute(
-                select(integration_batches).where(
-                    integration_batches.c.id == subject.batch_id
-                )
-            )
-        ).mappings().one_or_none()
+        initial_batch = await select_row(
+            conn, integration_batches, integration_batches.c.id == subject.batch_id
+        )
         project = None
         if initial_batch is not None:
-            project = (
-                await conn.execute(
-                    select(projects).where(projects.c.id == initial_batch["project_id"])
-                )
-            ).mappings().one_or_none()
+            project = await select_row(conn, projects, projects.c.id == initial_batch["project_id"])
         if not self._enabled_project_repository(project):
             return False
         await self.db.lock_hierarchy_project(conn, project["id"])
-        project = (
-            await conn.execute(
-                select(projects)
-                .where(projects.c.id == project["id"])
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        project = await select_row(conn, projects, projects.c.id == project["id"], lock=True)
         if not self._enabled_project_repository(project):
             return False
-        batch = (
-            await conn.execute(
-                select(integration_batches)
-                .where(integration_batches.c.id == subject.batch_id)
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
-        candidate = (
-            await conn.execute(
-                select(integration_candidate_revisions)
-                .where(
-                    integration_candidate_revisions.c.batch_id == subject.batch_id,
-                    integration_candidate_revisions.c.revision == subject.revision,
-                )
-                .with_for_update()
-            )
-        ).mappings().one_or_none()
+        batch = await select_row(
+            conn, integration_batches, integration_batches.c.id == subject.batch_id, lock=True
+        )
+        candidate = await select_row(
+            conn,
+            integration_candidate_revisions,
+            integration_candidate_revisions.c.batch_id == subject.batch_id,
+            integration_candidate_revisions.c.revision == subject.revision,
+            lock=True,
+        )
         operation = None
         if batch is not None:
-            operation = (
-                await conn.execute(
-                    select(integration_repair_operations)
-                    .where(
-                        integration_repair_operations.c.batch_id == batch["id"],
-                        integration_repair_operations.c.episode_id == batch["id"],
-                    )
-                    .with_for_update()
-                )
-            ).mappings().one_or_none()
+            operation = await select_row(
+                conn,
+                integration_repair_operations,
+                integration_repair_operations.c.batch_id == batch["id"],
+                integration_repair_operations.c.episode_id == batch["id"],
+                lock=True,
+            )
         return bool(
             operation is not None
             and batch is not None
@@ -1873,15 +1826,13 @@ class ParentVerification:
             valid = valid and covered == set(required.names)
             if not valid:
                 return {"outcome": "invalid_evidence", "task_id": task_id}
-            existing = (
-                await conn.execute(
-                    select(integration_parent_verifications).where(
-                        integration_parent_verifications.c.operation_id == operation["id"],
-                        integration_parent_verifications.c.generation == generation,
-                        integration_parent_verifications.c.head_sha == head_sha,
-                    )
-                )
-            ).mappings().one_or_none()
+            existing = await select_row(
+                conn,
+                integration_parent_verifications,
+                integration_parent_verifications.c.operation_id == operation["id"],
+                integration_parent_verifications.c.generation == generation,
+                integration_parent_verifications.c.head_sha == head_sha,
+            )
             verification_id = existing["id"] if existing else str(uuid.uuid4())
             if existing is None:
                 await conn.execute(
@@ -1975,15 +1926,12 @@ class ParentVerification:
             if readiness["outcome"] != "ready":
                 return readiness
             expected_owner = operation["verifier_task_id"] or task_id
-            owner = (
-                await conn.execute(
-                    select(integration_branch_owners).where(
-                        integration_branch_owners.c.repository_id
-                        == checkpoint["repository_id"],
-                        integration_branch_owners.c.ref == checkpoint["branch"],
-                    )
-                )
-            ).mappings().one_or_none()
+            owner = await select_row(
+                conn,
+                integration_branch_owners,
+                integration_branch_owners.c.repository_id == checkpoint["repository_id"],
+                integration_branch_owners.c.ref == checkpoint["branch"],
+            )
             if (
                 fence.owner_id != expected_owner
                 or fence.target.repository_id != checkpoint["repository_id"]

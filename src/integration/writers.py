@@ -37,7 +37,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.integration.models import BranchKey, Fence
+from src.integration.models import INTEGRATION_REPAIR_PRIORITY, BranchKey, Fence
 from src.integration.outbox import enqueue_integration_event
 from src.integration.owner_recovery import (
     CHECKOUT_IN_USE,
@@ -519,6 +519,12 @@ class WriterPrimitives:
                     task_type=TaskType.TEST
                     if args.role is WriterRole.VERIFIER
                     else TaskType.BUGFIX,
+                    # A repair writer holds the subject's target branch.
+                    **(
+                        {}
+                        if args.role is WriterRole.VERIFIER
+                        else {"priority": INTEGRATION_REPAIR_PRIORITY}
+                    ),
                     class_hint=args.intelligence_class,
                     dedup_key=f"{subject.id}:{key}",
                     created_by_kind="integration_writer",

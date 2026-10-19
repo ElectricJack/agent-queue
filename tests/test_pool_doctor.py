@@ -32,7 +32,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
-from tests.db_fixtures import lease_dsn, seed_task_session_attempt
+from tests.db_fixtures import seed_task_session_attempt
 
 # ``src/doctor/__init__.py`` does ``from src.doctor.pool_checks import
 # pool_checks`` (the factory function) to build ``default_registry()`` --
@@ -50,15 +50,11 @@ PROJECT_ID = "proj"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    from src.database import Database
-
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     await database.create_project(Project(id=PROJECT_ID, name="p"))
     await database.create_profile(AgentProfile(id="worker", name="w", lifecycle="pool"))
     yield database
-    await database.close()
 
 
 def test_check_names():

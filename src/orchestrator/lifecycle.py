@@ -1,4 +1,4 @@
-"""Lifecycle sweep: re-check stale BLOCKED/PAUSED tasks, retry obsolete cleanup.
+"""Lifecycle sweep: re-check stopped and frontier-rejected work, retry cleanup.
 
 Restarts, updates and holds leave tasks sitting in BLOCKED or PAUSED long after
 the reason they stopped has gone away, and nothing looks at them again: the
@@ -23,6 +23,10 @@ project supervisor gets one inbox message per stale episode
 The flag is advisory. It never holds a task out of promotion, and any
 transition out of BLOCKED/PAUSED removes it.  A task that already carries
 another ``needs_attention`` code is left to whoever raised it.
+
+READY work rejected by the shared claim frontier is tracked continuously and
+flagged after ``work_graph.frontier_rejected_after_seconds``. Its supervisor
+notice names the excluding rules. Recovery or leaving READY clears the advisory.
 
 The sweep makes no LLM call and takes no judgment: deciding what a stale task
 should become is the supervisor's.
@@ -49,7 +53,7 @@ class LifecycleMixin:
     _last_lifecycle_sweep: float = 0.0
 
     async def _sweep_lifecycle(self) -> None:
-        """Run the stale-open re-evaluation and obsolete-cleanup retries on cadence."""
+        """Re-evaluate stale and frontier-rejected work and retry cleanup on cadence."""
         interval = self.config.work_graph.lifecycle_sweep_interval_seconds
         if interval <= 0:
             return
@@ -62,9 +66,48 @@ class LifecycleMixin:
         except Exception:
             logger.exception("Stale-open re-evaluation failed")
         try:
+            await self.reevaluate_frontier_rejections(now=now)
+        except Exception:
+            logger.exception("READY frontier re-evaluation failed")
+        try:
             await self.retry_obsolete_cleanup()
         except Exception:
             logger.exception("Obsolete-close cleanup retry failed")
+
+    async def reevaluate_frontier_rejections(self, *, now: float | None = None) -> list[str]:
+        """Notify the supervisor once after a continuous READY frontier rejection."""
+        from src.integration.delivery_observer import hierarchy_frontier_modes
+        from src.routing.readiness import orchestrator_router_ready
+
+        threshold = self.config.work_graph.frontier_rejected_after_seconds
+        if threshold <= 0:
+            return []
+        now = time.time() if now is None else now
+        active = {p.id for p in await self.db.list_projects(status=ProjectStatus.ACTIVE)}
+        ready_projects = {
+            pid: await orchestrator_router_ready(self, pid) for pid in active
+        }
+        modes = await hierarchy_frontier_modes(self.db, project_ids=active, cached_only=True)
+        flagged = []
+        for task in await self.db.list_tasks(status=TaskStatus.READY):
+            if task.project_id not in active:
+                continue
+            try:
+                reasons = await self.db.claim_frontier_exclusions(
+                    task.id, router_ready=ready_projects[task.project_id], hierarchy_modes=modes,
+                )
+                if await self.db.record_frontier_rejection(
+                    task.id, updated_at=task.updated_at, reasons=reasons,
+                    now=now, threshold=threshold,
+                ):
+                    flagged.append(task.id)
+                    await self.bus.emit("task.needs_attention", {
+                        "task_id": task.id, "project_id": task.project_id,
+                        "title": task.title, "reason": STALE_OPEN_ATTENTION,
+                    })
+            except Exception:
+                logger.exception("READY frontier re-check of %s failed", task.id)
+        return flagged
 
     async def reevaluate_stale_open(self, *, now: float | None = None) -> dict[str, list[str]]:
         """Unblock or flag every BLOCKED/PAUSED task older than the threshold.

@@ -224,12 +224,22 @@ class SurfaceCommandsMixin:
         ``tasks.assigned_agent_id``, and the fence in ``tasks.claim_epoch``.
         A task counts as claimed when at least one of the session or agent is
         set — a released claim clears both, and ``claim_epoch`` alone is just
-        the historical high-water mark.
+        the historical high-water mark.  A session record whose holder is
+        durably stopped is provenance, not a claim (``unresolved_claim_clause``).
         """
         task = await self.db.get_task(task_id)
         if task is None:
             return None
         session_id = await self.db.get_task_meta(task_id, "claimed_by_session")
+        if session_id:
+            holder = await self.db.get_session(session_id)
+            if (
+                holder is not None
+                and holder.state == "stopped"
+                and holder.desired_state == "stopped"
+                and holder.instance_token
+            ):
+                session_id = None
         agent_id = task.assigned_agent_id
         if not session_id and not agent_id:
             return None

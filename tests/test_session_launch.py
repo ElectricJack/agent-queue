@@ -362,10 +362,9 @@ _PROCESS_SITES = {
     ("src/git/github_cli.py", "GhRunner.run", "create_subprocess_exec"): 1,
     # Whole-source proof pipes git diff into git patch-id; neither starts an agent.
     ("src/git/manager.py", "GitManager.apatch_id", "create_subprocess_exec"): 2,
-    ("src/git/manager.py", "GitManager._arun_git_result_unlocked", "create_subprocess_exec"): 1,
     ("src/git/manager.py", "GitManager._arun_subprocess", "create_subprocess_exec"): 1,
-    ("src/git/manager.py", "GitManager._arun_unlocked", "create_subprocess_exec"): 1,
-    # Authenticated acquisition, push and credential-free import share this Git-only spawn.
+    # Local runners (_arun_unlocked and _arun_git_result_unlocked), authenticated
+    # acquisition, push and credential-free import share this cancellation-safe Git spawn.
     ("src/git/manager.py", "GitManager._spawn_isolated_git", "create_subprocess_exec"): 1,
     ("src/integration/regeneration.py", "_run", "create_subprocess_exec"): 1,
     ("src/jobs/e2e.py", "main", "create_subprocess_exec"): 1,

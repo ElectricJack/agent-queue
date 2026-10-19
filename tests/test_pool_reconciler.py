@@ -15,7 +15,6 @@ from sqlalchemy import insert
 
 from src.commands.claim_commands import CLAIM_FILE, write_claim_file
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.intelligence_classes import IntelligenceClass
 from src.models import (
@@ -34,6 +33,91 @@ from tests.assignment_routing_helpers import route_source_for
 from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
+
+
+@pytest.mark.parametrize("artifact", [False, True])
+async def test_pool_demand_observes_artifact_sources_only(orch, db, monkeypatch, artifact):
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    await db.create_task(Task(
+        id="source", project_id=PROJECT_ID, title="source", description="",
+        status=TaskStatus.COMPLETED, branch_name="aq/source" if artifact else None,
+    ))
+    await db.add_dependency("candidate", "source")
+    observer = AsyncMock(return_value=MagicMock(allowed=set()))
+    monkeypatch.setattr(orch, "_delivery_admission", observer)
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey("worker")] == int(not artifact)
+    assert observer.await_count == int(artifact)
+
+
+@pytest.mark.parametrize("rejected", [False, True])
+async def test_pool_demand_and_claim_use_the_exact_frontier_builder(
+    orch, db, monkeypatch, rejected,
+):
+    from src.database.queries import claim_queries
+    from src.database.tables import tasks
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    original = claim_queries.claim_frontier_predicates
+
+    def frontier(*args, **kwargs):
+        predicates = original(*args, **kwargs)
+        if rejected:
+            predicates["regression_fence"] = tasks.c.id != "candidate"
+        return predicates
+
+    monkeypatch.setattr(claim_queries, "claim_frontier_predicates", frontier)
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == int(not rejected)
+    async with db.immediate() as conn:
+        selected = await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        )
+    assert selected == (None if rejected else "candidate")
+
+
+async def test_preparation_backoff_withholds_pool_demand_and_recovers(orch, db):
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    await db.set_task_meta("candidate", "claim_prepare_backoff_until", time.time() + 300)
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    assert await db.list_sessions(lifecycle="pool") == []
+    async with db.immediate() as conn:
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        ) is None
+    await db.set_task_meta("candidate", "claim_prepare_backoff_until", 0)
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 1
+
+
+async def test_contained_sibling_releases_mid_epic_without_delivery_receipt(
+    orch, db, git_first_frontier,
+):
+    from sqlalchemy import select
+
+    from src.database.tables import task_delivery_receipts
+    from src.integration.delivery_observer import hierarchy_frontier_modes
+    from src.scheduler import PoolKey
+
+    env = git_first_frontier
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 0
+    env.git(env.origin.clone, "push", "origin", "aq/first:aq/epic")
+    env.observer._recent.clear()
+    assert (await db.get_task("epic")).status == TaskStatus.IN_PROGRESS
+    assert (await orch._measure_pools()).demand[PoolKey("worker")] == 1
+    assert await db.claim_frontier_exclusions("second") == []
+    modes = await hierarchy_frontier_modes(db, project_ids={PROJECT_ID})
+    async with db.immediate() as conn:
+        assert not (await conn.execute(select(task_delivery_receipts))).first()
+        assert await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+            hierarchy_mode=modes[PROJECT_ID],
+        ) == "second"
 
 
 @pytest.fixture
@@ -277,7 +361,7 @@ async def test_git_first_delivery_releases_scheduler_pool_and_claim(
     assert session.state == "running"
     handler._current_scope = {"kind": "session", "session_id": session.id,
                               "project_id": PROJECT_ID, "task_id": None, "elevated": False}
-    result = await handler._cmd_task_claim({"next": True})
+    result = await handler._cmd_task_claim({"next": True, "wait": 5})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
 
@@ -322,7 +406,7 @@ async def test_stacked_frontier_agrees_for_scheduler_demand_explain_and_claim(
     [session] = await db.list_sessions(lifecycle="pool")
     handler._current_scope = {"kind": "session", "session_id": session.id,
                               "project_id": PROJECT_ID, "task_id": None, "elevated": False}
-    result = await handler._cmd_task_claim({"next": True})
+    result = await handler._cmd_task_claim({"next": True, "wait": 5})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
     prepare = orch._worktree_slots().reset_slot_for_task
@@ -433,7 +517,7 @@ async def test_git_first_claim_refetches_after_cached_advisory_target_rewinds(
     env.git(env.origin.clone, "push", "origin", f"{env.source}:aq/epic")
     delivery_head = AsyncMock(wraps=db.hierarchy_prerequisite_delivery_head)
     monkeypatch.setattr(db, "hierarchy_prerequisite_delivery_head", delivery_head)
-    result = await handler._cmd_task_claim({"next": True})
+    result = await handler._cmd_task_claim({"next": True, "wait": 5})
     assert result["result"] == "claimed", result
     assert result["task"]["id"] == "second"
     # Admission refetches once; workspace preparation separately observes the
@@ -536,9 +620,8 @@ class _FakeSlotManager:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("test.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("test.db")
     # These fixtures model independent clones; slot provisioning has its own tests.
     kind = await database.resolve_workspace_kind("__system__", "project-repo")
     await database.upsert_workspace_kind(replace(kind, mode="exclusive-clone"))
@@ -559,7 +642,6 @@ async def db(tmp_path):
             )
         )
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -617,6 +699,225 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
             intelligence_class=intelligence_class,
         )
     )
+
+
+@pytest.mark.parametrize("state,ordinal,expected", [
+    ("active", 0, True), ("escalated", 0, True),
+    ("completed", 0, False), ("cancelled", 0, False), ("active", 1, False),
+])
+async def test_train_repair_demand_claim_and_alarm_use_current_stage(
+    orch, db, state, ordinal, expected,
+):
+    from src.database.tables import integration_repair_operations, integration_repair_stages
+    from src.doctor.models import DoctorContext
+    from src.doctor.stall_checks import _waiting_train_repairs
+    from src.scheduler import PoolKey
+
+    await ready(db, "ordinary")
+    await ready(db, "repair")
+    # Ordinary priority and affinity would otherwise beat this repair.
+    await db.update_task("ordinary", priority=0, affinity_agent_id="probe")
+    await db.update_task("repair", priority=100)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_repair_operations).values(
+            id="op", target_kind="batch", batch_id="train", episode_id="episode",
+            active_stage=0, state=state, policy_snapshot={}, artifact_snapshot={},
+            required_check_version="v1", created_at=1, updated_at=1,
+        ))
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id="op", ordinal=ordinal, policy={}, repair_task_id="repair",
+            writer_kind="repair_delegate", starting_sha="a" * 40, state="active",
+        ))
+    measurement = await orch._measure_pools()
+    [candidate] = measurement.candidates[PoolKey("worker")]
+    assert candidate.repair_ready == int(expected)
+    async with db.immediate() as conn:
+        selected = await db.select_ready_for_profile(
+            conn, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+        )
+        if expected:
+            # The repair probe locks its row even inside COALESCE: another
+            # claimant skips it and can still take ordinary affinity work.
+            async with db.immediate() as other:
+                assert await db.select_ready_for_profile(
+                    other, project_id=PROJECT_ID, profile_id="worker", agent_id="probe",
+                ) == "ordinary"
+    assert selected == ("repair" if expected else "ordinary")
+    bindings = await _waiting_train_repairs(DoctorContext(db=db, config=orch.config), ["repair", "ordinary"])
+    assert bindings == ({"repair": {"batch_id": "train", "operation_id": "op"}}
+                        if expected else {})
+    # The same frontier fence must withhold urgent demand too.
+    await db.set_task_meta("repair", "claim_prepare_backoff_until", time.time() + 300)
+    [candidate] = (await orch._measure_pools()).candidates[PoolKey("worker")]
+    assert candidate.repair_ready == 0
+
+
+async def test_pool_watchdog_reports_and_recovers_eligible_demand(orch, db, caplog):
+    await ready(db, "stranded")
+    # No cascade tick: reproduce a scheduler blocked in unrelated housekeeping.
+    for _ in range(2):
+        await orch._check_pool_progress()
+    assert await db.list_sessions(lifecycle="pool") == []
+    assert "pool.scaler_stalled" not in caplog.text
+
+    await orch._check_pool_progress()
+    await orch.wait_for_pool_launches()
+    [session] = await db.list_sessions(lifecycle="pool")
+    assert session.state == "running"
+    [payload] = [call.args[1] for call in orch.bus.emit.await_args_list
+                 if call.args[0] == "pool.scaler_stalled"]
+    assert payload == {"profile_id": "worker", "desired": 1, "live": 0,
+                       "ready": 1, "ticks": 3, "recovery": "reconcile"}
+    events = await db.get_recent_events(event_type="pool.scaler_stalled")
+    assert len(events) == 1
+    # An idle worker can serve this demand now; clear the continuous incident.
+    await orch._check_pool_progress()
+    assert not orch._pool_progress_observations
+    assert caplog.text.count("pool.scaler_stalled") == 1
+
+
+async def test_pool_watchdog_deduplicates_and_resets_on_start(orch, db, monkeypatch, caplog):
+    from src.scheduler import PoolKey
+
+    await ready(db, "stranded")
+    recovery = AsyncMock()
+    monkeypatch.setattr(orch, "_reconcile_pools", recovery)
+    for _ in range(5):
+        await orch._check_pool_progress()
+    assert recovery.await_count == 3
+    assert caplog.text.count("pool.scaler_stalled") == 1
+    assert len(await db.get_recent_events(event_type="pool.scaler_stalled")) == 1
+    orch._pool_last_start = {PoolKey("worker"): 1.0}
+    await orch._check_pool_progress()
+    assert recovery.await_count == 3
+    await orch._check_pool_progress()
+    await orch._check_pool_progress()
+    assert recovery.await_count == 4
+    assert caplog.text.count("pool.scaler_stalled") == 2
+
+
+@pytest.mark.parametrize("blocker", [
+    "no_demand", "profile_disabled", "sessions_disabled", "swarm_disabled",
+    "profile_cap", "global_cap", "project_cap", "workspace", "quarantine", "provider",
+])
+async def test_pool_watchdog_respects_admission_and_capacity(orch, db, monkeypatch, caplog, blocker):
+    await ready(db, "task")
+    if blocker == "no_demand":
+        await db.transition_task("task", TaskStatus.FAILED)
+    elif blocker == "profile_disabled":
+        await db.update_profile("worker", enabled=False)
+    elif blocker == "sessions_disabled":
+        orch.config.sessions.enabled = False
+    elif blocker == "swarm_disabled":
+        orch.config.swarm.enabled = False
+    elif blocker == "profile_cap":
+        await db.update_profile("worker", max_active=0)
+    elif blocker == "global_cap":
+        orch.config.swarm.global_max_active = 0
+    elif blocker == "project_cap":
+        await db.update_project(PROJECT_ID, max_concurrent_agents=0)
+    elif blocker == "workspace":
+        monkeypatch.setattr(db, "count_available_workspaces", AsyncMock(return_value=0))
+    elif blocker == "quarantine":
+        orch._quarantine_pool(PROJECT_ID, "worker", "test")
+    elif blocker == "provider":
+        orch.provider_availability = MagicMock()
+        orch.provider_availability.suppresses.return_value = True
+    for _ in range(4):
+        await orch._check_pool_progress()
+    assert "pool.scaler_stalled" not in caplog.text
+    assert not orch._pool_progress_observations
+    assert await db.list_sessions(lifecycle="pool") == []
+
+
+async def test_pool_watchdog_preserves_live_launch_and_reaps_cancelled_bookkeeping(
+    orch, db, monkeypatch, caplog,
+):
+    import asyncio
+
+    from src.orchestrator.pools import PoolLaunch
+
+    await ready(db, "task")
+    launch = PoolLaunch(PROJECT_ID, "worker")
+    launch.task = asyncio.create_task(asyncio.Event().wait())
+    orch._pool_launches = {launch.session_id: launch}
+    try:
+        for _ in range(4):
+            await orch._check_pool_progress()
+        assert "pool.scaler_stalled" not in caplog.text
+        assert not launch.task.done()
+        assert await db.list_sessions(lifecycle="pool") == []
+        launch.task.cancel()
+        await asyncio.gather(launch.task, return_exceptions=True)
+        for _ in range(3):
+            await orch._check_pool_progress()
+        await orch.wait_for_pool_launches()
+        assert len(await db.list_sessions(lifecycle="pool")) == 1
+        assert "pool.scaler_stalled" in caplog.text
+        assert not orch._pool_launches
+    finally:
+        launch.task.cancel()
+        await asyncio.gather(launch.task, return_exceptions=True)
+
+
+async def test_pool_reconcile_timeout_releases_lock_for_recovery(orch, db, monkeypatch, caplog):
+    import asyncio
+
+    import src.orchestrator.pools as pools
+
+    await ready(db, "task")
+    original = orch._measure_pools
+    cancelled = asyncio.Event()
+
+    async def stuck(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(pools, "POOL_RECONCILE_TIMEOUT", 0.01)
+    monkeypatch.setattr(orch, "_measure_pools", stuck)
+    await orch._reconcile_pools()
+    assert cancelled.is_set()
+    assert not orch._pool_reconcile_lock().locked()
+    assert "Pool reconciliation timed out" in caplog.text
+    monkeypatch.setattr(orch, "_measure_pools", original)
+    monkeypatch.setattr(pools, "POOL_RECONCILE_TIMEOUT", 30)
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    assert len(await db.list_sessions(lifecycle="pool")) == 1
+
+
+async def test_pool_reconcile_and_watchdog_never_overlap(orch, db, monkeypatch):
+    import asyncio
+
+    await ready(db, "task")
+    original = orch._measure_pools
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def measure(**kwargs):
+        entered.set()
+        await release.wait()
+        return await original(**kwargs)
+
+    measurement = AsyncMock(side_effect=measure)
+    monkeypatch.setattr(orch, "_measure_pools", measurement)
+    first = asyncio.create_task(orch._reconcile_pools())
+    await entered.wait()
+    second = asyncio.create_task(orch._reconcile_pools())
+    try:
+        await orch._check_pool_progress()
+        await asyncio.sleep(0)
+        assert measurement.await_count == 1
+        release.set()
+        await asyncio.gather(first, second)
+        await orch.wait_for_pool_launches()
+        assert len(await db.list_sessions(lifecycle="pool")) == 1
+    finally:
+        release.set()
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
 
 
 class TestReconcilePools:
@@ -926,6 +1227,8 @@ class TestReconcilePools:
                 )
             )
 
+        # Teardown must observe the active claim, not the pre-claim launch row.
+        session = await db.get_session(session.id)
         if refusal_drain:
             await db.update_session(
                 session.id, claim_phase="preparing", last_claim_epoch=0,
@@ -1148,6 +1451,23 @@ async def test_concurrent_pool_teardown_stops_and_releases_only_once(orch, db, m
     )
     assert stop.await_count == 1
     assert (await db.get_agent(row.agent_id)).state == AgentState.IDLE
+
+
+@pytest.mark.parametrize("changed", ["instance", "claim"])
+async def test_late_pool_teardown_preserves_current_instance_and_claim(orch, db, changed):
+    await ready(db, "pooled")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    old = (await db.list_sessions(lifecycle="pool"))[0]
+    if changed == "instance":
+        await db.update_session(old.id, instance_token="replacement")
+    else:
+        await db.update_session(old.id, task_id="pooled", last_claim_epoch=1, claim_phase="active")
+    before = await db.get_session(old.id)
+    agent_before = await db.get_agent(old.agent_id)
+    await orch._terminate_pool_session(old, reason="context_thrash")
+    assert await db.get_session(old.id) == before
+    assert await db.get_agent(old.agent_id) == agent_before
 
 
 # ---------------------------------------------------------------------------

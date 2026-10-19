@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 
 from src.models import KIND_MODE_WORKTREE
+from src.workspace_registration import path_is_missing, workspace_missing_detail
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class WorktreeCommandsMixin:
                                             "detail": str}, ...]}
 
         Kinds emitted:
+        * ``missing_workspace_path`` — a workspace row's directory is gone;
+          restore it or explicitly remove its registration.
         * ``exclude_missing`` — Git's exact exclude file lacks the block.
         * ``exclude_unverifiable`` — resolving or reading that exact path
           failed, so doctor cannot claim the workspace is protected.
@@ -62,6 +65,15 @@ class WorktreeCommandsMixin:
 
         for project in projects:
             workspaces = await self.db.list_workspaces(project_id=project.id)
+            missing_ids = set()
+            for ws in workspaces:
+                if path_is_missing(ws.workspace_path):
+                    missing_ids.add(ws.id)
+                    findings.append({
+                        "kind": "missing_workspace_path",
+                        "workspace_id": ws.id,
+                        "detail": workspace_missing_detail(ws),
+                    })
             bases = [ws for ws in workspaces if not ws.is_slot]
             slots = [ws for ws in workspaces if ws.is_slot]
 
@@ -136,6 +148,8 @@ class WorktreeCommandsMixin:
                 continue
 
             for base in bases:
+                if base.id in missing_ids:
+                    continue
                 try:
                     kind = await self.db.resolve_workspace_kind(
                         project.id, base.kind_id or "project-repo"

@@ -881,6 +881,8 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
     Git failure yields an unknown snapshot even if stale tracking refs exist.
     It is never converted to an empty source or a successful delivery.
     """
+    from src.integration.repository_recovery import fetch_retained_origin
+
     target_oid, heads, error = None, {}, None
     try:
         if await _run(git, store, "remote", "get-url", "origin") != repository_url:
@@ -888,7 +890,8 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         if not target_ref.startswith("refs/heads/"):
             raise GitError("invalid_target")
         await _run(git, store, "check-ref-format", target_ref)
-        await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True)
+        await fetch_retained_origin(git, store, repository_url=repository_url,
+                                    project_id=project_id, repository_id=repository_id)
         refs = await _run(
             git, store, "for-each-ref", "--format=%(refname) %(objectname)",
             "refs/remotes/origin/", "refs/aq/provenance/",

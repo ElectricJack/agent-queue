@@ -17,6 +17,15 @@ if os.name != "posix":
 
 from src.sessions.provider import NotSubmitted, SessionHandle
 from src.sessions.tmux import TmuxCommandError, TmuxProvider
+from tests.test_session_runtime_units import session_clock as session_clock
+
+
+@pytest.fixture(autouse=True)
+def tmux_clock(session_clock):
+    from src.sessions import tmux
+
+    session_clock.patch(tmux)
+    return session_clock
 
 REMINDER = "No progress for 8 min. Report status, finish the task, or run aq ask."
 STALE_DRAFT = (

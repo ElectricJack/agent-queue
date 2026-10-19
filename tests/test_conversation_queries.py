@@ -20,18 +20,15 @@ from src.database.tables import (
     messages,
     supervisor_conversations,
 )
-from tests.db_fixtures import lease_dsn
 
 AUTHOR = "111111111111111111"
 CHANNEL = "222222222222222222"
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("conversation-queries"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("conversation-queries")
     yield database
-    await database.close()
 
 
 def accept_args(**overrides) -> dict:
@@ -101,6 +98,10 @@ async def test_accept_writes_conversation_input_and_supervisor_message(db):
         "closed_at": None,
     }
     assert item == {
+        "ask_id": None, "project_id": None, "routing_state": "conversation",
+        "routing_evidence": {}, "receipt": {}, "guild_id": None,
+        "reference_message_id": None, "external_thread_id": None,
+        "source_version": None, "retention_entry_id": None,
         "id": item["id"],
         "conversation_id": conversation["id"],
         "transport": "discord",

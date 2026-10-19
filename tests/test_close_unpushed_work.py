@@ -21,7 +21,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
-from src.database import Database
 from src.git.manager import GitManager
 from src.models import (
     AgentProfile,
@@ -69,14 +68,13 @@ def repo(tmp_path):
 
 
 @pytest.fixture
-async def handler(request, tmp_path, repo):
+async def handler(tmp_path, repo, reuse_database):
     """SQLite always; PostgreSQL when ``POSTGRES_TEST_DSN`` is set (CI).
 
     The close path writes task metadata and a completion row, so both
     dialects are exercised rather than assumed equivalent.
     """
-    db = Database(lease_dsn("close.db"))
-    await db.initialize()
+    db = await reuse_database("close.db")
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="t", guild_id="1"),
         workspace_dir=str(tmp_path / "w"),
@@ -100,7 +98,6 @@ async def handler(request, tmp_path, repo):
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker"))
     yield orch._command_handler
-    await db.close()
 
 
 async def _task_on_workspace(h: CommandHandler, repo: dict, task_title="Do work") -> str:
@@ -249,3 +246,39 @@ async def _live_session(h: CommandHandler, task_id: str, work_dir: str) -> str:
     )
     await h.db.create_session(session)
     return session.id
+
+
+@pytest.mark.parametrize("remote_state", ["absent", "behind", "different_branch", "unreachable"])
+async def test_live_passing_close_requires_exact_task_branch_on_origin(handler, repo, remote_state):
+    h = handler
+
+    async def pipeline(ctx):
+        return "", True
+
+    h.orchestrator._run_completion_pipeline = pipeline
+    task_id = await _task_on_workspace(h, repo)
+    branch = f"aq/{task_id}"
+    _git(["checkout", "-b", branch], cwd=repo["clone"])
+    await h.db.update_task(task_id, branch_name=branch)
+    if remote_state == "behind":
+        _git(["push", "origin", branch], cwd=repo["clone"])
+    sha = _commit(repo["clone"], "work.py")
+    if remote_state == "different_branch":
+        _git(["push", "origin", "HEAD:aq/other"], cwd=repo["clone"])
+    if remote_state == "unreachable":
+        _git(["remote", "set-url", "origin", repo["origin"] + ".missing"], cwd=repo["clone"])
+    session = await _live_session(h, task_id, repo["clone"])
+    args = {"task_id": task_id, "outcome": "pass", "summary": "done", "session_id": session}
+    refused = await h.execute("task_close", args)
+    assert refused["success"] is False, refused
+    assert refused["result"] == "verification_failed"
+    assert "aq git push" in refused["error"]
+    assert (await h.db.get_task(task_id)).status == TaskStatus.IN_PROGRESS
+    assert (await h.db.get_session(session)).state == "running"
+    assert await h.db.get_task_completion(task_id) is None
+    _git(["remote", "set-url", "origin", repo["origin"]], cwd=repo["clone"])
+    _git(["push", "origin", branch], cwd=repo["clone"])
+    assert _git(["rev-parse", f"refs/heads/{branch}"], cwd=repo["origin"]) == sha
+    accepted = await h.execute("task_close", args)
+    assert accepted["success"], accepted
+    assert (await h.db.get_task(task_id)).status == TaskStatus.COMPLETED

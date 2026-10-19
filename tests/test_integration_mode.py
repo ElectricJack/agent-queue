@@ -20,6 +20,7 @@ from src.models import (
     AgentProfile,
     AgentOutput,
     AgentResult,
+    DepType,
     PhaseResult,
     PipelineContext,
     Project,
@@ -27,6 +28,7 @@ from src.models import (
     RepoSourceType,
     Task,
     TaskStatus,
+    TaskType,
     Workspace,
     WorkspaceKind,
 )
@@ -1177,6 +1179,32 @@ class TestSessionCloseCompletion:
         assert result["status"] == TaskStatus.COMPLETED.value
         assert [row["status"] for row in await orch.db.list_task_subtasks(task.id)] == ["skipped"]
 
+    async def _close_with_dependent(self, orch, task):
+        await orch.db.create_task(task)
+        await orch.db.create_task(
+            Task(id=f"{task.id}-dep", project_id="p-1", title="dep", description="dep")
+        )
+        await orch.db.add_dependency(f"{task.id}-dep", task.id, DepType.BLOCKS.value)
+        pr = "https://github.com/org/repo/pull/56"
+        orch._run_completion_pipeline = AsyncMock(return_value=(pr, True))
+        result = await orch.complete_session_task(task, outcome="pass", notes="done")
+        assert result["status"] == TaskStatus.COMPLETED.value
+        return await orch.db.get_task(f"{task.id}-dep"), pr
+
+    async def test_pull_request_completion_holds_blocks_dependent_on_pr_merge(self, orch):
+        """sound-journey-29: an open PR is not delivery; the dependent waits."""
+        dep, pr = await self._close_with_dependent(orch, _pr_task("t-close-gate"))
+
+        assert dep.is_blocked is True
+        [gate] = await orch.db.get_gates_for_task(dep.id)
+        assert (gate["gate_type"], gate["await_id"], gate["status"]) == ("pr-merged", pr, "open")
+
+    async def test_direct_completion_releases_blocks_dependent(self, orch):
+        dep, _ = await self._close_with_dependent(orch, _direct_task("t-close-direct"))
+
+        assert dep.is_blocked is False
+        assert await orch.db.get_gates_for_task(dep.id) == []
+
 
 class TestResolveIntegrationMode:
     """The pure policy chain: parent → task → project → config default."""
@@ -1503,22 +1531,56 @@ class TestNoCodeTasksSkipThePrGate:
         assert ctx.verification_retry_in_session is True
         assert any("No open PR" in msg for msg in ctx.verification_issues)
 
-    async def test_no_code_task_still_sweeps_uncommitted_changes(self, orch, monkeypatch):
-        """Skipping the gate must not leave a dirty slot for the next task."""
-        task, ctx = await self._no_pr_ctx(orch, "t-dirty", "aq/t-dirty", profile_id="reviewer")
+    @pytest.mark.parametrize("intent", ["reviewer", "review", "design", "no-op", "db-only"])
+    @pytest.mark.parametrize("path", ["ordinary", "skip", "error"])
+    async def test_document_only_dirty_close_preserves_drafts(self, orch, monkeypatch, intent, path):
+        """A local review copy must never become an auto-committed source PR."""
+        kw = {}
+        if intent == "reviewer":
+            kw["profile_id"] = "reviewer"
+        elif intent == "review":
+            kw["deliverables"] = [{"id": "doc", "kind": "review", "target": "spec"}]
+        elif intent == "design":
+            kw["task_type"] = TaskType.DESIGN
+        elif intent == "db-only":
+            await orch.db.create_profile(
+                AgentProfile(id="db-only", name="DB-only", needs_workspace=False)
+            )
+            kw["profile_id"] = "db-only"
+        _, ctx = await self._no_pr_ctx(orch, "t-dirty", "aq/t-dirty", **kw)
+        if intent == "no-op":
+            ctx.work_outcome = "no-op"
+        if path == "skip":
+            ctx.task.skip_verification = True
+        elif path == "error":
+            ctx.output.exit_code = 1
+        orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        sweep = AsyncMock(return_value=False)
+        monkeypatch.setattr(orch, "_auto_remediate_uncommitted", sweep)
 
-        # The first strict status sees dirt; all post-remediation probes are
-        # known clean.
-        orch.git.ahas_uncommitted_changes = AsyncMock(
-            side_effect=[True, False, False, False]
-        )
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert ctx.verification_retry_in_session is True
+        assert "Drafts were preserved" in ctx.verification_feedback
+        sweep.assert_not_awaited()
+        orch.git.afind_open_pr.assert_not_awaited()
+
+    async def test_review_plus_source_deliverables_still_deliver_source(self, orch, monkeypatch):
+        _, ctx = await self._no_pr_ctx(orch, "t-mixed", "aq/t-mixed", deliverables=[
+            {"id": "doc", "kind": "review", "target": "spec"},
+            {"id": "code", "kind": "file", "target": "src/fix.py"},
+        ])
+        orch.git.ahas_uncommitted_changes = AsyncMock(side_effect=[True, False, False])
         sweep = AsyncMock(return_value=False)
         monkeypatch.setattr(orch, "_auto_remediate_uncommitted", sweep)
 
         assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
         sweep.assert_awaited_once()
-        assert sweep.await_args.args[1] == task.id
-        assert sweep.await_args.args[2] == "aq/t-dirty"
+
+    async def test_clean_review_only_task_needs_no_source_pr(self, orch):
+        task, ctx = await self._no_pr_ctx(orch, "t-spec", "aq/t-spec", deliverables=[
+            {"id": "doc", "kind": "review", "target": "spec"},
+        ])
+        await self._assert_clean_pass(orch, task, ctx)
 
     async def test_no_code_status_error_does_not_bypass_verification(self, orch):
         """No-code intent is not evidence that an unreadable checkout is clean."""

@@ -21,6 +21,7 @@ from src.config import AppConfig, DatabaseConfig
 from src.models import AgentProfile, Project, ProjectStatus, SessionRecord, Task, TaskType
 from src.prime import PrimeRenderer
 from src.prime.models import PrimeDocument, PrimeSection
+from src.prime.sections import build_role_section
 from src.profiles.parser import parse_profile
 
 pytestmark = pytest.mark.asyncio
@@ -32,13 +33,9 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-async def db():
-    from src.database import Database
-
-    adapter = Database(lease_dsn("prime"))
-    await adapter.initialize()
+async def db(reuse_database):
+    adapter = await reuse_database("prime")
     yield adapter
-    await adapter.close()
 
 
 @pytest.fixture
@@ -88,6 +85,20 @@ async def test_paused_project_instruction_survives_local_override(db, config, ta
 
 
 class TestGoldenAssembly:
+    @pytest.mark.parametrize("profile_id", ["supervisor", "coder"])
+    async def test_installed_supervisor_receives_infrastructure_policy(self, config, profile_id):
+        path = Path(config.vault_agent_types) / profile_id / "profile.md"
+        _write(path, "## Role\nOperator-customized role.\n")
+
+        section = await build_role_section(config, profile_id)
+
+        assert "Operator-customized role." in section.body
+        assert ("Never mass-pause" in section.body) == (profile_id == "supervisor")
+        assert ("with the train off, train controls" in section.body) == (
+            profile_id == "supervisor"
+        )
+        assert path.read_text() == "## Role\nOperator-customized role.\n"
+
     async def test_an_unrouted_task_takes_no_role_sections(self, db, config):
         """An unrouted task takes no role from any profile (mandatory routing §8)."""
         await db.create_profile(AgentProfile(id="coder", name="Coder"))
@@ -227,6 +238,23 @@ class TestGoldenAssembly:
         body = {s.key: s.body for s in doc.sections}["task"]
         assert "## Deliverables" not in body
         assert "aq review submit" not in body
+
+    @pytest.mark.parametrize("bounded", [False, True])
+    async def test_revision_task_gets_publication_guidance_without_a_document_type(
+        self, db, config, task, bounded
+    ):
+        await db.set_task_meta(task.id, "review_response", {"review_id": "rev-assigned", "revision": 2})
+        await db.update_task(task.id, description="Long context. " * 2000)
+        doc = await PrimeRenderer(db, config).render_for_task(task.id, bounded_worker=bounded)
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "## Review revision publication" in body
+        assert "newer than revision 2 before a passing close" in body
+        assert "aq review show --review-id rev-assigned --comments" in body
+        assert "aq review submit --review-id rev-assigned --file <draft.md>" in body
+        assert "do not edit the vault mirror" in body
+        assert "--resolves" in body
+        assert "content hash" in body
+        assert "Do not wait for approval" in body
 
     async def test_task_section_omits_subtasks_block_when_none_exist(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")

@@ -8,6 +8,7 @@ is a recorded ``--command`` value rather than text found in the repo.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -136,6 +137,204 @@ def test_test_command_target_without_paths_needs_a_matching_recorded_test(repo):
     item = {"id": "suite", "kind": "test", "target": "npm test"}
     assert _met(item, root=repo, tests=["npm test"]) is True
     assert _met(item, root=repo, tests=["npm run lint"]) is False
+
+
+_DASHBOARD_TEST_PATHS = [
+    f"src/pages/playbook-graph-v2/__tests__/{name}"
+    for name in (
+        "types.test.ts",
+        "StepNodeCard.test.tsx",
+        "SemanticNodeInspector.test.tsx",
+        "AdvancedNodeDetail.test.tsx",
+        "RunOverlayPanel.test.tsx",
+    )
+]
+
+
+@pytest.fixture
+def npm_repo(repo):
+    (repo / "package.json").write_text(json.dumps({"workspaces": ["dashboard"]}))
+    (repo / "dashboard").mkdir()
+    (repo / "dashboard/package.json").write_text(json.dumps({"name": "@queue/dashboard"}))
+    for path in _DASHBOARD_TEST_PATHS:
+        file = repo / "dashboard" / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text("// regression fixture\n")
+    return repo
+
+
+def _npm_suite(prefix="npm -w dashboard run test"):
+    return prefix + " -- " + " ".join(_DASHBOARD_TEST_PATHS)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "npm -w dashboard run test",
+        "npm --workspace dashboard run test",
+        "npm --workspace=dashboard run test",
+        "npm -wdashboard run test",
+        "npm -w './dashboard/' run test",
+        "npm run test -w dashboard",
+        "npm run test --workspace=dashboard",
+        "npm test --workspace dashboard",
+        "npm --workspace=@queue/dashboard run-script test",
+    ],
+)
+def test_npm_workspace_resolves_the_exact_five_dashboard_paths(npm_repo, prefix):
+    """B1 paths exist only below dashboard, never at the worktree root."""
+    command = _npm_suite(prefix)
+    item = {"id": "dashboard", "kind": "test", "target": command}
+    assert all(not (npm_repo / path).exists() for path in _DASHBOARD_TEST_PATHS)
+    assert _met(item, root=npm_repo, tests=[command]) is True
+    assert _met(item, root=npm_repo, commands=[command]) is False
+
+
+def test_npm_workspace_needs_exact_test_evidence_from_the_same_context(npm_repo):
+    command = _npm_suite()
+    item = {"id": "dashboard", "kind": "test", "target": command}
+    assert _met(item, root=npm_repo, tests=[command.replace(" ", "  ")]) is True
+    for evidence in (
+        [],
+        [_npm_suite("npm run test")],
+        [_npm_suite("npm -w other run test")],
+        [f"aq test {path}" for path in _DASHBOARD_TEST_PATHS],
+        ["cd other && " + command],
+        [command + " --exclude " + _DASHBOARD_TEST_PATHS[0]],
+    ):
+        assert _met(item, root=npm_repo, tests=evidence) is False
+
+
+def test_npm_workspace_missing_file_cannot_be_replaced_by_a_root_file(npm_repo):
+    path = _DASHBOARD_TEST_PATHS[0]
+    (npm_repo / "dashboard" / path).unlink()
+    root_file = npm_repo / path
+    root_file.parent.mkdir(parents=True)
+    root_file.write_text("// wrong directory\n")
+    command = _npm_suite()
+    item = {"id": "dashboard", "kind": "test", "target": command}
+    assert _met(item, root=npm_repo, tests=[command]) is False
+
+
+@pytest.mark.parametrize(
+    "selector", ["missing", "src", "../dashboard", "dashboard/../dashboard", "/tmp", "*"]
+)
+def test_npm_workspace_rejects_unknown_unconfigured_and_traversing_selectors(npm_repo, selector):
+    command = _npm_suite(f"npm -w {selector} run test")
+    item = {"id": "dashboard", "kind": "test", "target": command}
+    assert _met(item, root=npm_repo, tests=[command]) is False
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [None, "not json", "[]", '{"workspaces": "dashboard"}', '{"workspaces": ["*"]}'],
+)
+def test_npm_workspace_requires_a_resolvable_root_manifest(npm_repo, manifest):
+    path = npm_repo / "package.json"
+    if manifest is None:
+        path.unlink()
+    else:
+        path.write_text(manifest)
+    command = _npm_suite()
+    assert (
+        _met({"id": "suite", "kind": "test", "target": command}, root=npm_repo, tests=[command])
+        is False
+    )
+
+
+@pytest.mark.parametrize("manifest", [None, "not json", "[]"])
+def test_npm_workspace_requires_its_package_manifest(npm_repo, manifest):
+    path = npm_repo / "dashboard/package.json"
+    if manifest is None:
+        path.unlink()
+    else:
+        path.write_text(manifest)
+    command = _npm_suite()
+    assert (
+        _met({"id": "suite", "kind": "test", "target": command}, root=npm_repo, tests=[command])
+        is False
+    )
+
+
+def test_npm_workspace_missing_directory_is_unmet(repo):
+    (repo / "package.json").write_text('{"workspaces": ["dashboard"]}')
+    command = "npm -w dashboard run test"
+    assert (
+        _met({"id": "suite", "kind": "test", "target": command}, root=repo, tests=[command])
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "npm --workspace= run test",
+        "npm run test --workspace",
+        "npm run test --workspaces",
+        "npm -ws run test",
+        "npm -w dashboard -w dashboard run test",
+        "npm -w dashboard run test --prefix dashboard",
+        "npm -w dashboard run test --if-present",
+        "npm -w 'dashboard run test",
+        "npm -w dashboard run lint",
+        "npm -w dashboard run test && npm run lint",
+    ],
+)
+def test_npm_workspace_unsupported_or_malformed_commands_are_unmet(npm_repo, command):
+    assert (
+        _met({"id": "suite", "kind": "test", "target": command}, root=npm_repo, tests=[command])
+        is False
+    )
+
+
+def test_npm_workspace_paths_cannot_traverse_or_follow_symlinks_outside(npm_repo, tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.test.ts"
+    outside.write_text("// outside the worktree\n")
+    escaped = npm_repo / "dashboard/escape.test.ts"
+    escaped.symlink_to(outside)
+    loop = npm_repo / "dashboard/loop.test.ts"
+    loop.symlink_to(loop)
+    for path in ("escape.test.ts", "loop.test.ts", str(outside), "../tests/test_a.py"):
+        command = f"npm -w dashboard run test -- {path}"
+        assert (
+            _met({"id": "suite", "kind": "test", "target": command}, root=npm_repo, tests=[command])
+            is False
+        )
+
+
+def test_npm_workspace_directory_cannot_escape_through_a_symlink(npm_repo, tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-workspace"
+    outside.mkdir()
+    (outside / "package.json").write_text('{"name": "escape"}')
+    (npm_repo / "escape").symlink_to(outside, target_is_directory=True)
+    (npm_repo / "package.json").write_text('{"workspaces": ["escape"]}')
+    command = "npm -w escape run test"
+    assert (
+        _met({"id": "suite", "kind": "test", "target": command}, root=npm_repo, tests=[command])
+        is False
+    )
+
+
+def test_npm_workspace_package_name_must_resolve_unambiguously(npm_repo):
+    (npm_repo / "other").mkdir()
+    (npm_repo / "other/package.json").write_text('{"name": "@queue/dashboard"}')
+    (npm_repo / "package.json").write_text('{"workspaces": ["dashboard", "other"]}')
+    command = "npm --workspace=@queue/dashboard test"
+    assert (
+        _met({"id": "suite", "kind": "test", "target": command}, root=npm_repo, tests=[command])
+        is False
+    )
+
+
+def test_npm_root_paths_and_script_workspace_arguments_keep_their_root_context(npm_repo):
+    for command in (
+        "npm run test -- tests/test_a.py",
+        "npm test -- --workspace dashboard tests/test_a.py",
+    ):
+        assert (
+            _met({"id": "suite", "kind": "test", "target": command}, root=npm_repo, tests=[command])
+            is True
+        )
 
 
 # --- kind=command ----------------------------------------------------------

@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from src.git.manager import GitError, GitManager
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 # ---------------------------------------------------------------------------
@@ -60,17 +61,9 @@ def _current_branch(cwd: str) -> str:
 def git_repo(tmp_path):
     """Create a bare remote + working clone with an initial commit."""
     remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True,
-        capture_output=True,
-    )
+    init_bare_seed(str(remote))
     clone = tmp_path / "clone"
-    subprocess.run(
-        ["git", "clone", str(remote), str(clone)],
-        check=True,
-        capture_output=True,
-    )
+    clone_seed(str(remote), str(clone))
     # Initial commit
     (clone / "README.md").write_text("init")
     subprocess.run(["git", "add", "."], cwd=str(clone), check=True, capture_output=True)
@@ -87,6 +80,14 @@ def git_repo(tmp_path):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def test_repos_disable_auto_maintenance(git_repo):
+    """Fresh repos disable detached maintenance, including receive-pack."""
+    for repo in git_repo.values():
+        assert _git(["config", "--local", "--bool", "maintenance.auto"], cwd=repo) == "false"
+        assert _git(["config", "--local", "--int", "gc.auto"], cwd=repo) == "0"
+        assert _git(["config", "--local", "--bool", "receive.autogc"], cwd=repo) == "false"
 
 
 class TestSyncAndMerge:

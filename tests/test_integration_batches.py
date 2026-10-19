@@ -11,6 +11,7 @@ from src.database.tables import integration_batches, integration_subject_journal
 from src.integration.batches import Batch, BatchMember, BatchService, BatchStore, candidate_ref, ordered_members
 from src.integration.git_truth import GitTruth
 from src.integration.gitops import branch
+from tests.test_integration_gitops import git_history_template as git_history_template
 from tests.test_integration_gitops import commit, git, setup as setup
 
 
@@ -371,3 +372,63 @@ async def test_attestation_io_cannot_override_final_authorization(batch_env, cha
     refused = await service.visit(batch, members, await snapshot())
     assert refused.state == "held"
     assert git(ops.git.remote_path, "rev-parse", batch.target_ref) == base
+
+
+async def test_frozen_batch_retries_recovered_cache_through_exact_candidate_gate(
+    batch_env, tmp_path, monkeypatch,
+):
+    import json
+    from pathlib import Path
+
+    from src.commands import CommandHandler
+    from src.config import AppConfig
+    from src.git.manager import GitError
+    from src.integration.repository_incidents import admission_holds
+    from src.integration.repository_recovery import fetch_retained_origin
+    from src.models import Project, RepoConfig, RepoSourceType
+
+    db, ops, repo, base, head, store, batch, members, green, _, snapshot, service = batch_env
+
+    await db.create_project(Project(id='p', name='Batch recovery'))
+    await db.create_repo(RepoConfig(id='r', project_id='p', source_type=RepoSourceType.CLONE,
+                                   url=str(ops.git.remote_path)))
+    handler = CommandHandler(SimpleNamespace(db=db, git=ops.git),
+                             AppConfig(data_dir=str(tmp_path / 'data')))
+    ops.git.retained_recovery_state = handler.retained_repository_recovery
+    first = await service.visit(batch, members, await snapshot())
+    assert first.state == 'testing'
+    oid = git(repo.store, 'rev-parse', f'{base}:base.txt')
+    obj = repo.store / '.git' / 'objects' / oid[:2] / oid[2:]
+    obj.parent.mkdir(exist_ok=True)
+    obj.unlink(missing_ok=True)
+    obj.write_bytes(b'broken frozen batch dependency')
+    fetch = ops.git.afetch_origin
+
+    async def fail(*args, **kwargs):
+        if kwargs.get('refetch'):
+            raise GitError('temporary transport failure')
+        return await fetch(*args, **kwargs)
+
+    async def recover():
+        await fetch_retained_origin(ops.git, repo.store,
+                                    repository_url=str(ops.git.remote_path),
+                                    project_id='p', repository_id='r')
+
+    monkeypatch.setattr(ops.git, 'afetch_origin', fail)
+    with pytest.raises(GitError, match='temporary transport failure'):
+        await recover()
+    assert await admission_holds(db, 'p')
+    monkeypatch.setattr(ops.git, 'afetch_origin', fetch)
+    await recover()
+    assert not await admission_holds(db, 'p')
+    state = json.loads((repo.store / '.git' / 'aq-empty-object-backups' / 'incident.json').read_text())
+    assert state['attempts'] == 2 and state['status'] == 'recovered'
+    assert Path(state['moves'][0]['backup']).read_bytes() == b'broken frozen batch dependency'
+    assert await store.get(batch.id) == batch
+    assert await store.members(batch.id) == members
+    assert git(repo.store, 'rev-parse', members[0].source_sha) == head
+    retry = await service.visit(batch, members, await snapshot())
+    assert retry.state == 'testing' and retry.candidate_sha == first.candidate_sha
+    assert git(ops.git.remote_path, 'rev-parse', batch.target_ref) == base
+    green.add(retry.candidate_sha)
+    assert (await service.visit(batch, members, await snapshot())).state == 'delivered'

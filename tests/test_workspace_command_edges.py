@@ -251,4 +251,11 @@ async def test_edit_workspace_refuses_locked_or_duplicate_path_but_allows_forced
     row = await handler.db.get_workspace("ws-a")
     assert row.name == "renamed"
     assert row.enabled is False
+    assert row.disabled_reason == "operator: disabled with edit_workspace"
+    assert row.disabled_at is not None
     assert row.source_type == RepoSourceType.INIT
+
+    # Re-enabling clears the reason.
+    await handler._cmd_edit_workspace({"workspace_id": "ws-a", "enabled": True})
+    row = await handler.db.get_workspace("ws-a")
+    assert (row.enabled, row.disabled_reason, row.disabled_at) == (True, None, None)

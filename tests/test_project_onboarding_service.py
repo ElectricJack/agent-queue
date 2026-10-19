@@ -219,7 +219,7 @@ def _request(**overrides):
 
 
 @pytest.fixture
-async def onboarding(request, tmp_path: Path):
+async def onboarding(request, tmp_path: Path, reuse_database):
     root = tmp_path / "root"
     root.mkdir()
     data_dir = tmp_path / "data"
@@ -228,11 +228,9 @@ async def onboarding(request, tmp_path: Path):
         data_dir=str(data_dir),
         database=DatabaseConfig(url=lease_dsn("onboarding.db")),
     )
-    database = Database(config.database.url)
-    await database.initialize()
+    database: Database = await reuse_database("onboarding.db")
     service = ProjectOnboardingService(database, config, GitManager())
     yield service, database, config, root, data_dir
-    await database.close()
 
 
 @pytest.mark.parametrize(

@@ -17,7 +17,7 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
 from src.database import Database
-from src.models import AgentProfile, Project, Task, TaskStatus
+from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 from tests.assignment_routing_helpers import route_source_for
 
@@ -520,6 +520,47 @@ async def test_close_accepts_test_and_command_deliverables_declared_as_shell_com
     ]
 
 
+@pytest.mark.asyncio
+async def test_close_workspace_test_deliverable_checks_files_and_test_evidence(
+    handler, db, tmp_path, monkeypatch
+):
+    """npm's workspace cwd reaches the close gate without weakening its evidence."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "package.json").write_text('{"workspaces": ["dashboard"]}')
+    dashboard = tmp_path / "dashboard"
+    dashboard.mkdir()
+    (dashboard / "package.json").write_text('{"name": "dashboard"}')
+    test_file = dashboard / "src/pages/graph/__tests__/types.test.ts"
+    test_file.parent.mkdir(parents=True)
+    suite = "npm -w dashboard run test -- src/pages/graph/__tests__/types.test.ts"
+    item = {"id": "dashboard-suite", "kind": "test", "target": suite}
+    await db.create_project(Project(id="p", name="P"))
+    created = await handler.execute(
+        "create_task", {"project_id": "p", "title": "t", "deliverables": [item]}
+    )
+    tid = created["created"]
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+
+    missing = await handler.execute(
+        "task_close", {"task_id": tid, "outcome": "pass", "tests": [suite]}
+    )
+    assert missing["code"] == "deliverables.unmet"
+    assert (await db.get_task(tid)).status == TaskStatus.IN_PROGRESS
+    test_file.write_text("// fixture\n")
+    wrong_evidence = await handler.execute(
+        "task_close", {"task_id": tid, "outcome": "pass", "commands": [suite]}
+    )
+    assert wrong_evidence["code"] == "deliverables.unmet"
+    assert (await db.get_task(tid)).status == TaskStatus.IN_PROGRESS
+
+    result = await handler.execute(
+        "task_close", {"task_id": tid, "outcome": "pass", "tests": [suite]}
+    )
+    assert result["success"] is True, result
+    completion = await db.get_task_completion(tid)
+    assert completion.deliverables == [{**item, "met": True, "reason": ""}]
+
+
 # ---------------------------------------------------------------------------
 # Review deliverables: a proposal goes to Reviews, not only a branch
 # (vivid-delta; research task crisp-orbit-37 committed its proposal and was
@@ -704,6 +745,89 @@ async def test_a_withdrawn_review_does_not_satisfy_the_close(handler, db):
     result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
 
     assert result["code"] == "deliverables.unmet"
+
+
+@pytest.mark.parametrize("evidence", ["file_only", "unrelated", "other_task", "old", "withdrawn"])
+async def test_revision_close_requires_publication_to_the_assigned_review(
+    handler, db, tmp_path, evidence
+):
+    tid = await _started(handler, db)
+    await _submitted_review(db, "rev-assigned", task_id=None, state="changes_requested")
+    await db.set_task_meta(tid, "review_response", {"review_id": "rev-assigned", "revision": 1})
+    if evidence == "file_only":
+        (tmp_path / "draft.md").write_text("---\nrevision: 2\n---\n# Edited draft\n")
+    else:
+        if evidence == "unrelated":
+            await _submitted_review(db, "rev-unrelated", task_id=tid)
+        if evidence == "withdrawn":
+            await _submitted_review(db, "rev-withdrawn", task_id=None, state="withdrawn")
+            await db.set_task_meta(
+                tid, "review_response", {"review_id": "rev-withdrawn", "revision": 1}
+            )
+        review_id = {
+            "withdrawn": "rev-withdrawn", "unrelated": "rev-unrelated",
+        }.get(evidence, "rev-assigned")
+        row = await db.get_review_revision(review_id, 1)
+        row.update(revision=2, submitted_task_id="another-task" if evidence == "other_task" else tid)
+        async with db.immediate() as conn:
+            await db.insert_review_revision(revision=row, conn=conn)
+        if evidence == "old":
+            await db.set_task_meta(tid, "review_response", {"review_id": "rev-assigned", "revision": 2})
+
+    refused = await handler.execute("task_close", {
+        "task_id": tid, "outcome": "pass", "summary": "Revised the draft",
+        "deliverable_unmet": ["review: edited locally"],
+    })
+    assert refused["code"] == "reviews.revision_unpublished"
+    assert f"aq review submit --review-id {refused['review_id']}" in refused["error"]
+    assert (await db.get_task(tid)).status == TaskStatus.IN_PROGRESS
+    assert await db.get_task_completion(tid) is None
+    assert await db.get_task_meta(tid, "work_outcome") is None
+    assert not any(
+        event.startswith("task.") for event, _payload in handler.orchestrator.bus.events
+    )
+
+
+async def test_revision_close_passes_after_review_submit(handler, db, config, tmp_path):
+    config.data_dir = str(tmp_path)
+    tid = await _started(handler, db)
+    await _submitted_review(db, "rev-assigned", task_id=None, state="changes_requested")
+    await db.set_task_meta(tid, "review_response", {"review_id": "rev-assigned", "revision": 1})
+    await db.create_profile(AgentProfile(
+        id="reviser", name="Reviser", aq_commands=["review_submit"], needs_workspace=False,
+    ))
+    await db.create_session(SessionRecord(
+        id="reviser", task_id=tid, project_id="p", profile_id="reviser", harness="codex",
+        provider="fake", name="reviser", lifecycle="task", work_dir=str(tmp_path),
+        epoch="test", instance_token="test-token", started_at=1.0, state="running",
+    ))
+    submitted = await handler.execute("review_submit", {
+        "review_id": "rev-assigned", "task_id": tid,
+        "content": "# Revised proposal\n", "changes": "Addressed the requested feedback.",
+        "_scope": {
+            "kind": "session", "session_id": "reviser", "project_id": "p", "task_id": tid,
+            "session_instance_token": "test-token", "elevated": False,
+        },
+    })
+    assert submitted["success"], submitted
+    assert submitted["revision"] == 2
+    assert (await db.get_review_revision("rev-assigned", 2))["submitted_task_id"] == tid
+    result = await handler.execute("task_close", {
+        "task_id": tid, "outcome": "pass", "summary": "Published revision 2",
+    })
+    assert result["success"], result
+    assert (await db.get_task(tid)).status == TaskStatus.COMPLETED
+    assert (await db.get_review("rev-assigned"))["state"] == "in_review"
+
+
+async def test_failed_revision_close_does_not_require_publication(handler, db):
+    tid = await _started(handler, db)
+    await db.set_task_meta(tid, "review_response", {"review_id": "rev-missing", "revision": 1})
+    result = await handler.execute("task_close", {
+        "task_id": tid, "outcome": "fail", "summary": "Could not revise the document",
+    })
+    assert result["success"], result
+    assert (await db.get_task(tid)).status == TaskStatus.FAILED
 
 
 # ---------------------------------------------------------------------------

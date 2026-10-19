@@ -126,6 +126,12 @@ class EnsureTaskArgs(CommandArgs):
     discovered_from: str | None = None
 
 
+class EnsureSpecIngestArgs(CommandArgs):
+    project_id: str
+    decision_id: str
+    packet_sha256: str
+
+
 class EnsureTaskValue(CommandValue):
     task_id: str
     created: bool
@@ -211,6 +217,7 @@ class AddDependencyValue(CommandValue):
 
 
 class GateCreateArgs(CommandArgs):
+    human_request: dict[str, Any] | None = None
     project_id: str
     gate_type: str
     title: str
@@ -230,8 +237,13 @@ class GateCreateValue(CommandValue):
 
 
 class GateResolveArgs(CommandArgs):
+    expected: dict[str, Any] | None = None
+    preview_id: str | None = None
+    idempotency_key: str | None = None
+    option_key: str | None = None
+    overall_note: str | None = None
     gate_id: str
-    resolved_by: str
+    resolved_by: str | None = None
     resolution: str | None = None
 
 
@@ -492,6 +504,17 @@ class TaskRouteApplyValue(CommandValue):
     planned_profile_id: str | None = None
     adjusted_at_apply: bool = False
     resolved_gate_ids: list[str] = Field(default_factory=list)
+
+
+class CiCompletedStatusArgs(CommandArgs):
+    project_id: str
+
+
+class CiCompletedStatusValue(CommandValue):
+    project_id: str
+    checked: int = 0
+    failing: list[dict[str, Any]] = Field(default_factory=list)
+    unresolved: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CiBaselineStatusArgs(CommandArgs):
@@ -838,10 +861,12 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if state == "red" and raw.get("escalated"):
             return "red_escalated"
         return state if state in {"green", "red", "pending", "unknown"} else "unknown"
+    if name == "ci_completed_status":
+        return "listed"
     if name == "ci_repair_adopt":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
-    if name == "ensure_task":
+    if name in {"ensure_task", "ensure_spec_ingest"}:
         return "created" if raw.get("created") else "reused"
     if name == "github_issue_triage":
         return "swept"
@@ -1129,6 +1154,15 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"task_id": "Task", "created": "Was created"},
         subject_labels={"task": "a task"},
     ),
+    "ensure_spec_ingest": CommandPresentation(
+        title="Ensure approved spec ingestion",
+        summary="Create or recover the role task receipt for an immutable approved decision.",
+        arg_labels={"project_id": "Project", "decision_id": "Decision",
+                    "packet_sha256": "Approved packet hash"},
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "an approved spec ingestion task"},
+    ),
     "github_issue_triage": CommandPresentation(
         title="Triage GitHub issues",
         summary="File bounded investigations and label the corresponding issues.",
@@ -1289,6 +1323,15 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         result_labels={"stopped": "Stopped task"},
         subject_labels={"task_execution": "the task's execution"},
+    ),
+    "ci_completed_status": CommandPresentation(
+        title="Audit completed task CI",
+        summary="List completed sources with failing required checks and unresolved CI evidence.",
+        arg_labels={"project_id": "Project"},
+        outcome_labels={"listed": "Listed", "rejected": "Rejected"},
+        result_labels={"checked": "Sources checked", "failing": "Failing sources",
+                       "unresolved": "Unresolved sources"},
+        subject_labels={},
     ),
     "ci_baseline_status": CommandPresentation(
         title="Read the default branch's CI verdict",
@@ -1684,71 +1727,48 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
         (
-            "create_task",
-            CreateTaskArgs,
-            CreateTaskValue,
-            _outcomes("created"),
+            "create_task", CreateTaskArgs, CreateTaskValue, _outcomes("created"),
             SideEffectClass.CREATE,
             (CreateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="none"),
-            False,
+            IdempotencySpec(mode="none"), False,
         ),
         (
-            "ensure_task",
-            EnsureTaskArgs,
-            EnsureTaskValue,
-            _outcomes("created", "reused"),
+            "ensure_task", EnsureTaskArgs, EnsureTaskValue, _outcomes("created", "reused"),
             SideEffectClass.CREATE,
             (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="dedup_key"),),
-            IdempotencySpec(mode="keyed", key_field="dedup_key"),
-            True,
+            IdempotencySpec(mode="keyed", key_field="dedup_key"), True,
         ),
         (
-            "github_issue_triage",
-            GitHubIssueTriageArgs,
-            GitHubIssueTriageValue,
-            _outcomes("swept"),
-            SideEffectClass.COMPOSITE,
+            "ensure_spec_ingest", EnsureSpecIngestArgs, EnsureTaskValue,
+            _outcomes("created", "reused"), SideEffectClass.CREATE,
+            (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="decision_id"),),
+            IdempotencySpec(mode="keyed", key_field="decision_id"), True,
+        ),
+        (
+            "github_issue_triage", GitHubIssueTriageArgs, GitHubIssueTriageValue,
+            _outcomes("swept"), SideEffectClass.COMPOSITE,
             (CreateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "github_issue_fix_approved",
-            GitHubIssueFixApprovedArgs,
-            GitHubIssueFixApprovedValue,
-            _outcomes("created", "reused", "ignored"),
-            SideEffectClass.CREATE,
+            "github_issue_fix_approved", GitHubIssueFixApprovedArgs, GitHubIssueFixApprovedValue,
+            _outcomes("created", "reused", "ignored"), SideEffectClass.CREATE,
             (CreateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "github_issue_rejection",
-            GitHubIssueRejectionArgs,
-            GitHubIssueRejectionValue,
-            _outcomes("closed", "ignored"),
-            SideEffectClass.COMPOSITE,
-            (),
-            IdempotencySpec(mode="natural"),
-            True,
+            "github_issue_rejection", GitHubIssueRejectionArgs, GitHubIssueRejectionValue,
+            _outcomes("closed", "ignored"), SideEffectClass.COMPOSITE, (),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "edit_task",
-            EditTaskArgs,
-            EditTaskValue,
-            _outcomes("updated"),
-            SideEffectClass.UPDATE,
+            "edit_task", EditTaskArgs, EditTaskValue, _outcomes("updated"), SideEffectClass.UPDATE,
             (UpdateClause(subject=EffectSubject.TASK),),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "add_dependency",
-            AddDependencyArgs,
-            AddDependencyValue,
-            _outcomes("linked", "already_linked"),
-            SideEffectClass.LINK,
+            "add_dependency", AddDependencyArgs, AddDependencyValue,
+            _outcomes("linked", "already_linked"), SideEffectClass.LINK,
             (
                 LinkClause(
                     subject=EffectSubject.DEPENDENCY_EDGE,
@@ -1757,15 +1777,11 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                     relation_arg="dep_type",
                 ),
             ),
-            IdempotencySpec(mode="natural"),
-            True,
+            IdempotencySpec(mode="natural"), True,
         ),
         (
-            "gate_create",
-            GateCreateArgs,
-            GateCreateValue,
-            _outcomes("created", "reused", "skipped"),
-            SideEffectClass.CREATE,
+            "gate_create", GateCreateArgs, GateCreateValue,
+            _outcomes("created", "reused", "skipped"), SideEffectClass.CREATE,
             (
                 CreateClause(subject=EffectSubject.GATE),
                 LinkClause(
@@ -1775,8 +1791,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                     when=ClausePredicate(arg_present="waiter_task_ids"),
                 ),
             ),
-            IdempotencySpec(mode="keyed", key_field="await_id"),
-            False,
+            IdempotencySpec(mode="keyed", key_field="await_id"), False,
         ),
         (
             "gate_resolve",
@@ -1847,6 +1862,11 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             ),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "ci_completed_status", CiCompletedStatusArgs, CiCompletedStatusValue,
+            _outcomes("listed"), SideEffectClass.READ, (),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "ci_baseline_status",
@@ -2064,3 +2084,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.inventory import register_inventory_contracts
 
     register_inventory_contracts(registry)
+
+    from src.commands.contracts.ask import register_ask_contracts
+    register_ask_contracts(registry)

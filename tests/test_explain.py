@@ -13,6 +13,7 @@ Covers docs/specs/implementation/work-graph.md §6.3 and §11:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -21,7 +22,6 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
-from src.database import Database
 from src.explain import build_capacity_reasons
 from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, AgentState, DepType, Project, Task, TaskStatus
@@ -33,12 +33,10 @@ PROJECT_ID = "proj-explain"
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("explain.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("explain.db")
     await database.create_project(Project(id=PROJECT_ID, name="Explain"))
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -176,6 +174,37 @@ async def spill_task(db, tid="spill", *, age=900, intent="preferred", priority=1
     )
     async with db._engine.begin() as conn:
         await conn.execute(update(tasks).where(tasks.c.id == tid).values(updated_at=10_000 - age))
+
+
+@pytest.mark.parametrize("age,target_kind,active,alarm", [
+    (1790, "batch", True, False),
+    (1810, "batch", True, True),
+    (40_000, "batch", False, False),
+    (40_000, "parent", True, False),
+])
+async def test_explain_train_repair_capacity_alarm(
+    handler, db, spill_pool, monkeypatch, age, target_kind, active, alarm,
+):
+    from sqlalchemy import update
+
+    from src.database.tables import tasks
+
+    await spill_task(db, intent="pinned")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "spill").values(
+            updated_at=time.time() - age,
+        ))
+    monkeypatch.setattr(db, "get_active_integration_repair_for_task", AsyncMock(
+        return_value={"target_kind": target_kind, "batch_id": "train-1", "id": "operation-1"}
+        if active else None,
+    ))
+    result = await handler._cmd_explain_task({"task_id": "spill"})
+    assert ("train_repair_capacity_wait" in result["reason_codes"]) is alarm
+    assert "awaiting_pool_session" in result["reason_codes"]
+    if alarm:
+        reason = result["reasons"][-1]
+        assert reason["ref"] == "operation-1"
+        assert "train-1" in reason["detail"] and "fast-low-codex" in reason["detail"]
 
 
 @pytest.mark.parametrize(
@@ -941,3 +970,64 @@ async def test_explain_includes_shared_operator_decision(handler, db):
     assert result["success"], result
     assert "operator_decision_hold" in result["reason_codes"]
     assert result["operator_decisions"][0]["id"] == row["id"]
+
+
+async def test_explain_returns_persisted_and_live_claim_timing(handler, db):
+    from src.claim_timing import ClaimTiming
+
+    await mktask(db, "timed", status=TaskStatus.IN_PROGRESS)
+    persisted = ClaimTiming("session", task_id="timed", claim_epoch=1)
+    persisted.finish("claimed")
+    await db.set_task_meta("timed", "claim_timing", persisted.snapshot())
+    result = await handler._cmd_explain_task({"task_id": "timed"})
+    assert result["claim_timing"] == persisted.snapshot()
+    live = ClaimTiming("new-session", task_id="timed", claim_epoch=2)
+    live.running.append(("fetch", time.monotonic()))
+    handler.orchestrator.claim_timings["timed"] = live
+    result = await handler._cmd_explain_task({"task_id": "timed"})
+    assert result["claim_timing"]["current_phase"] == "fetch"
+    assert result["claim_timing"]["claim_epoch"] == 2
+
+
+@pytest.mark.parametrize("stage", ["frontier", "admission", "integration"])
+async def test_cancelled_explanation_does_not_imply_failed_independent_reads(
+    handler, db, monkeypatch, stage,
+):
+    """Successful controls do not turn an incomplete explanation into evidence."""
+    await mktask(db, "slow-explain", status=TaskStatus.READY, profile_id="worker")
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def stalled(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with monkeypatch.context() as fault:
+        if stage == "frontier":
+            fault.setattr(db, "claim_frontier_exclusions", stalled)
+        elif stage == "admission":
+            fault.setattr("src.integration.admission.observe_admission", stalled)
+        else:
+            fault.setattr("src.integration.status.IntegrationStatusService.task_blockers", stalled)
+        request = asyncio.create_task(handler._cmd_explain_task({"task_id": "slow-explain"}))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            shown = await handler._cmd_get_task({"task_id": "slow-explain"})
+            assert shown["id"] == "slow-explain"
+            assert shown["status"] == "READY"
+            assert not request.done()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert cancelled.is_set()
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    # The later successful reads establish their own results only. No empty
+    # reason list was produced or persisted for the cancelled request.
+    assert (await handler._cmd_get_task({"task_id": "slow-explain"}))["status"] == "READY"
+    complete = await handler._cmd_explain_task({"task_id": "slow-explain"})
+    assert complete["success"]
+    assert complete["reasons"]

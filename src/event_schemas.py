@@ -1029,6 +1029,16 @@ _WORKTREE_SCHEMAS: dict[str, EventSchema] = {
         "required": ["project_id", "workspace_id", "slot", "path", "reason"],
         "optional": [],
     },
+    # Slot reconciler (src.orchestrator.slot_restore): a disabled in-cap slot
+    # came back into service, or was held out because it carries changes.
+    "worktree.restored": {
+        "required": ["project_id", "workspace_id", "slot", "path", "action"],
+        "optional": ["previous_reason"],
+    },
+    "worktree.quarantined": {
+        "required": ["project_id", "workspace_id", "slot", "path", "reason"],
+        "optional": ["dirty_paths"],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -1363,11 +1373,19 @@ _CRON_SCHEMAS: dict[str, EventSchema] = {
 
 _SPEC_SCHEMAS: dict[str, EventSchema] = {
     "spec.approved": {
-        "required": ["project_id", "spec_path"],
-        "optional": [],
+        "required": ["project_id", "decision_id", "packet_sha256", "review_id", "revision",
+                     "spec_kind"],
+        "optional": ["spec_path", "operation_key", "seq"],
         "fields": {
             "project_id": {"type": "string", "description": "project"},
-            "spec_path": {"type": "string", "description": "specification path"},
+            "decision_id": {"type": "string", "description": "immutable approval decision"},
+            "packet_sha256": {"type": "string", "description": "approved packet hash"},
+            "review_id": {"type": "string", "description": "review or null for standalone"},
+            "revision": {"type": "integer", "description": "review revision or null"},
+            "spec_kind": {"type": "string", "description": "design or implementation"},
+            "spec_path": {"type": "string", "description": "display mirror only"},
+            "operation_key": {"type": "string", "description": "durable dispatch identity"},
+            "seq": {"type": "integer", "description": "persisted event sequence"},
         },
     },
     "proposal.ready": {
@@ -1533,6 +1551,10 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
         # sizer alone never had one.
         "optional": ["placement_reason"],
     },
+    "pool.scaler_stalled": {
+        "required": ["profile_id", "desired", "live", "ready", "ticks", "recovery"],
+        "optional": [],
+    },
     # Sizing authorised a start and no project could take it — the condition
     # that was invisible before placement became explicit (§6.3).  ``reasons``
     # maps project id to the predicate that excluded it: ``quarantined``,
@@ -1568,7 +1590,7 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.prepare_failed": {
         "required": ["project_id", "profile_id", "session_id", "task_id", "reason"],
-        "optional": [],
+        "optional": ["error_type", "stage", "defect", "target_ref"],
     },
     "pool.session_drained": {
         "required": ["project_id", "profile_id", "session_id", "name", "reason"],
@@ -1991,6 +2013,24 @@ _DASHBOARD_STATE_SCHEMAS: dict[str, EventSchema] = {
 }
 
 EVENT_SCHEMAS: dict[str, EventSchema] = {
+    "integration.completed_container_checkpoint_recovered": {
+        "required": ["id", "operator_id", "reason", "task_id", "project_id", "repository_id",
+                     "branch", "head_sha", "completion_id", "origin_sha256", "snapshot_sha256",
+                     "generation", "version", "old_head_sha", "tree_sha", "remote_head_sha",
+                     "before", "after", "before_snapshot_sha256", "after_snapshot_sha256",
+                     "owner", "origin_id", "children", "observed_at", "delivery"],
+        "optional": [],
+        "types": {"id": str, "operator_id": str, "reason": str, "before": dict, "after": dict,
+                  "owner": dict, "children": list, "observed_at": (float, int), "delivery": bool},
+    },
+    "ask.input_received": {
+        "required": ["ask_id", "project_id", "input_id"], "optional": [],
+        "types": {"ask_id": str, "project_id": str, "input_id": str},
+    },
+    "ask.discussion_replied": {
+        "required": ["ask_id", "project_id", "input_id"], "optional": [],
+        "types": {"ask_id": str, "project_id": str, "input_id": str},
+    },
     "conversation.reply_queued.v1": {
         "required": ["conversation_id", "input_id", "reply_message_id", "delivery_dedup_key", "created"],
         "optional": [],

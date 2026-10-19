@@ -22,17 +22,17 @@ import logging
 import time
 from pathlib import Path
 
-from ruamel.yaml import YAML
 from sqlalchemy import exists, insert, select, update
 
 from src.api.auth import RequestScope
 from src.api.scope import spec_ingest_task_for_session
+from src.asks.ingestion import approved_packet, stamp_for, task_stamp
+from src.asks.operations import get_operation, operation, succeed
 from src.commands import task_changes
 from src.commands.principal import PrincipalKind, current_principal
 from src.database.queries import proposal_queries
 from src.database.tables import events, gates, task_metadata, task_proposals, tasks
 from src.models import Task, TaskStatus
-from src.reviews.vault import spec_kind_from_content, split_frontmatter
 from src.routing.filing import choice_forbidden
 
 logger = logging.getLogger(__name__)
@@ -69,18 +69,48 @@ class TaskProposalCommandsMixin:
         ))
         if task is None or task.project_id != project_id:
             raise ValueError("spec ingestion requires a live role assignment in this project")
-        path = Path(task.dedup_key.removeprefix("spec-ingest:")).resolve()
-        root = (Path(self.config.vault_root) / "projects" / project_id).resolve()
-        if not any(path.is_relative_to(root / directory) for directory in ("specs", "plans")):
-            raise ValueError("spec ingestion path is outside the project's specs/plans")
-        if source != f"spec:{path}":
-            raise ValueError("proposal source must match the held ingestion task's spec path")
-        raw = path.read_text(encoding="utf-8")
-        spec_kind = spec_kind_from_content(raw)
-        frontmatter, _ = split_frontmatter(raw)
-        if not frontmatter or (YAML(typ="safe").load(frontmatter) or {}).get("status") != "approved":
-            raise ValueError("spec ingestion requires an approved document")
-        return {"task_id": task.id, "spec_path": str(path), "spec_kind": spec_kind}
+        async with self.db.immediate() as conn:
+            stamp = await task_stamp(conn, task.id)
+            packet = await approved_packet(self.db, stamp["decision_id"], stamp["packet_sha256"],
+                                           project_id, conn=conn)
+        if source != f"spec:decision:{packet['decision_id']}":
+            raise ValueError("proposal source must match the held ingestion task's decision")
+        return {"task_id": task.id, **stamp_for(packet)}
+
+    async def _lock_ingest(self, conn, ingest):
+        return await approved_packet(self.db, ingest["decision_id"], ingest["packet_sha256"],
+                                     ingest["project_id"], conn=conn)
+
+    async def _ingest_change_set(self, conn, change_set, ingest):
+        packet = await self._lock_ingest(conn, ingest)
+        payload = task_changes.normalize(change_set)
+        if packet["spec_kind"] == "design":
+            tasks_in, edges_in = self._design_spec_batch(packet["spec_path"])
+            tasks_in[1]["description"] += (
+                f"\nApproved decision {packet['decision_id']} ({packet['packet_sha256']})."
+                f"\nImmutable approved design:\n{packet['body']}"
+            )
+            payload = task_changes.normalize({"tasks": tasks_in, "edges": edges_in})
+        parents = {s["parent_id"] for s in payload["tasks"] if s.get("parent_id")}
+        parents.update(e["to"] for e in payload["edges"] if e.get("dep_type", "blocks") == "parent-child")
+        leaves = {s["tempId"] for s in payload["tasks"]} - parents
+        for obligation in packet["feedback"]:
+            if not obligation["required_before_release"] or obligation["disposition"] != "follow_up":
+                continue
+            task_id = obligation["task_id"]
+            target = (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().first()
+            if (not target or target["project_id"] != packet["project_id"]
+                    or target["status"] == "FAILED" or await self.db.is_container(task_id, conn=conn)):
+                raise task_changes.ChangeSetError("Required follow-up is missing or unrepresentable")
+            choice = obligation["accepted_by"]["choice"]
+            coverage = choice.get("coverage", {}).get("leaf_keys")
+            if coverage is not None and (not set(coverage) <= leaves or not coverage):
+                raise task_changes.ChangeSetError("Accepted prerequisite coverage does not match leaves")
+            for leaf in sorted(leaves if coverage is None else coverage):
+                edge = {"from": leaf, "to": task_id, "dep_type": "blocks"}
+                if leaf != task_id and edge not in payload["edges"]:
+                    payload["edges"].append(edge)
+        return payload, packet
 
     @staticmethod
     def _design_spec_batch(path: str) -> tuple[list[dict], list[dict]]:
@@ -94,6 +124,14 @@ class TaskProposalCommandsMixin:
              "description": (
                  f"Read approved design spec {path} and inspect the current repository. "
                  "Write an implementation spec grounded in files, functions, tests and rollout. "
+                 "Follow docs/templates/spec.md and the Spec supersession checklist in "
+                 "docs/guides/reviews.md: identify approved specs replaced or overlapped, "
+                 "including this design, cite approved revisions, and list every predecessor "
+                 "goal as kept, changed or dropped with replacement evidence and reasons. "
+                 "Flag every drop in the review; each requires Jack's explicit sign-off for "
+                 "the goal and replacement revision. Record decision evidence or pending "
+                 "sign-off; pending drops block approval and affected implementation work. "
+                 "Delegated or general approval alone does not authorize dropping a goal. "
                  "Choose defaults for open questions. Include spec_kind: implementation in "
                  "frontmatter. File no implementation work. Submit the document to Jack with "
                  "aq review submit --task-id <held-task> --file <draft> --kind spec --title "
@@ -135,6 +173,10 @@ class TaskProposalCommandsMixin:
         for edge in payload["edges"]:
             if edge.get("dep_type", "blocks") == "parent-child":
                 continue
+            if edge["from"] not in specs:
+                raise task_changes.ChangeSetError(
+                    "spec-ingest dependency edges must originate in the new batch"
+                )
             for endpoint in (edge["from"], edge["to"]):
                 if endpoint in containers:
                     raise task_changes.ChangeSetError(
@@ -234,19 +276,24 @@ class TaskProposalCommandsMixin:
         except (ValueError, OSError) as exc:
             return {"success": False, "error": str(exc)}
         change_set = args
-        if ingest and ingest["spec_kind"] == "design":
-            tasks_in, edges_in = self._design_spec_batch(ingest["spec_path"])
-            change_set = {"tasks": tasks_in, "edges": edges_in}
         committed = notifications = None
         try:
-            async with task_changes.boundary(self.db, project_id) as conn:
+            async with task_changes.boundary(
+                self.db, project_id,
+                source_lock=(lambda conn: self._lock_ingest(conn, ingest)) if ingest else None,
+            ) as conn:
                 if ingest:
-                    await self._validate_ingest_graph(conn, task_changes.normalize(change_set))
+                    existing = await get_operation(conn, ingest["decision_id"], "materialization", lock=True)
+                    if existing and existing["status"] == "succeeded":
+                        return {"success": True, "committed": True, "already_committed": True,
+                                **existing["receipt"]}
+                    change_set, packet = await self._ingest_change_set(conn, change_set, ingest)
+                    await self._validate_ingest_graph(conn, change_set)
                 payload = await self._prepare_change_set(conn, project_id, change_set, source)
                 if args.get("dry_run"):
                     return {"success": True, "dry_run": True, "diff": payload["diff"]}
                 if ingest:
-                    payload[SPEC_INGEST_META] = ingest
+                    payload[SPEC_INGEST_META] = {**ingest, "feedback": packet["feedback"]}
                 proposal_id = await proposal_queries.insert_proposal(
                     self.db,
                     project_id=project_id,
@@ -368,7 +415,7 @@ class TaskProposalCommandsMixin:
         return {"success": True}
 
     async def _proposal_approval_error(
-        self, row: dict, *, gate_id: str | None, project_id: str | None
+        self, row: dict, *, gate_id: str | None, project_id: str | None, conn=None
     ) -> str | None:
         """Why this proposal lacks approval authority, or ``None``.
 
@@ -389,12 +436,13 @@ class TaskProposalCommandsMixin:
         if row["payload"].get(SPEC_INGEST_META):
             return None
         if gate_id:
-            gate = await self.db.get_gate(str(gate_id))
+            gate = await self.db.get_gate(str(gate_id), conn=conn, lock=conn is not None)
             if gate is None:
                 return f"approval gate '{gate_id}' not found"
         else:
             candidates = await self.db.list_gates(
-                project_id=owner, gate_type="human", await_id=proposal_id
+                project_id=owner, gate_type="human", await_id=proposal_id,
+                conn=conn, lock=conn is not None
             )
             if not candidates:
                 return f"proposal '{proposal_id}' has no human approval gate"
@@ -438,7 +486,14 @@ class TaskProposalCommandsMixin:
             return {"success": False, "error": f"proposal '{proposal_id}' not found"}
         project_id = row["project_id"]
         try:
-            async with task_changes.boundary(self.db, project_id) as conn:
+            ingest = row["payload"].get(SPEC_INGEST_META)
+            if ingest and not ingest.get("decision_id") and row["status"] != "committed":
+                raise task_changes.ChangeSetError("Legacy ingestion requires operator reconciliation")
+            async with task_changes.boundary(
+                self.db, project_id,
+                source_lock=(lambda conn: self._lock_ingest(conn, ingest))
+                if ingest and row["status"] != "committed" else None,
+            ) as conn:
                 result, notifications = await self._materialize_proposal(
                     conn,
                     proposal_id,
@@ -480,7 +535,7 @@ class TaskProposalCommandsMixin:
         if current["status"] == "discarded":
             raise task_changes.ChangeSetError("proposal was discarded")
         approval_error = await self._proposal_approval_error(
-            current, gate_id=gate_id, project_id=project_id
+            current, gate_id=gate_id, project_id=project_id, conn=conn
         )
         if approval_error:
             return {"success": False, "not_approved": True, "error": approval_error}, None
@@ -499,6 +554,12 @@ class TaskProposalCommandsMixin:
         payload = task_changes.normalize(stored)
         ingest = stored.get(SPEC_INGEST_META)
         if ingest:
+            packet = await self._lock_ingest(conn, ingest)
+            if ingest.get("feedback") != packet["feedback"]:
+                raise task_changes.ChangeSetError("Ingestion feedback obligations changed")
+            covered, _ = await self._ingest_change_set(conn, payload, ingest)
+            if covered["edges"] != payload["edges"]:
+                raise task_changes.ChangeSetError("Required prerequisite coverage is missing")
             await self._validate_ingest_graph(conn, payload)
         expected, rows, project = await task_changes.snapshot(
             conn,
@@ -514,6 +575,14 @@ class TaskProposalCommandsMixin:
         receipt.update(omissions)
         for task_id in receipt["task_ids"]:
             await self.db._upsert_meta(task_id, PROPOSAL_ID_META, proposal_id, conn=conn)
+            if ingest:
+                await self.db._upsert_meta(task_id, SPEC_INGEST_META, ingest, conn=conn)
+        if ingest:
+            decision = await self.db.get_ask_decision(ingest["decision_id"], conn=conn)
+            op = await operation(self.db, decision, "materialization", conn=conn)
+            if op["status"] != "pending":
+                raise task_changes.ChangeSetError("Decision already materialized or needs reconciliation")
+            await succeed(conn, op, {"proposal_id": proposal_id, "task_ids": receipt["task_ids"]})
         stored["receipt"] = receipt
         if ingest:
             stored[SPEC_INGEST_META] = {**ingest, "task_ids": receipt["task_ids"]}

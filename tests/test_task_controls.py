@@ -8,7 +8,6 @@ import pytest
 from src.api.auth import RequestScope
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig
-from src.database import Database
 from src.models import Agent, AgentProfile, Project, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from tests.assignment_routing_helpers import install_already_routed
@@ -20,9 +19,8 @@ POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
-async def env(tmp_path, request):
-    db = Database(lease_dsn("controls.db"))
-    await db.initialize()
+async def env(tmp_path, request, reuse_database):
+    db = await reuse_database("controls.db")
     for pid in ("p", "other"):
         await db.create_project(Project(id=pid, name=pid))
     await db.create_profile(AgentProfile(id="worker", name="Worker", needs_workspace=False))
@@ -46,7 +44,6 @@ async def env(tmp_path, request):
     orch.db = db
     install_already_routed(orch)
     yield SimpleNamespace(db=db, orch=orch, handler=CommandHandler(orch, config), config=config)
-    await db.close()
 
 
 async def command(env, name, task_id="t", **args):

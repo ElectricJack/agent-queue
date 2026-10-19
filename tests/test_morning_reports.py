@@ -18,7 +18,7 @@ from src.cli.app import cli
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.report_commands import ReportCommandsMixin
 from src.config import AppConfig
-from src.database import Database, tables
+from src.database import tables
 from src.delivery.message import operation_marker
 from src.event_bus import EventBus
 from src.git.manager import GitManager
@@ -43,6 +43,7 @@ def frozen(name):
 
 def snapshot():
     return {
+        "needs_you": {"count": 0, "source_health": "healthy", "identity_hash": "empty"},
         "projects": [{"id": "p", "name": "Project P", "repo_default_branch": "main"}],
         "sources": {
             name: frozen(name)
@@ -465,9 +466,8 @@ def test_cli_preview_requires_dry_run_and_forwards_window(monkeypatch):
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("morning_reports"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("morning_reports")
     await database.create_project(Project(id="p", name="Project P"))
     await database.create_project(Project(id="q", name="Private Project Q"))
     for task_id in ("t1", "t2", "t3"):
@@ -508,7 +508,6 @@ async def db():
             .values(status="FAILED", updated_at=incident["updated_at"])
         )
     yield database
-    await database.close()
 
 
 async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds(db):
@@ -530,7 +529,7 @@ async def test_db_frozen_sources_use_one_read_only_snapshot_and_half_open_bounds
     assert statements[0] == "SET TRANSACTION READ ONLY"
     assert len(connections) == 1
     assert all(
-        sql.startswith(("SELECT", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
+        sql.startswith(("SELECT", "WITH", "SET TRANSACTION", "SAVEPOINT", "RELEASE SAVEPOINT"))
         for sql in statements
     )
     for source in ("completions", "deliveries", "incidents", "escalations", "attempts", "reroutes"):

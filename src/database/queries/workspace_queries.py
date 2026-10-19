@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+from pathlib import Path
 
-from sqlalchemy import case, delete, func, insert, nulls_first, select, true, update
+from sqlalchemy import and_, case, delete, func, insert, nulls_first, or_, select, true, update
 
-from src.database.tables import workspaces
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.database.queries.job_queries import unpinned_workspace
+from src.database.tables import sessions, task_metadata, tasks, workspaces
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -60,6 +63,8 @@ class WorkspaceQueryMixin:
                     locked_by_task_id=workspace.locked_by_task_id,
                     locked_at=workspace.locked_at,
                     enabled=workspace.enabled,
+                    disabled_reason=workspace.disabled_reason,
+                    disabled_at=workspace.disabled_at,
                     slot_index=workspace.slot_index,
                     base_workspace_id=workspace.base_workspace_id,
                     created_at=time.time(),
@@ -120,11 +125,131 @@ class WorkspaceQueryMixin:
             result = await conn.execute(stmt)
             return [self._row_to_workspace(r) for r in result.mappings().fetchall()]
 
+    async def read_workspace_owner_facts(
+        self, rows: list[Workspace]
+    ) -> dict[str, list[dict]]:
+        """Read-only owner facts for listed workspaces, in one transaction.
+
+        Returns ``{"tasks": [...], "sessions": [...]}``: each task a lock
+        names (status, claim fence, and the session its claim record names)
+        and every unended session whose agent, task or ``work_dir`` points at
+        one of *rows*.  Matching facts to rows is the caller's job
+        (:mod:`src.workspace_listing`); nothing here writes or takes a row
+        lock, so a listing can never contend with a claim.
+        """
+        if not rows:
+            return {"tasks": [], "sessions": []}
+        task_ids = sorted({ws.locked_by_task_id for ws in rows if ws.locked_by_task_id})
+        agent_ids = sorted({ws.locked_by_agent_id for ws in rows if ws.locked_by_agent_id})
+        paths = sorted({ws.workspace_path for ws in rows if ws.workspace_path})
+        session_match = [sessions.c.work_dir.in_(paths)]
+        if task_ids:
+            session_match.append(sessions.c.task_id.in_(task_ids))
+        if agent_ids:
+            session_match.append(sessions.c.agent_id.in_(agent_ids))
+        async with self._engine.begin() as conn:
+            task_rows = []
+            if task_ids:
+                task_rows = (await conn.execute(
+                    select(
+                        tasks.c.id, tasks.c.status, tasks.c.claim_epoch,
+                        tasks.c.assigned_agent_id,
+                        task_metadata.c.value.label("claimed_by_session"),
+                    )
+                    .select_from(tasks.outerjoin(task_metadata, and_(
+                        task_metadata.c.task_id == tasks.c.id,
+                        task_metadata.c.key == CLAIMED_BY_SESSION_KEY,
+                    )))
+                    .where(tasks.c.id.in_(task_ids))
+                )).mappings().fetchall()
+            session_rows = (await conn.execute(
+                select(
+                    sessions.c.id, sessions.c.project_id, sessions.c.agent_id,
+                    sessions.c.task_id, sessions.c.lifecycle, sessions.c.state,
+                    sessions.c.desired_state, sessions.c.claim_phase,
+                    sessions.c.claim_phase_at, sessions.c.last_claim_epoch,
+                    sessions.c.last_activity, sessions.c.work_dir,
+                    sessions.c.started_at,
+                )
+                .where(sessions.c.ended_at.is_(None), or_(*session_match))
+                .order_by(sessions.c.started_at.desc(), sessions.c.id)
+            )).mappings().fetchall()
+        return {
+            "tasks": [dict(r) for r in task_rows],
+            "sessions": [dict(r) for r in session_rows],
+        }
+
     async def delete_workspace(self, workspace_id: str) -> None:
         """Delete a workspace record."""
         async with self._engine.begin() as conn:
             await conn.execute(
                 delete(workspaces).where(workspaces.c.id == workspace_id, unpinned_workspace())
+            )
+
+    async def remove_missing_workspace_registration(
+        self, workspace_id: str, *, expected_path: str,
+    ) -> None:
+        """Remove missing inventory and its unused repo identities in one audited transaction."""
+        from src.database.tables import repos
+        from src.workspace_registration import path_is_missing
+
+        async with self._engine.begin() as conn:
+            ws = (await conn.execute(select(workspaces).where(
+                workspaces.c.id == workspace_id,
+            ).with_for_update())).mappings().one_or_none()
+            if ws is None:
+                raise ValueError("workspace registration no longer exists")
+            if (ws["workspace_path"] != expected_path or ws["slot_index"] is not None
+                    or not path_is_missing(expected_path)):
+                raise ValueError("workspace path or presence changed; diagnose again before removal")
+            if ws["locked_by_agent_id"] or ws["locked_by_task_id"] or ws["job_pin_count"]:
+                raise ValueError("workspace is locked or pinned; release its owner first")
+            if (await conn.execute(select(sessions.c.id).where(
+                sessions.c.work_dir == expected_path, sessions.c.ended_at.is_(None),
+            ).limit(1))).first():
+                raise ValueError("a live session still names the workspace; reconcile it first")
+            if (await conn.execute(select(workspaces.c.id).where(
+                workspaces.c.base_workspace_id == workspace_id,
+            ).limit(1))).first():
+                raise ValueError("workspace still has child slots; reconcile them first")
+
+            path = Path(expected_path).resolve()
+            # Repository rows have no workspace FK. Match only the actual local
+            # source/base path, never a similar name, URL, or another project.
+            other_paths = (await conn.execute(select(workspaces.c.workspace_path).where(
+                workspaces.c.project_id == ws["project_id"], workspaces.c.id != workspace_id,
+            ))).scalars().all()
+            repo_ids = []
+            if not any(Path(p).resolve() == path for p in other_paths):
+                candidates = (await conn.execute(select(repos).where(
+                    repos.c.project_id == ws["project_id"],
+                ).with_for_update())).mappings().all()
+                for repo in candidates:
+                    local = (repo["source_path"] if repo["source_type"] == "link"
+                             else repo["checkout_base_path"])
+                    if local and Path(local).resolve() == path:
+                        repo_ids.append(repo["id"])
+            if repo_ids:
+                # Some retained history/owner tables intentionally have soft
+                # repository references. A missing checkout does not authorize
+                # orphaning those identities, even after task archival.
+                for table in repos.metadata.tables.values():
+                    for name in ("repo_id", "repository_id", "parent_repository_id",
+                                 "integration_repository_id"):
+                        column = table.c.get(name)
+                        if column is not None and (await conn.execute(
+                            select(column).where(column.in_(repo_ids)).limit(1),
+                        )).first():
+                            raise ValueError(f"matching repository is referenced by {table.name}")
+                # Foreign keys additionally refuse task/lease references, rolling
+                # back both deletes and the audit entry on any failure.
+                await conn.execute(delete(repos).where(repos.c.id.in_(repo_ids)))
+            await conn.execute(delete(workspaces).where(workspaces.c.id == workspace_id))
+            await self.log_event(
+                "workspace.registration_removed", project_id=ws["project_id"],
+                payload=json.dumps({"workspace_id": workspace_id, "path": expected_path,
+                                    "repository_ids": repo_ids, "reason": "missing_path"}),
+                conn=conn,
             )
 
     async def acquire_workspace(
@@ -733,6 +858,8 @@ class WorkspaceQueryMixin:
             locked_at=row["locked_at"],
             lock_mode=WorkspaceMode(raw_mode) if raw_mode else None,
             enabled=bool(row["enabled"]),
+            disabled_reason=row.get("disabled_reason"),
+            disabled_at=row.get("disabled_at"),
             slot_index=row["slot_index"],
             base_workspace_id=row["base_workspace_id"],
         )

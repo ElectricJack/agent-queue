@@ -309,6 +309,7 @@ class OperatorCommandsMixin:
             message = await self.execute("message_send", {
                 "project_id": task.project_id, "to_kind": "user", "to_id": "dashboard", "body": body,
                 "from_kind": "session", "from_id": session.id,
+                "claim_epoch": task.claim_epoch,
                 "_scope": scope,
             })
             if message.get("error") or message.get("success") is False:

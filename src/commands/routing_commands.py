@@ -1003,6 +1003,25 @@ class RoutingCommandsMixin:
                 return {"success": False, "error": error}
             preference = {"prefer_target": target, "prefer_mode": mode}
         if not await self.db.reset_task_route(task.id, **hints, **preference):
+            # A stopped task can still have an old writer awaiting confirmed
+            # termination. Name that session instead of calling the task running.
+            fresh = await self.db.get_task(task.id)
+            if fresh is not None:
+                refusal = self._route_state_refusal(fresh, command="aq task route")
+                if refusal is not None:
+                    return refusal
+            session = await self.db.get_session_for_task(task.id)
+            if session is not None and session.state in {"starting", "running", "draining"}:
+                return {
+                    "success": False,
+                    "code": NOT_ROUTABLE,
+                    "error": (
+                        f"task '{task.id}' still has live session '{session.id}' "
+                        f"({session.state}); stop its writer with "
+                        f"`aq session kill {session.id}`, wait for confirmed termination, "
+                        "then run aq task route again"
+                    ),
+                }
             return {
                 "success": False,
                 "code": NOT_ROUTABLE,

@@ -26,6 +26,42 @@ from src.sessions.provider import DialogRule
 from src.sessions.state_cache import TmuxStateCache, TmuxUnavailable
 from src.sessions.transcripts.watcher import TranscriptWatcher
 
+
+@pytest.fixture
+def session_clock(monkeypatch):
+    """Advance scripted panes' clocks without waiting for a real TUI to repaint.
+
+    Replace module references, not the process-wide asyncio/time functions:
+    pytest's deadlines and real-process tests keep their real clocks. Each
+    sleep still yields so cancellation and other coroutines can run.
+    """
+    from src.sessions import dialogs
+
+    clock = SimpleNamespace(now=time.monotonic(), delays=[])
+
+    def monotonic():
+        return clock.now
+
+    async def sleep(delay):
+        assert delay >= 0
+        clock.delays.append(delay)
+        clock.now += delay
+        await asyncio.sleep(0)
+
+    def patch(module):
+        monkeypatch.setattr(module, "time", SimpleNamespace(**(vars(time) | {
+            "monotonic": monotonic,
+        })))
+        monkeypatch.setattr(module, "asyncio", SimpleNamespace(**(vars(asyncio) | {
+            "sleep": sleep,
+        })))
+
+    clock.monotonic = monotonic
+    clock.patch = patch
+    patch(dialogs)
+    return clock
+
+
 # ---------------------------------------------------------------------------
 # dialogs
 # ---------------------------------------------------------------------------
@@ -49,6 +85,7 @@ class _Screen:
         self.sent.append(keys)
 
 
+@pytest.mark.usefixtures("session_clock")
 class TestDialogDismissal:
     async def test_matches_and_answers_until_quiet(self):
         screen = _Screen(["Do you trust this folder?", "❯ "])
@@ -117,9 +154,9 @@ class TestDialogDismissal:
         assert outcome.fired == ["trust"]
         assert screen.sent == [("Enter",)]
 
-    async def test_quiet_window_returns_when_the_pane_stays_clear(self):
+    async def test_quiet_window_returns_when_the_pane_stays_clear(self, session_clock):
         screen = _Screen(["❯ "])
-        started = time.monotonic()
+        started = session_clock.monotonic()
         outcome = await run_dialog_dismissal(
             capture=screen.capture,
             send_keys=screen.send,
@@ -128,7 +165,7 @@ class TestDialogDismissal:
             fired=set(),
             quiet_seconds=0.4,
         )
-        elapsed = time.monotonic() - started
+        elapsed = session_clock.monotonic() - started
         assert outcome.fired == []
         assert not outcome.budget_exhausted
         assert 0.4 <= elapsed < 2.0  # waited the window, then stopped

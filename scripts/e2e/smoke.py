@@ -574,8 +574,8 @@ class Worker:
     def aq(self, *args: str, check_ok: bool = True) -> dict:
         return aq(*args, token=self.token, session_id=self.session_id, check_ok=check_ok)
 
-    def claim_next(self, *, check_ok: bool = True) -> dict:
-        out = self.aq("task", "claim", "--next", check_ok=check_ok)
+    def claim_next(self, *, check_ok: bool = True, wait: int = 0) -> dict:
+        out = self.aq("task", "claim", "--next", "--wait", str(wait), check_ok=check_ok)
         if isinstance(out, dict) and out.get("result") == "claimed":
             self.task_id = out["task"]["id"]
             self.claim_epoch = out["claim_epoch"]
@@ -623,7 +623,9 @@ def claim_fixture(worker: Worker, task_ids: str | list[str], *, what: str) -> di
 
     def claim():
         nonlocal last_claim
-        last_claim = worker.claim_next()
+        # Fixture assertions need the final ownership result. Let the daemon
+        # await its preparation job within this existing convergence budget.
+        last_claim = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
         # READY and routed does not imply available to this single attempt:
         # PostgreSQL SKIP LOCKED can skip a fixture during another transaction.
         # Releasing that lock emits no task.ready event, so retry explicitly.
@@ -1245,26 +1247,55 @@ def s7_claim_race(state: dict) -> str:
     # Let the task land in the frontier before both callers ask for it.
     wait_for(lambda: task_show(task_id)["status"] == "READY", what=f"{task_id} to be READY")
 
-    procs = []
-    for sid, token in tokens:
-        env = dict(os.environ)
-        env.update({"AQ_API_URL": API_URL, "AQ_API_TOKEN": token, "AQ_SESSION_ID": sid})
-        procs.append(
-            subprocess.Popen(
-                [sys.executable, AQ_LAUNCHER, "--json", "task", "claim", "--next"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-            )
-        )
     outcomes = []
-    for p in procs:
-        out, _err = p.communicate(timeout=120)
-        payload = json.loads(out.strip() or "{}")
-        data = payload.get("data") or {}
-        details = (payload.get("error") or {}).get("details") or {}
-        outcomes.append(data.get("result") or details.get("result") or "unknown")
+
+    def race():
+        nonlocal outcomes
+        procs = []
+        for sid, token in tokens:
+            env = dict(os.environ)
+            env.update({"AQ_API_URL": API_URL, "AQ_API_TOKEN": token, "AQ_SESSION_ID": sid})
+            procs.append(
+                subprocess.Popen(
+                    [sys.executable, AQ_LAUNCHER, "--json", "task", "claim", "--next"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                )
+            )
+        outcomes = []
+        for worker, p in zip(workers, procs, strict=True):
+            out, _err = p.communicate(timeout=120)
+            payload = json.loads(out.strip() or "{}")
+            data = payload.get("data") or {}
+            details = (payload.get("error") or {}).get("details") or {}
+            result = data.get("result") or details.get("result") or "unknown"
+            if result == "claim_in_progress":
+                check(data.get("task_id") == task_id,
+                      f"race is preparing a different task: {data}")
+                preparing_epoch = data.get("claim_epoch")
+                check(isinstance(preparing_epoch, int) and preparing_epoch > 0,
+                      f"race preparation omitted its generation: {data}")
+                # Keep selection concurrent and immediate, then join the
+                # winning generation once before asserting final ownership.
+                data = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
+                result = data.get("result") or "unknown"
+                check(data.get("claim_epoch") == preparing_epoch,
+                      f"race preparation changed generation: {data}")
+            if result == "claimed":
+                check(data.get("task", {}).get("id") == task_id,
+                      f"race claimed a different task: {data}")
+            outcomes.append(result)
+        # READY does not mean unlocked: both SKIP LOCKED queries can miss
+        # the task during a scheduler transaction. Race both callers again
+        # only when neither claimed; all other results retain the assertions.
+        return None if outcomes == ["no_ready_work", "no_ready_work"] else outcomes
+
+    wait_for(
+        race, what=f"one concurrent claim of {task_id}", timeout=CONVERGE_TIMEOUT,
+        diagnostic=lambda: f"outcomes={outcomes}; fixture={task_show(task_id)}",
+    )
 
     winners = [o for o in outcomes if o == "claimed"]
     check(
@@ -1891,6 +1922,30 @@ def set_failover_policy_enabled(enabled: bool) -> None:
     check(result.get("enabled") is enabled, f"could not set {FAILOVER_PLAYBOOK}: {result}")
 
 
+def wait_for_restored_readiness() -> None:
+    """Wait for the health snapshot to observe an explicitly restored policy.
+
+    S16 temporarily disables a required policy. Re-enabling its activation is
+    synchronous, but the cached /ready verdict is collected independently. Do
+    not pass that disabled snapshot on to the next scenario's preflight.
+    """
+    from scripts.e2e.probe import READY, fetch
+
+    last = None
+    deadline = time.monotonic() + 15
+
+    def restored():
+        nonlocal last
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        last = fetch(API_URL, timeout=min(2, remaining))
+        return last[0] == READY
+
+    wait_for(restored, what="readiness after restoring the failover policy", timeout=15,
+             diagnostic=lambda: f"last readiness probe={last!r}")
+
+
 def held_tasks() -> dict[str, dict]:
     rows = collection_rows(api_checked("provider_held_tasks", {"project_id": PROJECT}), "tasks")
     return {row["task_id"]: row for row in rows}
@@ -2023,6 +2078,7 @@ def _run_failover_phase(state: dict, phase) -> str:
             _restore_providers()
         finally:
             set_failover_policy_enabled(True)
+            wait_for_restored_readiness()
 
 
 def _s16(state: dict) -> str:
@@ -2449,7 +2505,7 @@ def _pin_train_validation(project_id: str, home: Path) -> dict:
     settings = DevelopmentPolicy(validation="none", commands=[], interval_seconds=86400)
     source = render_development_policy(project_id, settings)
     definition = load_definition_json(Path(
-        REPO_ROOT, "src/prompts/reviewed_playbooks/root-train/artifact.json",
+        REPO_ROOT, "docs/history/legacy-train-policies/root-train/artifact.json",
     ).read_text()).model_copy(update={
         "id": f"{project_id}-development", "scope": ProjectScope(project_id=project_id),
         "source_hash": source_digest(source), "integration_policy": policy_from_markdown(source),
@@ -2704,7 +2760,7 @@ def s17_phased_graph(state: dict) -> str:
         fixture_ready,
         what="the first phase-1 task to reach the claim frontier",
     )
-    first_claim = first_worker.claim_next()
+    first_claim = first_worker.claim_next(wait=int(CONVERGE_TIMEOUT))
     check(first_claim.get("result") == "claimed", f"first phase-1 claim: {first_claim}")
     check(first_worker.task_id in phase_one_nodes, f"withheld runner was claimed: {first_worker.task_id}")
 
@@ -2733,7 +2789,7 @@ def s17_phased_graph(state: dict) -> str:
             project_id=project_id,
         )
         worker = Worker.adopt(session["id"])
-        claim = worker.claim_next()
+        claim = worker.claim_next(wait=int(CONVERGE_TIMEOUT))
         check(claim.get("result") == "claimed", f"{what} claim: {claim}")
         check(worker.task_id == expected_task_id, f"{what} claimed {worker.task_id}")
         return worker

@@ -653,6 +653,7 @@ def size_pools(
     scale_down_grace: float,
     max_starts_per_tick: int,
     max_drains_per_tick: int,
+    repair_demand: dict[PoolKey, int] | None = None,
 ) -> tuple[list[PoolAction], dict[PoolKey, float]]:
     """Desired-state pool sizing (swarm-work-model §11.1).  Pure — no I/O, no clock.
 
@@ -664,7 +665,8 @@ def size_pools(
     and a task held in project B alike.
 
     Scale-up hands out ``max_starts_per_tick`` one start at a time,
-    round-robin across the pools that still want more and bounded by the
+    serving locally unserved ``repair_demand`` first, then round-robin
+    across the pools that still want more and bounded by the
     box-wide ``global_cap``, so a saturated fleet fair-shares whatever
     headroom is left instead of starving later pools in iteration order.
     Per-project caps are deliberately *not* considered here: they are a
@@ -700,21 +702,34 @@ def size_pools(
     starts: dict[PoolKey, int] = {k: 0 for k in keys}
     used_global = sum(current.values())
     budget = max_starts_per_tick
+    # Repairs unlock delivery for whole trains; fund their unserved demand
+    # before ordinary pools compete for the same box-wide headroom.
+    repair_remaining = {
+        key: max(0, (repair_demand or {}).get(key, 0))
+        for key in keys
+    }
     progressed = True
     while budget > 0 and progressed:
         progressed = False
-        for key in keys:
+        for key in sorted(keys, key=lambda k: (repair_remaining[k] <= 0, k.profile_id)):
+            if repair_remaining[key] <= 0 and any(
+                repair_remaining[other] > 0
+                and current[other] + starts[other] < desired[other]
+                for other in keys
+            ):
+                continue
             if current[key] + starts[key] >= desired[key]:
                 continue
             if global_cap is not None and used_global >= global_cap:
                 continue
             starts[key] += 1
+            repair_remaining[key] = max(0, repair_remaining[key] - 1)
             used_global += 1
             budget -= 1
             progressed = True
             if budget == 0:
                 break
-    for key in keys:
+    for key in sorted(keys, key=lambda k: ((repair_demand or {}).get(k, 0) <= 0, k.profile_id)):
         if starts[key]:
             actions.append(PoolAction(key=key, kind="start", count=starts[key]))
 
@@ -766,6 +781,7 @@ class PlacementCandidate:
     warm_floor: int  # profile.min_per_project
     idle_session_ids: tuple[str, ...] = ()  # oldest first
     starting: int = 0  # of ``live``, how many are still booting
+    repair_ready: int = 0  # current active batch repair delegates in ready
 
 
 @dataclass(frozen=True)
@@ -775,7 +791,7 @@ class PlacedStart:
     key: PoolKey
     project_id: str
     count: int
-    reason: str  # "warm_floor" | "deficit" | "spread"
+    reason: str  # "train_repair" | "warm_floor" | "deficit" | "spread"
 
 
 @dataclass(frozen=True)
@@ -848,11 +864,12 @@ def place_pool_actions(
     Starts are handed out one at a time, re-sorting after each, so a budget
     of two does not pile onto whichever project sorts first:
 
-    1. projects below their ``warm_floor``, largest shortfall first — a
+    1. projects with unserved active train repairs;
+    2. projects below their ``warm_floor``, largest shortfall first — a
        stated per-project reservation outranks raw demand;
-    2. then by unserved deficit ``ready - (idle + starting)``, largest first;
-    3. then by fewest ``live`` sessions, spreading rather than concentrating;
-    4. then ``project_id`` ascending, so the result is deterministic and a
+    3. then by fewest ``live`` sessions among projects with unserved demand;
+    4. then by unserved deficit ``ready - (idle + starting)``, largest first;
+    5. then ``project_id`` ascending, so the result is deterministic and a
        test can assert on it.
 
     Drains invert it: a project at or below its warm floor is excluded
@@ -893,6 +910,10 @@ def place_pool_actions(
             pid = c.project_id
             return c.ready - (len(idle_ids[pid]) + c.starting + pending[pid])
 
+        def repair_unserved(c: PlacementCandidate) -> int:
+            return c.repair_ready - (len(idle_ids[c.project_id])
+                                    + c.starting + pending[c.project_id])
+
         if action.kind == "start":
             # (project_id, reason) -> count, insertion-ordered so the caller
             # emits one event per project in the order placement chose them.
@@ -927,16 +948,19 @@ def place_pool_actions(
                     break
                 eligible.sort(
                     key=lambda c: (
+                        0 if repair_unserved(c) > 0 else 1,
                         0 if live[c.project_id] < c.warm_floor else 1,
                         -max(0, c.warm_floor - live[c.project_id]),
-                        -unserved(c),
                         live[c.project_id],
+                        -unserved(c),
                         c.project_id,
                     )
                 )
                 pick = eligible[0]
                 pid = pick.project_id
-                if live[pid] < pick.warm_floor:
+                if repair_unserved(pick) > 0:
+                    reason = "train_repair"
+                elif live[pid] < pick.warm_floor:
                     reason = "warm_floor"
                 elif unserved(pick) > 0:
                     reason = "deficit"
@@ -1000,8 +1024,9 @@ def rebalance_idle_pools(
 
     Global supply can equal desired supply while all ready work is in a
     different project from its idle workers. No size action then exists.
-    After sustained placement imbalance, drain only idle surplus above the
-    source's warm floor. A later ordinary sizing pass owns replacement;
+    After sustained placement imbalance, drain idle workers above the
+    source's warm floor for smaller project shares or unserved repairs,
+    preserving local repair capacity. A later ordinary sizing pass owns replacement;
     this function never grants extra starts or changes any pool cap.
     """
     converging = {item.key for item in starts} | {item.key for item in drains}
@@ -1011,38 +1036,46 @@ def rebalance_idle_pools(
     for key in sorted(candidates, key=lambda item: item.profile_id):
         if key in converging:
             continue
-        needed = 0
-        donors = []
-        for candidate in candidates[key]:
-            idle = len(candidate.idle_session_ids)
-            deficit = max(0, candidate.ready - idle - candidate.starting)
-            if deficit and not _start_ineligibility(
-                candidate,
-                live=candidate.live,
-                total=candidate.project_live_total,
-                capacity=candidate.workspace_capacity,
-                unserved=deficit,
-            ):
-                room = candidate.workspace_capacity
-                if candidate.project_cap is not None:
-                    room = min(room, candidate.project_cap - candidate.project_live_total)
-                needed += min(deficit, room)
-            spare = min(
-                idle - max(0, candidate.ready - candidate.starting),
-                candidate.live - candidate.warm_floor,
-            )
-            if spare > 0:
-                donors.append((candidate, spare))
-        if not needed or not donors:
+        cands = {c.project_id: c for c in candidates[key]}
+        live = {pid: c.live for pid, c in cands.items()}
+        idle = {pid: list(c.idle_session_ids) for pid, c in cands.items()}
+        pending = {pid: 0 for pid in cands}
+        transfers: dict[str, list[str]] = {}
+        for _ in range(budget):
+            pairs = []
+            for pid, receiver in cands.items():
+                deficit = receiver.ready - len(idle[pid]) - receiver.starting - pending[pid]
+                if deficit <= 0 or _start_ineligibility(
+                    receiver, live=live[pid],
+                    total=receiver.project_live_total + pending[pid],
+                    capacity=receiver.workspace_capacity - pending[pid], unserved=deficit,
+                ):
+                    continue
+                urgent = receiver.repair_ready > len(idle[pid]) + receiver.starting + pending[pid]
+                for source, donor in cands.items():
+                    if source == pid or not idle[source] or live[source] <= donor.warm_floor:
+                        continue
+                    # Leave enough idle/starting capacity for the donor's
+                    # repairs. Ordinary demand may yield to a smaller share.
+                    if len(idle[source]) <= max(0, donor.repair_ready - donor.starting):
+                        continue
+                    spare = len(idle[source]) > max(0, donor.ready - donor.starting)
+                    if not (spare or urgent or live[source] > live[pid] + 1):
+                        continue
+                    pairs.append((not urgent, live[pid], -live[source], -deficit, pid, source))
+            if not pairs:
+                break
+            _, _, _, _, target, source = min(pairs)
+            transfers.setdefault(source, []).append(idle[source].pop(0))
+            live[source] -= 1
+            live[target] += 1
+            pending[target] += 1
+        if not transfers:
             continue
         since[key] = surplus_since.get(key, now)
         if now - since[key] < grace:
             continue
-        for candidate, spare in sorted(donors, key=lambda item: item[0].project_id):
-            count = min(spare, needed, budget)
-            if count <= 0:
-                break
-            result.append(PlacedDrain(key, candidate.project_id, candidate.idle_session_ids[:count]))
-            budget -= count
-            needed -= count
+        for pid, session_ids in transfers.items():
+            result.append(PlacedDrain(key, pid, tuple(session_ids)))
+            budget -= len(session_ids)
     return result, since

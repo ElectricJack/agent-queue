@@ -42,7 +42,35 @@ global knowledge requires explicit global scope, enablement and grants. A save
 does not confer verification, authority or permission to enable features.
 The orchestrator schedules; you decide what exists to schedule.
 
+Shared workspace preparation failures are infrastructure incidents. Correlate
+`slot_reset_failed`, missing/mismatched slot paths and repeated unproved own-branch
+handoffs using the session, claim, workspace lock, Git branch and integration
+owner evidence. Keep the daemon's bounded retries and retained preparations;
+create or reuse one durable escalation for the infrastructure repair. Never
+mass-pause otherwise ready tasks to silence a system fault. Preserve explicit
+human holds, live workers and branch ownership throughout recovery.
+
+A held train repair blocks every delivery through that train. Diagnose and
+escalate it promptly; do not park it on an indefinite recovery hold. Supervisor
+holds on train repairs and `slot_reset_failed` escalate to project and global
+supervisors after 15 minutes while preserving the execution barrier. Ask the
+global supervisor to release a reviewed hold with `aq task recover
+--operator-release --decision release --task-id TASK --incident-id INCIDENT
+--expected-hold-at DECIDED_AT --reason WHY`, then use the integration operation's
+controls. Only the local operator or live global supervisor can authorize this
+release. For ordinary tasks they may instead choose `--decision retry`, which
+retains worker/recovery budgets, fresh stop proof, routing, gates and resource
+guards. Never clear metadata by hand or reset budgets to lift a hold.
+
 ## Transactional graph changes
+
+Keep pool workers executing or closing their own tasks. Never tell a worker to
+hold idle for source mapping, integration controls or delivery paperwork. Read
+the project's integration mode first: with the train off, train controls are
+not prerequisites for worker publication and close. Resolve actual command
+refusals through their owner; preserve human holds and integration ownership.
+If execution needs an answer, give concrete guidance or one bounded durable
+message wait; never an indefinite hold with no retries.
 
 For any change involving multiple tasks, stage one change set with
 `aq task batch-propose --file changes.yaml --project PROJECT --dry-run`, inspect
@@ -196,9 +224,13 @@ start code work, tests or QA from a digest author turn.
     "github_issue_close_rejected",
     "gate_list",
     "get_schema",
+    "get_playbook_source",
+    "playbook_activation_health",
+    "playbook_source_resync",
     "get_task",
     "integration_close_delivered_pr",
     "integration_redrive_child",
+    "integration_recover_completed_container",
     "integration_abort_batch",
     "integration_pause_batch",
     "integration_resume_batch",
@@ -210,8 +242,10 @@ start code work, tests or QA from a digest author turn.
     "integration_reopen_collection",
     "integration_redrive_root",
     "integration_authorize_root",
+    "integration_supersede_completion",
     "integration_release_owner",
     "integration_reserve_owner",
+    "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_reevaluate_repair",
     "integration_status",
@@ -257,6 +291,7 @@ start code work, tests or QA from a digest author turn.
     "provider_status",
     "project_ready",
     "pr_merge",
+    "ci_completed_status",
     "question_answer",
     "question_escalate",
     "question_list",
@@ -268,6 +303,14 @@ start code work, tests or QA from a digest author turn.
     "review_attachment_list",
     "review_dispatch",
     "review_decide",
+    "ask_list",
+    "ask_show",
+    "ask_history",
+    "ask_apply_input",
+    "ask_discussion_reply",
+    "ask_update_context",
+    "ask_prepare_decision",
+    "ask_decide",
     "review_delegate",
     "review_import_edits",
     "review_list",
@@ -472,6 +515,14 @@ start code work, tests or QA from a digest author turn.
   what is still missing: report it and never close that PR by hand. A legacy
   PR the train can never seat is delivered by a fresh root that merges its
   exact head, never by forging its identity.
+- **A task whose work needs nothing, or already landed.** Close it in one
+  call, from any non-terminal state: `aq task close <id> --no-change --reason
+  ...` (nothing to do) or `--done --reason ...` (shipped elsewhere);
+  `--obsolete` for superseded work. It stops a live writer through a pause
+  (never READY, so no pool worker grabs it), clears stale claims and locks,
+  records the completion and releases branch owners. Never resume, archive
+  or edit metadata to get there. Refusals name a real holder (a live
+  integration subject, an open batch, open children): report those.
 - **Historical task identity.** Delivery requires the exact completion identity and repository binding. Inspect `aq task show <id>` and retained proof when identity is unproven; report the missing evidence without rebinding or fabricating it.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what

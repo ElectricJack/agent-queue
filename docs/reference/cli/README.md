@@ -351,6 +351,7 @@ run longer carry their own timeout in `_COMMAND_TIMEOUTS`
 | Command | Read timeout | Why |
 |---|---|---|
 | `task_claim`, `task_close` | 180 s | Both long-poll for the next claim; `--wait` is clamped server-side by `swarm.claim_wait_max`. |
+| `integration_recover_completed_container` | 300 s | Preview and apply prove the exact head under the retained repository's lock: a fetch with its 120 s Git budget, authenticated `ls-remote` reads and ancestry checks. |
 
 `aq test` is not on this list because it is not an HTTP call — it execs pytest
 locally and waits as long as pytest does.
