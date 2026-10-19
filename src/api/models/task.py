@@ -880,6 +880,15 @@ class AssignmentRouteDetail(BaseModel):
     override: dict[str, Any] | None = None
 
 
+class ClaimTimingDetail(BaseModel):
+    session_id: str
+    claim_epoch: int | None = None
+    total_seconds: float
+    phases: dict[str, float] = {}
+    current_phase: str | None = None
+    result: str | None = None
+
+
 class ExplainTaskResponse(BaseModel):
     success: bool = True
     reasons: list[ExplainReason] = []
@@ -887,6 +896,7 @@ class ExplainTaskResponse(BaseModel):
     assignment_route: AssignmentRouteDetail | None = None
     provider_hold: ProviderHoldDetail | None = None
     phase_hold: PhaseHoldDetail | None = None
+    claim_timing: ClaimTimingDetail | None = None
 
 
 class ReadyTask(BaseModel):
@@ -985,6 +995,44 @@ class TaskRouteOverrideResponse(BaseModel):
 
 class SpecApproveResponse(BaseModel):
     success: bool = True
+    decision_id: str
+    packet_sha256: str
+    snapshot_id: str
+
+
+class ApprovedSpecPacketResponse(BaseModel):
+    success: bool = True
+    project_id: str
+    decision_id: str
+    packet_sha256: str
+    review_id: str | None
+    revision: int | None
+    snapshot_id: str | None
+    spec_kind: str
+    spec_path: str
+    content_sha256: str
+    body: str
+    packet: dict[str, Any]
+    feedback: list[dict[str, Any]]
+
+
+class SpecIngestReconcileResponse(BaseModel):
+    success: bool = True
+    dispatched: int
+    errors: list[dict[str, str]]
+
+
+class BatchReconcileResponse(BaseModel):
+    success: bool = True
+    recovered: list[dict[str, str]]
+    errors: list[dict[str, str]]
+
+
+class SpecIngestLegacyInventoryResponse(BaseModel):
+    success: bool = True
+    assignments: list[dict[str, Any]]
+    next_after_id: str | None
+    policy: str
 
 
 class TaskBatchProposeResponse(BaseModel):
@@ -1000,6 +1048,7 @@ class TaskBatchProposeResponse(BaseModel):
     proposal_id: str | None = None
     dry_run: bool = False
     committed: bool = False
+    already_committed: bool = False
     task_ids: list[str] | None = None
     diff: dict[str, Any] | None = None
 
@@ -1011,6 +1060,19 @@ class TaskBatchAckResponse(BaseModel):
     diff: dict[str, Any] | None = None
 
 
+class TaskBatchValidateResponse(BaseModel):
+    """``task_batch_validate`` — the automatic-check report; nothing is written."""
+
+    success: bool = True
+    project_id: str | None = None
+    batch_id: str | None = None
+    passed: bool = False
+    retryable: bool = False
+    hard: list[dict[str, Any]] = Field(default_factory=list)
+    advisory: list[dict[str, Any]] = Field(default_factory=list)
+    gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ClaimSessionSummary(BaseModel):
     """The calling session's claim bookkeeping, echoed back on every ``task_claim`` reply."""
 
@@ -1019,6 +1081,7 @@ class ClaimSessionSummary(BaseModel):
     cap: int | None = None
     desired_state: str | None = None
     claim_phase: str | None = None
+    failed_preparation: dict[str, Any] | None = None
 
 
 class TaskClaimResponse(BaseModel):
@@ -1037,6 +1100,10 @@ class TaskClaimResponse(BaseModel):
     task: dict[str, Any] | None = None
     claim_epoch: int | None = None
     session: ClaimSessionSummary = ClaimSessionSummary()
+    task_id: str | None = None
+    claim_phase: str | None = None
+    claim_phase_at: float | None = None
+    claim_timing: ClaimTimingDetail | None = None
     reason: str | None = None
     error: str | None = None
     retry_after: int | None = None
@@ -1359,6 +1426,11 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "explain_task": ExplainTaskResponse,
     "project_ready": ProjectReadyResponse,
     "ensure_task": EnsureTaskResponse,
+    "ensure_spec_ingest": EnsureTaskResponse,
+    "approved_spec_packet": ApprovedSpecPacketResponse,
+    "spec_ingest_reconcile": SpecIngestReconcileResponse,
+    "batch_reconcile": BatchReconcileResponse,
+    "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
     "task_route_override": TaskRouteOverrideResponse,
@@ -1366,6 +1438,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_propose": TaskBatchProposeResponse,
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
+    "task_batch_validate": TaskBatchValidateResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,

@@ -200,17 +200,9 @@ class MessageDeliveryEngine:
         if activity == "sleeping":
             if pending[0].body_kind == "schedule_prompt":
                 return result
-            if all(msg.body_kind == "conversation_input" for msg in pending):
+            if all(msg.body_kind in {"conversation_input", "ask_input"} for msg in pending):
                 return result
             if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
-                return result
-            if not await self._sessions.ensure_started(
-                kind=kind, target_id=target_id, project_id=resolved_project
-            ):
-                logger.warning(
-                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
-                    pending[0].id, to_kind, to_id,
-                )
                 return result
 
         if activity == "absent":
@@ -234,6 +226,20 @@ class MessageDeliveryEngine:
             if scheduled:
                 await self.cron_service.finish_delivery(msg.id, delivered=False)
             return result
+        # Recheck durable eligibility before a cold start as well as a nudge.
+        if activity == "sleeping":
+            if not await self._sessions.ensure_started(
+                kind=kind, target_id=target_id, project_id=resolved_project
+            ):
+                if scheduled:
+                    await self.cron_service.finish_delivery(msg.id, delivered=False)
+                logger.warning(
+                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
+                    msg.id, to_kind, to_id,
+                )
+                return result
+            if not await self._db.message_notification_is_pending(msg.id):
+                return result
         try:
             ok = await self._sessions.nudge(
                 kind=kind, target_id=target_id, project_id=resolved_project,
@@ -408,7 +414,7 @@ class MessageDeliveryEngine:
         now = time.time()
         parked = 0
         for msg in pending:
-            if msg.to_kind != "session" or msg.body_kind == "conversation_input":
+            if msg.to_kind != "session" or msg.body_kind in {"conversation_input", "ask_input"}:
                 continue
             if (now - msg.created_at) < PARK_AFTER_SECONDS:
                 continue

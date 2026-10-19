@@ -104,11 +104,14 @@ from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
 from src.commands.conversation_commands import ConversationCommandsMixin
 from src.commands.review_commands import ReviewCommandsMixin
+from src.commands.ask_commands import AskCommandsMixin
 from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
 from src.commands.spec_commands import SpecCommandsMixin
+from src.commands.spec_ingest_commands import SpecIngestCommandsMixin
+from src.commands.batch_check_commands import BatchCheckCommandsMixin
 from src.routing.filing import GUARDED_COMMANDS, routing_choice_refusal, without_inert_choices
 
 if TYPE_CHECKING:
@@ -408,10 +411,13 @@ class CommandHandler(
     EscalationCommandsMixin,
     ConversationCommandsMixin,
     ReviewCommandsMixin,
+    AskCommandsMixin,
     GitHubIssueCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,
+    SpecIngestCommandsMixin,
+    BatchCheckCommandsMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 
@@ -981,7 +987,8 @@ class CommandHandler(
                 }
                 if name == "update_config"
                 else {"envelope": "<redacted-conversation-envelope>", "source": args.get("source")}
-                if name == "supervisor_inbox_post"
+                if name in {"supervisor_inbox_post", "ask_intake", "ask_button", "ask_reply",
+                            "ask_apply_input", "ask_discussion_reply"}
                 else {
                     **args,
                     "data_base64": f"<image bytes: {len(args.get('data_base64', ''))} base64 chars>",

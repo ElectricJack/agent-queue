@@ -13,22 +13,24 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import time
 import weakref
 from collections.abc import Iterable, Mapping
-from functools import partial
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 
 from sqlalchemy import literal, or_, select
 
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     archived_tasks,
     projects,
     repos,
-    task_completion_records,
     task_branch_origins,
+    task_completion_records,
     tasks,
 )
 from src.git.manager import GitError, RemoteRefState
@@ -117,7 +119,9 @@ async def gating_delivery_ids(conn, project_id: str, *, limit: int = STATUS_DELI
     """Completed development work that open work waits on, newest first.
 
     What the scheduler and settlement wait for: the prerequisite of a
-    ``blocks`` edge whose dependent is still open, and the child of a
+    ``blocks`` or ``delivery-of`` edge whose dependent is still open (the
+    observation of a delivery-of target is what recomputes its dependents),
+    and the child of a
     container that has not finished.  Returns ``(ids, total)`` with *ids*
     bounded by *limit*, so a status read stays one bounded git pass.
     """
@@ -132,7 +136,7 @@ async def gating_delivery_ids(conn, project_id: str, *, limit: int = STATUS_DELI
         .select_from(edge.join(dependent, dependent.c.id == edge.c.task_id))
         .where(
             edge.c.depends_on_task_id == tasks.c.id,
-            edge.c.dep_type == "blocks",
+            edge.c.dep_type.in_(("blocks", "delivery-of")),
             dependent.c.status.not_in(finished),
         )
         .correlate(tasks)
@@ -149,6 +153,8 @@ async def gating_delivery_ids(conn, project_id: str, *, limit: int = STATUS_DELI
                 tasks.c.project_id == project_id,
                 tasks.c.status == "COMPLETED",
                 development_delivery_scope(tasks),
+                # Held ingestion members are never delivery candidates.
+                not_ingest_held(),
                 gating,
             )
             .order_by(tasks.c.updated_at.desc(), tasks.c.id)
@@ -381,6 +387,10 @@ class PrerequisiteView:
 
 
 _FETCH_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_FLIGHTS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+#: A branch name ``git check-ref-format`` certainly accepts. A shared observation
+#: reports any other absent ref as unknown rather than missing.
+_PLAIN_BRANCH = re.compile(r"refs/heads/(?!.*(?:\.\.|//|/\.|\.lock(?:/|$)))[\w-][\w./-]*(?<![./])")
 
 
 def prerequisite_observer(db):
@@ -510,6 +520,64 @@ def _fetch_lock(path: Path) -> asyncio.Lock:
     return locks.setdefault(str(path), asyncio.Lock())
 
 
+@dataclass(eq=False)
+class _Flight:
+    """One store observation, run as its own task and shared by its joiners."""
+
+    task: asyncio.Task | None = None
+    #: Observation number, assigned when the fetch begins under the store lock;
+    #: None while the flight still waits for that lock.
+    seq: int | None = None
+    #: Monotonic time the observation completed, for read-only age reuse.
+    stamp: float = 0.0
+    #: Observer instances that recorded this observation's covered targets.
+    recorded: weakref.WeakSet = field(default_factory=weakref.WeakSet)
+
+
+@dataclass(eq=False)
+class _Flights:
+    """Single-flight state for one (store, project, repository, URL) observation.
+
+    Every observer instance on the loop shares it, as they share the store lock.
+    """
+
+    begun: int = 0
+    flight: _Flight | None = None
+    #: The last completed flight, kept only while callers are still waiting.
+    last: _Flight | None = None
+    readers: int = 0
+
+
+def _flight_landed(flights: dict, key, state: _Flights, flight: _Flight, _task) -> None:
+    if state.flight is flight:
+        state.flight = None
+    if flight.seq is not None and not flight.task.cancelled():
+        state.last = flight
+    if not state.readers and flights.get(key) is state:
+        del flights[key]
+
+
+def _for_target(snapshot: DeliverySnapshot, target: DeliveryTarget) -> DeliverySnapshot:
+    """*snapshot*'s repository observation pinned to *target*'s ref.
+
+    A complete observation captured every remote branch, so another ref of the
+    same project/repository/URL reads its own head; an absent head is a missing
+    target. A failed observation stays unknown for every ref, and so does an
+    absent ref whose name its own fetch would have rejected.
+    """
+    if snapshot.target_ref == target.target_ref:
+        return snapshot
+    if snapshot.error not in {None, "missing_target"}:
+        return replace(snapshot, target_ref=target.target_ref, target_oid=None)
+    oid = snapshot.source_heads.get(
+        "refs/remotes/origin/" + target.target_ref.removeprefix("refs/heads/"))
+    if oid is None and not _PLAIN_BRANCH.fullmatch(target.target_ref):
+        return replace(snapshot, target_ref=target.target_ref, target_oid=None,
+                       error="snapshot_git_error: invalid_target")
+    return replace(snapshot, target_ref=target.target_ref, target_oid=oid,
+                   error=None if oid else "missing_target")
+
+
 class DeliveryObserver:
     """Fetch and evaluate delivery truth for arbitrary tasks, outside transactions.
 
@@ -542,10 +610,13 @@ class DeliveryObserver:
         return self.data_dir / digest / "observer"
 
     async def _store(self, target: DeliveryTarget) -> Path:
+        from src.integration.repository_recovery import harden_retained_repository
+
         path = self.store_path(target.repository_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
             await self.git.acreate_checkout(target.repository_url, str(path), no_checkout=True)
+        await harden_retained_repository(self.git, path)
         return path
 
     async def _snapshot(
@@ -565,13 +636,73 @@ class DeliveryObserver:
         if cached_only:
             # Interactive diagnostic reads must never queue behind a fetch or start
             # one. Expired evidence is unknown, not evidence of non-delivery.
-            return DeliverySnapshot(
-                self.git, str(path), target.project_id, target.repository_id,
-                target.repository_url, target.target_ref, None, MappingProxyType({}),
-                "snapshot_unavailable",
-            )
+            return self._unavailable(target, path, "snapshot_unavailable")
+        snapshot, stamp, flight = await self._shared_observation(target, path)
+        # Each caller owns its request caches and freshness marks, as if it had
+        # fetched alone; observers sharing a store read with their own transport.
+        snapshot = replace(snapshot, git=self.git, _cache={}, _identities={}, _freshness={})
+        own = _for_target(snapshot, target)
+        if snapshot.error in {None, "missing_target"} and self not in flight.recorded:
+            flight.recorded.add(self)
+            self._remember(target, snapshot, stamp)
+        elif own.error in {None, "missing_target"} and (
+                target not in self._recent or self._recent[target][0] < stamp):
+            # A joiner's own ref, outside the targets its first caller covered.
+            self._recent[target] = (stamp, own)
+        return own
+
+    async def _shared_observation(
+        self, target: DeliveryTarget, path: Path,
+    ) -> tuple[DeliverySnapshot, float, _Flight]:
+        """Join the store observation that begins after this caller arrived.
+
+        Callers that arrive before a flight takes the store lock share it: its
+        fetch begins after each of them asked. A caller arriving once a fetch has
+        begun waits for that flight without consuming it, then shares its
+        successor, so a burst costs at most two fetches. Each flight is its own
+        task awaited without cancellation: a cancelled caller leaves its peers
+        and the flight running, and an abandoned flight ends with no backlog.
+        """
+        loop = asyncio.get_running_loop()
+        flights = _FLIGHTS.setdefault(loop, {})
+        key = str(path), target.project_id, target.repository_id, target.repository_url
+        state = flights.setdefault(key, _Flights())
+        arrival = state.begun
+        state.readers += 1
+        try:
+            while True:
+                flight = state.flight
+                if flight is not None and flight.seq is not None and flight.seq <= arrival:
+                    # Its fetch began before this caller asked: no proof for it.
+                    await asyncio.wait((flight.task,))
+                    continue
+                if flight is None:
+                    if state.last is not None and state.last.seq > arrival:
+                        flight = state.last
+                    else:
+                        flight = state.flight = _Flight()
+                        flight.task = loop.create_task(self._observe_store(
+                            target, path, state, flight))
+                        flight.task.add_done_callback(
+                            partial(_flight_landed, flights, key, state, flight))
+                await asyncio.wait((flight.task,))
+                break
+        finally:
+            state.readers -= 1
+            if not state.readers and state.flight is None and flights.get(key) is state:
+                del flights[key]
+        if flight.task.cancelled():
+            return self._unavailable(target, path, "observer_error: CancelledError"), 0.0, flight
+        return flight.task.result(), flight.stamp, flight
+
+    async def _observe_store(
+        self, target: DeliveryTarget, path: Path, state: _Flights, flight: _Flight,
+    ) -> DeliverySnapshot:
+        """Fetch one repository observation; any failure is an unknown one."""
         try:
             async with _fetch_lock(path):
+                state.begun += 1
+                flight.seq = state.begun
                 store = await self._store(target)
                 if self.truth is not None:
                     snapshot = (await self.truth.snapshot(
@@ -585,40 +716,42 @@ class DeliveryObserver:
                         repository_id=target.repository_id,
                         repository_url=target.repository_url, target_ref=target.target_ref,
                     )
-            if snapshot.error in {None, "missing_target"}:
-                # The fetch captured every remote branch. Preserve its timestamp
-                # for every covered target, including previously cached branches
-                # that have since disappeared, without extending reused evidence.
-                stamp = time.monotonic()
-                covered = {target} | {
-                    cached for cached in self._recent
-                    if (cached.project_id, cached.repository_id, cached.repository_url)
-                    == (target.project_id, target.repository_id, target.repository_url)
-                } | {
-                    replace(target, target_ref="refs/heads/" + ref.removeprefix(
-                        "refs/remotes/origin/"))
-                    for ref in snapshot.source_heads
-                    if ref.startswith("refs/remotes/origin/") and ref != "refs/remotes/origin/HEAD"
-                }
-                for covered_target in covered:
-                    oid = snapshot.source_heads.get("refs/remotes/origin/" +
-                                                    covered_target.target_ref.removeprefix(
-                                                        "refs/heads/"))
-                    self._recent[covered_target] = (stamp, replace(
-                        snapshot, target_ref=covered_target.target_ref, target_oid=oid,
-                        error=None if oid else "missing_target",
-                    ))
+            flight.stamp = time.monotonic()
             return snapshot
         except Exception as exc:  # noqa: BLE001 - any failure is an unknown observation
             logger.warning(
                 "delivery observer: %s %s unavailable: %s",
                 target.repository_id, target.target_ref, exc,
             )
-            return DeliverySnapshot(
-                self.git, str(path), target.project_id, target.repository_id,
-                target.repository_url, target.target_ref, None, MappingProxyType({}),
-                f"observer_error: {type(exc).__name__}",
-            )
+            return self._unavailable(target, path, f"observer_error: {type(exc).__name__}")
+
+    def _unavailable(self, target: DeliveryTarget, path: Path, error: str) -> DeliverySnapshot:
+        return DeliverySnapshot(
+            self.git, str(path), target.project_id, target.repository_id,
+            target.repository_url, target.target_ref, None, MappingProxyType({}), error,
+        )
+
+    def _remember(self, target: DeliveryTarget, snapshot: DeliverySnapshot, stamp: float):
+        """Cache a complete observation for every target it covers.
+
+        The fetch captured every remote branch. Preserve its timestamp for every
+        covered target, including previously cached branches that have since
+        disappeared, without extending reused evidence.
+        """
+        covered = {target} | {
+            cached for cached in self._recent
+            if (cached.project_id, cached.repository_id, cached.repository_url)
+            == (target.project_id, target.repository_id, target.repository_url)
+        } | {
+            replace(target, target_ref="refs/heads/" + ref.removeprefix(
+                "refs/remotes/origin/"))
+            for ref in snapshot.source_heads
+            if ref.startswith("refs/remotes/origin/") and ref != "refs/remotes/origin/HEAD"
+        }
+        for covered_target in covered:
+            recent = self._recent.get(covered_target)
+            if recent is None or recent[0] <= stamp:
+                self._recent[covered_target] = (stamp, _for_target(snapshot, covered_target))
 
     async def snapshot(
         self, target: DeliveryTarget, *, max_age: float = 0.0, cached_only: bool = False,
@@ -811,5 +944,23 @@ class DeliveryObserver:
             view = DeliveryView(self.db, evidence, targets, tuple(snapshots), self.request_loader,
                                 target_loader)
             if cached_only or max_age > 0 or await view.fresh():
-                return view
+                break
+        if not cached_only:
+            await self._admit_delivery_dependents(view)
         return view
+
+    async def _admit_delivery_dependents(self, view: DeliveryView) -> None:
+        """Recompute ``delivery-of`` dependents of each task git shows delivered.
+
+        The projection itself reads only the durable landing receipt, so a
+        target seen delivered before its receipt commits stays blocking until
+        a later observation; nothing here unblocks without the receipt.
+        """
+        recompute = getattr(self.db, "recompute_delivery_dependents", None)
+        delivered = sorted(task_id for task_id in view.evidence if view.satisfied(task_id))
+        if recompute is None or not delivered:
+            return
+        try:
+            await recompute(delivered)
+        except Exception:
+            logger.warning("delivery-of recompute failed for %s", delivered, exc_info=True)

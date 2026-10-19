@@ -38,6 +38,51 @@ def _question_projection():
 
 
 class AgentQuestionQueriesMixin:
+    async def lock_question_source_on(self, conn, question_id):
+        row = (await conn.execute(select(questions).where(
+            questions.c.id == question_id,
+        ).with_for_update())).mappings().first()
+        return dict(row) if row else None
+
+    async def question_claim_current_on(self, conn, q):
+        """Check the claim on the answer transaction, including the live owner."""
+        row = (await conn.execute(select(sessions).select_from(
+            sessions.join(tasks, tasks.c.id == sessions.c.task_id)
+            .join(agents, agents.c.id == tasks.c.assigned_agent_id)
+        ).where(
+            sessions.c.id == q["session_id"], sessions.c.name == q["session_name"],
+            sessions.c.instance_token == q["instance_token"],
+            sessions.c.project_id == q["project_id"], sessions.c.task_id == q["task_id"],
+            sessions.c.state.in_(("starting", "running", "draining")),
+            sessions.c.desired_state == "running", sessions.c.profile_id != "supervisor",
+            or_(sessions.c.agent_id.is_(None), sessions.c.agent_id == q["agent_id"]),
+            or_(sessions.c.last_claim_epoch.is_(None),
+                sessions.c.last_claim_epoch == q["claim_epoch"]),
+            or_(sessions.c.lifecycle == "task",
+                (sessions.c.lifecycle == "pool") & (sessions.c.claim_phase == "active")),
+            tasks.c.status == "IN_PROGRESS", tasks.c.claim_epoch == q["claim_epoch"],
+            tasks.c.assigned_agent_id == q["agent_id"], tasks.c.project_id == q["project_id"],
+            agents.c.current_task_id == q["task_id"], agents.c.deleted_at.is_(None),
+        ).with_for_update())).mappings().first()
+        return dict(row) if row else None
+
+    async def begin_question_submission(self, question_id, token):
+        # Commit the unknown fence BEFORE terminal I/O. A process death cannot
+        # clear it. Only a positive NotSubmitted result authorizes another try.
+        async with self._engine.begin() as conn:
+            result = await conn.execute(update(questions).where(
+                questions.c.id == question_id, questions.c.delivery_token == token,
+                questions.c.submission_state == "pending",
+            ).values(submission_state="unknown"))
+            return result.rowcount == 1
+
+    async def question_submission_not_sent(self, question_id, token):
+        async with self._engine.begin() as conn:
+            await conn.execute(update(questions).where(
+                questions.c.id == question_id, questions.c.delivery_token == token,
+                questions.c.submission_state == "unknown",
+            ).values(submission_state="pending"))
+
     async def create_agent_question(self, **values) -> bool:
         try:
             async with self._engine.begin() as conn:
@@ -205,6 +250,7 @@ class AgentQuestionQueriesMixin:
                 .where(
                     questions.c.id == question_id,
                     questions.c.state == "answered",
+                    questions.c.submission_state == "pending",
                     or_(
                         questions.c.delivery_lease_until.is_(None),
                         questions.c.delivery_lease_until < now,
@@ -292,6 +338,7 @@ class AgentQuestionQueriesMixin:
             )
             .values(
                 state="delivered",
+                submission_state="delivered",
                 delivered_at=now,
                 updated_at=now,
                 delivery_token=None,

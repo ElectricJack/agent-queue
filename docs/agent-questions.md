@@ -103,17 +103,33 @@ operator, use `aq message send --to user:dashboard --project PROJECT_ID --body
   after an AQ restart. Only configured authorized Discord users can submit it.
 - In the dashboard, **Waiting for input** appears in the Agent flock. Open the
   agent's terminal and answer directly to continue its existing conversation.
-- From the local operator CLI:
+- From the CLI, inspect or escalate a question:
 
   ```sh
   aq question list
-  aq question answer QUESTION_ID --body "Your answer"
   aq question escalate QUESTION_ID --reason "This needs a human decision"
   ```
 
-Supervisor sessions use their existing scoped CLI credentials. Worker tokens
+Supervisors answer routine factual questions with `aq question answer QUESTION_ID
+--body "Your answer"` using their existing scoped CLI credentials. Worker tokens
 cannot impersonate human callers. General MCP/LLM command calls without an
 operator identity cannot approve questions.
+
+Human-required answers use the versioned ask boundary. The owning supervisor
+applies stored, authenticated escalation evidence with `escalation_apply_reply`:
+first load its ask version, prepare the exact answer packet, then confirm its
+preview with a stable request key. Legacy requests receive an actionable ask
+link; a supervisor's own text cannot replace the stored reply. The factual
+supervisor answer path remains separate.
+
+The source stores the accepted decision id before terminal submission. A saved
+answer is still applying until delivery has a receipt. AQ checks the original
+claim and session again at submission, and a paused project keeps the answer
+queued without resuming work. If submission may have happened but its receipt
+was lost, AQ retains an unknown outcome for reconciliation and never sends the
+same answer again automatically. Schema revision `a00000000092` adds these
+source receipts and gate policy metadata; installation upgrades remain an
+operator action.
 
 An answer is queued durably and submitted into the same live terminal. AQ never
 clears a terminal draft or reassigns/restarts the task to deliver an answer. If
@@ -134,8 +150,8 @@ it does not replay old message history when the feature is first enabled. If no
 Discord destination is available, the pending question remains visible in AQ.
 As with any external transport, a process crash after Discord accepts a message
 but before the receipt commits can leave a duplicate notification on retry.
-Terminal input has the same small crash window: if the process dies after input
-is submitted but before its receipt commits, delivery may repeat after recovery.
+Terminal input is fenced before submission: a crash without a delivery receipt
+leaves an unknown outcome and does not automatically repeat the input.
 Normal retries and competing replies are deduplicated.
 
 This feature handles assistant questions in native conversation transcripts and

@@ -56,11 +56,15 @@ ROUTING_LOCK_BUDGET_SECONDS = 30.0
 
 # Explicit work verdicts only. Session loss, launch/close errors and provider
 # outages are deliberately absent: they say nothing about the worker's ability.
+# Review feedback reworks a passing attempt, so ``reopen_with_feedback`` re-plans
+# the route without journaling a failure.
 ROUTING_FAILURE_CONTEXTS = frozenset({
     "retry", "max_retries", "session_close_hard_failure", "verification_reopen",
-    "verification_failed", "reopen_with_feedback",
+    "verification_failed",
 })
-ROUTING_RETRY_CONTEXTS = ROUTING_FAILURE_CONTEXTS | {"restart_task", "supervisor_recovery"}
+ROUTING_RETRY_CONTEXTS = ROUTING_FAILURE_CONTEXTS | {
+    "restart_task", "supervisor_recovery", "reopen_with_feedback",
+}
 ROUTING_FAILURES_KEY = "routing_failed_attempts"
 
 
@@ -136,9 +140,10 @@ class RoutingQueryMixin:
             return False
         substantive = (
             context in ROUTING_FAILURE_CONTEXTS
+            # A COMPLETED task passed; reopening it is rework, not a failure.
             and previous_status in {
-                TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.COMPLETED,
-                TaskStatus.FAILED, TaskStatus.BLOCKED,
+                TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED, TaskStatus.FAILED,
+                TaskStatus.BLOCKED,
             }
         )
         if substantive and context in {"retry", "max_retries"}:

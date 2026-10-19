@@ -55,6 +55,55 @@ _SLOT_WAIT_REASONS = frozenset(
     {"slot_lost_race", "slot_warming", "slot_stalled", "slots_full"}
 )
 
+#: How long an accepted close waits on one best-effort pull-request open after
+#: its terminal transition.  A train root's open reads the project-wide
+#: delivery observation, which a busy project can hold for many minutes
+#: (amber-flare-10); the close's record, writer handoff and claim release must
+#: not wait behind it.  Past the bound the open keeps running detached and its
+#: outcome is logged; a root it missed is retried by the root PR reconciler.
+CLOSE_PUBLICATION_TIMEOUT_SECONDS = 30.0
+
+#: Strong references to publications that outlived their close.
+_DETACHED_CLOSE_PUBLICATIONS: set[asyncio.Task] = set()
+
+
+async def _bounded_close_publication(task_id: str, label: str, publish) -> dict | None:
+    """Run ``publish()`` for at most the close bound; None when it is still running.
+
+    The open is shielded, so neither the bound nor a cancelled close stops it:
+    pull-request creation is idempotent per head, so letting it finish is
+    never a duplicate, while cancelling it mid-write could be a half-done one.
+    Its exception, when it settles inside the bound, propagates to the caller.
+    """
+    job = asyncio.ensure_future(publish())
+    _DETACHED_CLOSE_PUBLICATIONS.add(job)
+    job.add_done_callback(_DETACHED_CLOSE_PUBLICATIONS.discard)
+    try:
+        return await asyncio.wait_for(asyncio.shield(job), CLOSE_PUBLICATION_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning(
+            "Task %s: %s still running after %.0fs; the close finishes without "
+            "waiting for it",
+            task_id, label, CLOSE_PUBLICATION_TIMEOUT_SECONDS,
+        )
+
+        def _settled(done: asyncio.Task) -> None:
+            if done.cancelled():
+                logger.warning("Task %s: detached %s was cancelled", task_id, label)
+            elif done.exception() is not None:
+                logger.warning(
+                    "Task %s: detached %s failed", task_id, label,
+                    exc_info=done.exception(),
+                )
+            else:
+                logger.info(
+                    "Task %s: detached %s outcome: %s",
+                    task_id, label, (done.result() or {}).get("outcome"),
+                )
+
+        job.add_done_callback(_settled)
+        return None
+
 
 class ExecutionMixin:
     """Agent execution pipeline methods mixed into Orchestrator."""
@@ -271,11 +320,12 @@ class ExecutionMixin:
         """
         task = await self.db.get_task(action.task_id)
         if task is not None:
+            batch = await self._delivery_admission([task.id])
+            task = await self.db.get_task(task.id)
             if task.is_blocked:
                 return "task has unresolved gates or dependencies"
-            batch = await self._delivery_admission([task.id])
             if task.id not in batch.allowed:
-                return "development prerequisite delivery is pending or unknown"
+                return "prerequisite delivery is pending or unknown"
             agent = await self.db.get_agent(action.agent_id)
             mismatch = await self._check_agent_routing(task, agent)
             if mismatch:
@@ -754,12 +804,19 @@ class ExecutionMixin:
             logger.info("Task %s changed ownership or stopped before session launch", action.task_id)
             return
         task = current
+        if await self.db.ingest_held_task_ids({task.id}):
+            # Held after assignment: the batch awaits fidelity review (design §4).
+            await self._fail_session_launch(action, task, "ingest_held", notify=False)
+            return
         agent = await self.db.get_agent(action.agent_id)
         routed_task, effective_route = await self._effective_assignment_task(task)
-        mismatch = "task has unresolved gates or dependencies" if task.is_blocked else None
         batch = await self._delivery_admission([task.id])
-        if task.id not in batch.allowed:
-            mismatch = "development prerequisite delivery is pending or unknown"
+        task = await self.db.get_task(task.id)
+        mismatch = "task has unresolved gates or dependencies" if task.is_blocked else None
+        if (task.id not in batch.allowed or not await batch.matches()
+                or not await batch.is_fresh(task.id)
+                or batch.pr is not None and not await batch.pr.verify_workspace(task.id, workspace)):
+            mismatch = "prerequisite delivery is pending or unknown"
         if mismatch is None and routed_task is None:
             mismatch = "awaiting intelligence route"
         if mismatch is None:
@@ -1668,6 +1725,26 @@ class ExecutionMixin:
                                         f"{completion['outcome']}."
                                     ]
                                     ctx.verification_feedback = ctx.verification_issues[0]
+                        elif managed_parent and getattr(
+                            self.config.integration, "git_first", "shadow"
+                        ) == "active":
+                            # The train's epic lane, not a parent episode,
+                            # collects this container: it closes normally at
+                            # its exact final published head.  A refusal
+                            # writes nothing and keeps the claim live.
+                            try:
+                                await hierarchy.checkpoint_container_completion(
+                                    task.id,
+                                    head,
+                                    int(checkpoint["generation"]),
+                                    expect_claim_epoch=expect_claim_epoch,
+                                )
+                            except HierarchyError as exc:
+                                ctx.verification_retry_in_session = True
+                                ctx.verification_issues = [
+                                    f"Container checkpoint was refused: {exc}."
+                                ]
+                                ctx.verification_feedback = ctx.verification_issues[0]
                         elif managed_parent:
                             await hierarchy.checkpoint_and_suspend_parent(
                                 task.id,
@@ -1814,7 +1891,10 @@ class ExecutionMixin:
                 }
 
         if outcome == "pass" and completed_ok:
-            from src.integration.completion_ci import verify_completion_ci
+            from src.integration.completion_ci import (
+                describe_completion_ci,
+                verify_completion_ci,
+            )
 
             ci = await verify_completion_ci(
                 self.db, getattr(self, "git", None), self.config, task, project,
@@ -1823,8 +1903,8 @@ class ExecutionMixin:
             if ci is not None:
                 if ci["state"] != "green":
                     feedback = (
-                        f"Required CI is {ci['state']} on {ci.get('head_sha') or 'unknown head'}; "
-                        "resolve the checks or wait for CI and retry close."
+                        f"{describe_completion_ci(ci)} Resolve the named stage or checks "
+                        "or wait for CI and retry close."
                     )
                     return {
                         "status": task.status.value, "pr_url": pr_url, "pipeline_ok": False,
@@ -1919,6 +1999,17 @@ class ExecutionMixin:
         # (final-reviewer trigger, downstream ``pr-merged`` gates) can see
         # it even when the agent never called ``aq task set --pr-url``.
         pr_kwargs = {"pr_url": pr_url} if pr_url else {}
+        # A ``pull_request`` completion leaves its work on that open PR, so
+        # ``blocks`` dependents wait on its ``pr-merged`` gate rather than on
+        # COMPLETED alone.  Managed projects deliver through their own paths.
+        if pr_url and new_status == TaskStatus.COMPLETED:
+            from src.integration.delivery_path import MANAGED_MODES
+
+            if (
+                getattr(project, "hierarchical_integration_mode", None) not in MANAGED_MODES
+                and await self._effective_integration_mode(task) == "pull_request"
+            ):
+                pr_kwargs["pr_merge_gate"] = pr_url
         try:
             if managed_parent_suspended or managed_parent_completed:
                 # The suspension transition and episode reservation above
@@ -2030,16 +2121,21 @@ class ExecutionMixin:
         # before ``task.completed`` hydrates the row.  Best-effort: a GitHub
         # failure must not undo a committed COMPLETED, and the root PR
         # reconciler (``src/integration/root_pull_requests.py``) retries it.
+        # Bounded, because it reads the shared delivery observation.
         if train_leaf_root and new_status == TaskStatus.COMPLETED:
             from src.integration.root_pull_requests import EpicPullRequestService
 
             try:
-                opened = await EpicPullRequestService(
-                    self.db, git_manager=self.git
-                ).open_for_epic(task.id)
-                logger.info("Task %s: train root pull request outcome: %s",
-                            task.id, opened["outcome"])
-                pr_url = opened.get("pr_url") or pr_url
+                opened = await _bounded_close_publication(
+                    task.id, "train root pull request",
+                    lambda: EpicPullRequestService(
+                        self.db, git_manager=self.git
+                    ).open_for_epic(task.id),
+                )
+                if opened is not None:
+                    logger.info("Task %s: train root pull request outcome: %s",
+                                task.id, opened["outcome"])
+                    pr_url = opened.get("pr_url") or pr_url
             except Exception:
                 logger.warning(
                     "Task %s: could not open the train root pull request; "
@@ -2072,14 +2168,16 @@ class ExecutionMixin:
             )
 
             try:
-                opened = await open_stranded_child_pull_request(
-                    self.db, self.git, task.id
+                opened = await _bounded_close_publication(
+                    task.id, "stranded child pull request",
+                    lambda: open_stranded_child_pull_request(self.db, self.git, task.id),
                 )
-                logger.info(
-                    "Task %s: stranded child pull request outcome: %s (%s)",
-                    task.id, opened["outcome"], opened.get("reason"),
-                )
-                pr_url = opened.get("pr_url") or pr_url
+                if opened is not None:
+                    logger.info(
+                        "Task %s: stranded child pull request outcome: %s (%s)",
+                        task.id, opened["outcome"], opened.get("reason"),
+                    )
+                    pr_url = opened.get("pr_url") or pr_url
             except Exception:
                 logger.warning(
                     "Task %s: could not open a pull request for a child no "
@@ -2300,6 +2398,12 @@ class ExecutionMixin:
             # expire/release without a legacy delegate-close or stop proof.
             if ordinary_fence is not None:
                 await BranchLock(self.db).release(ordinary_fence)
+            if completed_ok and new_status == TaskStatus.COMPLETED:
+                resumed = await OrdinaryRepairService(self.db).resume_completed(task.id)
+                train = getattr(self, "integration_train", None)
+                if resumed is not None and train is not None:
+                    train.wake(resumed["project_id"], resumed["repository_id"],
+                               resumed["target_ref"])
             release_needed = False
         handoff_unproven = False
         if release_needed:

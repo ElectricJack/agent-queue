@@ -9,6 +9,7 @@ rule and the publishing check.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import time
@@ -464,12 +465,15 @@ async def test_installation_default_set_show_and_clear(db, tmp_path):
 # --- pool refresh: a new claim never inherits a stale identity -----------------
 
 
-@pytest.fixture
-async def claim_env(db, tmp_path):
+@pytest.fixture(params=[0.5, 0.0], ids=["warm", "deferred"])
+async def claim_env(db, tmp_path, request, monkeypatch):
     from src.intelligence_classes import IntelligenceClass
     from src.orchestrator import Orchestrator
     from tests.assignment_routing_helpers import route_source_for
 
+    monkeypatch.setattr(
+        "src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", request.param
+    )
     await db.create_project(Project(id="p", name="p"))
     await db.create_profile(
         AgentProfile(id="worker", name="w", lifecycle="pool", needs_workspace=False)
@@ -533,7 +537,15 @@ async def claim_env(db, tmp_path):
             "kind": "session", "session_id": sid, "task_id": None, "project_id": "p",
             "elevated": False,
         }
-        return await handler._cmd_task_claim({"next": True})
+        result = await handler._cmd_task_claim({"next": True})
+        if result["result"] == "claim_in_progress":
+            # Identity assertions concern the settled claim, independent of
+            # whether preparation outlives the no-wait response allowance.
+            key = (sid, result["task_id"], result["claim_epoch"])
+            preparation = orch.claim_preparations[key]
+            await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+            result = await handler._cmd_task_claim({"next": True})
+        return result
 
     return SimpleNamespace(config=config, db=db, task=task, session=session, claim=claim)
 

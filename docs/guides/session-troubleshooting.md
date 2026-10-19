@@ -500,6 +500,16 @@ nothing; claim again.
 | `prepare_failed` | the workspace could not be prepared | see the next section |
 | `out_of_scope` | the task is not this session's to touch | do not retry |
 
+In a stacked train project `no_ready_work` can name why stacked work was not
+selected. `stack_snapshot_changed` means a pinned stack ref moved while the
+claim was checking it; the claim re-observes up to three times, then refuses,
+and `stack_evidence` names the ref with its expected and observed OIDs.
+`stack_snapshot_unavailable` means Git gave no stack evidence at all (a failed
+or backed-off fetch): stacked dependents are withheld, while roots and work
+whose prerequisites have delivered still claim, and `stack_evidence.reason`
+carries the Git error. A run of `stack_snapshot_unavailable` points at the
+repository fetch, not the task graph.
+
 ## `slot_reset_failed`: the workspace could not be made clean
 
 **Symptom.** A claim comes back `prepare_failed`, and the task carries
@@ -521,6 +531,16 @@ aq task explain <task-id>
 needs_attention: slot_reset_failed: <reset error> (attempt 2; automatic retry).
 After fixing the cause: aq task resume --task-id <task-id>
 ```
+
+The reset error is `<stage>: <Type>: <message>` plus its causes, for example
+`slot_reset: RuntimeError: branch held by stopped slot`. An exception that
+carried no text reads `<stage>: <Type> (no message) at <file:line function>`:
+the type, the preparation stage and the frame are what was observed, and
+nothing more is known. Do not read a missing directory or a lock owner into it
+— check the slot itself. A reset that outlived the 30 s fenced-branch bound
+reads `slot_reset: BranchLockTimeout: branch fence critical section exceeded
+30s on <repo>:<branch>; caused by TimeoutError (no message) …; caused by
+CancelledError (no message) at <the interrupted frame>`.
 
 The attempt counter is the important part. The first two failures release the
 task back to `READY` with an exponential preparation backoff, so AQ retries on
@@ -546,7 +566,8 @@ attention flag together, so a later unrelated failure starts from zero.
 **The related flag** is `integration_prepare_failed`, which means the branch
 fence — not the filesystem — was the problem. That one intentionally retains
 every binding for recovery rather than unlocking a checkout an integration
-fence still names; see
+fence still names. `explain` prints its recorded `prepare_failure` reason, with
+whether the claim was `released` or `retained`; see
 [development integration](development-integration.md).
 
 ## `stack_prerequisites_conflict`: child preparation needs a merge repair
@@ -575,6 +596,20 @@ A refusal must remain held with its diagnosis; do not substitute a restart,
 status edit, branch reset, new incident or gate bypass. If an attachment cannot
 be proved released, resolve it through the supported ownership recovery flow
 before retrying, retaining its checkout and commits.
+
+If a reviewed hold cannot pass automatic failure/end-reason checks, the local
+operator or live global supervisor can use `aq task recover --operator-release
+--decision retry --task-id TASK --incident-id INCIDENT --expected-hold-at DECIDED_AT
+--reason WHY`. It retains stop proof, routing, gates, ownership and all remaining
+budgets. For integration-owned repairs, use `--decision release` to lift only
+the hold, then continue through the integration operation's controls. This form
+also clears an exact stale hold on a READY task without resetting counters or
+changing its state. Project supervisors cannot authorize operator release.
+
+Supervisor holds on train repairs and `slot_reset_failed` escalate after
+15 minutes to project and global supervisors. The execution hold stays effective;
+the deadline prevents a silent wait, not an unsafe retry. Explicit human holds
+do not expire. Never delete recovery metadata by hand.
 
 The next normal preparation reserves the repair and withholds E3. Let the
 ordinary router and worker publish and close that repair. AQ verifies its exact
@@ -608,7 +643,7 @@ aq integration status          # what still holds the branch
 If the writer is gone and the sweep did not clear it:
 
 ```bash
-aq integration release-owner --owner-row-id <row>
+aq integration release-owner --owner-row-id <row> --apply
 ```
 
 ## A pool worker that stopped asking for work

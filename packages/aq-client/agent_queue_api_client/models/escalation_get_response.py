@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -26,6 +26,9 @@ class EscalationGetResponse:
         messages (list[EscalationMessage]):
         deliveries (list[EscalationDelivery]):
         actions (list[EscalationAction]):
+        ask_id (None | str | Unset):
+        ask_url (None | str | Unset):
+        deprecation (None | str | Unset):
         success (bool | Unset):  Default: True.
     """
 
@@ -33,6 +36,9 @@ class EscalationGetResponse:
     messages: list[EscalationMessage]
     deliveries: list[EscalationDelivery]
     actions: list[EscalationAction]
+    ask_id: None | str | Unset = UNSET
+    ask_url: None | str | Unset = UNSET
+    deprecation: None | str | Unset = UNSET
     success: bool | Unset = True
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -54,6 +60,24 @@ class EscalationGetResponse:
             actions_item = actions_item_data.to_dict()
             actions.append(actions_item)
 
+        ask_id: None | str | Unset
+        if isinstance(self.ask_id, Unset):
+            ask_id = UNSET
+        else:
+            ask_id = self.ask_id
+
+        ask_url: None | str | Unset
+        if isinstance(self.ask_url, Unset):
+            ask_url = UNSET
+        else:
+            ask_url = self.ask_url
+
+        deprecation: None | str | Unset
+        if isinstance(self.deprecation, Unset):
+            deprecation = UNSET
+        else:
+            deprecation = self.deprecation
+
         success = self.success
 
         field_dict: dict[str, Any] = {}
@@ -66,6 +90,12 @@ class EscalationGetResponse:
                 "actions": actions,
             }
         )
+        if ask_id is not UNSET:
+            field_dict["ask_id"] = ask_id
+        if ask_url is not UNSET:
+            field_dict["ask_url"] = ask_url
+        if deprecation is not UNSET:
+            field_dict["deprecation"] = deprecation
         if success is not UNSET:
             field_dict["success"] = success
 
@@ -102,6 +132,33 @@ class EscalationGetResponse:
 
             actions.append(actions_item)
 
+        def _parse_ask_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        ask_id = _parse_ask_id(d.pop("ask_id", UNSET))
+
+        def _parse_ask_url(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        ask_url = _parse_ask_url(d.pop("ask_url", UNSET))
+
+        def _parse_deprecation(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        deprecation = _parse_deprecation(d.pop("deprecation", UNSET))
+
         success = d.pop("success", UNSET)
 
         escalation_get_response = cls(
@@ -109,6 +166,9 @@ class EscalationGetResponse:
             messages=messages,
             deliveries=deliveries,
             actions=actions,
+            ask_id=ask_id,
+            ask_url=ask_url,
+            deprecation=deprecation,
             success=success,
         )
 

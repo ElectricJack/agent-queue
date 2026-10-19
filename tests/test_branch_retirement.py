@@ -31,13 +31,17 @@ BINDING = GitHubRepositoryBinding(1234, "example/project")
 
 
 class LocalTransport(GitManager):
-    """Only authentication is replaced; backup, refs and leases use real Git."""
+    """Model GitHub authority with a real bare repo for backup, refs and leases."""
 
     def __init__(self, remote):
         super().__init__()
         self.remote = str(remote)
         self.before_delete = None
         self.fail_delete = False
+
+    async def aget_remote_url(self, checkout_path, remote="origin"):
+        url = await super().aget_remote_url(checkout_path, remote)
+        return "https://github.com/example/project.git" if url == self.remote else url
 
     async def afetch_repository_oid(self, checkout, *, repository, oid, destination_ref):
         await self._arun(["fetch", "--no-tags", self.remote, oid], cwd=checkout)
@@ -58,9 +62,10 @@ class LocalTransport(GitManager):
 
 
 @pytest.fixture
-async def setup(tmp_path, reuse_database):
+async def setup(tmp_path, reuse_database, request):
     remote, checkout = tmp_path / "remote.git", tmp_path / "checkout"
-    git = LocalTransport(remote)
+    local = getattr(request, "param", "github") == "local"
+    git = GitManager() if local else LocalTransport(remote)
     await git._arun(["init", "--bare", "--template=", str(remote)], cwd=str(tmp_path))
     await git._arun(["init", "-b", "main", "--template=", str(checkout)], cwd=str(tmp_path))
     (checkout / "base.txt").write_text("base\n")
@@ -78,7 +83,8 @@ async def setup(tmp_path, reuse_database):
     db = await reuse_database("branch-retirement")
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(RepoConfig(
-        id="repo", project_id="p", source_type=RepoSourceType.CLONE, url=str(remote),
+        id="repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url=str(remote) if local else "https://github.com/example/project.git",
         checkout_base_path=str(checkout),
     ))
     await db.create_task(Task(
@@ -110,6 +116,106 @@ async def rows(db):
         return [dict(row) for row in (await conn.execute(
             select(branch_retirements).order_by(branch_retirements.c.branch)
         )).mappings()]
+
+
+@pytest.fixture
+async def local_setup(setup):
+    db, _git, service, checkout, remote, head = setup
+    await db.update_repo("repo", url=str(remote))
+    service.git = GitManager()
+    service.github_repository_binding_resolver = AsyncMock(
+        side_effect=AssertionError("local retirement must not request GitHub authority"),
+    )
+    service.github_client_factory = AsyncMock(
+        side_effect=AssertionError("local retirement must not request a GitHub client"),
+    )
+    return db, service.git, service, checkout, remote, head
+
+
+@pytest.mark.parametrize("url_kind", ["path", "relative", "file", "localhost", "escaped"])
+async def test_local_retirement_audits_deletes_and_restores_without_github(local_setup, url_kind):
+    db, git, service, checkout, remote, head = local_setup
+    if url_kind == "escaped":
+        moved = remote.with_name("remote with spaces.git")
+        remote.rename(moved)
+        remote = moved
+        await git._arun(["remote", "set-url", "origin", str(remote)], cwd=str(checkout))
+    url = {
+        "path": str(remote), "relative": "../" + remote.name,
+        "file": remote.as_uri(), "localhost": "file://localhost" + str(remote),
+        "escaped": remote.as_uri(),
+    }[url_kind]
+    await db.update_repo("repo", url=url)
+    await request(db)
+    outcomes = await service.drain_due()
+    assert outcomes and all(state == "complete" for state, _ in outcomes), outcomes
+    audit = next(row for row in await rows(db) if row["branch"] == BRANCH)
+    assert audit["evidence"]["remote"]["sha"] == head
+    assert audit["evidence"]["remote"]["state"] == "deleted"
+    assert audit["evidence"]["local:" + str(checkout)]["sha"] == head
+    assert await git.arev_parse(str(remote), "refs/heads/" + BRANCH) is None
+    assert await git.arev_parse(str(checkout), "refs/heads/" + BRANCH) is None
+    assert await git.arev_parse(str(checkout), "refs/remotes/origin/" + BRANCH) is None
+    assert await git.arev_parse(str(remote), "refs/heads/main") is not None
+    restored = checkout.parent / "restore-local.git"
+    await git._arun(["init", "--bare", str(restored)], cwd=str(checkout.parent))
+    await git._arun(["fetch", str(remote), "main"], cwd=str(restored))
+    bundle = audit["evidence"]["remote"]["bundle"]
+    await git._arun(["bundle", "unbundle", bundle], cwd=str(restored))
+    assert await git.arev_parse(str(restored), head) == head
+    assert await service.drain_due() == []
+
+
+async def test_local_retirement_keeps_unreachable_remote_pending(local_setup):
+    db, git, service, checkout, remote, head = local_setup
+    remote.rename(remote.with_name("unreachable.git"))
+    await request(db)
+    outcomes = await service.drain_due()
+    assert outcomes and all(state == "pending" for state, _ in outcomes)
+    assert all(row["evidence"] == {} for row in await rows(db))
+    assert await git.arev_parse(str(checkout), BRANCH) == head
+
+
+async def test_local_retirement_exact_lease_preserves_head_moved_during_push(local_setup, monkeypatch):
+    db, git, service, checkout, remote, head = local_setup
+    run = git.arun_git_result
+    main_head = await git.arev_parse(str(remote), "refs/heads/main")
+    pushes = []
+
+    async def move_before_push(args, **kwargs):
+        if "push" in args:
+            audit = next(row for row in await rows(db) if row["branch"] == BRANCH)
+            assert audit["evidence"]["remote"]["sha"] == head
+            assert Path(audit["evidence"]["remote"]["bundle"]).is_file()
+            pushes.append(args)
+            await git._arun(["update-ref", "refs/heads/" + BRANCH, main_head], cwd=str(remote))
+        return await run(args, **kwargs)
+
+    monkeypatch.setattr(git, "arun_git_result", move_before_push)
+    await request(db)
+    assert (await service.drain_due())[0] == (
+        "conflict", "remote branch moved during retirement",
+    )
+    assert len(pushes) == 1
+    assert f"--force-with-lease=refs/heads/{BRANCH}:{head}" in pushes[0]
+    assert await git.arev_parse(str(remote), BRANCH) == main_head
+    assert await git.arev_parse(str(checkout), BRANCH) == head
+
+
+@pytest.mark.parametrize("guard", ["attached", "protected"])
+async def test_local_retirement_preserves_guarded_refs(local_setup, guard):
+    db, git, service, checkout, remote, head = local_setup
+    if guard == "attached":
+        await git._arun(["checkout", BRANCH], cwd=str(checkout))
+    else:
+        async with db.immediate() as conn:
+            await conn.execute(update(projects).values(promotion_flow=[{
+                "id": "release", "source": "main", "target": BRANCH,
+            }]))
+    await request(db)
+    assert (await service.drain_due())[0][0] == ("pending" if guard == "attached" else "conflict")
+    assert await git.arev_parse(str(remote), BRANCH) == head
+    assert await git.arev_parse(str(checkout), BRANCH) == head
 
 
 @pytest.mark.parametrize("failure", [
@@ -377,6 +483,7 @@ async def test_protected_flow_target_inside_aq_namespace_survives(setup):
     assert await git.arev_parse(str(remote), BRANCH) == head
 
 
+@pytest.mark.parametrize("setup", ["github", "local"], indirect=True)
 async def test_aborted_candidate_cleanup_uses_the_same_audit(setup):
     db, git, retirements, checkout, remote, head = setup
     candidate = candidate_ref("batch")

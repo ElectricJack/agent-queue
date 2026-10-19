@@ -15,6 +15,7 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
+from src.database.queries import ingest_batch_queries as batches
 from src.database.queries.proposal_queries import detect_cycles
 from src.database.tables import (
     gates,
@@ -54,6 +55,14 @@ CREATE_FIELDS = frozenset(
         "task_type",
         "deliverables",
         "parent_id",
+        "section_anchor",
+        "primary_outcome",
+        "acceptance",
+        "constraints",
+        "owned_modules",
+        "size",
+        "placement",
+        "delivery_targets",
     }
 )
 OPERATIONS = ("tasks", "edges", "edits", "remove_edges", "comments")
@@ -95,6 +104,27 @@ def normalize(args: dict) -> dict:
             raise ChangeSetError("tasks[].title is required")
         if not isinstance(spec.get("description"), str):
             raise ChangeSetError("tasks[].description is required (string)")
+        for key in ("section_anchor", "primary_outcome"):
+            if key in spec and (not isinstance(spec[key], str) or not spec[key].strip()):
+                raise ChangeSetError(f"{key} must be a non-empty string", f"{key}_missing")
+        if "acceptance" in spec and not (
+            isinstance(spec["acceptance"], str)
+            or isinstance(spec["acceptance"], list)
+            and all(isinstance(item, str) for item in spec["acceptance"])
+        ):
+            raise ChangeSetError("acceptance must be a string or list of strings")
+        for key in ("constraints", "owned_modules", "delivery_targets"):
+            if key in spec and (not isinstance(spec[key], list)
+                               or any(not isinstance(v, str) or not v.strip() for v in spec[key])):
+                raise ChangeSetError(f"{key} must be a list of non-empty strings")
+        if "size" in spec and spec["size"] not in ("s", "m", "l"):
+            raise ChangeSetError("size must be s, m or l")
+        if "placement" in spec and spec["placement"] not in ("child", "operational_root"):
+            raise ChangeSetError("placement must be child or operational_root")
+        if "delivery_targets" in spec and spec.get("placement") != "operational_root":
+            raise ChangeSetError("delivery_targets require placement operational_root")
+        if spec.get("placement") == "operational_root" and not spec.get("delivery_targets"):
+            raise ChangeSetError("operational_root requires delivery_targets")
     seen_edits = set()
     for edit in payload["edits"]:
         _fields(edit, EDIT_FIELDS)
@@ -161,10 +191,12 @@ def _fields(spec, allowed):
 
 
 @asynccontextmanager
-async def boundary(db, project_id):
+async def boundary(db, project_id, *, source_lock=None):
     # Routing plans are re-selected under this fleet lock. Acquire it first
     # so their read/decision/write cannot straddle a hint change in this set.
     async with db.routing_apply_lock() as conn:
+        if source_lock is not None:
+            await source_lock(conn)
         # Hierarchy writers already take this lock before writing task rows.
         await db.lock_hierarchy_project(conn, project_id)
         # All scheduler, claim and routing UPDATEs acquire ROW EXCLUSIVE,
@@ -182,6 +214,7 @@ def references(payload):
     refs = {edit["task_id"] for edit in payload["edits"]}
     refs.update(c["task_id"] for c in payload["comments"])
     refs.update(s["parent_id"] for s in payload["tasks"] + payload["edits"] if s.get("parent_id"))
+    refs.update(target for spec in payload["tasks"] for target in spec.get("delivery_targets", []))
     for edge in payload["edges"] + payload["remove_edges"]:
         refs.update((edge["from"], edge["to"]))
     return refs - {spec["tempId"] for spec in payload["tasks"]}
@@ -345,6 +378,12 @@ def final_graph(payload, rows, expected, *, approved=False):
     for tid, pid in parent.items():
         if pid is not None:
             graph.add((tid, pid, "parent-child"))
+    for spec in payload["tasks"]:
+        if spec.get("placement") == "operational_root":
+            tid = spec["tempId"]
+            if parent[tid] is not None:
+                raise ChangeSetError("operational_root cannot have a structural parent")
+            graph.update((tid, target, "delivery-of") for target in spec["delivery_targets"])
     blocking = [edge for edge in graph if edge[2] in BLOCKING_DEP_TYPES]
     if cycles := detect_cycles(blocking, payload["tasks"], []):
         raise ChangeSetError(f"proposal introduces cycle(s): {cycles}")
@@ -368,7 +407,8 @@ def final_graph(payload, rows, expected, *, approved=False):
     return parent
 
 
-async def apply(handler, conn, project_id, payload, expected, rows, project, source, *, approved=False):
+async def apply(handler, conn, project_id, payload, expected, rows, project, source, *,
+                approved=False, hold=None):
     """Apply a fully validated set, returning a receipt and deferred notifications."""
     db = handler.db
     transitions = []
@@ -467,10 +507,37 @@ async def apply(handler, conn, project_id, payload, expected, rows, project, sou
                 if item.get("gate_id"):
                     routing_ids.append(item["task_id"])
                 await db._upsert_meta(item["task_id"], "proposal_source", source, conn=conn)
+                spec = specs[tid]
+                if hold:
+                    role = ("operational_root" if spec.get("placement") == "operational_root"
+                            else "container" if tid in parents.values() else "leaf")
+                    joined = await batches.add_member(
+                        conn, hold, task_id=item["task_id"], member_key=tid, role=role,
+                        section_anchor=spec["section_anchor"],
+                        primary_outcome=spec.get("primary_outcome", ""), created_revision=1,
+                        acceptance=spec.get("acceptance"), constraints=spec.get("constraints", []),
+                        size=spec.get("size"),
+                    )
+                    if not joined["success"]:
+                        raise ChangeSetError(joined["error"])
+                if "owned_modules" in spec:
+                    await db._upsert_meta(item["task_id"], "owned_modules",
+                                          spec["owned_modules"], conn=conn)
                 pending.remove(tid)
 
     def real(tid):
         return mapping.get(tid, tid)
+
+    for spec in payload["tasks"]:
+        if spec.get("placement") == "operational_root":
+            targets = [real(target) for target in spec["delivery_targets"]]
+            await db._upsert_meta(real(spec["tempId"]), "delivery_condition",
+                                  {"targets": targets, "kind": "delivery-of"}, conn=conn)
+            for target in targets:
+                await conn.execute(pg_insert(task_dependencies).values(
+                    task_id=real(spec["tempId"]), depends_on_task_id=target,
+                    dep_type="delivery-of",
+                ).on_conflict_do_nothing())
 
     # Remove edges first, so a reversal/reparent is checked against the final
     # constraints, not the old graph. Structural membership has one writer.

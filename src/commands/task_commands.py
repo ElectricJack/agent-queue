@@ -39,7 +39,9 @@ from src.models import (
     INTEGRATION_MODES,
     TASK_TYPE_VALUES,
     WORKSPACE_MODE_VALUES,
+    AgentState,
     DepType,
+    ProjectStatus,
     Task,
     TaskStatus,
     TaskType,
@@ -242,6 +244,9 @@ def _recovery_incident_reason(incident: dict):
 
     owner = incident.get("owner") or {}
     parts = [f"open recovery incident for {incident.get('reason')}"]
+    identity = incident.get("identity_reason")
+    if identity and identity != incident.get("reason"):
+        parts[0] += f" (first diagnosed as {identity})"
     if owner.get("kind") == "integration_operation":
         parts.append(
             f"owned by integration operation {owner.get('operation_id')} "
@@ -1369,6 +1374,7 @@ class TaskCommandsMixin:
                     "code": "hierarchy.reparent_out_of_scope",
                     "error": _REPARENT_SCOPE_ERROR,
                 }
+        delivery = await self.db.observe_removal_delivery([task_id], for_mutation=True)
         try:
             async with self.db.immediate() as conn:
                 provenance: str | None = None
@@ -1378,10 +1384,26 @@ class TaskCommandsMixin:
                     )
                     if refusal is not None:
                         return refusal
-                result = await self.db.set_parent(
-                    task_id, new_parent, conn=conn,
-                    reject_live_parent=new_parent != held_id,
-                )
+                from sqlalchemy import select
+                from src.database.tables import projects, tasks
+
+                await self.db.lock_hierarchy_project(conn, task.project_id)
+                mode = await conn.scalar(select(projects.c.hierarchical_integration_mode).where(
+                    projects.c.id == task.project_id,
+                ))
+                old_parent = await conn.scalar(select(tasks.c.parent_task_id).where(
+                    tasks.c.id == task_id,
+                ))
+                if mode in {"hierarchy", "train"} and old_parent != new_parent:
+                    _, result = await self._hierarchy_integration_service().reparent_on(
+                        conn, task_id, new_parent, delivery=delivery,
+                        reject_live_parent=new_parent != held_id,
+                    )
+                else:
+                    result = await self.db.set_parent(
+                        task_id, new_parent, conn=conn,
+                        reject_live_parent=new_parent != held_id,
+                    )
                 if provenance is not None and provenance != new_parent:
                     # The filing's only provenance was the parent-child edge
                     # it just lost (a filing under the held task writes no
@@ -2114,14 +2136,17 @@ class TaskCommandsMixin:
             }
 
     async def _create_task(self, args: dict) -> dict:
-        # Internal command composition can add durable rows that must commit
-        # with the task itself (phases are the current user).  This hook is
-        # never part of a public command schema: only an in-process command
-        # can supply a callable, and a non-callable value is refused rather
-        # than silently changing a task creation's atomicity.
+        # Internal hooks commit source-owned rows with the task (phases and
+        # review feedback). Public schemas cannot supply callables; refuse
+        # non-callables rather than silently changing creation's atomicity.
+        before_create_on = args.pop("_before_create_on", None)
+        if before_create_on is not None and not callable(before_create_on):
+            return {"success": False, "error": "_before_create_on is internal-only"}
         after_create_on = args.pop("_after_create_on", None)
         if after_create_on is not None and not callable(after_create_on):
             return {"success": False, "error": "_after_create_on is internal-only"}
+        if before_create_on is not None and after_create_on is None:
+            return {"success": False, "error": "A pre-create hook requires its atomic receipt writer"}
         if args.get("container"):
             scope = self._current_scope or {}
             if scope.get("kind") == "session" and not scope.get("elevated"):
@@ -2798,12 +2823,12 @@ class TaskCommandsMixin:
         if hierarchy_enabled and filing_session is None:
             try:
                 async with self.db.immediate() as conn:
+                    if before_create_on is not None:
+                        await before_create_on(conn)
                     service = self._hierarchy_integration_service()
                     if parent_id:
                         created = await service.file_prepared_child_on(
-                            conn,
-                            parent_id,
-                            task,
+                            conn, parent_id, task,
                             requirements=normalized_requirements,
                             edges=edges,
                             labels=labels,
@@ -2812,19 +2837,16 @@ class TaskCommandsMixin:
                         task.parent_task_id = parent_id
                     else:
                         created = await service.file_root_on(
-                            conn,
-                            task,
+                            conn, task,
                             requirements=normalized_requirements,
                             edges=edges,
                             labels=labels,
                             routing_policy=routing_policy,
                             target_ref=args.get("_integration_root_ref"),
                         )
-                    # Every other creation path runs the internal post-create
-                    # writer in its own transaction; a hierarchy/train filing
-                    # must too, or its row commits without the metadata the
-                    # writer owns (a review revision task's
-                    # ``review_response``, a review dispatch record).
+                    # Like other paths, hierarchy/train filing must commit the
+                    # post-create metadata (review_response or dispatch record)
+                    # in the same transaction as the task.
                     if after_create_on is not None:
                         await after_create_on(conn, created["task_id"], task.parent_task_id)
                 task_id = created["task_id"]
@@ -2837,6 +2859,8 @@ class TaskCommandsMixin:
                     "code": f"hierarchy.{exc.code}",
                 }
         elif filing_session is not None:
+            if before_create_on is not None:
+                return {"success": False, "error": "Source-owned filing requires a control-plane principal"}
             try:
                 (
                     task_id,
@@ -2896,18 +2920,17 @@ class TaskCommandsMixin:
             try:
                 if after_create_on is None:
                     task_id, depth_cap_fallback = await self.db.create_task_under(
-                        task,
-                        parent_id,
+                        task, parent_id,
                         description=spawn_reason,
                         **({"routing_policy": routing_policy} if routing_policy is not None else {}),
                     )
                 else:
-                    # Keep an internal post-create writer in the same
-                    # transaction as the task, its parent edge and any
-                    # routing gate.  ``create_task_under`` otherwise owns
-                    # that transaction, which is ideal for ordinary calls
-                    # but would expose a phase between its filing and gates.
+                    # Keep the post-create writer, task, parent edge and routing
+                    # gate atomic. create_task_under owns its transaction, which
+                    # would expose a phase between filing and gate creation.
                     async with self.db.immediate() as conn:
+                        if before_create_on is not None:
+                            await before_create_on(conn)
                         await self.db.lock_hierarchy_project(conn, task.project_id)
                         task_id, depth_cap_fallback = await child_task_id(conn, parent_id)
                         task.id = task_id
@@ -2947,6 +2970,8 @@ class TaskCommandsMixin:
                 )
             else:
                 async with self.db.immediate() as conn:
+                    if before_create_on is not None:
+                        await before_create_on(conn)
                     await self.db.lock_hierarchy_project(conn, task.project_id)
                     task_id = await fresh_root_id(conn)
                     task.id = task_id
@@ -3005,18 +3030,14 @@ class TaskCommandsMixin:
                         "task_created": task_id,
                     }
             await self.db.log_event(
-                "dependency.added",
-                project_id=project_id,
-                task_id=task_id,
+                "dependency.added", project_id=project_id, task_id=task_id,
                 payload=f"{dep_type} -> {dep_id}",
             )
         for label in labels:
             if not hierarchy_created:
                 await self.db.add_task_label(task_id, label)
             await self.db.log_event(
-                "label.added",
-                project_id=project_id,
-                task_id=task_id,
+                "label.added", project_id=project_id, task_id=task_id,
                 payload=label,
             )
 
@@ -4302,6 +4323,116 @@ class TaskCommandsMixin:
             return {"error": error}
         return {"stopped": args["task_id"]}
 
+    async def recover_orphaned_integration_task(self, task_id: str, session) -> dict | None:
+        """Preserve and release a stopped pool claim before the orphan fallback.
+
+        None means no retained integration attachment belongs to this session.
+        Every other result retains responsibility here: a refused proof must
+        not fall through to a transition that loses the recoverable assignment.
+        """
+        from sqlalchemy import select
+
+        from src.claim_file import remove_claim_file_if_matches
+        from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
+        from src.database.queries.integration_state_queries import session_attached_clause
+        from src.database.tables import integration_branch_owners, sessions, task_metadata, tasks
+        from src.integration.owner_recovery import RECOVERABLE_STATES, owner_recovery_for
+
+        if session.lifecycle != "pool":
+            return None
+        async with self.db._engine.connect() as conn:
+            owners = (await conn.execute(select(integration_branch_owners).where(
+                integration_branch_owners.c.owner_id == task_id,
+                integration_branch_owners.c.session_id == session.id,
+                integration_branch_owners.c.owner_role.in_(("worker", "repair")),
+                integration_branch_owners.c.handoff_state.in_(RECOVERABLE_STATES),
+            ))).mappings().all()
+        if not owners:
+            return None
+        orch = self.orchestrator
+        retained = {"success": False, "outcome": "retained"}
+        if (
+            not self.config.integration.owner_recovery_sweep
+            or task_id in orch._running_tasks or orch._task_control_held(task_id)
+        ):
+            return retained
+        async with orch._task_control_lock(task_id):
+            task = await self.db.get_task(task_id)
+            current = await self.db.get_session(session.id)
+            if (
+                task is None or task.status is not TaskStatus.IN_PROGRESS
+                or current is None or current.instance_token != session.instance_token
+                or current.state != "stopped" or current.desired_state != "stopped"
+                or current.task_id != task_id or current.claim_phase != "active"
+                or current.last_claim_epoch != task.claim_epoch
+                or task.assigned_agent_id != current.agent_id
+                or not current.agent_id or task.resume_after is not None
+            ):
+                return retained
+            project = await self.db.get_project(task.project_id)
+            constraint = await self.db.get_project_constraint(task.project_id)
+            agent = await self.db.get_agent(current.agent_id)
+            workspace = await self.db.get_workspace_for_agent(current.agent_id)
+            if (
+                project is None or project.status is not ProjectStatus.ACTIVE
+                or constraint is not None and constraint.pause_scheduling
+                or agent is None or agent.current_task_id != task_id
+                or agent.state not in {AgentState.BUSY, AgentState.RETIRED}
+                or project.hierarchical_integration_mode not in {"train", "hierarchy"}
+                or task.repo_id != project.integration_repository_id
+                or workspace is None or await self.db.workspace_has_job_pin(workspace.id)
+                or workspace.locked_by_task_id != task_id
+                or workspace.locked_by_agent_id != current.agent_id
+                or os.path.realpath(workspace.workspace_path) != os.path.realpath(current.work_dir)
+                or len(owners) != 1 or owners[0]["workspace_id"] != workspace.id
+                or owners[0]["repository_id"] != task.repo_id
+                or owners[0]["ref"].removeprefix("refs/heads/") != (
+                    task.branch_name or ""
+                ).removeprefix("refs/heads/")
+            ):
+                return retained
+            async with self.db._engine.connect() as conn:
+                if (await conn.execute(select(sessions.c.id).where(
+                    sessions.c.agent_id == current.agent_id,
+                    sessions.c.id != current.id, session_attached_clause(),
+                ))).first() is not None:
+                    return retained
+                if await self.db.is_container(task_id, conn=conn):
+                    return retained
+                eligible = apply_label_filters(select(tasks.c.id).where(
+                    tasks.c.id == task_id, ~blocked_predicate(),
+                ), exclude_hold=True)
+                if (await conn.execute(eligible)).first() is None:
+                    return retained
+                if (await conn.execute(select(task_metadata.c.key).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == "manual_pause",
+                ))).first() is not None:
+                    return retained
+                owner = await self.db._recovery_owner(conn, {
+                    "id": task_id, "project_id": task.project_id,
+                })
+                if owner["kind"] != "supervisor":
+                    return retained
+            recovery = owner_recovery_for(orch)
+            if recovery is None:
+                return retained
+            result = await recovery.recover(owners[0]["id"], principal="session-reconciler")
+            if result.outcome not in {"released", "preserved_and_released"}:
+                return {**retained, "recovery": result.to_dict()}
+            remove_claim_file_if_matches(current.work_dir, task_id, task.claim_epoch)
+            await self.db.add_task_comment(
+                task_id,
+                f"Orphan sweep recovered stopped pool writer {current.id}, claim epoch "
+                f"{task.claim_epoch}; owner recovery preserved its branch and released the "
+                "retained claim to READY without a manual session kill or restart.",
+                author_kind="supervisor", author_id="session-reconciler",
+            )
+            await self._emit_task_graph_change(
+                "task.restarted", await self.db.get_task(task_id), reason="integration_owner_recovery",
+            )
+            return {"success": True, "outcome": "recovered", "recovery": result.to_dict()}
+
     async def recover_missing_session_task(self, task_id: str, *, now: float) -> dict:
         """Internal orphan-sweep command; never use operator restart's budget reset.
 
@@ -4381,7 +4512,7 @@ class TaskCommandsMixin:
             return {"error": "The old worker may still be running; recovery was not accepted"}
         return {"id": row.id, "instance_token": row.instance_token}
 
-    async def _cmd_task_recover(self, args: dict) -> dict:
+    async def _cmd_task_recover(self, args: dict, *, ask_decision=None) -> dict:
         task_id = args.get("task_id")
         error = await self._task_control_scope_error(task_id)
         if error:
@@ -4389,21 +4520,35 @@ class TaskCommandsMixin:
         decision = args.get("decision")
         reason = args.get("reason")
         if (
-            decision not in ("retry", "hold")
+            decision not in ("retry", "hold", "release")
             or not isinstance(reason, str)
             or not 1 <= len(reason.strip()) <= 4000
         ):
-            return {"error": "Provide decision retry|hold and a reason of 1 to 4000 characters"}
+            return {"error": "Provide decision retry|hold|release and a reason of 1 to 4000 characters"}
+        operator_release = args.get("operator_release", False)
+        if not isinstance(operator_release, bool):
+            return {"error": "operator_release must be a boolean"}
         expected_hold_at = args.get("expected_hold_at")
         if expected_hold_at is not None and (
-            decision != "retry"
+            decision not in ("retry", "release")
             or isinstance(expected_hold_at, bool)
             or not isinstance(expected_hold_at, (int, float))
         ):
-            return {"error": "expected_hold_at requires retry and the prior hold's decided_at"}
+            return {"error": "expected_hold_at requires retry|release and the prior hold's decided_at"}
+        actor = None
+        if operator_release:
+            if decision not in ("retry", "release") or expected_hold_at is None:
+                return {"error": "operator_release requires retry|release and expected_hold_at"}
+            from src.commands.supervisor_authority import operator_or_global_supervisor
+
+            actor, refusal = await operator_or_global_supervisor(self.db)
+            if refusal:
+                return {"error": refusal}
+        elif decision == "release":
+            return {"error": "decision release requires operator_release"}
         repair_operation = await self.db.get_active_integration_repair_for_task(task_id)
         verifier_operation = await self.db.get_active_integration_verifier_for_task(task_id)
-        if repair_operation is not None or verifier_operation is not None:
+        if decision != "release" and (repair_operation is not None or verifier_operation is not None):
             operation = repair_operation or verifier_operation
             return {
                 "error": (
@@ -4414,7 +4559,6 @@ class TaskCommandsMixin:
         scope = self._current_scope or {}
         stopped_session = None
         operator_handoff = False
-        actor = None
         if decision == "retry":
             incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
             if incident.get("id") != args.get("incident_id"):
@@ -4436,6 +4580,13 @@ class TaskCommandsMixin:
             stopped_session = await self._confirm_recovery_worker_stopped(incident)
             if "error" in stopped_session:
                 return stopped_session
+        elif decision == "release":
+            current = await self.db.get_task(task_id)
+            if current is not None and current.assigned_agent_id:
+                incident = await self.db.get_task_meta(task_id, "supervisor_recovery_incident") or {}
+                if incident.get("id") != args.get("incident_id"):
+                    return {"error": "Incident is stale or not found"}
+                stopped_session = await self._confirm_recovery_worker_stopped(incident)
         result = await self.db.decide_task_recovery(
             task_id,
             args.get("incident_id"),
@@ -4447,6 +4598,10 @@ class TaskCommandsMixin:
             stopped_session=stopped_session,
             expected_hold_at=expected_hold_at,
             operator_handoff=operator_handoff,
+            operator_release=operator_release,
+            ask_decision_id=ask_decision["id"] if ask_decision else None,
+            ask_evidence_entry_id=ask_decision["evidence_entry_id"] if ask_decision else None,
+            ask_expected_meaning=ask_decision["packet"]["domain"]["meaning"] if ask_decision else None,
         )
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result
@@ -4696,6 +4851,15 @@ class TaskCommandsMixin:
             "assigned_agent_id": None,
             "pr_url": None,
         }
+        # Missing provenance is recoverable only through an explicit operator
+        # control. Ordinary lifecycle writes and reviewer rejections retain the
+        # unknown-delivery fence.
+        from src.commands.supervisor_authority import operator_or_supervisor
+
+        _, recovery_refusal = await operator_or_supervisor(
+            self.db, task.project_id, subject="task reopen"
+        )
+        transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
         if review_evidence_snapshot is None:
             await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
         else:
@@ -4978,13 +5142,6 @@ class TaskCommandsMixin:
                 project_id=task.project_id,
                 task_id=task_id,
             )
-            if abandon_undelivered:
-                await self.db.log_event(
-                    "task.delivery_abandoned",
-                    project_id=task.project_id,
-                    task_id=task_id,
-                    payload=json.dumps({"disposition": disposition}),
-                )
             await self._emit_task_graph_change("task.archived", task)
             return {
                 "archived": task_id,
@@ -5451,7 +5608,9 @@ class TaskCommandsMixin:
             if needs_attention == "slot_reset_failed":
                 failure = await self.db.get_task_meta(str(task_id), "slot_reset_failure")
                 if isinstance(failure, dict):
-                    detail += (f": {failure.get('reason', 'unknown reset error')} "
+                    # A record written before reasons were described can
+                    # hold an empty string; say so rather than print nothing.
+                    detail += (f": {failure.get('reason') or 'no reason recorded'} "
                                f"(attempt {failure.get('attempt')}; "
                                f"{failure.get('retry', 'automatic')} retry). "
                                f"After fixing the cause: aq task resume --task-id {task_id}")
@@ -5462,6 +5621,15 @@ class TaskCommandsMixin:
                                f"{fenced.get('branch')}. The claim retries on its own; "
                                f"aq integration release-owner releases the writer if it "
                                f"is gone")
+            elif needs_attention in {
+                "integration_prepare_failed", "integration_prepare_failed_attached",
+                "repair_target_unpublished",
+            }:
+                prepared = await self.db.get_task_meta(str(task_id), "prepare_failure")
+                if isinstance(prepared, dict) and prepared.get("reason"):
+                    detail += (f": {prepared['reason']} "
+                               f"({prepared.get('disposition', 'unknown')}; "
+                               f"claim epoch {prepared.get('claim_epoch')})")
             reasons.append(Reason(
                 code="needs_attention", detail=detail, ref=str(task_id),
             ))
@@ -5520,8 +5688,13 @@ class TaskCommandsMixin:
         ))
 
         from src.integration.admission import observe_admission
+
         admission = await observe_admission(
-            self.db, [str(task_id)], self._development_integration(), cached_only=True,
+            self.db,
+            [str(task_id)],
+            self._development_integration(),
+            cached_only=True,
+            default_mode=self.config.integration.default_mode,
         )
         from src.integration.delivery_engine import project_delivery_issue
 
@@ -5620,8 +5793,19 @@ class TaskCommandsMixin:
             blockers = await self.db.get_blocking_dependencies(str(task_id))
         except Exception:
             blockers = []
+        delivery_targets = [b[0] for b in blockers if b[3] == DepType.DELIVERY_OF.value]
+        try:
+            delivery_failures = await self.db.delivery_failures(delivery_targets)
+        except Exception:
+            delivery_failures = {}
         for dep_id, dep_title, dep_status, dep_type, dep_project in blockers:
-            if dep_project and dep_project != task.project_id:
+            if dep_type == DepType.DELIVERY_OF.value:
+                # Unknown delivery (no receipt yet) and failed delivery both
+                # hold the root; a failure names its reason.
+                detail = f"waiting_for: delivery-of {dep_id}"
+                if dep_id in delivery_failures:
+                    detail += f" (delivery failed: {delivery_failures[dep_id]})"
+            elif dep_project and dep_project != task.project_id:
                 detail = (
                     f"blocked by {dep_type} dep '{dep_id}' ({dep_title}) "
                     f"status={dep_status} in project '{dep_project}'"
@@ -5767,6 +5951,10 @@ class TaskCommandsMixin:
                     ref=repair["id"],
                 ))
 
+        live_timing = getattr(self.orchestrator, "claim_timings", {}).get(str(task_id))
+        claim_timing = (live_timing.snapshot() if live_timing is not None else
+                        await self.db.get_task_meta(str(task_id), "claim_timing"))
+
         return {
             "success": True,
             "reasons": reasons,
@@ -5775,6 +5963,7 @@ class TaskCommandsMixin:
             "assignment_route": assignment_route,
             "provider_hold": provider_hold,
             "phase_hold": phase_hold,
+            "claim_timing": claim_timing,
         }
 
     async def _assignment_route_state(self, task):
@@ -6067,6 +6256,14 @@ class TaskCommandsMixin:
         profile_id = args.get("profile_id")
         brief = bool(args.get("brief"))
 
+        from src.integration.admission import observe_admission, structural_candidates
+
+        admission = await observe_admission(
+            self.db,
+            await structural_candidates(self.db, str(project_id)),
+            self._development_integration(),
+            default_mode=self.config.integration.default_mode,
+        )
         try:
             frontier = await self.db.get_ready_frontier(
                 str(project_id), labels=labels, any_label=any_label
@@ -6074,10 +6271,6 @@ class TaskCommandsMixin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-        from src.integration.admission import observe_admission
-        admission = await observe_admission(
-            self.db, [task.id for task in frontier], self._development_integration()
-        )
         delivery_withheld = {task.id for task in frontier if task.id not in admission.allowed}
         frontier = [task for task in frontier if task.id in admission.allowed]
 
