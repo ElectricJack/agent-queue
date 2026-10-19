@@ -531,6 +531,51 @@ async def test_hold_during_preparation_returns_ingest_held(handler, db, tmp_path
     assert await db.get_task_meta("held", "claim_prepare_backoff_attempts") is None
 
 
+@pytest.mark.parametrize("change", ["none", "attempt", "epoch"])
+@pytest.mark.parametrize("with_attempt", [False, True])
+async def test_recovery_hold_only_fences_its_execution_identity(
+    handler, db, tmp_path, change, with_attempt,
+):
+    from src.scheduler import PoolKey
+
+    await mktask(db, "held", profile_id="worker", status=TaskStatus.FAILED)
+
+    async def stopped(sid):
+        await db.create_session(SessionRecord(
+            id=sid, name=sid, project_id=PROJECT_ID, task_id="held",
+            profile_id="worker", harness="claude", provider="fake", lifecycle="task",
+            epoch="test", instance_token=sid, work_dir="/unused", state="running",
+            desired_state="running", started_at=time.time(),
+        ))
+        await db.update_session(sid, state="stopped", desired_state="stopped",
+                                ended_at=time.time(), end_reason="stuck_timeout")
+
+    if with_attempt:
+        await stopped("old")
+    await db.queue_task_recovery_notifications()
+    held = await db.get_task_meta("held", "supervisor_recovery_incident")
+    assert (held["attempt_id"] is not None) == with_attempt
+    await db.set_task_meta("held", "supervisor_recovery_incident", {**held, "decision": "hold"})
+    # A structural projection alone keeps the hold; changed execution identity
+    # must not strand an already reopened task before the recovery scan runs.
+    await db.update_task("held", status=TaskStatus.READY)
+    if change == "attempt":
+        await stopped("new")
+    elif change == "epoch":
+        await db.update_task("held", claim_epoch=held["claim_epoch"] + 1)
+    allowed = change != "none"
+    assert await db.count_ready_by_profile(PROJECT_ID) == ({"worker": 1} if allowed else {})
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == int(allowed)
+    assert [item["code"] for item in await db.claim_frontier_exclusions("held")] == (
+        [] if allowed else ["frontier_recovery_hold"]
+    )
+    sid, _ = await pool_session(db, tmp_path)
+    claim = await settled_claim(scoped(handler, sid), {"next": True})
+    assert claim["result"] == ("claimed" if allowed else "no_ready_work"), claim
+    if allowed:
+        assert claim["task"]["id"] == "held"
+
+
 async def ordinary_pool_repair(handler, db, tmp_path):
     from src.integration.batches import Batch, BatchMember, BatchStore, candidate_ref
     from src.integration.lock import BranchLock

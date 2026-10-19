@@ -985,6 +985,7 @@ class TaskRecoveryQueryMixin:
                 "title": task["title"],
                 "session_id": attempt["session_id"] if attempt is not None else None,
                 "attempt_id": attempt["id"] if attempt is not None else None,
+                "claim_epoch": task["claim_epoch"],
                 "reason": reason,
                 "end_reason": attempt["end_reason"] if attempt is not None else None,
                 "runtime_seconds": (

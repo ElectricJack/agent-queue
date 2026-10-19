@@ -1635,16 +1635,18 @@
         "claims"
       ],
       "default_arm": false,
-      "digest": "sha256:82545c2cafcb1a233a03479004d75a727cfc5cb349104ee2289c5a5176e2d62e",
+      "digest": "sha256:2c259da0c0e60e74da04f779395c0597090b3893b6237112bdc64626af46b463",
       "imports": [
         "src.claim_file",
         "src.commands.handler",
         "src.config",
+        "src.database.tables",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator"
       ],
       "markers": [
+        "parametrize",
         "perf"
       ],
       "summary": "Statement/latency budgets for the claim path and pool reconcile — spec §15."
