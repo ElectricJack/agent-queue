@@ -32,6 +32,11 @@ _MAINTENANCE = ["-c", "gc.auto=6700", "-c", "gc.autoDetach=false", "-c", "mainte
 _RETAINED_CONFIG = (("core.fsync", "committed"), ("core.fsyncMethod", "fsync"),
                     ("gc.auto", "0"), ("gc.autoDetach", "false"), ("maintenance.auto", "false"))
 MAX_ATTEMPTS = 2
+# Full object-body verification is CPU/I/O bound: the 423 MB integration cache
+# takes about a minute per pass on a healthy store. Recovery needs up to four
+# passes, so neither a pass nor their shared acquisition can use the ordinary
+# short-command budget alone.
+FSCK_TIMEOUT_SECONDS = 300
 
 
 async def ensure_retained_origin(git, store, origin_url, *, lock_held=False):
@@ -292,7 +297,7 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
 
     async def fsck():
         return await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
-                                        env={"LC_ALL": "C"})
+                                        env={"LC_ALL": "C"}, timeout=FSCK_TIMEOUT_SECONDS)
 
     async def fetch(**options):
         await git.afetch_origin(str(store), repository_url=repository_url, all_heads=True,
@@ -404,7 +409,8 @@ async def fetch_retained_origin(git, store, *, repository_url, project_id=None,
         logger.warning("retained cache %s recovered: incident=%s attempts=%s backup=%s",
                        store, state["id"], state["attempts"], state["backup"])
 
-    deadline = asyncio.get_running_loop().time() + git._command_timeout()
+    deadline = (asyncio.get_running_loop().time() + git._command_timeout()
+                + 4 * FSCK_TIMEOUT_SECONDS)
     async with _transaction(git, store, lock_held):
         try:
             async with asyncio.timeout_at(deadline):
@@ -445,7 +451,7 @@ async def clear_retained_recovery(git, state, *, by, record):
     journal, pending = root / "incident.json", root / "pending"
     async with _transaction(git, store, False):
         result = await git.arun_git_result(_FSCK, cwd=str(store), lock_held=True,
-                                           env={"LC_ALL": "C"})
+                                           env={"LC_ALL": "C"}, timeout=FSCK_TIMEOUT_SECONDS)
         check = _diagnostics(result)
         if not _clean(result):
             return {"cleared": False, "fsck": check, "state": state}

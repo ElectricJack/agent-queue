@@ -79,7 +79,7 @@ async def record_incident(handler, state, *, load=False):
         await conn.execute(pg_insert(system_config).values(key=key, value=json.dumps(state)).
                            on_conflict_do_update(index_elements=[system_config.c.key],
                                                  set_={"value": json.dumps(state)}))
-        if state["status"] in {"failed", "exhausted"}:
+        if state["status"] == "exhausted":
             incident_id = "escalation-retained-" + state["id"]
             summary = (f"Retained Git cache recovery {state['status']} for {project} "
                        f"(attempt {state['attempts']}/2)")
