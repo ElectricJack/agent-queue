@@ -829,7 +829,7 @@ class GitOpsMixin:
         return ctx.repo is not None
 
     async def _preserve_non_source_drafts(self, ctx: PipelineContext) -> bool:
-        """Refuse dirty document/no-code closes before automatic Git writes.
+        """Refuse document/no-code closes for an already-proven dirty Git checkout.
 
         Review submission copies the draft to the vault but leaves the local
         file intact. Publishing that duplicate as source would manufacture
@@ -837,11 +837,6 @@ class GitOpsMixin:
         """
         from src.deliverables import resolve_task_deliverables
 
-        if not ctx.workspace_path or not await self._task_uses_git(ctx):
-            return False
-        # A clean checkout has nothing to preserve; check it before any task lookup.
-        if await self.git.ahas_uncommitted_changes(ctx.workspace_path, strict=True) is not True:
-            return False
         items = await resolve_task_deliverables(self.db, ctx.task)
         review_only = bool(items) and all(item["kind"] == "review" for item in items)
         if not review_only and not await self._task_produces_no_code(ctx):
@@ -1096,7 +1091,9 @@ class GitOpsMixin:
         ctx.no_work_proven = True
         return True
 
-    async def _sweep_uncommitted_before_skip(self, ctx: PipelineContext) -> None:
+    async def _sweep_uncommitted_before_skip(
+        self, ctx: PipelineContext, *, has_uncommitted: bool | None
+    ) -> None:
         """Best-effort dirty-slot cleanup on a verification path that skips the checks.
 
         A task that bypasses git verification must still not leave dirty
@@ -1107,7 +1104,9 @@ class GitOpsMixin:
         if not workspace or not await self.git.avalidate_checkout(workspace):
             return
         try:
-            if await self.git.ahas_uncommitted_changes(workspace):
+            if has_uncommitted is None:
+                has_uncommitted = await self.git.ahas_uncommitted_changes(workspace)
+            if has_uncommitted:
                 current = await self.git.aget_current_branch(workspace)
                 await self._auto_remediate_uncommitted(
                     workspace,
@@ -1255,7 +1254,13 @@ class GitOpsMixin:
         workspace = ctx.workspace_path
         task = ctx.task
 
-        if await self._preserve_non_source_drafts(ctx):
+        uses_git = bool(workspace) and await self._task_uses_git(ctx)
+        # Share the initial status between draft protection and remediation;
+        # cleanliness is checked again after remediation.
+        has_uncommitted = (
+            await self.git.ahas_uncommitted_changes(workspace, strict=True) if uses_git else None
+        )
+        if has_uncommitted is True and await self._preserve_non_source_drafts(ctx):
             return PhaseResult.STOP
 
         # Skip verification if the agent exited with an error — bad git state
@@ -1270,10 +1275,10 @@ class GitOpsMixin:
             # Still auto-remediate uncommitted changes so the workspace is
             # clean for the next task.  Without this, a crashed agent leaves
             # dirty state that bleeds into subsequent tasks.
-            await self._sweep_uncommitted_before_skip(ctx)
+            await self._sweep_uncommitted_before_skip(ctx, has_uncommitted=has_uncommitted)
             return PhaseResult.CONTINUE
 
-        if not workspace or not await self._task_uses_git(ctx):
+        if not uses_git:
             return PhaseResult.CONTINUE
 
         if not await self.git.avalidate_checkout(workspace):
@@ -1283,7 +1288,6 @@ class GitOpsMixin:
         default_branch = ctx.default_branch or "main"
         has_remote = await self.git.ahas_remote(workspace, strict=True)
         current_branch = await self.git.aget_current_branch(workspace, strict=True)
-        has_uncommitted = await self.git.ahas_uncommitted_changes(workspace, strict=True)
         if has_remote is None or not current_branch or has_uncommitted is None:
             logger.error("Task %s: required Git state could not be verified", task.id)
             return PhaseResult.STOP
