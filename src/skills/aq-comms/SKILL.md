@@ -62,6 +62,15 @@ is what a worker's durable message wait (`aq wait register --kind message
 aq agent message <task-id> "Filed: fresh-ember and .1-.9." --reply-to <message-id>
 ```
 
+Guidance from a project supervisor's own session is signed
+`session:supervisor-<project>`, so the worker answers it with
+`aq message reply <guidance-id>` and the reply lands back in that mailbox on
+the same thread. Guidance from the operator CLI, automation or the global
+supervisor is signed `system:supervisor` and cannot be replied to; a worker
+answers those with `aq message send --to session:supervisor-<project>`.
+A worker can reply only to messages addressed to its own mailboxes, and the
+reply's sender is always that mailbox.
+
 Use `aq session nudge` only for low-level diagnostics; it is not a reliable
 supervisor-to-worker delivery surface.
 
@@ -83,6 +92,33 @@ aq message send --to task:<task_id> \
 
 Recipients use `KIND:ID` syntax. `dashboard` is the canonical ID for the
 human operator; other recipient IDs identify the specific session or task.
+
+Omit sender flags for ordinary authenticated session sends. The server derives
+`session:<your session UUID>` from the current authenticated launch and live
+claim, so a supervisor's `aq message reply` returns to your mailbox. Pool sends
+carry the claim epoch automatically from `.aq/claim.json`. Local human/operator
+or script calls without an authenticated session default to `user:cli` and may
+provide explicit senders. A session may explicitly name only its own UUID; a
+live named supervisor may also use its own canonical supervisor addresses.
+Sessions cannot impersonate users or other sessions. Collaboration and scoped
+global reports keep their dedicated server-derived attribution.
+
+If the running daemon/CLI predates this fix, use the supported explicit sender
+workaround until delivery. Read the held session UUID from `.aq/claim.json` or
+prime; it supplies an address, never extra authority:
+
+```bash
+aq message send --to session:supervisor-<pid> --project <pid> \
+  --from-kind session --from-id <held-session-UUID> \
+  --thread-id <unique-thread> --body "Blocked: <task and decision needed>" --json
+aq wait register --kind message --ref <unique-thread> \
+  --after-seq <sent-message-created_seq> --idempotency-key <stable-key> --timeout 3600
+```
+
+Register once and end the turn; consume the returned wait ID when notified.
+An old `user:cli` report does not confer ownership of its thread. Do not retry
+an unauthorized wait or change its authorization; send an owned report instead.
+Source validation does not mean this fix is loaded in the operator daemon.
 
 ## Reply
 

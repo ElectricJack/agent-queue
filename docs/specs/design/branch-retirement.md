@@ -70,7 +70,11 @@ default branch. Each deletion records its exact SHA and proof in the project's
 daily TSV before mutation, and uses an expected-old-SHA lease. Before each delete,
 the sweep holds the shared per-ref exclusion, locks associated task rows and
 rechecks live references, unreleased owners, configured flow targets and attached
-worktrees. Unknown repository identities are skipped. Unique unmerged refs and
+worktrees. A checkout whose origin matches no project registration falls back to
+the project's own repository (`project:<id>`, the project's default branch) when
+the origin matches the project's `repo_url`, or when the project has neither a
+`repo_url` nor a registration; an origin another project registers, or any other
+unknown repository identity, is skipped and reported. Unique unmerged refs and
 stashes remain intact.
 
 Repository selection is scoped to the project's registrations. A linked repository

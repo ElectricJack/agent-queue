@@ -609,6 +609,31 @@ class TestExplainCommand:
         d = next(r for r in res["reasons"] if r["code"] == "blocked_dependency")
         assert "proj-other" in d["detail"]
 
+    async def test_delivery_of_reason_names_the_target_and_failure(self, handler, db):
+        from sqlalchemy import insert
+
+        from src.database.tables import task_delivery_receipts
+
+        await mktask(db, "leaf", status=TaskStatus.COMPLETED)
+        await mktask(db, "root", status=TaskStatus.READY)
+        await db.add_dependency("root", "leaf", DepType.DELIVERY_OF.value)
+
+        async def detail():
+            res = await handler._cmd_explain_task({"task_id": "root"})
+            return next(
+                r["detail"] for r in res["reasons"] if r["code"] == "blocked_dependency"
+            )
+
+        assert await detail() == "waiting_for: delivery-of leaf"
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_delivery_receipts).values(
+                id="failed-receipt", domain_key="failed-receipt", source_task_id="leaf",
+                repository_id="repo", target_branch="main", disposition="failed",
+                resolution_evidence={"reason": "squash conflict"}, created_at=time.time(),
+            ))
+        assert await detail() == "waiting_for: delivery-of leaf (delivery failed: squash conflict)"
+        assert (await db.get_task("root")).is_blocked
+
     async def test_typed_dependency_reasons_match_the_blocked_projection(self, handler, db):
         """Explain reports only the exact typed edges that currently block.
 

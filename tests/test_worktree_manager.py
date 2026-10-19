@@ -78,23 +78,13 @@ def _create_base_repo(tmp_path: Path) -> Path:
     return base
 
 
-@pytest.fixture(scope="session")
-def _base_repo_seed(tmp_path_factory) -> Path:
-    return _create_base_repo(tmp_path_factory.mktemp("worktree-seed"))
-
-
 @pytest.fixture
-def base_repo(tmp_path: Path, _base_repo_seed: Path) -> Path:
-    """Each test owns a copy of the prepared clone and its bare origin."""
-    origin = tmp_path / "origin.git"
-    base = tmp_path / "base"
-    shutil.copytree(_base_repo_seed.parent / "origin.git", origin)
-    shutil.copytree(_base_repo_seed, base)
-    _git(["config", "remote.origin.url", str(origin)], cwd=base)
-    return base
+def base_repo(tmp_path: Path) -> Path:
+    """Build a fresh clone and bare origin for this test's worktrees."""
+    return _create_base_repo(tmp_path)
 
 
-def test_repo_seed_and_copies_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+def test_fresh_repos_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
     trace = tmp_path / "git-trace.json"
     config = tmp_path / "empty-git-config"
     config.touch()
@@ -106,11 +96,8 @@ def test_repo_seed_and_copies_do_not_launch_auto_maintenance(tmp_path, monkeypat
     seed = _create_base_repo(seed_root)
     seed_head = _git(["rev-parse", "HEAD"], cwd=seed)
     origin = tmp_path / "origin.git"
-    base = tmp_path / "base"
-    shutil.copytree(seed_root / "origin.git", origin)
-    shutil.copytree(seed, base)
-    _git(["remote", "set-url", "origin", str(origin)], cwd=base)
-    _git(["commit", "--allow-empty", "-m", "private copy"], cwd=base)
+    base = _create_base_repo(tmp_path)
+    _git(["commit", "--allow-empty", "-m", "private work"], cwd=base)
     _git(["push", "origin", "main"], cwd=base)
     _git(["fetch", "origin"], cwd=base)
     assert _git(["rev-parse", "main"], cwd=seed_root / "origin.git") == seed_head
@@ -1612,7 +1599,6 @@ class TestGitManagerWorktreePrimitives:
         d = tmp_path / "not-a-repo"
         d.mkdir()
         assert asyncio.run(GitManager().aworktree_base_path(str(d))) is None
-
 
 
 # ────────────────────── §3.2 salvage: binaries and size ──────────────────

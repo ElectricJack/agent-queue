@@ -113,6 +113,11 @@ from .ask_update_context_request_expected import AskUpdateContextRequestExpected
 from .ask_version import AskVersion
 from .assignment_route_detail import AssignmentRouteDetail
 from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverrideType0
+from .batch_reconcile_request import BatchReconcileRequest
+from .batch_reconcile_response import BatchReconcileResponse
+from .batch_reconcile_response_422 import BatchReconcileResponse422
+from .batch_reconcile_response_errors_item import BatchReconcileResponseErrorsItem
+from .batch_reconcile_response_recovered_item import BatchReconcileResponseRecoveredItem
 from .benchmark_stage_record_request import BenchmarkStageRecordRequest
 from .benchmark_stage_record_response import BenchmarkStageRecordResponse
 from .benchmark_stage_record_response_422 import BenchmarkStageRecordResponse422
@@ -1815,6 +1820,12 @@ from .task_batch_propose_response_diff_type_0 import TaskBatchProposeResponseDif
 from .task_batch_update_request import TaskBatchUpdateRequest
 from .task_batch_update_request_payload import TaskBatchUpdateRequestPayload
 from .task_batch_update_response_422 import TaskBatchUpdateResponse422
+from .task_batch_validate_request import TaskBatchValidateRequest
+from .task_batch_validate_response import TaskBatchValidateResponse
+from .task_batch_validate_response_422 import TaskBatchValidateResponse422
+from .task_batch_validate_response_advisory_item import TaskBatchValidateResponseAdvisoryItem
+from .task_batch_validate_response_gaps_item import TaskBatchValidateResponseGapsItem
+from .task_batch_validate_response_hard_item import TaskBatchValidateResponseHardItem
 from .task_children_request import TaskChildrenRequest
 from .task_children_response import TaskChildrenResponse
 from .task_children_response_422 import TaskChildrenResponse422
@@ -2137,6 +2148,11 @@ __all__ = (
     "AskVersion",
     "AssignmentRouteDetail",
     "AssignmentRouteDetailOverrideType0",
+    "BatchReconcileRequest",
+    "BatchReconcileResponse",
+    "BatchReconcileResponse422",
+    "BatchReconcileResponseErrorsItem",
+    "BatchReconcileResponseRecoveredItem",
     "BenchmarkStageRecordRequest",
     "BenchmarkStageRecordResponse",
     "BenchmarkStageRecordResponse422",
@@ -3827,6 +3843,12 @@ __all__ = (
     "TaskBatchUpdateRequest",
     "TaskBatchUpdateRequestPayload",
     "TaskBatchUpdateResponse422",
+    "TaskBatchValidateRequest",
+    "TaskBatchValidateResponse",
+    "TaskBatchValidateResponse422",
+    "TaskBatchValidateResponseAdvisoryItem",
+    "TaskBatchValidateResponseGapsItem",
+    "TaskBatchValidateResponseHardItem",
     "TaskChildrenRequest",
     "TaskChildrenResponse",
     "TaskChildrenResponse422",

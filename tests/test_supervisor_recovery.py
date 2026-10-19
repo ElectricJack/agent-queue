@@ -78,7 +78,8 @@ async def incident(env, sid="s", started=200, reason="stuck_timeout"):
     return await env.db.get_task_meta("t", "supervisor_recovery_incident")
 
 
-async def stopped_attempt(env, sid="s", started=200, reason="stuck_timeout", attention=True):
+async def stopped_attempt(env, sid="s", started=200, reason="stuck_timeout", attention=True,
+                          agent_id=None, lifecycle="task"):
     await env.db.create_session(
         SessionRecord(
             id=sid,
@@ -88,7 +89,8 @@ async def stopped_attempt(env, sid="s", started=200, reason="stuck_timeout", att
             harness="fake",
             provider="fake",
             name=sid,
-            lifecycle="task",
+            lifecycle=lifecycle,
+            agent_id=agent_id,
             state="running",
             desired_state="running",
             epoch="test",
@@ -602,6 +604,118 @@ async def test_release_only_preserves_task_and_other_guards(env, status):
                                    expected_hold_at=held["decided_at"])
 
 
+@pytest.mark.parametrize("guard", [None, "provider_live", "live_session", "epoch", "instance",
+                                   "branch_owner", "operation", "lost_epoch", "wrong_holder"])
+async def test_hold_release_repairs_only_exact_stopped_assignment(env, guard):
+    await env.db.create_agent(Agent(id="old", name="Old", profile_id="worker"))
+    await stopped_attempt(env, reason="claim_binding_stale", agent_id="old", lifecycle="pool")
+    await env.db.update_session("s", last_claim_epoch=0)
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    held, _ = await supervisor_handoff_hold(env, current)
+    await env.db.transition_task(
+        "t", TaskStatus.READY, force=True, context="test", assigned_agent_id="old",
+    )
+    if guard == "provider_live":
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=AsyncMock(return_value=False)
+        )
+    elif guard == "live_session":
+        await env.db.create_session(SessionRecord(
+            id="other-worker", project_id="p", profile_id="worker", harness="fake",
+            provider="fake", name="other-worker", lifecycle="pool", state="sleeping",
+            desired_state="sleeping", agent_id="old", epoch="test", instance_token="other",
+            work_dir="/never-used", started_at=9000,
+        ))
+    elif guard == "epoch":
+        await env.db.update_task("t", claim_epoch=1)
+    elif guard == "instance":
+        async def replaced_during_probe(_):
+            await env.db.update_session("s", instance_token="replacement")
+            return True
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=replaced_during_probe
+        )
+    elif guard == "branch_owner":
+        async with env.db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="owner", repository_id="r", ref="aq/keep", owner_id="t",
+                owner_role="worker", handoff_state="handoff_pending", session_id="s",
+                fence_token=2, created_at=1, updated_at=8000,
+            ))
+    elif guard == "operation":
+        await bind_train_repair(env)
+    elif guard in {"lost_epoch", "wrong_holder"}:
+        await env.db.update_session("s", last_claim_epoch=None, task_id=None, claim_phase=None)
+        await env.db.set_task_meta("t", "claimed_by_session",
+                                   "s" if guard == "lost_epoch" else "someone-else")
+    before = await env.db.get_task("t")
+    result = await decide(env, current, "release", operator_release=True,
+                          expected_hold_at=held["decided_at"])
+    accepted = guard in (None, "branch_owner", "operation", "lost_epoch")
+    assert ("error" not in result) is accepted, result
+    after = await env.db.get_task("t")
+    cleared = guard in (None, "lost_epoch")
+    assert asdict(after) == {**asdict(before), "assigned_agent_id": None if cleared else "old"}
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert recorded["decision"] == ("release" if accepted else "hold")
+    if cleared:
+        assert "already_assigned" not in {
+            item["code"] for item in await env.db.claim_frontier_exclusions("t")
+        }
+
+
+@pytest.mark.parametrize("race", ["historical_release", "during_stop_probe"])
+async def test_old_hold_release_cannot_clear_successor_assignment_or_hold(env, race):
+    await env.db.create_agent(Agent(id="old", name="Old", profile_id="worker"))
+    await env.db.create_agent(Agent(id="new", name="New", profile_id="worker"))
+    await stopped_attempt(env, reason="claim_binding_stale", agent_id="old", lifecycle="pool")
+    await env.db.update_session("s", last_claim_epoch=0)
+    await env.db.queue_task_recovery_notifications()
+    old = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    held, scope = await supervisor_handoff_hold(env, old)
+    await env.db.transition_task(
+        "t", TaskStatus.READY, force=True, context="test", assigned_agent_id="old",
+    )
+    if race == "historical_release":
+        assert "error" not in await decide(
+            env, old, "release", operator_release=True, expected_hold_at=held["decided_at"],
+        )
+
+    async def successor_holds(_=None):
+        await env.db.update_task("t", claim_epoch=1)
+        await env.db.transition_task(
+            "t", TaskStatus.BLOCKED, force=True, context="test", assigned_agent_id="new",
+        )
+        await stopped_attempt(env, sid="successor", started=9000, reason="context_thrash",
+                              agent_id="new", lifecycle="pool")
+        await env.db.update_session("successor", last_claim_epoch=1)
+        await env.db.set_task_meta("t", "claimed_by_session", "successor")
+        await env.db.queue_task_recovery_notifications()
+        current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+        assert current["id"] != old["id"]
+        assert "error" not in await decide(env, current, "hold", _scope=scope)
+        return True
+
+    if race == "historical_release":
+        await successor_holds()
+    else:
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=successor_holds,
+        )
+    result = await decide(
+        env, old, "release", operator_release=True, expected_hold_at=held["decided_at"],
+    )
+    assert "error" in result, result
+    task = await env.db.get_task("t")
+    assert task.status is TaskStatus.BLOCKED
+    assert task.claim_epoch == 1 and task.assigned_agent_id == "new"
+    assert task.retry_count == 0
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert current["id"] != old["id"] and current["decision"] == "hold"
+    assert (await env.db.get_session("successor")).last_claim_epoch == 1
+
+
 @pytest.mark.parametrize("authority", ["global", "project", "stopped", "wrong_instance",
                                        "worker", "service"])
 async def test_operator_hold_release_requires_live_global_authority(env, authority):
@@ -1005,6 +1119,217 @@ async def test_scan_supersedes_obsolete_hold_without_losing_diagnosis(env, chang
     assert await env.db.count_ready_by_profile("p") == {"worker": 1}
     assert (await env.db.get_task("t")).retry_count == 0
     assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+
+RECLASSIFY_KEPT = (
+    "id", "decision", "decision_reason", "decided_at", "decided_by", "decision_history",
+    "ask_decision_id", "hold_deadline_at", "deadline_kind", "redeliveries", "attempt_id",
+    "session_id", "end_reason", "supervisor_recoveries",
+)
+
+
+async def recovery_rows(env):
+    rows = await queued_messages(env)
+    return [row for row in rows if row["body_kind"] == "task_recovery"]
+
+
+async def reclassified_comments(env):
+    return [
+        comment for comment in (await env.db.list_task_comments("t"))["comments"]
+        if "reclassified" in comment["body"]
+    ]
+
+
+@pytest.mark.parametrize("held", ["pending", "supervisor_hold", "human_hold"])
+async def test_reclassified_stopped_attempt_keeps_one_incident_hold_and_budget(env, held):
+    """A refused stale-binding unwind re-diagnoses the SAME stopped attempt.
+
+    The legacy record (no identity_reason) keeps its id, decision, provenance and
+    budget; no second notification, human decision or automatic retry follows.
+    """
+    current = await incident(env, reason="context_thrash")
+    assert "identity_reason" not in current
+    if held == "supervisor_hold":
+        await supervisor_handoff_hold(env, current)
+    elif held == "human_hold":
+        assert (await apply_human_recovery_reply(env, current, "hold"))["success"]
+    await env.db.queue_task_recovery_notifications()
+    before = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert before["decision"] == (None if held == "pending" else "hold")
+
+    await env.db.set_task_meta("t", "needs_attention", "claim_binding_stale")
+    # A late decision against the old diagnosis is refused until the scan records it.
+    late = await decide(env, current, "hold")
+    assert "error" in late, late
+    if held == "pending":
+        assert "diagnosis changed" in late["error"]
+    await asyncio.gather(
+        env.db.queue_task_recovery_notifications(), env.db.queue_task_recovery_notifications(),
+    )
+    for _ in range(2):
+        replay = await notify(env)
+        assert replay["incident_id"] == current["id"], replay
+    await env.db.queue_task_recovery_notifications()
+
+    after = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert {key: after.get(key) for key in RECLASSIFY_KEPT} == {
+        key: before.get(key) for key in RECLASSIFY_KEPT
+    }
+    assert after["reason"] == "claim_binding_stale"
+    assert after["identity_reason"] == "context_thrash"
+    assert [(entry["from"], entry["to"]) for entry in after["reason_history"]] == [
+        ("context_thrash", "claim_binding_stale"),
+    ]
+    assert after["retry_allowed"] is False and after["retry_reason_allowed"] is False
+    assert "Not an automatically retryable failure" in after["next_action"] or held != "pending"
+    assert [row["id"] for row in await recovery_rows(env)] == ["msg-" + current["id"]]
+    assert len(await reclassified_comments(env)) == 1
+    task = await env.db.get_task("t")
+    assert task.status is TaskStatus.BLOCKED and task.retry_count == 0
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+    assert "error" in await decide(env, current)
+    if held == "pending":
+        assert "error" not in await decide(env, current, "hold")
+        assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["id"] == current["id"]
+
+
+@pytest.mark.parametrize("first,second,allowed", [
+    ("context_thrash", "stuck_timeout", False),
+    ("stuck_timeout", "exited_holding_task", True),
+])
+async def test_reclassification_never_relabels_nonautomatic_failure_as_retryable(
+    env, first, second, allowed,
+):
+    await stopped_attempt(env, reason="stuck_timeout", attention=False)
+    await env.db.set_task_meta("t", "needs_attention", first)
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    await env.db.set_task_meta("t", "needs_attention", second)
+    await env.db.queue_task_recovery_notifications()
+    after = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert after["id"] == current["id"] and after["reason"] == second
+    assert after["retry_allowed"] is allowed, after
+    result = await decide(env, current)
+    if allowed:
+        assert result["status"] == "READY", result
+        assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") == 1
+    else:
+        assert "diagnosed as not automatically retryable" in result["error"], result
+        assert (await env.db.get_task("t")).retry_count == 0
+        assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+
+
+@pytest.mark.parametrize("scan", [False, True])
+async def test_reclassification_makes_prepared_human_packet_stale(env, scan):
+    from src.asks.models import SourceIdentity
+    current = await incident(env)
+    ask = await env.handler._publish_source_ask(
+        SourceIdentity("p", "recovery", current["id"], {"task_id": "t"})
+    )
+    args = {"ask_id": ask["id"], "expected": {k: ask[k] for k in (
+        "decision_generation", "source_fingerprint", "feedback_version")},
+        "option_key": "retry", "overall_note": "Preserve evidence and retry",
+        "idempotency_key": "recovery-reclassified"}
+    preview = await env.handler._cmd_ask_prepare_decision(args)
+    assert preview["success"], preview
+    # Still a retryable diagnosis: only the changed facts make the approval stale.
+    await env.db.set_task_meta("t", "needs_attention", "session_not_live")
+    if scan:
+        await env.db.queue_task_recovery_notifications()
+    result = await env.handler._cmd_ask_decide({**args, "preview_id": preview["preview"]["id"]})
+    assert result["success"] is False and result["error_code"] == "ask.stale_source", result
+    task = await env.db.get_task("t")
+    assert task.status is TaskStatus.BLOCKED and task.retry_count == 0
+    assert await env.db.get_task_meta("t", "supervisor_recovery_attempts") is None
+    recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert recorded["id"] == current["id"] and recorded["decision"] is None
+    assert recorded.get("ask_decision_id") is None
+
+
+async def test_reclassification_back_and_forth_is_recorded_once_each(env):
+    current = await incident(env, reason="context_thrash")
+    for reason in ("claim_binding_stale", "context_thrash", "context_thrash"):
+        await env.db.set_task_meta("t", "needs_attention", reason)
+        await env.db.queue_task_recovery_notifications()
+    after = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert after["id"] == current["id"] and after["reason"] == "context_thrash"
+    assert [(entry["from"], entry["to"]) for entry in after["reason_history"]] == [
+        ("context_thrash", "claim_binding_stale"), ("claim_binding_stale", "context_thrash"),
+    ]
+    assert len(await reclassified_comments(env)) == 2
+    assert len(await recovery_rows(env)) == 1
+    assert "error" not in await decide(env, current, "hold")
+
+
+async def test_new_stopped_attempt_after_reclassification_is_a_new_incident(env):
+    current = await incident(env, reason="context_thrash")
+    assert "error" not in await decide(env, current, "hold")
+    await env.db.set_task_meta("t", "needs_attention", "claim_binding_stale")
+    await env.db.queue_task_recovery_notifications()
+    await stopped_attempt(env, sid="successor", started=9000)
+    await env.db.queue_task_recovery_notifications()
+    new = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert new["id"] != current["id"]
+    assert new["decision"] is None and "reason_history" not in new
+    assert new["supervisor_recoveries"] == 0
+    assert (await env.db.get_message("msg-" + current["id"])).archived_at is not None
+    assert len(await recovery_rows(env)) == 2
+
+
+async def test_no_attempt_failure_reclassifies_but_new_transition_is_new_incident(env):
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True)
+    await notify(env)
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert current["reason"] == "terminal_failed"
+    assert "error" not in await decide(env, current, "hold")
+    await env.db.set_task_meta("t", "needs_attention", "operator_review")
+    await env.db.queue_task_recovery_notifications()
+    kept = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert kept["id"] == current["id"] and kept["decision"] == "hold"
+    assert kept["reason"] == "operator_review" and kept["identity_reason"] == "terminal_failed"
+    assert len(await recovery_rows(env)) == 1
+
+    for status in (TaskStatus.READY, TaskStatus.FAILED):
+        await env.db.transition_task("t", status, force=True)
+    await env.db.queue_task_recovery_notifications()
+    new = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert new["id"] != current["id"] and new["decision"] is None
+    assert (await env.db.get_message("msg-" + current["id"])).archived_at is not None
+
+
+async def test_reclassified_integration_delegate_keeps_operation_stage_and_budget(env):
+    await bind_train_repair(env)
+    current = await incident(env)
+    await env.db.set_task_meta("t", "needs_attention", "claim_binding_stale")
+    await asyncio.gather(
+        env.db.queue_task_recovery_notifications(), env.db.queue_task_recovery_notifications(),
+    )
+    after = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert after["id"] == current["id"] and after["reason"] == "claim_binding_stale"
+    assert after["owner"]["kind"] == "integration_operation"
+    assert after["owner"]["operation_id"] == "train-repair"
+    assert after["retry_allowed"] is False
+    assert await recovery_rows(env) == []
+    async with env.db._engine.connect() as conn:
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+    assert operation["state"] == "human_required"
+    assert stage["attempts"] == 2 and stage["deadline_at"] == 500
+    assert stage["repair_task_id"] == "t" and stage["state"] == "active"
+
+
+async def test_reclassified_ready_hold_projection_stays_held(env):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    await env.db.update_task("t", status=TaskStatus.READY, route_source="override")
+    await env.db.set_task_meta("t", "needs_attention", "claim_binding_stale")
+    await env.db.queue_task_recovery_notifications()
+    kept = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert kept["id"] == held["id"] and kept["decision"] == "hold"
+    assert kept["decided_at"] == held["decided_at"]
+    assert {item["code"] for item in await env.db.claim_frontier_exclusions("t")} >= {
+        "frontier_recovery_hold"
+    }
 
 
 @pytest.mark.parametrize("guard", ["human_gate", "hold_label", "dependency"])
