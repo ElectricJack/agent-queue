@@ -10129,7 +10129,7 @@
         "knowledge-records"
       ],
       "default_arm": true,
-      "digest": "sha256:9bae35bba4c1ce0824fe5e7a31ff87b7492ffcc60b93a08a29e81902dc3f4519",
+      "digest": "sha256:95d5c48327b40774516006a431484980306c14bc788e171b18d233786eb760a9",
       "imports": [
         "src.commands.principal",
         "src.config",
@@ -10140,6 +10140,7 @@
         "src.knowledge.service",
         "src.messages",
         "src.models",
+        "src.prime",
         "src.prime.models",
         "src.prime.renderer",
         "src.prime.sections",
@@ -13352,17 +13353,20 @@
         "prime"
       ],
       "default_arm": true,
-      "digest": "sha256:7d948caef03804992a7b27eb3c136dcf4f7efa565487492bfc55a8f77b593ef2",
+      "digest": "sha256:f91a9590c716562833c3065d3b353ae8067ddfc7a2a02190ef20aca426677bc5",
       "imports": [
         "src.api.scope",
         "src.config",
         "src.handoffs",
+        "src.knowledge.budget",
         "src.models",
         "src.prime",
         "src.prime.budgets",
         "src.prime.models",
+        "src.prime.renderer",
         "src.prime.sections",
         "src.profiles.parser",
+        "src.records.models",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
         "src.sessions.worker_recovery"

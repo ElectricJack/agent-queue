@@ -32,6 +32,14 @@ token upper bound and reserves output and wrapper space. Section counts exclude
 headings; overrides may repeat sections, so use the final body count to check
 fit. These diagnostics carry no undelivered instruction bodies.
 
+When knowledge context is enabled for the project, worker prime reduces pageable
+description, ordinary context and historical handoff excerpts as needed to fit
+the aggregate budget. Follow every shortened field's `aq task show --field …`
+command through `next_offset: null` before acting. Handoff pointers retain the
+stored row ID. Role/Rules, full task comments, live repair authority, pending
+messages, result/wait pointers, current facts and completion instructions remain
+inline; if they cannot fit, prime still refuses delivery.
+
 ### Two consumers, one renderer
 
 The document is built by [`src/prime/`](../../../src/prime/), and two things

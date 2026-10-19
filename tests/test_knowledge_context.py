@@ -401,6 +401,63 @@ async def test_prime_command_returns_prepared_bundle_and_delivery_command_record
         assert await conn.scalar(select(func.count()).select_from(knowledge_citations)) == 1
 
 
+async def test_prime_fits_required_salvage_and_preserves_full_continuation_reads(
+    command_handler_factory, tmp_path,
+):
+    from src.commands.principal import principal_context
+    from src.prime import PrimeRenderer
+
+    handler = await command_handler_factory()
+    db, config = handler.db, handler.config
+    config.data_dir = str(tmp_path)
+    config.knowledge = knowledge_config()
+    config.memory.enabled = True
+    worker = await worker_principal(db, grants=["prime", "task_show", "knowledge_show", "record_search"])
+    task_id = worker.task_id
+    description = "Acceptance αβ. " * 1000 + "FINAL ACCEPTANCE"
+    salvage = "+retained change αβ\n" * 10000 + "FINAL DIFF"
+    await db.update_task(task_id, description=description)
+    await db.add_task_context(task_id, type="worktree_salvage", label="Saved changes", content=salvage)
+    comment = "Preserve the complete decision. " * 40 + "FINAL COMMENT"
+    await db.add_task_comment(task_id, comment, author_kind="agent", author_id="earlier-worker")
+    role = "Required inline policy. " + "r" * 8000
+    profile_path = tmp_path / "vault" / "agent-types" / worker.profile_id / "profile.md"
+    profile_path.parent.mkdir(parents=True)
+    profile_path.write_text("## Role\n" + role)
+    before = await PrimeRenderer(db, config).render_for_task(task_id, session_id=worker.session_id)
+    budget = ContextBudget.from_config(config)
+    assert budget.account(before.to_markdown())["diagnostic"] == "context.required_over_budget"
+    config.knowledge.context.enabled = True
+    worker = replace(worker, task_id=None)
+    scope = dict(kind="session", session_id=worker.session_id, project_id="p",
+                 session_instance_token=worker.session_instance_token, task_id=None, elevated=False)
+    with principal_context(worker):
+        result = await handler.execute("prime", {"_scope": scope})
+        assert result["success"], result
+        assert result["context_bundle"]["budget"]["fits"]
+        budget.enforce(result["body"])
+        assert role in result["body"]
+        assert comment in result["body"]
+        assert "--field description" in result["body"]
+        assert "--field prime_context" in result["body"]
+        # Exercise the supported worker reads, not an unscoped database escape.
+        for field in ("description", "prime_context"):
+            chunks, offset = [], 0
+            while True:
+                page = await handler.execute("task_show", dict(
+                    _scope=scope, task_id=task_id, field=field, offset=offset, limit=4096,
+                ))
+                assert "error" not in page, page
+                chunks.append(page["content"])
+                offset = page["next_offset"]
+                if offset is None:
+                    break
+            full = "".join(chunks)
+            assert (description if field == "description" else salvage) in full
+            if field == "prime_context":
+                assert comment in full
+
+
 async def test_prime_degrades_when_the_principal_lacks_the_knowledge_show_grant(
     command_handler_factory,
 ):

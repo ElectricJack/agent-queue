@@ -37,6 +37,19 @@ input allowance. Whole items are dropped with omission reasons. Required
 content overflow stores an empty diagnostic bundle and refuses delivery with
 `context.required_over_budget`; authoritative instructions are never cut.
 
+For pilot worker prime, the renderer fits pageable prose to that same configured
+budget before knowledge selection. It reduces ordinary task-context excerpts,
+then the task description, then historical handoff assertions, retaining an
+explicit task/field paging command and the handoff context row ID. Full reads use
+`aq task show TASK --field FIELD --offset 0 --limit 4096`, with `description`,
+`prime_context` or `context`, and follow `next_offset` until null before acting on
+shortened material. Stored sources are unchanged. Profile Role/Rules, all complete
+task comments, current repair fences, pending messages, result/wait pointers,
+current facts and completion instructions stay inline. Override expansion
+(including repeated slots) and the project pause notice count toward the final
+body. If inline content plus continuation commands cannot fit, delivery still
+fails with the hard diagnostic.
+
 An over-budget prime refusal includes `context_budget` (the configured
 allowances and byte accounting), `required_body_bytes`,
 `required_section_bytes` and renderer `source`. These diagnostics expose no
