@@ -84,7 +84,19 @@ def addressed_to_wait():
 def message_is_held():
     """Correlated SQL guard, applied BEFORE mailbox limits and delivery writes."""
     waiting = execution_waits().where(addressed_to_wait()).correlate(messages).exists()
-    return and_(waiting, or_(messages.c.body_kind.is_(None),
+    parked = select(continuations.c.id).select_from(
+        continuations.join(wait_records, wait_records.c.id == continuations.c.wait_id)
+        .join(tasks, tasks.c.id == continuations.c.task_id)
+    ).where(
+        continuations.c.resume_state.in_(("sleeping", "queued", "reserved", "launching",
+                                         "delivered", "held")),
+        continuations.c.acknowledged_at.is_(None),
+        tasks.c.status.in_(("WAITING", "HIBERNATED", "RESUME_PENDING", "PAUSED")),
+        or_(and_(messages.c.to_kind == "task", messages.c.to_id == tasks.c.id),
+            and_(messages.c.to_kind == "session",
+                 messages.c.to_id == wait_records.c.session_id)),
+    ).correlate(messages).exists()
+    return and_(or_(waiting, parked), or_(messages.c.body_kind.is_(None),
                             messages.c.body_kind.not_in(WAKE_BODY_KINDS)))
 
 

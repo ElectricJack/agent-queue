@@ -148,4 +148,6 @@ class WaitTimerDriver:
                 ).values(fired_at=now))
             if cursor["lease_expires_at"] <= self.clock():
                 raise LeaseLost("timer lease expired during deadline effect")
-            return result
+        if payload := result.pop('escalation_event', None):
+            await self.service.orch.bus.emit('wait.escalated', payload)
+        return result

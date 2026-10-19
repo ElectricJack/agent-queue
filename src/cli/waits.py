@@ -287,13 +287,16 @@ def wait_explain(ctx, wait_id, task_id, project_id, history):
 @wait.command("graph")
 @click.option("--project", "project_id", default=None)
 @click.option("--fleet", is_flag=True)
+@click.option("--costs", is_flag=True, help="Include measured wait and resume costs.")
 @click.pass_context
 @_handle_errors
-def wait_graph(ctx, project_id, fleet):
+def wait_graph(ctx, project_id, fleet, costs):
     """Read project blockers or the redacted fleet summary."""
     if fleet and project_id:
         raise click.UsageError("--project and --fleet are mutually exclusive")
     params = {"fleet": fleet}
+    if costs:
+        params["costs"] = True
     if project_id:
         params["project_id"] = project_id
     emit(ctx, _execute(ctx, "wait_graph", params))

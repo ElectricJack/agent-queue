@@ -11,12 +11,12 @@ from sqlalchemy import insert, select, update
 from src.database.queries.continuation_queries import wait_outcome_envelope
 from src.database.tables import (
     admission_reservations, agents, continuations, messages, provider_availability,
-    tasks,
+    tasks, sessions,
 )
 from src.models import Agent, AgentState
 from src.scheduler import AssignAction
 from src.waits.conditions import WaitError
-from src.waits.hibernate import locked_suspension
+from src.wait_runtime.hibernate import locked_suspension
 from src.waits.mail import held_messages
 from src.waits.sources import insert_message_with_source_event
 
@@ -63,7 +63,24 @@ class ResumeTransaction:
             observed = await self.service.scheduler.reader.observe_task(
                 conn, task['id'], continuation_id=continuation_id,
             )
-            if observed is None or any(c['blocked'] for c in observed.constraints.values()):
+            if observed is None:
+                return None
+            blocked = {key for key, value in observed.constraints.items() if value['blocked']}
+            if blocked:
+                if blocked <= {'slot', 'workspace'}:
+                    # A continuation requires a new process. Retire an unused
+                    # pool process through reconciliation; it still occupies
+                    # capacity until the provider has actually stopped it.
+                    idle = await conn.scalar(select(sessions.c.id).where(
+                        sessions.c.project_id == task['project_id'],
+                        sessions.c.profile_id == task['profile_id'],
+                        sessions.c.lifecycle == 'pool', sessions.c.state == 'running',
+                        sessions.c.desired_state == 'running', sessions.c.task_id.is_(None),
+                        sessions.c.claim_phase.is_(None),
+                    ).order_by(sessions.c.started_at).with_for_update(skip_locked=True).limit(1))
+                    if idle:
+                        await conn.execute(update(sessions).where(sessions.c.id == idle).values(
+                            desired_state='stopped'))
                 return None
             now = self.clock()
             agent = Agent(id=str(uuid.uuid4()), name=f"resume-{continuation_id}",
@@ -192,6 +209,14 @@ class ResumeTransaction:
                 ))).mappings().one()
             try:
                 workspace = await self.fresh_workspace(action, task, agent, dict(intent))
+                async with self.db._engine.begin() as conn:
+                    _, _, current = await locked_suspension(conn, intent['wait_id'])
+                    facts = {**current['facts'], 'costs': {**current['facts'].get('costs', {}),
+                        'rebuild_seconds': max(0, self.clock() - current['facts'][
+                            'resume_attempt_started_at'])}}
+                    await conn.execute(update(continuations).where(
+                        continuations.c.id == current['id'],
+                    ).values(facts=facts))
             except Exception as exc:
                 await self.failed(action, task, f'workspace preparation: {exc}', handler=handler,
                                   hold_reason='resume_workspace_failed')
@@ -317,7 +342,10 @@ class ResumeTransaction:
         current = (await conn.execute(select(provider_availability).where(
             provider_availability.c.provider == provider,
         ))).mappings().first()
-        if current is None or current['state'] not in {'available', 'recovering'}:
+        facts = event['payload'].get('facts', {})
+        if (current is None or current['state'] != 'available'
+                or facts.get('generation') != current['generation']
+                or event['source_revision'] != str(current['generation'])):
             return
         ids = list((await conn.execute(select(continuations.c.wait_id).where(
             continuations.c.resume_state == 'held',

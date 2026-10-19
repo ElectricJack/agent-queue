@@ -8840,6 +8840,509 @@
     },
     "src/api/target_scope.py::import from src.database.tables import ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections": {
       "reason": "Project ownership resolver table import includes integration targets alongside generic human ask targets. Integration table dependencies remain charged; human identity and decision evidence retain generic storage ownership."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.admission import AdmissionReader, branch_holders": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, ask_decision_previews, ask_decisions, conversation_inputs, escalation_messages, escalations, gates, human_asks, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        58,
+        84
+      ]
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_clear_retained_recovery']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        157,
+        157
+      ]
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_recover_completed_container']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        162,
+        162
+      ]
+    },
+    "src/cli/auto_commands.py::HANDCRAFTED_COVERAGE['integration_supersede_completion']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        166,
+        166
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_recover_completed_container']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        133,
+        137
+      ]
+    },
+    "src/cli/client.py::_COMMAND_TIMEOUTS['integration_release_owner']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        127,
+        128
+      ]
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._claim_request": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        300,
+        497
+      ]
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        1107,
+        1926
+      ]
+    },
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, AgentState, DepType, ProjectStatus, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        36,
+        51
+      ]
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.claim_preparation_state": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        828,
+        863
+      ]
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.get_project_for_claim": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        815,
+        827
+      ]
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.park_task_for_continuation": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        1043,
+        1120
+      ]
+    },
+    "src/database/queries/claim_queries.py::_CLAIM_STACK_ORIGIN": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        87,
+        87
+      ]
+    },
+    "src/database/queries/claim_queries.py::_URGENT_OPERATION": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        80,
+        85
+      ]
+    },
+    "src/database/queries/claim_queries.py::_URGENT_STAGE": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        86,
+        86
+      ]
+    },
+    "src/database/queries/project_queries.py::ProjectQueryMixin.list_projects": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        193,
+        216
+      ]
+    },
+    "src/database/queries/session_queries.py::SessionQueryMixin.record_failed_preparation": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        371,
+        428
+      ]
+    },
+    "src/database/queries/session_queries.py::import from src.database.tables import agent_profiles, agents, gates, integration_batches, integration_branch_owners, playbook_v2_runs, projects, sessions, task_branch_origins, task_integration_checkpoints, task_session_attempts, tasks, workspaces": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        43,
+        48
+      ]
+    },
+    "src/database/queries/task_recovery_queries.py::TaskRecoveryQueryMixin._clear_stopped_recovery_assignment_on": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        1378,
+        1434
+      ]
+    },
+    "src/database/queries/wait_queries.py::import from src.database.tables import agents, admission_reservations, continuations, events, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, messages, projects, sessions, tasks, wait_deadlines, wait_edges, wait_escalations, wait_priority_projection, wait_records": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        23,
+        42
+      ]
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.remove_missing_workspace_registration": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        190,
+        255
+      ]
+    },
+    "src/doctor/stall_checks.py::_train_batch_findings": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        640,
+        648
+      ]
+    },
+    "src/event_schemas.py::EVENT_SCHEMAS['integration.completed_container_checkpoint_recovered']": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        2058,
+        2067
+      ]
+    },
+    "src/wait_runtime/hibernate.py::HibernationTransaction._advance_locked": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        132,
+        276
+      ]
+    },
+    "src/wait_runtime/hibernate.py::locked_suspension": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        62,
+        84
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.failed": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        267,
+        335
+      ]
+    },
+    "src/wait_runtime/resume.py::verify_saved_branch": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        22,
+        36
+      ]
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline_locked": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        217,
+        292
+      ]
+    },
+    "src/wait_runtime/service.py::WaitService.__init__": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        19,
+        62
+      ]
+    },
+    "src/wait_runtime/service.py::WaitService.graph": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        70,
+        80
+      ]
+    },
+    "src/waits/admission.py::import from src.database.tables import continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        14,
+        18
+      ]
+    },
+    "src/waits/decisions.py::WaitDecisions.raise_escalation": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        36,
+        84
+      ]
+    },
+    "src/waits/decisions.py::import from src.database.tables import admission_reservations, continuations, escalation_deliveries, escalations, events, integration_branch_owners, messages, sessions, task_context, tasks, wait_deadlines, wait_edges, wait_escalations, wait_records": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        17,
+        21
+      ]
+    },
+    "src/waits/source_locking.py::lock_database_source": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        12,
+        50
+      ]
+    },
+    "src/wait_runtime/eviction.py::candidate": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        9,
+        18
+      ]
+    },
+    "src/wait_runtime/eviction.py::import from src.waits.holding import execution_waits": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        8,
+        8
+      ]
+    },
+    "src/wait_runtime/hibernate.py::begin_suspension": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        25,
+        61
+      ]
+    },
+    "src/wait_runtime/hibernate.py::import from src.database.queries.continuation_queries import degrade_checkpoint": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        18,
+        18
+      ]
+    },
+    "src/wait_runtime/hibernate.py::import from src.waits.checkpoint import collect_checkpoint_facts": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        21,
+        21
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.register": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        28,
+        86
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.sleep_decide": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        87,
+        124
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.suspend": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        130,
+        166
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::import from src.database.queries.continuation_queries import measurement_medians": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        13,
+        13
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.bind_launch": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        229,
+        266
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.dispatch": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        177,
+        228
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.fresh_workspace": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        108,
+        176
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.recovery_event": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        336,
+        374
+      ]
+    },
+    "src/wait_runtime/resume.py::ResumeTransaction.reserve": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        45,
+        107
+      ]
+    },
+    "src/wait_runtime/resume.py::import from src.wait_runtime.hibernate import locked_suspension": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        19,
+        19
+      ]
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.__init__": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        41,
+        46
+      ]
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.authorize": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        47,
+        52
+      ]
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.sync": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        53,
+        182
+      ]
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        22,
+        22
+      ]
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.registry import build_registry": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        23,
+        23
+      ]
+    },
+    "src/wait_runtime/scheduler.py::import from src.waits.reservations import SchedulerPolicy, enabled": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        24,
+        24
+      ]
+    },
+    "src/wait_runtime/scheduler.py::scheduler_tick": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        292,
+        314
+      ]
+    },
+    "src/wait_runtime/service.py::WaitService.lock_source": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        63,
+        69
+      ]
+    },
+    "src/wait_runtime/service.py::import from src.waits.graph import recompute_from": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        11,
+        11
+      ]
+    },
+    "src/wait_runtime/service.py::import from src.waits.registry import build_registry": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        8,
+        8
+      ]
+    },
+    "src/wait_runtime/service.py::import from src.waits.source_locking import lock_database_source": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        12,
+        12
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::import from src.wait_runtime.hibernate import HibernationTransaction, begin_suspension": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        14,
+        14
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::import from src.waits.decision import ceiling_anchor, decide_sleep, measured_inputs, project_policy": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        11,
+        11
+      ]
+    },
+    "src/wait_runtime/resume.py::import from src.database.queries.continuation_queries import wait_outcome_envelope": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        10,
+        11
+      ]
+    },
+    "src/wait_runtime/resume.py::import from src.waits.mail import held_messages": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        20,
+        20
+      ]
+    },
+    "src/wait_runtime/scheduler.py::close_row": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        27,
+        37
+      ]
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.acknowledge": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        170,
+        183
+      ]
+    },
+    "src/wait_runtime/eviction.py::request_evictions": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        44,
+        63
+      ]
+    },
+    "src/wait_runtime/hibernate.py::HibernationTransaction.cleanup": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        277,
+        308
+      ]
+    },
+    "src/agent_waits.py::AgentWaitReconciler.tick": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        195,
+        207
+      ]
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_sleep": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        738,
+        784
+      ]
+    },
+    "src/orchestrator/pools.py::PoolsMixin._reconcile_pools_inner": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        611,
+        661
+      ]
     }
   },
   "exclusions": {
@@ -8968,7 +9471,9 @@
     "src/database/queries/ask_delivery_queries.py::AskDeliveryQueriesMixin.ask_delivery_status": "Notification root and reconciliation-case observations for every ask source; delivery_status is transport receipt state, with no Git, branch, integration gate or publication authority.",
     "src/commands/ask_commands.py::AskCommandsMixin._ask_service": "Generic registry/service assembly for reviews, specifications and all human sources. Static integration adapter registration and IntegrationAdapter are independently charged; no integration decision or domain write occurs here.",
     "src/asks/source_operations.py::apply": "Generic human-source operation leasing, pause gating and reconciliation, dispatching through the registered source adapter. No integration branch, subject, gate or policy state is interpreted or written here; IntegrationAdapter and authorize_source retain the charged integration authority and receipts.",
-    "src/asks/source_operations.py::import from src.asks.sources import authorize_source, finish_on": "Generic human-source authorization and completion imports; the integration branch of authorize_source remains independently charged, and finish_on only updates ask operations/projections."
+    "src/asks/source_operations.py::import from src.asks.sources import authorize_source, finish_on": "Generic human-source authorization and completion imports; the integration branch of authorize_source remains independently charged, and finish_on only updates ask operations/projections.",
+    "src/wait_runtime/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/database/tables.py::wait_measurements": "Generic wait duration and continuation cost samples; no integration lifecycle or reference replay authority."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -13587,7 +14092,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._release_stale_container_claim_on::38814c21c0f19182dcafaa65739a065688b16d03d4250ec173f37f0c7f0e18b8": {
-      "line": 1956,
+      "line": 2034,
       "owner": "ClaimQueryMixin._release_stale_container_claim_on",
       "call": "log_event",
       "owner_fingerprint": "f4c16c961ffa7c4364b8713dfc9b61be23d715455e54ca7e4b11886dbc017a03",
@@ -13596,7 +14101,7 @@
       "reason": "Audit of an exact stopped pool claim release: session id, claim epoch and prior task status only; no git ref replay or duplicate integration lifecycle authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1339,
+      "line": 1417,
       "owner": "ClaimQueryMixin.activate_claim",
       "call": "delete",
       "owner_fingerprint": "2c8ca4cbfea981f8373ef5c4025facb13dc56531cee648da1261c49955b71ab2",
@@ -14568,7 +15073,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::cfcd13e9187c1de3a01142301b8203fae1e11a8a3a4ce9bf92d2a08ca1895e28": {
-      "line": 2462,
+      "line": 2480,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
       "owner_fingerprint": "2c71e34d3afe5f0898592025d474707e656ac21e08a6b6712567805c636f01fb",
@@ -14577,7 +15082,7 @@
       "reason": "Ordinary needs_attention marker for an unproven integration handoff. The owner distinguishes substantive verification failure from infrastructure pipeline refusal for routing, and successful live-code close verifies its exact task branch on origin before resource release. Neither path adds ref replay authority or integration lifecycle storage."
     },
     "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::8984da29e38cdef16a89fdb5710ce864b3017bdca5db3309dce9f87f9f13fe70": {
-      "line": 2581,
+      "line": 2599,
       "owner": "ExecutionMixin._preserve_unpushed_on_failure",
       "call": "set_task_meta",
       "owner_fingerprint": "3469e4902d7ce1776353595687d4530639a9670117a995811d0601df821323bc",
@@ -14586,7 +15091,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: UNMERGED_BRANCH_META"
     },
     "src/orchestrator/execution.py::ExecutionMixin._preserve_unpushed_on_failure::f2a065e87b9ac1c2c29f709808b528c8ed38ee71d4c075de9a7daf013baee912": {
-      "line": 2583,
+      "line": 2601,
       "owner": "ExecutionMixin._preserve_unpushed_on_failure",
       "call": "set_task_meta",
       "owner_fingerprint": "3469e4902d7ce1776353595687d4530639a9670117a995811d0601df821323bc",
@@ -14721,7 +15226,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/pools.py::PoolsMixin._emit_placement_starved::f2bc83f54522a114c6e29938e4315b96f4b29bdf4e269cbbbe2af02824951adb": {
-      "line": 860,
+      "line": 879,
       "owner": "PoolsMixin._emit_placement_starved",
       "call": "log_event",
       "owner_fingerprint": "f0569610c68fa2db6dfb68b2ec3b626e83af26504c4dbdaa91d7d6c09d3d33b4",
@@ -14730,7 +15235,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/pools.py::PoolsMixin._emit_pool_scaled::c9221773bd5af291a008dce3478eaf21fcfbfc1f29dbbf363b18df8d2447b2b9": {
-      "line": 939,
+      "line": 958,
       "owner": "PoolsMixin._emit_pool_scaled",
       "call": "log_event",
       "owner_fingerprint": "9a0198f9ad5d35b6af8b2d7adf67b918e753fad7650665e1a496ea1adb435f53",
@@ -14739,7 +15244,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/orchestrator/pools.py::PoolsMixin._release_container_claims::455dfd0642cbbd011fed166aee953c41f586725b6941d5357c7faadf39649d63": {
-      "line": 708,
+      "line": 727,
       "owner": "PoolsMixin._release_container_claims",
       "call": "log_event",
       "owner_fingerprint": "db79a6b164403e94a1a0179c50ed33f8b91f35977a46feb5e959473fed7c5b4f",
@@ -14802,7 +15307,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: CHECKPOINT_META"
     },
     "src/orchestrator/workspace.py::WorkspaceMixin.arecover_completed_integration_pool_claim::1320846324f64b9a88c33a5a658ca64eaa3257d89135ad3028fb672a9cc9a076": {
-      "line": 2308,
+      "line": 2313,
       "owner": "WorkspaceMixin.arecover_completed_integration_pool_claim",
       "call": "log_event",
       "owner_fingerprint": "1987d63ba311f2a811d1759438b010cf17ace1cdbf223a58f42d1524c19b71f8",
@@ -15027,7 +15532,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.release_historical_pool_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 2337,
+      "line": 2415,
       "owner": "ClaimQueryMixin.release_historical_pool_claim",
       "call": "delete",
       "owner_fingerprint": "33f786f583e284469fe110ba22079b81831aed80c4ae9748522dbb2b46caff44",
@@ -15450,7 +15955,7 @@
       "reason": "Ordinary continuous READY rejection timestamp and advisory cleanup. Clears only its own stale attention code on admission recovery; no ref replay or delivery authority."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::91f3e9ef1047553b1b6a181d34a45e38af1c9c81aa3244f1605030fa2da742ba": {
-      "line": 1927,
+      "line": 1945,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
       "owner_fingerprint": "2c71e34d3afe5f0898592025d474707e656ac21e08a6b6712567805c636f01fb",
@@ -15459,7 +15964,7 @@
       "reason": "Updates the existing identity-bound pending completion draft with the verified source SHA before the terminal transition, preserving accepted-close crash recovery; no new lifecycle or journal."
     },
     "src/orchestrator/execution.py::ExecutionMixin._complete_session_task_locked::ae8c919429f58dac2642af5184c5d10500c81e12bf5ef7db9da07251fc6b167d": {
-      "line": 1918,
+      "line": 1936,
       "owner": "ExecutionMixin._complete_session_task_locked",
       "call": "set_task_meta",
       "owner_fingerprint": "2c71e34d3afe5f0898592025d474707e656ac21e08a6b6712567805c636f01fb",
@@ -15468,10 +15973,10 @@
       "reason": "Ordinary completion audit evidence for exact published-source required CI. It records a check observation, not ref replay or managed delivery state."
     },
     "src/orchestrator/pools.py::PoolsMixin._check_pool_progress::f6acd075b5bd9a6a9104d37e66f4885432fd8fd46ebb5c13cd8902504da0de5e": {
-      "line": 596,
+      "line": 602,
       "owner": "PoolsMixin._check_pool_progress",
       "call": "log_event",
-      "owner_fingerprint": "fd45a29fa965f1c775f0ef8b740c06d36e9fde8279e8f2f7a4a43be6dc7b4781",
+      "owner_fingerprint": "1e4aff4d933e34ae26e83c29a30ec202d42503f1c4646d47b925fedd4339ec08",
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary pool-progress watchdog audit event, pool.scaler_stalled. Records bounded demand, live supply, ticks and a reconciliation hint; no Git ref replay, delivery state or integration lifecycle authority. Recovery re-measures ordinary scheduling admission through the existing pool reconciler."
@@ -15619,6 +16124,312 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Approved-document dispatch audit records the immutable decision identity and event sequence in its source-owned ingestion operation. Retries cannot authorize work without the approved application receipt; no Git ref replay or integration delivery lifecycle state."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5": {
+      "line": 277,
+      "owner": "SchedulerWaitService.deadline",
+      "call": "log_event",
+      "owner_fingerprint": "f1022096d1e79be84d5287104e90d38b0e5701433470e2d6c8f9e91145746115",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait escalation audit event in the existing event stream; no ref replay or duplicate integration journal."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::47e4081469e519ba1ff4517fb4e3b8ec7bda6f9adecd25f10447a5341f89d18a": {
+      "line": 1788,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "669c0eb6d34b8aa615f3b2a386fa593b38d51fae438ac63bf0f129c24be12d4b",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._complete_claim_preparation::27d2c7227cac1efde9305e4e5792e2b634594c79d3c0000acdecba5067fcd697": {
+      "line": 1241,
+      "owner": "ClaimCommandsMixin._complete_claim_preparation",
+      "call": "set_task_meta",
+      "owner_fingerprint": "9bf1e567448a83f6fa0b24ab7786eef2815879a154637dabe36e74b31ce1a47c",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._complete_claim_preparation::62d546a66dd5a56bab9700432793a30f89d23563495a44f8d593d3b44d01e89b": {
+      "line": 1244,
+      "owner": "ClaimCommandsMixin._complete_claim_preparation",
+      "call": "set_task_meta",
+      "owner_fingerprint": "9bf1e567448a83f6fa0b24ab7786eef2815879a154637dabe36e74b31ce1a47c",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/escalation_commands.py::EscalationCommandsMixin._create_escalation::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 288,
+      "owner": "EscalationCommandsMixin._create_escalation",
+      "call": "insert",
+      "owner_fingerprint": "622139d33b44c7e86fa57ecc80997d50ccd4ef5d376c1758e039676349ec7b2d",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/integration_commands.py::IntegrationCommandsMixin._reopen_source_ci_once::99067e5d5da4bc5efd63f84a8dbf3d8a88481ddf555f7b70a646a51fe37b5581": {
+      "line": 795,
+      "owner": "IntegrationCommandsMixin._reopen_source_ci_once",
+      "call": "log_event",
+      "owner_fingerprint": "c6fc0a4c606d946b039eda742965603117fe951d8157a18ca15285a10f5e810b",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::da4a85ceaecac9a0a1152f3e0883f7f88015afbe1b94fb6f5e36892a01f386b4": {
+      "line": 1501,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::4c9eda3727972063970ceb5f31add9dca5ecf28f36a7217710d665d7181a99bb": {
+      "line": 1503,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::e6420f7ac1c540cf49ce31f733f1e46efaca47d04099608408916ce1c06433ab": {
+      "line": 1573,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::ae11c6bd4fb43bd6de75c4c48200714e0e53b8fabfe707dbbd4107030938735a": {
+      "line": 1505,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::be73c4ceb2c880e944a4b02d2f545fec23c5e2b042151119ccb55a6a109bcd41": {
+      "line": 1507,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::f27f9aaff90d2f291ca36b29a447e4ecbd3822acfd900bbda99ee4792c8e586f": {
+      "line": 1511,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::4440a33c54ab4fa4c809666198358bb0499a892c5fc60e199b16f28357f6a517": {
+      "line": 1513,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::dc542d68e996f280c4f1a0ad5174d7f358d5e33051a34bae65de5a76b92faf40": {
+      "line": 1515,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::56578aa26104563e627d6920b6ab71ed75c43b52451419defe2a62b353044c31": {
+      "line": 1517,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::ca3f2cdcd35a7a2089869aaff868b1ed242d5a4dc3a16c2f22bbee657ab3d40f": {
+      "line": 1775,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::f3b4697bfd97ba0305066ae8ff852bfbb7c8f4a9737eb15f0d6b36946b634acd": {
+      "line": 1757,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/commands/session_commands.py::SessionCommandsMixin._close_task_ordinary::660e646c2bc73a87acbd9635c6d7c2d7bfb27bc207880247753c79164914ad87": {
+      "line": 1901,
+      "owner": "SessionCommandsMixin._close_task_ordinary",
+      "call": "set_task_meta",
+      "owner_fingerprint": "1eb444c96571361506c42465779b690cb0d9a45e99df53c09bf3f37838cce511",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/database/queries/archive_queries.py::ArchiveQueryMixin._archive_task_on::6ee0195b41e365a4f138cbf111c69b21f7782f9b3bc5c059df2281abfd263cfe": {
+      "line": 397,
+      "owner": "ArchiveQueryMixin._archive_task_on",
+      "call": "log_event",
+      "owner_fingerprint": "56c48bd997c0ddc82a143baa8acd79b70342cae9ffe687ae6426cd09e80fb73c",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin.park_task_for_continuation::9db730027a1de7e70c139ab21146787d9948bcc16f5a6fec39ca36519907ee96": {
+      "line": 1117,
+      "owner": "ClaimQueryMixin.park_task_for_continuation",
+      "call": "log_event",
+      "owner_fingerprint": "21abdb7096408de95dde1329941055b5228d0d661d59671eb637416576ea9a47",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/database/queries/gate_queries.py::GateQueriesMixin._forget_generated_pr_links::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
+      "line": 425,
+      "owner": "GateQueriesMixin._forget_generated_pr_links",
+      "call": "delete",
+      "owner_fingerprint": "1b2dee51bd8a2a9ce6dcdb791a37e62253074fea3f5aeda927ef272326532e15",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/database/queries/task_queries.py::TaskQueryMixin.set_task_meta::be3be394bad4eaa21aa8a28db135b02557490ddb64be7fdc9e1c1efef1d879ec": {
+      "line": 2526,
+      "owner": "TaskQueryMixin.set_task_meta",
+      "call": "pg_insert",
+      "owner_fingerprint": "0a8e405f2d5c5e99eaab652601cdf343b26f43cdecd66fba6fd13906d33614e6",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/database/queries/wait_queries.py::register_wait::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 439,
+      "owner": "register_wait",
+      "call": "insert",
+      "owner_fingerprint": "080bd0fc1f60c258a556d6c63b520d1791c0048a242ab2686a264d51b40f7757",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.remove_missing_workspace_registration::a5f684862b5f1b5f0686966e672650a3dd7af3f0bf0904e8dfdd4ed91901feca": {
+      "line": 250,
+      "owner": "WorkspaceQueryMixin.remove_missing_workspace_registration",
+      "call": "log_event",
+      "owner_fingerprint": "42d661a286261f42d5b20053e7be13cd0277ba64be0f359d2a817f348bc6370d",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/integration/completed_container_recovery.py::CompletedContainerRecovery.run::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 420,
+      "owner": "CompletedContainerRecovery.run",
+      "call": "insert",
+      "owner_fingerprint": "e1d260204da20dd44a3bf84ae788412ed502b6970a487c81d5552260f267e1c5",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/integration/superseded_completion.py::SupersededCompletion.run::3269b48f6c87f0167f0f8b51b4cd513461dce8207576390f7135309e684c4cfd": {
+      "line": 170,
+      "owner": "SupersededCompletion.run",
+      "call": "append_integration_subject_journal_on",
+      "owner_fingerprint": "a54b809a67a712b729839e394c1cb94422ef5c15d34a52509ba5d1f7775283ab",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/wait_runtime/lifecycle.py::WaitLifecycle.suspend::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 161,
+      "owner": "WaitLifecycle.suspend",
+      "call": "insert",
+      "owner_fingerprint": "a73d1f3c6ac312e2b3b5c93467514cf7b3f5993e859f936c215cf078d9201eae",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/wait_runtime/scheduler.py::SchedulerWaitService.deadline_locked::e5139650d0a374a5e87df9bbfe8b5821ca25c26574dd678280b656466cf16ca5": {
+      "line": 281,
+      "owner": "SchedulerWaitService.deadline_locked",
+      "call": "log_event",
+      "owner_fingerprint": "a84054d6348ba805dae249dbbaa80e19046888fa8704921427010ca312fe6e41",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/waits/decisions.py::WaitDecisions.audit::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 88,
+      "owner": "WaitDecisions.audit",
+      "call": "insert",
+      "owner_fingerprint": "1b62cdf43d63f7c9dc6d867841cd777c1151fd8abe15feeaab4bb87574bb4e9e",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/waits/decisions.py::WaitDecisions.resolve_escalation::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 111,
+      "owner": "WaitDecisions.resolve_escalation",
+      "call": "insert",
+      "owner_fingerprint": "e236cfadc13e31d359121eabcd134b9f2eeb27946253a4369e37811c7702267a",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/waits/decisions.py::WaitDecisions.human::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 359,
+      "owner": "WaitDecisions.human",
+      "call": "insert",
+      "owner_fingerprint": "aa5dbed2849f26490ab8df453422e97c075f43fca9e5e90a3bb499773c8c704d",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/waits/dispatcher.py::WakeDispatcher.finish::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 184,
+      "owner": "WakeDispatcher.finish",
+      "call": "insert",
+      "owner_fingerprint": "d2454986d593395624ba6150c30b2a2c02a6606612f82237cc964a2190b69432",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/waits/mail.py::acknowledge_in_place::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 80,
+      "owner": "acknowledge_in_place",
+      "call": "insert",
+      "owner_fingerprint": "e2817a41c581088dc14f977ee4ae0d13754cdc0afa5f018bcbef10062da61b34",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
+    },
+    "src/waits/resume_ack.py::acknowledge::2d36ab3da05dcd99c7a0cb4b8a22925dd23e723147d1b0fe6a07ff4716ee55ac": {
+      "line": 122,
+      "owner": "acknowledge",
+      "call": "insert",
+      "owner_fingerprint": "fe2994f1e88e41aab93810bdb6e25522956f62f9c72df76e1ba45a21d5674b7c",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
     }
   },
   "generic_dependencies": {
@@ -16562,7 +17373,279 @@
     "src/database/tables.py::ask_reconciliation_cases": "Generic source/transport evidence conflicts and explicit repair receipts for every ask source; no integration subject journal or ref replay authority.",
     "src/database/tables.py::ask_source_aliases": "Generic human request source identity and alias reconciliation shared by every source kind; integration source interpretation remains independently charged.",
     "src/database/tables.py::review_feedback_obligations": "Generic accepted review feedback, ownership and completion evidence; no integration branch, publication state or ref replay authority.",
-    "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged."
+    "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged.",
+    "src/wait_runtime/scheduler.py::enabled": "Generic verified-wait lifecycle/configuration or ordinary routing helper; no integration ref mutation or duplicate lifecycle storage.",
+    "src/database/tables.py::wait_measurements": "Generic wait duration and continuation cost samples; no integration lifecycle or reference replay authority.",
+    "src/waits/ownership.py::fence_owner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::latest_note": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/agent_commands.py::AgentCommandsMixin._cmd_list_workspace_kinds": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_catalog.py::import from src.profiles.mcp_probe import ProbedTool, ProbeResult, probe_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/mail.py::import from src.database.queries.wait_queries import REGISTRATION_LOCK, verify_owner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::wait_next_step": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/reservations.py::enabled": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_queries.py::import from src.waits.graph import GRAPH_LOCK, add_edges, clear_edges, lock_component_tasks, lock_graph, recompute_from, would_create_cycle": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_kinds_queries.py::WorkspaceKindQueryMixin._row_to_workspace_kind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::measurement_medians": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/agent_commands.py::AgentCommandsMixin._cmd_remove_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_wait_commands.py::import from src.collaboration import CollaborationError, WAIT_REASONS, is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::typed_match": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/scheduler.py::place_pool_actions": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::clear_edges": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::MESSAGE_TO_KINDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/wait_commands.py::WaitCommandsMixin._cmd_wait_get": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/doctor/worktree_checks.py::describe_shortfall": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::recompute_from": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.get_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_queries.py::REGISTRATION_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/adapters/message.py::import from src.database.tables import collaboration_members, collaboration_messages, collaboration_threads, messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decision.py::measured_inputs": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/__init__.py::import from src.waits.registry import ConditionRegistry, build_registry": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace_attachments.py::effective_requirements": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::CLAIM_FAILURES": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_parser.py::parse_workspace_kind_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/agent_commands.py::AgentCommandsMixin._cmd_edit_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin._locked_collaboration": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::WakeDispatcher.commit": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::slot_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/adapters/message.py::MessageAdapter.snapshot": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::would_create_cycle": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::import from src.waits.resource_sources import resource_invalidation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/wait_commands.py::WaitCommandsMixin._cmd_wait_register": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/tables.py::collaboration_messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::import from src.profiles.workspace_kind_parser import parse_workspace_kind_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/core.py::Orchestrator._on_config_reloaded": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::import from src.models import MESSAGE_FROM_KINDS, MESSAGE_TO_KINDS, Message, SessionRecord, TaskStatus": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::import from src.waits.sources import execute_workspace_release": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/doctor/stall_checks.py::_slot_capacity_findings": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::import from src.agent_waits import MAX_DIGEST_BYTES, TERMINAL_TASK_STATUSES, ProducerObservation, WaitError, WaitResolution, job_wait_deadline, resolve_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/mail.py::acknowledge_in_place": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_kinds_queries.py::WorkspaceKindQueryMixin.upsert_workspace_kind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::collect_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/measurements.py::cost_values": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace_attachments.py::import from src.models import SYSTEM_KIND_SCOPE, AgentState, ResolvedRequirement, Task, TaskStatus, WorkspaceAttachment, WorkspaceAttachmentSet, WorkspaceKind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/tables.py::wait_listener_cursors": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::WakeDispatcher.__init__": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::import from src.pool_claims import pool_claim_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/doctor/builtin.py::_scan_vault": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/worktree_commands.py::import from src.models import KIND_MODE_WORKTREE": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::import from src.database.queries.message_queries import _new_message_id": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::KIND_MODE_WORKTREE": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::resolve_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::record_pool_observations": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::job_wait_deadline": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_kinds_queries.py::WorkspaceKindQueryMixin.resolve_workspace_kind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decision.py::decide_sleep": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_registration.py::path_is_missing": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager.ensure_slot_checkout": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/pool_claims.py::MAX_IDENTICAL_CLAIM_FAILURES": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::disabled_slots_in_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::deadline_for": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_registry.py::vault_path_for": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decisions.py::import from src.waits.ownership import fence_owner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/git/manager.py::_object_store_fingerprint": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.acquire_one_unlocked": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::MessageCommandsMixin._cmd_message_send": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/job_commands.py::JobCommandsMixin._cmd_job_submit": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/message_queries.py::_new_message_id": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_source_queries.py::import from src.waits.sources import _SOURCE_SEQUENCE_LOCK, record_source_event": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::MessageCommandsMixin._cmd_message_list": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin._validate_wait_source": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/session_queries.py::SessionQueryMixin.record_pool_claim_failure": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/claim_timing.py::claim_selection": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/messages/delivery.py::_render_nudge": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.delete_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/resource_sources.py::resource_invalidation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/pools.py::PoolsMixin._size_pool_actions": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::import from src.waits.loops import progress": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/listener.py::import from src.database.tables import sessions, wait_listener_cursors, wait_records, wait_source_events": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace.py::import from src.models import AgentState, KIND_MODE_WORKTREE, RepoSourceType, Task, TaskStatus, Workspace, WorkspaceMode": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._cmd_edit_mcp_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/timers.py::import from src.database.queries.wait_queries import REGISTRATION_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_registry.py::validate_vault_id": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/listener.py::WaitSourceListener.locked_lease": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::import from src.waits.graph import clear_edges, lock_component_tasks, lock_graph, recompute_from": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::import from src.claim_preparation import CompletedClaimPreparation, same_session_launch": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_queries.py::wait_explain": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace.py::WorkspaceMixin._ensure_control_files_excluded": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._pool_context_claim_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_source_queries.py::WaitSourceQueriesMixin.wait_source_watermark": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::WORKSPACE_KIND_MODES": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._vault_mcp_server_path": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace.py::WorkspaceMixin._ensure_worktree_slots_for_task": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::import from src.claim_timing import claim_phase, timed_claim_phase": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/cli/messages.py::message_send": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._completed_preparation_response": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/reconciler.py::import from src.pool_claims import CLAIM_FAILURE_DRAIN_REASON, MAX_IDENTICAL_CLAIM_FAILURES, idle_pool_claim_loop_stalled, is_live_pool_claim_task_status, pool_claim_budget_exhausted, pool_claim_cap, pool_claim_loop_stall_seconds": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/reconciler.py::SessionReconciler._step_claim_refusals": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::QUARANTINED_DIRTY": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::MessageCommandsMixin._cmd_message_reply": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/__init__.py::__all__['build_registry']": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/pools.py::import from src.scheduler import PlacementCandidate, PoolKey, PoolProjectSupply, PoolSupply, place_pool_actions, rebalance_idle_pools, size_pools": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace.py::WorkspaceMixin._slot_branch_affinity": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/slot_restore.py::restore_disabled_slots": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/worker_recovery.py::record_failure": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin.reconcile_agent_waits": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::WorkspaceKindStore._path_for_kind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.close_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::meaningful": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::reason_code": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_parser.py::import from src.models import WORKSPACE_KIND_MODES, WorkspaceKind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decision.py::ceiling_anchor": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::MESSAGE_FROM_KINDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/claim_timing.py::current_claim_timing": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.list_collaboration_threads": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/preparation_failure.py::preparation_identity": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/timers.py::WaitTimerDriver.fire": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::add_edges": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/registry.py::build_registry": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_lifecycle_queries.py::import from src.collaboration import CONTENT_RETENTION_SECONDS, TOMBSTONE_RETENTION_SECONDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/loops.py::progress": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/core.py::Orchestrator._reap_worktree_slots": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/source_sql.py::_SEQUENCE_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_registration.py::workspace_missing_detail": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/resume_ack.py::acknowledge": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decisions.py::WaitDecisions.decide": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/pools.py::PoolsMixin._check_pool_progress": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_lifecycle_queries.py::import from src.database.tables import collaboration_messages as links, collaboration_threads as threads, messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::import from src.waits.ownership import fence_owner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::import from src.database.queries.job_queries import unpinned_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/listener.py::WaitSourceListener.lease": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::KIND_MODE_EXCLUSIVE_CLONE": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_registry.py::render_server_markdown": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_source_queries.py::WaitSourceQueriesMixin.purge_wait_source_events": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::WorkspaceKindStore._normalize_fresh_install_modes": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::import from src.workspace_disable import CLAIM_FAILURES, disable_fields": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/merge_slot.py::break_expired_merge_slots": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.release_workspaces_for_agent": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::_SOURCE_SEQUENCE_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._run_claim_preparation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/worktree_commands.py::import from src.workspace_registration import path_is_missing, workspace_missing_detail": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/claim_timing.py::timed_claim_phase": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._foreign_slot_claim_prepare_failed": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/measurements.py::update_sample": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/tables.py::collaboration_threads": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::import from src.database.queries.continuation_queries import wait_outcome_envelope": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_kinds_queries.py::import from src.models import KIND_MODE_WORKTREE, SYSTEM_KIND_SCOPE, WorkspaceKind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace.py::WorkspaceMixin._ensure_worktree_slots": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/holding.py::execution_waits": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/session_queries.py::SessionQueryMixin.record_claim_refusal": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/claim_timing.py::claim_phase": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._recover_abandoned_merge": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::WorktreeSlotManager._run_setup": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::describe_disabled_slot": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_queries.py::replace_wait_edges": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/adapters/message.py::MessageAdapter.authorise": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/collaboration.py::PARTNER_GRACE_SECONDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_source_queries.py::import from src.database.tables import wait_listener_cursors, wait_source_events": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/worktree_manager.py::resolve_managed_exclude_path": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/pool_claims.py::CLAIM_FAILURE_DRAIN_REASON": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/listener.py::import from src.database.queries.wait_queries import REGISTRATION_LOCK, verify_owner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/collaboration.py::is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::import from src.collaboration import PARTNER_GRACE_SECONDS, is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/claim_preparation.py::same_session_launch": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/agent_commands.py::import from src.workspace_disable import ENABLE_FIELDS, OPERATOR, disable_fields": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_inline_migration.py::_write_registry_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/slot_restore.py::_reconcile_slot": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.release_workspaces_for_task": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::continuation_prime_context": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::degrade_checkpoint": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/listener.py::WaitSourceListener.drain": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::_is_worktree_mode": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_inline_migration.py::import from src.profiles.mcp_registry import McpServerConfig, render_server_markdown, vault_path_for": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._record_claim_refusal": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/mail.py::held_messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/reconciler.py::SessionReconciler._idle_stop_candidate": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/session_commands.py::SessionCommandsMixin._cmd_session_sleep": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.append_collaboration_message": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._attempt_claim": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/slot_restore.py::import from src.workspace_disable import CLAIM_FAILURE_COOLDOWN, CLAIM_FAILURES, ENABLE_FIELDS, OPERATOR, QUARANTINED_DIRTY, disable_fields, disabled_slots_in_cap, reason_code": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_registry.py::derive_server_id": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::OPERATOR": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/dispatcher.py::WakeDispatcher.finish": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/wait_v2_commands.py::WaitV2CommandsMixin._wait_v2_register": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/surface_commands.py::SurfaceCommandsMixin._cmd_task_handoff": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._build_mcp_config": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::agent_note": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decisions.py::WaitDecisions.human": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/legacy.py::translate_registration": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/collaboration.py::TOMBSTONE_RETENTION_SECONDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._cmd_create_mcp_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._session_block": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/scheduler.py::rebalance_idle_pools": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._mcp_project_scope": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/workspace_disable.py::CLAIM_FAILURE_COOLDOWN": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/mail.py::import from src.waits.holding import WAKE_BODY_KINDS, addressed_to_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/worktree_commands.py::WorktreeCommandsMixin._cmd_workspace_doctor": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decision.py::project_policy": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::render_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/reconciler.py::SessionReconciler._record_worker_failure": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/pool_claims.py::pool_claim_budget_exhausted": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/vault_index.py::is_generated_hub_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/wait_queries.py::resolve_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._cmd_probe_mcp_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::WorkspaceKindStore.scan": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.acquire_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::import from src.collaboration import CollaborationError, is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/handoffs.py::render_note": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin._collaboration_members": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::AgentWaitReconciler.tick": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin._observe_collaboration_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_kinds_queries.py::WorkspaceKindQueryMixin.list_workspace_kinds_for_project": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/job_commands.py::JobCommandsMixin._cmd_job_result": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::execute_workspace_release": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.release_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/decisions.py::import from src.database.queries.wait_queries import wait_explain": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/holding.py::addressed_to_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_wait_commands.py::MessageWaitCommandsMixin._cmd_message_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/pool_claims.py::pool_claim_cap": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/adapters/message.py::MessageAdapter.collaboration_snapshot": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::MessageCommandsMixin._cmd_message_inbox": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_registry.py::parse_server_markdown": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/message_commands.py::MessageCommandsMixin._ordinary_message_sender": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/agent_waits.py::MAX_DIGEST_BYTES": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/workspace_queries.py::import from src.models import KIND_MODE_WORKTREE, RepoSourceType, Workspace, WorkspaceMode": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::import from src.vault_index import is_generated_hub_file": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::import from src.claim_timing import ClaimTiming, claim_phase, claim_selection, current_claim_timing, timed_claim_phase": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/job_queries.py::JobQueriesMixin.reconcile_job_results": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.get_collaboration_thread_project": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/prime/sections.py::build_messages_section": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/checkpoint.py::collect_checkpoint_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/doctor/worktree_checks.py::find_capacity_shortfalls": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/jobs/result.py::bounded": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.create_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::_bounded_digest": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.accept_collaboration": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/wait_commands.py::import from src.agent_waits import WaitError, deadline_for, typed_match, wait_next_step": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_catalog.py::refresh_one": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/workspace_kind_registry.py::import from src.models import KIND_MODE_EXCLUSIVE_CLONE, KIND_MODE_WORKTREE, SYSTEM_KIND_SCOPE, WorkspaceKind": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/scheduler.py::size_pools": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_lifecycle_queries.py::CollaborationLifecycleQueriesMixin.reconcile_collaborations": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/pools.py::PoolsMixin._reconcile_pools_inner": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/mcp_commands.py::McpCommandsMixin._cmd_delete_mcp_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/continuation_queries.py::wait_outcome_envelope": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/profiles/mcp_probe.py::probe_server": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/jobs/result.py::result_digest": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin.register_agent_wait_in_transaction": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/git_ops.py::GitOpsMixin._workspace_is_worktree_mode": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._await_attempt": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/adapters/message.py::import from src.collaboration import is_collaboration_thread": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::AgentWaitQueriesMixin._observe_agent_wait": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/sessions/worker_recovery.py::save_continuation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.remove_collaboration_member": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/models.py::SYSTEM_KIND_SCOPE": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/job_queries.py::unpinned_workspace": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/commands/claim_commands.py::ClaimCommandsMixin._complete_claim_preparation": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/tables.py::collaboration_members": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/collaboration.py::CONTENT_RETENTION_SECONDS": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/agent_wait_queries.py::import from src.database.tables import agents, archived_tasks, collaboration_messages, jobs, messages, projects, sessions, task_completion_records, tasks": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::import from src.database.tables import archived_tasks, collaboration_members as members, collaboration_messages as links, collaboration_threads as threads, messages, sessions, tasks": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/provider_availability_queries.py::ProviderAvailabilityQueryMixin.save_provider_availability": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/database/queries/collaboration_queries.py::CollaborationQueriesMixin.read_collaboration_messages": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/sources.py::import from src.waits.source_sql import _SEQUENCE_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/orchestrator/workspace_attachments.py::__all__['SYSTEM_KIND_SCOPE']": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/checkpoint.py::import from src.handoffs import collect_facts": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged.",
+    "src/waits/graph.py::GRAPH_LOCK": "Generic scheduling, telemetry or wait helper; integration-specific callers remain independently charged."
   },
   "exclusion_policy": {
     "tests": "Fixtures and tests do not ship as production mechanisms.",

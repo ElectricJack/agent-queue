@@ -295,10 +295,16 @@ class HibernationTransaction:
             await self.orch._release_workspace_and_cleanup(workspace)
         async with self.db._engine.begin() as conn:
             _, _, current = await locked_suspension(conn, wait["id"])
-            facts = {**current["facts"], "workspace_released_at": self.clock()}
+            facts = {**current["facts"], "workspace_released_at": self.clock(),
+                     "costs": {**current['facts'].get('costs', {}),
+                               'teardown_seconds': max(0, self.clock() - current['facts'].get(
+                                   'hibernation', {}).get('stop_started_at', current['created_at']))}}
             await conn.execute(update(continuations).where(
                 continuations.c.id == current["id"],
             ).values(facts=facts, version=current["version"] + 1))
+            from src.waits.measurements import update_sample
+
+            await update_sample(conn, wait, {**current, 'facts': facts})
         return {"success": True, "parked": True, "continuation_id": intent["id"]}
 
     async def transition(self, conn, deadline, wait, *, now, handler):

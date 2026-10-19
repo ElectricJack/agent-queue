@@ -3,7 +3,18 @@
 from sqlalchemy import Text, cast, select, update
 
 from src.database.tables import admission_reservations as reservations, projects, tasks
-from src.waits.scheduler import enabled
+
+def enabled(config):
+    policy = getattr(config, "wait_policy", None)
+    return (getattr(policy, "v2_enabled", False) is True
+            and getattr(policy, "scheduler_waits_enabled", False) is True)
+
+
+class SchedulerPolicy:
+    in_place_ceiling_seconds = 1800
+
+    def escalation_seconds(self, kind):
+        return None  # Only branch-holder reservations have scheduler deadlines.
 
 
 def reserved_statement(candidate, project_id, profile_id):

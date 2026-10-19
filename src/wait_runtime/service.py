@@ -11,8 +11,8 @@ from src.waits.dispatcher import WakeDispatcher
 from src.waits.graph import recompute_from
 from src.waits.source_locking import lock_database_source
 from src.waits.decisions import WaitDecisions
-from src.waits.lifecycle import WaitLifecycle
-from src.waits.scheduler import SchedulerWaitService
+from src.wait_runtime.lifecycle import WaitLifecycle
+from src.wait_runtime.scheduler import SchedulerWaitService
 
 
 class WaitService:
@@ -43,8 +43,10 @@ class WaitService:
                                ("wait_source_commit", self.source_commit),
                                ("wait_decide", self.decisions.decide),
                                ("wait_register", self.lifecycle.register),
+                               ("wait_graph", self.graph),
                                ("wait_ack", self.lifecycle.acknowledge),
                                ("wait_resume_dispatch", self.lifecycle.resume.dispatch),
+                               ("wait_evict", self.lifecycle.evict),
                                ("wait_sleep_decide", self.lifecycle.sleep_decide)):
             if name in handlers:
                 raise ValueError(f"duplicate wait lifecycle owner: {name}")
@@ -57,6 +59,7 @@ class WaitService:
         deadlines["escalation"] = self.escalation_deadline
         deadlines["reservation"] = self.scheduler.deadline_locked
         deadlines["transition"] = self.lifecycle.hibernate.transition
+        deadlines["ceiling"] = self.lifecycle.ceiling
 
     async def lock_source(self, conn, condition):
         if condition.kind == "resource":
@@ -64,6 +67,17 @@ class WaitService:
             # dispatcher's graph/owner lock. Events never supply its verdict.
             return
         await lock_database_source(conn, condition)
+
+    async def graph(self, args, *, principal, scope, handler):
+        from src.database.queries.wait_queries import wait_graph
+
+        async with self.orch.db._engine.connect() as conn:
+            result = await wait_graph(
+                conn, project_id=scope.get('project_id'), fleet=scope.get('fleet', False),
+                fleet_authorized=scope.get('fleet', False), costs=args.get('costs', False),
+                now=self.lifecycle.clock(),
+            )
+        return {'success': True, 'graph': result}
 
     async def escalation_deadline(self, conn, deadline, wait, *, now, handler):
         callback = (self.scheduler.deadline_locked if wait["origin"] == "scheduler"

@@ -304,3 +304,25 @@ async def continuation_prime_context(conn, *, task_id, project_id, session_id):
             wait, intent, held_messages=[m["id"] for m in held], decision=decision
         ),
     }
+
+
+async def measurement_medians(conn, project_id, *, now):
+    """Thirty-day medians with separate duration and complete resume-cost cohorts."""
+    from sqlalchemy import func
+    from src.database.tables import wait_measurements as measurements
+
+    recent = (measurements.c.project_id == project_id,
+              measurements.c.recorded_at >= now - 30 * 86400)
+    durations = (await conn.execute(select(
+        measurements.c.condition_kind, measurements.c.source_class,
+        func.count().label('count'),
+        func.percentile_cont(0.5).within_group(measurements.c.waited_seconds).label('median'),
+    ).where(*recent).group_by(measurements.c.condition_kind,
+                             measurements.c.source_class))).mappings().all()
+    total = (measurements.c.teardown_seconds + measurements.c.setup_seconds
+             + measurements.c.rebuild_seconds)
+    cost = (await conn.execute(select(
+        func.count().label('count'), func.percentile_cont(0.5).within_group(total).label('median'),
+    ).where(*recent, measurements.c.hibernated.is_(True), total.is_not(None)))).mappings().one()
+    return {'durations': {(r['condition_kind'], r['source_class']): dict(r) for r in durations},
+            'cost': dict(cost)}

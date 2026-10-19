@@ -434,6 +434,7 @@ class PoolsMixin:
                         idle_session_ids=tuple(local.idle_session_ids),
                         starting=local.starting,
                         repair_ready=repair_ready,
+                        evictable=local.evictable,
                     )
                 )
 
@@ -561,7 +562,7 @@ class PoolsMixin:
                 )
         eligible = {
             start.key for start in starts
-            if any(
+            if start.reason != 'evict' and any(
                 candidate.project_id == start.project_id
                 and candidate.ready > len(candidate.idle_session_ids) + candidate.starting
                 for candidate in measurement.candidates[start.key]
@@ -611,6 +612,12 @@ class PoolsMixin:
     async def _reconcile_pools_inner(self, *, hierarchy_modes=None) -> None:
         self._reap_pool_launches()
 
+        # Fund fresh continuation sessions before replenishing a warm idle
+        # pool, using the same admission reader and durable reservation fence.
+        service = getattr(self, 'wait_service', None)
+        if service and service.enabled:
+            await service.lifecycle.resume_pending()
+
         measurement = await self._measure_pools(hierarchy_modes=hierarchy_modes)
         # A drained holder's seat is counted from the next tick on.
         await self._release_container_claims(measurement.pool_sessions)
@@ -620,9 +627,16 @@ class PoolsMixin:
         from src.waits.sources import record_pool_observations
 
         await record_pool_observations(self.db, measurement, now)
+        self._wait_slot_pressure = {
+            (c.project_id, key.profile_id): c.ready - len(c.idle_session_ids) - c.starting
+            for key, candidates in measurement.candidates.items() for c in candidates
+        }
         starts, drains, starvations = place_pool_actions(
             actions=actions, candidates=measurement.candidates
         )
+        from src.wait_runtime.eviction import request_evictions
+
+        starts = await request_evictions(self, starts)
         relocations, self._pool_rebalance_since = rebalance_idle_pools(
             candidates=measurement.candidates,
             starts=starts,

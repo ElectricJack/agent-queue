@@ -5,18 +5,16 @@ from src.database.tables import sessions, tasks, wait_records
 
 
 async def evictable_sessions(db, config):
+    from src.waits.holding import execution_waits
+
     if getattr(getattr(config, "wait_policy", None), "v2_enabled", False) is not True:
         return frozenset()
     async with db._engine.connect() as conn:
-        return frozenset((await conn.execute(select(sessions.c.id).join(
-            tasks, tasks.c.id == sessions.c.task_id,
-        ).join(wait_records, wait_records.c.session_id == sessions.c.id).where(
-            sessions.c.state == "running", sessions.c.desired_state == "running",
-            sessions.c.claim_phase == "active", tasks.c.status == "WAITING",
-            wait_records.c.owner_kind == "task", wait_records.c.owner_id == tasks.c.id,
-            wait_records.c.claim_epoch == tasks.c.claim_epoch,
-            sessions.c.last_claim_epoch == tasks.c.claim_epoch,
-            wait_records.c.outcome == "pending", wait_records.c.verification_state == "verified",
+        return frozenset((await conn.execute(execution_waits().with_only_columns(
+            sessions.c.id, maintain_column_froms=True,
+        ).where(
+            tasks.c.status == "WAITING", wait_records.c.owner_kind == "task",
+            wait_records.c.outcome == "pending",
             wait_records.c.sleep_decision == "in_place",
         ))).scalars())
 

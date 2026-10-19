@@ -130,11 +130,11 @@ class AdmissionReader:
         resuming, reserved = await continuation_occupancy(o.db, config)
         live = [dict(row) for row in (await conn.execute(select(sessions).where(
             (sessions.c.lifecycle == "pool") | sessions.c.id.in_(resuming),
-            sessions.c.state.in_(("starting", "running")),
-            sessions.c.desired_state == "running",
+            sessions.c.state.in_(("starting", "running", "draining")),
         ))).mappings()]
         current = [s for s in live if s["project_id"] == task["project_id"]]
         idle = [s for s in current if s["profile_id"] == task["profile_id"]
+                and s['desired_state'] == 'running'
                 and s["state"] == "running" and not s["task_id"] and not s["claim_phase"]
                 and not idle_pool_claim_loop_stalled(SimpleNamespace(**s), now=self.clock(),
                     stall_seconds=pool_claim_loop_stall_seconds(config.swarm))]

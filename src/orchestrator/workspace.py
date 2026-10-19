@@ -1438,7 +1438,7 @@ class WorkspaceMixin:
             self._register_slot_bases([ws], base.workspace_path)
 
         if task.status == TaskStatus.RESUME_PENDING:
-            from src.waits.resume import verify_saved_branch
+            from src.wait_runtime.resume import verify_saved_branch
 
             await verify_saved_branch(self, task, slot_dir)
 

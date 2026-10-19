@@ -20,7 +20,7 @@ from src.waits.admission import AdmissionReader
 from src.waits.conditions import Scope, WaitError
 from src.waits.registry import build_registry
 from src.waits.reservations import consume_reservation
-from src.waits.scheduler import SchedulerWaitService
+from src.wait_runtime.scheduler import SchedulerWaitService
 from tests.db_fixtures import lease_dsn
 
 NOW = 1_800_000_000.0
@@ -296,7 +296,9 @@ async def test_in_place_wait_is_evictable_but_keeps_capacity(env):
         bounds={key: (0, 1)}, global_cap=1, surplus_since={}, now=NOW,
         scale_down_grace=60, max_starts_per_tick=1, max_drains_per_tick=1,
     )
-    assert not actions
+    # A checkpoint request does not fund a new process: the wait still owns
+    # its seat until the stop/save/park transaction completes.
+    assert [(action.kind, action.count) for action in actions] == [('evict', 1)]
 
 
 async def test_priority_donation_orders_reserved_blocker_before_ordinary_work(env):

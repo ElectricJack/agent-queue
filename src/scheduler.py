@@ -641,7 +641,7 @@ class PoolAction:
     """One start or drain to execute for a pool this tick."""
 
     key: PoolKey
-    kind: str  # "start" | "drain"
+    kind: str  # "start" | "drain" | "evict"
     count: int
     session_ids: tuple[str, ...] = ()  # for drains
 
@@ -737,6 +737,17 @@ def size_pools(
         if starts[key]:
             actions.append(PoolAction(key=key, kind="start", count=starts[key]))
 
+    # A waiting writer still consumes its seat. Ask placement to recover it;
+    # only a later proven park permits the replacement start under these caps.
+    evictions_left = max_starts_per_tick
+    for key in keys:
+        sup = supply.get(key, PoolSupply())
+        unserved = demand.get(key, 0) - sup.running_idle - sup.starting
+        n = min(sup.evictable, max(0, unserved), evictions_left)
+        if n:
+            actions.append(PoolAction(key=key, kind="evict", count=n))
+            evictions_left -= n
+
     # --- scale down: grace, then idle sessions oldest-first, bounded per tick
     drains_left = max_drains_per_tick
     for key in keys:
@@ -786,6 +797,7 @@ class PlacementCandidate:
     idle_session_ids: tuple[str, ...] = ()  # oldest first
     starting: int = 0  # of ``live``, how many are still booting
     repair_ready: int = 0  # current active batch repair delegates in ready
+    evictable: int = 0
 
 
 @dataclass(frozen=True)
@@ -795,7 +807,7 @@ class PlacedStart:
     key: PoolKey
     project_id: str
     count: int
-    reason: str  # "train_repair" | "warm_floor" | "deficit" | "spread"
+    reason: str  # "train_repair" | "warm_floor" | "deficit" | "spread" | "evict"
 
 
 @dataclass(frozen=True)
@@ -917,6 +929,20 @@ def place_pool_actions(
         def repair_unserved(c: PlacementCandidate) -> int:
             return c.repair_ready - (len(idle_ids[c.project_id])
                                     + c.starting + pending[c.project_id])
+
+        if action.kind == 'evict':
+            remaining = action.count
+            for candidate in sorted(cands.values(), key=lambda c: (-unserved(c), c.project_id)):
+                if candidate.quarantined or candidate.idle_session_ids or candidate.starting:
+                    continue
+                funded = sum(s.count for s in placed_starts if s.key == action.key
+                             and s.project_id == candidate.project_id and s.reason != 'evict')
+                count = min(remaining, candidate.evictable, max(0, unserved(candidate) - funded))
+                if count:
+                    placed_starts.append(PlacedStart(action.key, candidate.project_id,
+                                                     count, 'evict'))
+                    remaining -= count
+            continue
 
         if action.kind == "start":
             # (project_id, reason) -> count, insertion-ordered so the caller

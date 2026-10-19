@@ -21,21 +21,9 @@ from src.waits.admission import AdmissionReader, branch_holders
 from src.waits.conditions import Condition, NodeKey, Scope, SleepDecision, WaitError, canonical
 from src.waits.graph import add_edges, clear_edges, lock_graph, recompute_from
 from src.waits.registry import build_registry
+from src.waits.reservations import SchedulerPolicy, enabled
 
 logger = logging.getLogger(__name__)
-
-
-def enabled(config):
-    policy = getattr(config, "wait_policy", None)
-    return (getattr(policy, "v2_enabled", False) is True
-            and getattr(policy, "scheduler_waits_enabled", False) is True)
-
-
-class SchedulerPolicy:
-    in_place_ceiling_seconds = 1800
-
-    def escalation_seconds(self, kind):
-        return None  # Only branch-holder reservations have scheduler deadlines.
 
 
 async def close_row(conn, row, *, now, outcome="cancelled", result_ref=None):
@@ -223,6 +211,8 @@ class SchedulerWaitService:
             if not due:
                 return {"success": True, "fired": False}
             result = await self.deadline_locked(conn, due, row, now=now, handler=handler)
+        if payload := result.pop('escalation_event', None):
+            await self.orchestrator.bus.emit('wait.escalated', payload)
         return result
 
     async def deadline_locked(self, conn, due, row, *, now, handler):
@@ -298,7 +288,8 @@ class SchedulerWaitService:
         await conn.execute(update(wait_deadlines).where(
             wait_deadlines.c.id == due["id"],
         ).values(fired_at=now))
-        return {"success": True, "fired": True}
+        return {"success": True, "fired": True,
+                **({'escalation_event': event_payload} if event_payload else {})}
 
 
 async def scheduler_tick(handler):

@@ -123,4 +123,7 @@ async def acknowledge(conn, args, *, scope, now):
             task_id=task["id"], key=key, value=json.dumps(value),
         ).on_conflict_do_update(index_elements=[task_metadata.c.task_id, task_metadata.c.key],
                                 set_={"value": json.dumps(value)}))
+    from src.waits.measurements import update_sample
+
+    await update_sample(conn, wait, intent)
     return result
