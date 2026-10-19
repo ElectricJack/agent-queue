@@ -1,4 +1,4 @@
-"""Verified-wait lifecycle vocabulary (implementation §6; services remain opt-in)."""
+"""Verified-wait lifecycle vocabulary and typed condition boundaries."""
 
 from __future__ import annotations
 
@@ -11,10 +11,11 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert
 
+from src.database.tables import continuations, wait_records
+
 from src.api.models.task import TaskDetail, TaskDict
 from src.commands.task_commands import TaskCommandsMixin
 from src.database.queries.metrics_queries import _live_sessions_stmt
-from src.database.tables import continuations, wait_records
 from src.models import (
     OPEN_TASK_STATUSES,
     SUSPENDED_TASK_STATUSES,

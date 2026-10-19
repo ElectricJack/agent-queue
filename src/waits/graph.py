@@ -134,6 +134,12 @@ async def recompute_from(conn, changed_keys, *, now=None):
                     effective_priority=priority,
                 )
             )
+            from src.database.tables import admission_reservations
+
+            await conn.execute(update(admission_reservations).where(
+                admission_reservations.c.task_id == r["id"],
+                admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+            ).values(effective_priority=priority))
             changed.add(r["id"])
         # Base-only tasks need no donor record. In particular, ordinary v1
         # task_set writes do not introduce v2 lifecycle references.

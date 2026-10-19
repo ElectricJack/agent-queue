@@ -605,6 +605,7 @@ class PoolProjectSupply:
     starting: int = 0
     draining: int = 0
     unresponsive: int = 0
+    evictable: int = 0  # subset of running_busy; still occupies a slot
     idle_session_ids: list[str] = field(default_factory=list)  # oldest first
 
 
@@ -628,6 +629,7 @@ class PoolSupply:
     #: ``draining``, it is live but not supply: it neither satisfies demand
     #: nor is offered to a drain, and the session reconciler recycles it.
     unresponsive: int = 0
+    evictable: int = 0  # subset of running_busy; still occupies a slot
     idle_session_ids: list[str] = field(default_factory=list)  # oldest first
     by_project: dict[str, PoolProjectSupply] = field(default_factory=dict)
 

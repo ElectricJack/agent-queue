@@ -57982,6 +57982,11 @@
             "title": "Running Busy",
             "default": 0
           },
+          "evictable": {
+            "type": "integer",
+            "title": "Evictable",
+            "default": 0
+          },
           "starting": {
             "type": "integer",
             "title": "Starting",
@@ -58661,6 +58666,11 @@
           "running_busy": {
             "type": "integer",
             "title": "Running Busy"
+          },
+          "evictable": {
+            "type": "integer",
+            "title": "Evictable",
+            "default": 0
           },
           "starting": {
             "type": "integer",

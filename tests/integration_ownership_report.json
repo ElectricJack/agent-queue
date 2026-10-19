@@ -9776,6 +9776,42 @@
       ],
       "baseline_span": null
     },
+    "src/database/queries/wait_queries.py::wait_graph": {
+      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+    },
+    "src/waits/adapters/batch.py::BatchAdapter.snapshot": {
+      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+    },
+    "src/waits/adapters/ci.py::CIAdapter.authorise": {
+      "reason": "Read-only wait evidence adapter inspects authoritative integration ownership; entire adapter remains charged."
+    },
+    "src/database/queries/wait_queries.py::import from src.database.tables import agents, admission_reservations, continuations, integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, messages, projects, sessions, tasks, wait_deadlines, wait_edges, wait_escalations, wait_priority_projection, wait_records": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/waits/adapters/batch.py::import from src.database.tables import integration_batch_members as members": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/waits/adapters/batch.py::import from src.database.tables import integration_batches as batches": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_batches as batches": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/waits/adapters/ci.py::import from src.database.tables import integration_candidate_revisions as revisions": {
+      "reason": "Shared integration source imports for verified wait observation; charged without moving integration authority."
+    },
+    "src/api/target_scope.py::import from src.database.tables import agent_waits, continuations, escalation_messages, escalations, gates, integration_batches, integration_branch_owners, integration_candidate_resolutions, integration_check_evidence, integration_outbox, integration_parent_episodes, integration_subjects, jobs, projects, repos, task_branch_origins, test_selection_promotions, test_selections, wait_records": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::AdmissionReader.observe_task": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::branch_holders": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::import from src.database.tables import integration_batch_members, integration_batches, integration_branch_owners, integration_repair_stages, projects, sessions, tasks, token_ledger": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/admission.py::reservation_scope": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/reservations.py::reserved_statement": "Admission reads current integration branch, batch, repository and route constraints; charged to integration ownership.",
+    "src/waits/scheduler.py::SchedulerWaitService.deadline": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
+    "src/waits/scheduler.py::import from src.waits.admission import AdmissionReader, branch_holders": {
+      "reason": "Authoritative branch-holder admission and escalation reads; charged to integration ownership."
+    },
     "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
       "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
     },
