@@ -1447,25 +1447,45 @@ def test_ci_scenario_groups_cover_every_scenario_once():
     assert {phase.key for phase in smoke.FAILOVER_PHASES} == {"S16a", "S16b"}
 
 
-def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(monkeypatch):
+@pytest.mark.parametrize("readiness_failure", [False, True])
+def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(
+    monkeypatch, readiness_failure,
+):
     smoke = _load_smoke()
     calls: list[tuple[str, ...]] = []
-    restored: list[bool] = []
+    failure = smoke.Failure("readiness still unavailable after restoring the failover policy")
 
     def fake_aq(*args, **_kwargs):
         calls.append(args)
         return {"enabled": args[-1] == "--enabled"}
 
-    monkeypatch.setattr(smoke, "aq", fake_aq)
-    monkeypatch.setattr(smoke, "_s16", lambda state: "manual sweep complete")
-    monkeypatch.setattr(smoke, "_restore_providers", lambda: restored.append(True))
+    def manual_sweep(_state):
+        calls.append(("manual sweep",))
+        return "manual sweep complete"
 
-    assert smoke.s16_provider_failover({}) == "manual sweep complete"
+    def readiness():
+        calls.append(("readiness",))
+        if readiness_failure:
+            raise failure
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "_s16", manual_sweep)
+    monkeypatch.setattr(smoke, "_restore_providers", lambda: calls.append(("restore providers",)))
+    monkeypatch.setattr(smoke, "wait_for_restored_readiness", readiness)
+
+    if readiness_failure:
+        with pytest.raises(smoke.Failure) as error:
+            smoke.s16_provider_failover({})
+        assert error.value is failure
+    else:
+        assert smoke.s16_provider_failover({}) == "manual sweep complete"
     assert calls == [
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--no-enabled"),
+        ("manual sweep",),
+        ("restore providers",),
         ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--enabled"),
+        ("readiness",),
     ]
-    assert restored == [True]
 
 
 def test_s16_logout_stops_late_and_draining_recovery_sessions_once(monkeypatch):
