@@ -54,6 +54,7 @@ def test_task_help_does_not_advertise_retired_ask_human(runner):
 
 def test_ask_cutover_status_forwards_project_and_json(runner):
     import json
+
     from src.cli.app import cli
 
     receipt = {
@@ -64,9 +65,14 @@ def test_ask_cutover_status_forwards_project_and_json(runner):
             "destinations": [],
         },
     }
-    with patch.object(
-        CLIClient, "execute", new_callable=AsyncMock, return_value=receipt
-    ) as execute:
+    # Stub the health probe too: without it the test needs a live daemon.
+    with (
+        patch.object(CLIClient, "connect", new_callable=AsyncMock),
+        patch.object(CLIClient, "close", new_callable=AsyncMock),
+        patch.object(
+            CLIClient, "execute", new_callable=AsyncMock, return_value=receipt
+        ) as execute,
+    ):
         result = runner.invoke(cli, ["ask", "cutover-status", "--project-id", "p", "--json"])
     assert result.exit_code == 0, result.output
     execute.assert_awaited_once_with("ask_cutover_status", {"project_id": "p"})
