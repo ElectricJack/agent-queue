@@ -6256,8 +6256,13 @@
         "e2e-kit"
       ],
       "default_arm": true,
-      "digest": "sha256:8ca029f221fdcce9e55a6354fb9b879b2a72c4afd39204ce189c5e37a4486ad5",
-      "imports": [],
+      "digest": "sha256:0ea17f5934ba1e8bd23b0f200b3364aebd3ffe22ab1e2b09f5523fe6a65c3e46",
+      "imports": [
+        "src.api",
+        "src.api.dependencies",
+        "src.api.health",
+        "src.api.health_monitor"
+      ],
       "markers": [
         "parametrize",
         "skipif"
