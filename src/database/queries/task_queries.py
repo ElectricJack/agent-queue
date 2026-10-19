@@ -84,6 +84,25 @@ _OPERATOR_ADOPTION_TOKEN = object()
 _INTEGRATION_WAKE_TOKEN = object()
 #: "Argument not passed" for nullable keyword arguments where ``None`` means clear.
 _UNSET = object()
+
+
+class PauseFenceError(ValueError):
+    """Pause resources changed; never treat this as a retryable Git failure."""
+
+
+_PAUSE_WORKSPACE_FIELDS = (
+    "id", "project_id", "workspace_path", "base_workspace_id",
+    "locked_by_task_id", "locked_by_agent_id",
+    "generation", "job_pin_count", "slot_index", "kind_id", "source_type",
+)
+_PAUSE_SESSION_FIELDS = (
+    "id", "instance_token", "agent_id", "project_id", "work_dir", "last_claim_epoch",
+    "name", "provider",
+)
+_PAUSE_OWNER_FIELDS = (
+    "id", "owner_id", "session_id", "workspace_id", "fence_token", "handoff_state",
+    "repository_id", "ref", "holder", "fence", "owner_role", "confirmed_workspace_id",
+)
 # The provider probe runs outside SQL; these fields must still match under locks.
 _SLOT_RESET_STOP_PROOF_FIELDS = (
     "id", "name", "provider", "instance_token", "state", "desired_state",
@@ -867,20 +886,29 @@ class TaskQueryMixin:
         ))).scalar_one_or_none()
         if saved is not None:
             return json.loads(saved), None
-        owned_workspaces = (await conn.execute(select(workspaces.c.id).where(
+        owned_workspaces = (await conn.execute(select(*(
+            workspaces.c[field] for field in _PAUSE_WORKSPACE_FIELDS
+        )).where(
             workspaces.c.locked_by_task_id == task_id
-        ))).scalars().all()
+        ).order_by(workspaces.c.id).with_for_update())).mappings().all()
         if len(owned_workspaces) > 1:
             raise ValueError("Cannot pause a task with multiple locked workspaces safely. Stop or finish it before changing its workspace assignments.")
-        owned_sessions = (await conn.execute(select(
-            sessions.c.id, sessions.c.instance_token
-        ).where(sessions.c.task_id == task_id, sessions.c.state.not_in(("stopped", "quarantined"))))).mappings().all()
+        owned_sessions = (await conn.execute(select(*(
+            sessions.c[field] for field in _PAUSE_SESSION_FIELDS
+        ), sessions.c.claim_phase).where(
+            sessions.c.task_id == task_id
+        ).order_by(sessions.c.id))).mappings().all()
+        owners = await self._pause_owners(conn, task_id, owned_workspaces)
         snapshot = {
             "sessions": [dict(session) for session in owned_sessions],
+            "workspaces": [dict(workspace) for workspace in owned_workspaces],
+            "owners": owners,
             "status": row["status"],
             "resume_after": row["resume_after"],
             "agent_id": row["assigned_agent_id"],
             "claim_epoch": row["claim_epoch"],
+            "project_id": row["project_id"],
+            "branch_name": row["branch_name"],
             "cleanup_pending": bool(row["assigned_agent_id"] or owned_sessions or owned_workspaces),
         }
         if for_removal:
@@ -903,22 +931,193 @@ class TaskQueryMixin:
         await self._upsert_meta(task_id, "manual_pause", snapshot, conn=conn)
         return snapshot, result
 
-    async def finish_task_pause(self, task_id: str, snapshot: dict) -> None:
+    async def _pause_owners(self, conn, task_id, workspace_rows):
+        return [dict(owner) for owner in (await conn.execute(select(*(
+            integration_branch_owners.c[field] for field in _PAUSE_OWNER_FIELDS
+        )).where(or_(
+            integration_branch_owners.c.owner_id == task_id,
+            integration_branch_owners.c.workspace_id.in_([ws["id"] for ws in workspace_rows]),
+        )).order_by(integration_branch_owners.c.id).with_for_update())).mappings().all()]
+
+    async def validate_task_pause(
+        self, task_id: str, snapshot: dict, *, conn=None, stopped=False
+    ) -> None:
+        """Revalidate the exact persisted pause before reading or releasing its source."""
+        if conn is None:
+            async with self.immediate() as connection:
+                return await self.validate_task_pause(
+                    task_id, snapshot, conn=connection, stopped=stopped
+                )
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        if await conn.scalar(select(task_metadata.c.task_id).where(
+            task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+        )):
+            raise PauseFenceError("Preparation child termination is unproved; retain its recovery hold")
+        row = (await conn.execute(select(tasks).where(
+            tasks.c.id == task_id
+        ).with_for_update())).mappings().one_or_none()
+        retained_terminal = (
+            snapshot.get("removal") and row is not None
+            and row["status"] == snapshot["status"]
+            and row["status"] in self._TERMINAL_TASK_STATUSES
+        )
+        encoded = await self._read_manual_pause(conn, task_id)
+        saved = json.loads(encoded) if encoded is not None else None
+        if (row is None or saved != snapshot
+                or row["claim_epoch"] != snapshot["claim_epoch"] + 1
+                or row["assigned_agent_id"] != snapshot.get("agent_id")
+                or row["branch_name"] != snapshot.get("branch_name")
+                or not retained_terminal and (
+                    row["status"] != "PAUSED" or row["resume_after"] is not None
+                )):
+            raise PauseFenceError("Task pause identity changed; retaining resources for safe recovery")
+        if "workspaces" not in snapshot:
+            raise PauseFenceError(
+                "Legacy pause lacks source identity proof; retain resources for guarded recovery"
+            )
+        current = [dict(ws) for ws in (await conn.execute(select(*(
+            workspaces.c[field] for field in _PAUSE_WORKSPACE_FIELDS
+        )).where(workspaces.c.locked_by_task_id == task_id)
+          .order_by(workspaces.c.id).with_for_update())).mappings().all()]
+        if current != snapshot["workspaces"] or (
+            await self._pause_owners(conn, task_id, current) != snapshot["owners"]
+        ) or snapshot["project_id"] != row["project_id"] or any(
+            ws["project_id"] != row["project_id"] for ws in current
+        ):
+            raise PauseFenceError("Paused workspace or owner changed; retaining resources for safe recovery")
+        from src.database.tables import job_workspace_pins
+
+        if any(ws["job_pin_count"] for ws in current) or await conn.scalar(
+            select(job_workspace_pins.c.job_id).where(
+                job_workspace_pins.c.workspace_id.in_([ws["id"] for ws in current]),
+            ).limit(1)
+        ):
+            raise PauseFenceError("A job pins the paused workspace; retain it until its owner settles")
+        if any(ws["slot_index"] is not None for ws in current):
+            if (await self._recovery_owner(conn, row))["kind"] != "supervisor":
+                raise PauseFenceError("Integration operation owns the paused workspace cleanup")
+            raw = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == "claim_workspace",
+            ))
+            receipt = json.loads(raw) if raw is not None else None
+            ws = current[0]
+            if not any(identity["agent_id"] == ws["locked_by_agent_id"] and receipt == {
+                "workspace_id": ws["id"], "generation": ws["generation"],
+                "session_id": identity["id"], "instance_token": identity["instance_token"],
+                "claim_epoch": snapshot["claim_epoch"],
+            } for identity in snapshot["sessions"]):
+                raise PauseFenceError("Managed pause acquisition receipt is missing or changed")
+        captured_ids = {identity["id"] for identity in snapshot["sessions"]}
+        bound_ids = set((await conn.execute(select(sessions.c.id).where(
+            sessions.c.task_id == task_id
+        ))).scalars().all())
+        if bound_ids - captured_ids:
+            raise PauseFenceError("Paused task acquired an unknown session; retaining resources")
+        for identity in snapshot["sessions"]:
+            session = (await conn.execute(select(sessions).where(
+                sessions.c.id == identity["id"]
+            ).with_for_update())).mappings().one_or_none()
+            if (session is None or any(session[field] != identity[field]
+                                       for field in _PAUSE_SESSION_FIELDS)
+                    or session["project_id"] != row["project_id"]
+                    or current and session["work_dir"] != current[0]["workspace_path"]
+                    or session["task_id"] not in (None, task_id)
+                    or session["task_id"] is None and (
+                        session["state"] not in {"stopped", "quarantined"}
+                        or session["desired_state"] != "stopped"
+                    ) or stopped and (
+                        session["state"] not in {"stopped", "quarantined"}
+                        or session["desired_state"] != "stopped"
+                        or identity.get("claim_phase") in {"active", "preparing"}
+                        and session["last_claim_epoch"] != snapshot["claim_epoch"]
+                    )):
+                raise PauseFenceError("Paused session identity changed; retaining resources for safe recovery")
+
+    async def record_task_pause_checkpoint(self, task_id: str, snapshot: dict, saved: dict) -> None:
+        """Publish preservation evidence only under the still-current pause fences."""
+        async with self.immediate() as conn:
+            await self.validate_task_pause(task_id, snapshot, conn=conn, stopped=True)
+            saved = saved | {"pause_project_id": snapshot["project_id"],
+                             "pause_claim_epoch": snapshot["claim_epoch"],
+                             "pause_workspace_id": snapshot["workspaces"][0]["id"]}
+            await self._upsert_meta(task_id, "manual_pause_checkpoint", saved, conn=conn)
+            await conn.execute(insert(task_context).values(
+                id=str(uuid.uuid4())[:12], task_id=task_id, type="manual_pause_checkpoint",
+                label="Git checkpoint before manual pause", content=json.dumps(saved),
+                created_at=time.time(),
+            ))
+
+    async def record_task_pause_preparations_stopped(
+        self, task_id: str, snapshot: dict, identities: list[dict]
+    ) -> dict:
+        """Retain exact cancellation completion proof across pause cleanup retries."""
+        async with self.immediate() as conn:
+            await self.validate_task_pause(task_id, snapshot, conn=conn)
+            saved = {**snapshot, "preparations_stopped": identities}
+            await self._upsert_meta(task_id, "manual_pause", saved, conn=conn)
+            return saved
+
+    async def record_task_pause_context(self, task_id, snapshot, *, type, label, content):
+        """Fence partial/no-checkpoint receipts just like full checkpoint evidence."""
+        async with self.immediate() as conn:
+            await self.validate_task_pause(task_id, snapshot, conn=conn, stopped=True)
+            await conn.execute(insert(task_context).values(
+                id=str(uuid.uuid4())[:12], task_id=task_id, type=type,
+                label=label, content=content, created_at=time.time(),
+            ))
+
+    async def record_task_pause_cleanup_uncertainty(self, task_id, snapshot):
+        """Preserve unknown Git writers across reload without marking cancellation proved."""
+        from src.git.process import PREPARE_CLEANUP_HOLD
+
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(tasks).where(
+                tasks.c.id == task_id,
+            ).with_for_update())).mappings().one_or_none()
+            encoded = await self._read_manual_pause(conn, task_id)
+            current = json.loads(encoded) if encoded is not None else None
+            # The inner cleanup may have persisted exact preparation-stop
+            # proofs before the checkpoint failed. Those do not change source
+            # identity; every other snapshot field must still match.
+            def comparable(value):
+                return {k: v for k, v in value.items() if k != "preparations_stopped"}
+            if (row is None or row["claim_epoch"] != snapshot["claim_epoch"] + 1
+                    or current is None or comparable(current) != comparable(snapshot)):
+                return
+            exists = await conn.scalar(select(task_metadata.c.task_id).where(
+                task_metadata.c.task_id == task_id, task_metadata.c.key == PREPARE_CLEANUP_HOLD,
+            ))
+            if not exists:
+                await self._upsert_meta(task_id, PREPARE_CLEANUP_HOLD, {
+                    "source": "manual_pause", "claim_epoch": snapshot["claim_epoch"],
+                    "workspaces": snapshot["workspaces"], "sessions": snapshot["sessions"],
+                    "reason": "Checkpoint or preparation child termination is unproved",
+                }, conn=conn)
+
+    async def finish_task_pause(self, task_id: str, snapshot: dict, *, before_release=None) -> None:
         """Release only this stopped claim's resources, never a reused worker's."""
         async with self.immediate() as conn:
-            row = (await conn.execute(
-                select(tasks).where(tasks.c.id == task_id).with_for_update()
-            )).mappings().fetchone()
-            retained_terminal = (
-                snapshot.get("removal") and row is not None
-                and row["status"] == snapshot["status"]
-                and row["status"] in self._TERMINAL_TASK_STATUSES
-            )
-            if row is None or not retained_terminal and (
-                row["status"] != "PAUSED" or row["resume_after"] is not None
-            ):
-                raise ValueError("Task pause changed while stopping its session")
+            await self.validate_task_pause(task_id, snapshot, conn=conn, stopped=True)
+            if any(ws["slot_index"] is not None for ws in snapshot["workspaces"]):
+                raw = await conn.scalar(select(task_metadata.c.value).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == "manual_pause_checkpoint",
+                ))
+                checkpoint = json.loads(raw) if raw is not None else {}
+                if (checkpoint.get("pause_claim_epoch") != snapshot["claim_epoch"]
+                        or checkpoint.get("pause_workspace_id") != snapshot["workspaces"][0]["id"]):
+                    raise PauseFenceError("Full managed-slot checkpoint is unproved; retain the source")
+            if any(owner["fence"] is None and owner["workspace_id"] is not None
+                   and owner["handoff_state"] in {"attached", "handoff_pending"}
+                   for owner in snapshot.get("owners", [])):
+                raise PauseFenceError(
+                    "Task remains paused; attached integration ownership "
+                    "requires its guarded handoff before workspace release"
+                )
             agent_id = snapshot.get("agent_id")
+            if before_release is not None:
+                before_release()
             await conn.execute(
                 update(workspaces).where(workspaces.c.locked_by_task_id == task_id)
                 .values(locked_by_task_id=None, locked_by_agent_id=None, locked_at=None)
@@ -927,6 +1126,20 @@ class TaskQueryMixin:
                 await conn.execute(update(agents).where(
                     agents.c.id == agent_id, agents.c.current_task_id == task_id
                 ).values(state=AgentState.IDLE.value, current_task_id=None))
+            for identity in snapshot.get("sessions", []):
+                await conn.execute(update(sessions).where(
+                    sessions.c.id == identity["id"],
+                    sessions.c.instance_token == identity["instance_token"],
+                    sessions.c.task_id == task_id,
+                    sessions.c.state.in_(("stopped", "quarantined")),
+                ).values(claim_phase=None, claim_phase_at=None))
+                await conn.execute(update(sessions).where(
+                    sessions.c.id == identity["id"],
+                    sessions.c.instance_token == identity["instance_token"],
+                    sessions.c.task_id == task_id,
+                    sessions.c.lifecycle == "pool",
+                    sessions.c.state.in_(("stopped", "quarantined")),
+                ).values(task_id=None))
             await conn.execute(update(tasks).where(
                 tasks.c.id == task_id,
                 tasks.c.assigned_agent_id == agent_id if agent_id else tasks.c.assigned_agent_id.is_(None),
@@ -1167,7 +1380,7 @@ class TaskQueryMixin:
         """Restore a PAUSED task from its hold snapshot; the caller holds the row lock."""
         saved = json.loads(encoded) if encoded is not None else {}
         if saved.get("cleanup_pending"):
-            raise ValueError("Task is paused but its session has not stopped; retry Resume.")
+            raise ValueError("Task pause cleanup is pending; repeat Pause to finish cleanup while held.")
         prior = TaskStatus(saved.get("status", "READY"))
         if prior in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED):
             prior = (

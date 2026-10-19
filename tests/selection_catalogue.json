@@ -3534,7 +3534,7 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:45e846cb1c245c70257c594be4973d9709aebba30c666fe78d0c09a83d2a033e",
+      "digest": "sha256:c11a202b432defc828dac3f24470e3abb76c6e13862c90d36d9669a7eb4235ed",
       "imports": [
         "src.api.auth",
         "src.api.models.session",
@@ -3552,6 +3552,7 @@
         "src.event_bus",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.git.process",
         "src.integration",
         "src.integration.admission",
         "src.integration.batches",
@@ -3575,6 +3576,7 @@
         "src.orchestrator",
         "src.orchestrator.workspace_claim_recovery",
         "src.orchestrator.worktree_manager",
+        "src.preparation_failure",
         "src.scheduler",
         "src.sessions",
         "src.sessions.reconciler",
@@ -7182,13 +7184,14 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:c395ef5e8c7610083db41cabad2a3e7bfa69a61318e7d7c39e0df9361975d649",
+      "digest": "sha256:10df1072d05de1a4708d823523162b72d251d9163fcfc4d3b58188bd6206fbc8",
       "imports": [
         "src.event_bus",
         "src.git",
         "src.git.github_contracts",
         "src.git.locks",
         "src.git.manager",
+        "src.git.process",
         "src.models",
         "src.orchestrator.git_ops",
         "src.orchestrator.workspace_attachments"
@@ -13060,7 +13063,7 @@
         "policy-profiles"
       ],
       "default_arm": true,
-      "digest": "sha256:ec22591f55f7859033141d1f7badc99d7dd9344660779c6d88fab43e9f593e0e",
+      "digest": "sha256:8c6a6f7f27db9766f52c7c460218f1e263f5955cc97647251bd541331741483b",
       "imports": [
         "src.api",
         "src.api.app",
@@ -13071,6 +13074,7 @@
         "src.doctor.models",
         "src.doctor.playbook_v2_checks",
         "src.event_bus",
+        "src.integration.models",
         "src.integration.promotion_steps",
         "src.models",
         "src.playbooks.artifact_store",
@@ -16163,7 +16167,7 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:557ab2bb6912ca84aa32aeaa13b3fab9cfcdccbb2ac61e2dc3180aa9ac2408af",
+      "digest": "sha256:b4bf4ba090418fbd1c8240a2d837df5dd69b1f18458ace083ca25ac360330bc5",
       "imports": [
         "src.sessions",
         "src.sessions.dialogs",
@@ -16173,6 +16177,7 @@
         "src.sessions.transcripts.watcher"
       ],
       "markers": [
+        "parametrize",
         "skipif",
         "usefixtures"
       ],
@@ -17092,22 +17097,31 @@
         "task-lifecycle"
       ],
       "default_arm": true,
-      "digest": "sha256:0a2347f26e6abe9656e7ed9fbd8d1b4eb987012f56d116eb2c0e9eabd893532b",
+      "digest": "sha256:6162917356b0b933b7ef09278f4367218e9a501a7a8eca9d05c38681c16ad291",
       "imports": [
+        "src",
         "src.api.auth",
         "src.api.codegen",
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
+        "src.database.queries",
         "src.database.queries.claim_queries",
+        "src.database.queries.retained_workspace_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.git.process",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.core",
+        "src.orchestrator.retained_workspace",
         "src.orchestrator.task_checkpoint",
+        "src.orchestrator.worktree_manager",
         "src.scheduler",
+        "src.sessions",
         "src.sessions.fake",
         "src.sessions.harness_registry",
+        "src.sessions.proctable",
         "src.sessions.reconciler",
         "src.sessions.spec",
         "src.vault"
@@ -18263,14 +18277,16 @@
         "vault"
       ],
       "default_arm": true,
-      "digest": "sha256:df5132555656da1440e1f1bb7080a0a39117fd92927be745294ad2c48f07c46f",
+      "digest": "sha256:e0896cc27ebc4f12015e4dc2b014111e9685578bdc5887088f0d7e6c1888a08e",
       "imports": [
         "src.playbooks.required",
         "src.profiles.capabilities",
         "src.profiles.parser",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Tests for vault directory structure initialization (vault spec §2)"
     },
     "tests/test_vault_glossary.py": {
@@ -18611,11 +18627,12 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:aaacefcd8267b25580c3f069b65fb95b97a2e58d90692ff7987e515d55cf9a1b",
+      "digest": "sha256:45a805938958e2227b38adda944655d4639766ea0da90c4d387c8f3730d8dc21",
       "imports": [
         "src.commands.handler",
         "src.config",
         "src.database.queries.claim_queries",
+        "src.database.tables",
         "src.integration.lock",
         "src.integration.models",
         "src.models",
@@ -18653,11 +18670,15 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:7e7eca27b807b986d0fef4596464240351f842f20300869779d886bd579b5ece",
+      "digest": "sha256:1f2efec6d337e53dd24295ad6a1e9c472ac5e5bb6f32c0d87edae3b5faa675e2",
       "imports": [
-        "src.profiles.workspace_kind_parser"
+        "src.models",
+        "src.profiles.workspace_kind_parser",
+        "src.profiles.workspace_kind_registry"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "WorkspaceKind markdown frontmatter parser. See spec §4.1."
     },
     "tests/test_workspace_kind_registry.py": {
@@ -18822,12 +18843,13 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:29c81d95d63d412872297f9cf0d5fa706070d682bb6ede5ea2375156c0aa7eb6",
+      "digest": "sha256:f328b5830680809b62b45b4d33d12fc13678387115a033b0d1dd3b6c8409e3da",
       "imports": [
         "src.claim_file",
         "src.config",
         "src.event_schemas",
         "src.git.manager",
+        "src.git.process",
         "src.models",
         "src.orchestrator.execution",
         "src.orchestrator.task_checkpoint",
@@ -18880,19 +18902,25 @@
         "worktree-slots"
       ],
       "default_arm": true,
-      "digest": "sha256:9a4cfa9c523c923fc9f94cf8de210b2f6b84c6b3283bfa054ee1599a2c38a4e0",
+      "digest": "sha256:3c10ed3b803eb60174c5ac2480b81d5a0867f5fff378518e09cbf8d2e676e2ca",
       "imports": [
+        "src.claim_file",
+        "src.commands.worktree_commands",
         "src.config",
+        "src.database.tables",
         "src.git.manager",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.slot_restore",
+        "src.orchestrator.workspace_binding_audit",
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
         "src.sessions.proctable",
         "src.workspace_disable"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Worktree slot reaper + boot adoption + branch pruning (P4)."
     },
     "tests/test_worktree_slot_starvation.py": {

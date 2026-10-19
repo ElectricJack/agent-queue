@@ -1082,6 +1082,10 @@
             "type": "string",
             "description": "Workspace name (optional)"
           },
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable admission (default true). Register a cutover target with false."
+          },
           "kind_id": {
             "type": "string",
             "description": "Workspace kind id (e.g. 'project-repo', 'package-foo', 'vault'). Defaults to 'project-repo'. Must resolve via project-scoped or system-wide vault/workspace-kinds/<id>.md."
@@ -1331,6 +1335,40 @@
             "description": "Project id to scope diagnosis (optional; active project when omitted)."
           }
         }
+      }
+    },
+    {
+      "name": "workspace_cutover",
+      "description": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "description": "Project owning both bases."
+          },
+          "source_id": {
+            "type": "string",
+            "description": "Current enabled base."
+          },
+          "target_id": {
+            "type": "string",
+            "description": "New disabled, idle base of the same kind."
+          },
+          "apply": {
+            "type": "boolean",
+            "description": "Apply the preview (default false)."
+          },
+          "expected_proof": {
+            "type": "string",
+            "description": "Exact SHA256 proof returned by preview."
+          }
+        },
+        "required": [
+          "project_id",
+          "source_id",
+          "target_id"
+        ]
       }
     },
     {
@@ -17768,6 +17806,7 @@
     "queue_sync_workspaces": "project",
     "workspace_doctor": "project",
     "workspace_reap": "project",
+    "workspace_cutover": "project",
     "list_project_roots": "project",
     "browse_project_root": "project",
     "get_github_auth_status": "project",

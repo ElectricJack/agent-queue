@@ -691,6 +691,7 @@ class Workspace:
     locked_at: float | None = None
     lock_mode: WorkspaceMode | None = None  # lock mode used for current lock (None = unlocked)
     enabled: bool = True  # disabled workspaces are skipped by acquire_workspace
+    generation: int = 0  # incremented on acquisition; fences preparation against reassignment
     # ``"<code>: <detail>"`` and timestamp of the last disable (src/workspace_disable.py).
     disabled_reason: str | None = None
     disabled_at: float | None = None
@@ -755,6 +756,8 @@ class WorkspaceKind:
     # Shell commands run once inside a freshly created slot, and again when
     # the list changes (worktree-execution §3.6).  Operator-authored config.
     worktree_setup: list[str] = field(default_factory=list)
+    # Optional per-kind bound; the project concurrency limit still applies.
+    max_slots: int | None = None
     created_at: float = 0.0
     updated_at: float = 0.0
 

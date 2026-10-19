@@ -13049,6 +13049,53 @@
         }
       }
     },
+    "/api/project/workspace-cutover": {
+      "post": {
+        "tags": [
+          "project"
+        ],
+        "summary": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+        "description": "Preview or apply a source-preserving base switch. Apply requires the exact preview proof. Disables the old base and slots without moving or deleting any source or releasing writers.",
+        "operationId": "workspace_cutover",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceCutoverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceCutoverResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/project/workspace-doctor": {
       "post": {
         "tags": [
@@ -22400,6 +22447,18 @@
             ],
             "title": "Name",
             "description": "Workspace name (optional)"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled",
+            "description": "Enable admission (default true). Register a cutover target with false."
           },
           "kind_id": {
             "anyOf": [
@@ -32376,7 +32435,8 @@
               "template",
               "intelligence_class",
               "pool",
-              "project_settings"
+              "project_settings",
+              "integration_settings"
             ],
             "title": "Type"
           },
@@ -32444,7 +32504,8 @@
               "copy",
               "pending review",
               "pending configuration",
-              "system template"
+              "system template",
+              "configure integration"
             ],
             "title": "State",
             "default": "copy"
@@ -43655,6 +43716,97 @@
         ],
         "title": "InstallProfileResponse"
       },
+      "IntegrationSettings": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "integration_settings",
+            "title": "Type",
+            "default": "integration_settings"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
+          "engine": {
+            "type": "string",
+            "enum": [
+              "shadow",
+              "active"
+            ],
+            "title": "Engine"
+          },
+          "integration_mode": {
+            "type": "string",
+            "const": "pull_request",
+            "title": "Integration Mode",
+            "default": "pull_request"
+          },
+          "hierarchical_integration_mode": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "observe",
+              "hierarchy",
+              "train"
+            ],
+            "title": "Hierarchical Integration Mode"
+          },
+          "integration_repository_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Repository Id"
+          },
+          "default_branch": {
+            "type": "string",
+            "title": "Default Branch"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy"
+          },
+          "promotion_flow": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promotion Flow"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "engine",
+          "hierarchical_integration_mode",
+          "default_branch"
+        ],
+        "title": "IntegrationSettings",
+        "description": "Portable inputs, never a source installation's activation identities."
+      },
       "IntelligenceClassModel": {
         "properties": {
           "id": {
@@ -43844,7 +43996,8 @@
               "template",
               "intelligence_class",
               "pool",
-              "project_settings"
+              "project_settings",
+              "integration_settings"
             ],
             "title": "Type"
           },
@@ -43889,6 +44042,9 @@
               },
               {
                 "$ref": "#/components/schemas/ProjectPolicy"
+              },
+              {
+                "$ref": "#/components/schemas/IntegrationSettings"
               }
             ],
             "title": "Payload",
@@ -43897,6 +44053,7 @@
               "mapping": {
                 "agent_settings": "#/components/schemas/PolicyAgentSettings",
                 "ci_test": "#/components/schemas/CITestPolicy",
+                "integration_settings": "#/components/schemas/IntegrationSettings",
                 "intelligence_class": "#/components/schemas/IntelligenceClassPolicy",
                 "playbook": "#/components/schemas/PlaybookPolicy",
                 "pool": "#/components/schemas/PoolPolicy",
@@ -57524,6 +57681,14 @@
             "title": "Pending Configuration",
             "default": []
           },
+          "configured_integration": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Configured Integration",
+            "default": []
+          },
           "activated": {
             "type": "boolean",
             "title": "Activated",
@@ -57649,7 +57814,14 @@
             "title": "Item Id"
           },
           "playbook_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Playbook Id"
           },
           "message": {
@@ -57660,7 +57832,6 @@
         "type": "object",
         "required": [
           "item_id",
-          "playbook_id",
           "message"
         ],
         "title": "PolicyExportWarning"
@@ -80868,6 +81039,190 @@
           "task_id"
         ],
         "title": "WithheldTask"
+      },
+      "WorkspaceCutoverRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project owning both bases."
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id",
+            "description": "Current enabled base."
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id",
+            "description": "New disabled, idle base of the same kind."
+          },
+          "apply": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Apply",
+            "description": "Apply the preview (default false)."
+          },
+          "expected_proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Proof",
+            "description": "Exact SHA256 proof returned by preview."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "source_id",
+          "target_id"
+        ],
+        "title": "WorkspaceCutoverRequest"
+      },
+      "WorkspaceCutoverResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "applied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied"
+          },
+          "proof": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proof"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceCutoverSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retained": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Retained",
+            "default": []
+          },
+          "retirement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retirement"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "WorkspaceCutoverResponse"
+      },
+      "WorkspaceCutoverSnapshot": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "target_id": {
+            "type": "string",
+            "title": "Target Id"
+          },
+          "workspaces": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Workspaces"
+          },
+          "sessions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Sessions"
+          },
+          "owners": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Owners"
+          },
+          "source": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "source_id",
+          "target_id",
+          "workspaces",
+          "sessions",
+          "owners",
+          "source"
+        ],
+        "title": "WorkspaceCutoverSnapshot"
       },
       "WorkspaceDoctorRequest": {
         "properties": {

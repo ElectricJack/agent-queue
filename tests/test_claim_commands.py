@@ -1144,20 +1144,21 @@ class TestClaim:
         assert (wd / ".aq" / "claim.json").read_bytes() == claim_bytes
         handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
 
+    @pytest.mark.parametrize("foreign_task", ["foreign", "t1"])
     async def test_foreign_claim_in_the_session_path_survives_preparation_refusal(
-        self, handler, db, tmp_path,
+        self, handler, db, tmp_path, foreign_task,
     ):
         from src.claim_file import read_claim_file, write_claim_file
 
         await mktask(db, "t1", profile_id="worker")
         sid, wd = await pool_session(db, tmp_path)
-        foreign = {"task_id": "foreign", "claim_epoch": 7, "session_id": "foreign-session"}
+        foreign = {"task_id": foreign_task, "claim_epoch": 1, "session_id": "foreign-session"}
         write_claim_file(wd, foreign)
 
         result = await settled_claim(scoped(handler, sid), {"next": True})
 
         assert result["result"] == "drain_requested"
-        assert "retains a foreign claim of task foreign" in result["reason"]
+        assert f"retains a foreign claim of task {foreign_task}" in result["reason"]
         assert read_claim_file(wd) == foreign
         handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
 
@@ -1300,7 +1301,7 @@ class TestClaim:
         slots.reset_slot_for_task.assert_not_awaited()
 
     @pytest.mark.parametrize("protection", [None, "task", "session", "claim", "other_project"])
-    async def test_claim_reconciles_only_idle_misplaced_workspace_locks(
+    async def test_claim_preserves_misplaced_workspace_locks(
         self, handler, db, tmp_path, protection,
     ):
         from src.claim_file import read_claim_file, write_claim_file
@@ -1319,6 +1320,7 @@ class TestClaim:
             locked_by_task_id="foreign" if protection == "task" else None,
             lock_mode=WorkspaceMode.EXCLUSIVE,
         ))
+        await db.update_workspace("wrong-slot", lock_mode=WorkspaceMode.EXCLUSIVE.value)
         if protection == "session":
             await db.create_session(SessionRecord(
                 id="foreign-session", project_id=PROJECT_ID, profile_id="worker",
@@ -1338,28 +1340,144 @@ class TestClaim:
         result = await settled_claim(scoped(handler, sid), {"next": True})
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         old = await db.get_workspace("wrong-slot")
-        if protection is None:
-            assert result["result"] == "claimed"
-            assert reset.await_args.args[0].workspace_path == str(wd)
-            assert old.locked_by_agent_id is None
-            assert old.lock_mode is None
-            assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "t1"
-            assert (await db.get_workspace("ws-agent-1")).lock_mode is WorkspaceMode.EXCLUSIVE
-            assert read_claim_file(wd)["task_id"] == "t1"
+        assert result["result"] == "prepare_failed"
+        assert "workspace binding mismatch" in result["reason"]
+        reset.assert_not_awaited()
+        assert old.locked_by_agent_id == "agent-1"
+        assert old.lock_mode is WorkspaceMode.EXCLUSIVE
+        assert read_claim_file(wd) is None
+        if protection == "task":
+            assert old.locked_by_task_id == "foreign"
+        if protection == "claim":
+            assert read_claim_file(old_path)["task_id"] == "foreign"
+        if protection == "other_project":
+            assert (await db.get_workspace("foreign-workspace")).locked_by_agent_id == "foreign-agent"
+
+    @pytest.mark.parametrize("disagreement", ["slash", "disabled", "project", "agent", "task"])
+    async def test_registered_slot_mismatch_never_activates_or_resets(
+        self, handler, db, tmp_path, disagreement,
+    ):
+        from src.claim_file import read_claim_file
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, wd = await pool_session(db, tmp_path)
+        import subprocess
+
+        def git(*args):
+            return subprocess.check_output(
+                ["git", "-c", "user.name=T", "-c", "user.email=t@t.com", *args],
+                cwd=wd, text=True, stderr=subprocess.PIPE,
+            ).strip()
+
+        git("init", "--initial-branch=aq/source")
+        (wd / "tracked").write_text("source commit")
+        git("add", "tracked")
+        git("commit", "-m", "source")
+        (wd / "tracked").write_text("staged source")
+        git("add", "tracked")
+        (wd / "untracked").write_bytes(b"untracked source")
+        head = git("rev-parse", "HEAD")
+        branch = git("branch", "--show-current")
+        index = git("write-tree")
+        updates = {}
+        if disagreement == "slash":
+            updates["workspace_path"] = str(wd) + "/"
+        elif disagreement == "disabled":
+            updates["enabled"] = False
+        elif disagreement == "project":
+            await db.create_project(Project(id="other", name="Other"))
+            updates["project_id"] = "other"
+        elif disagreement == "agent":
+            await db.create_agent(Agent(id="peer", name="peer", profile_id="worker"))
+            updates["locked_by_agent_id"] = "peer"
         else:
-            assert result["result"] == "prepare_failed"
-            assert "workspace binding mismatch" in result["reason"]
-            reset.assert_not_awaited()
-            assert old.locked_by_agent_id == "agent-1"
-            if protection == "task":
-                assert old.locked_by_task_id == "foreign"
-            assert read_claim_file(wd) is None
-            if protection == "claim":
-                assert read_claim_file(old_path)["task_id"] == "foreign"
-            if protection == "other_project":
-                assert (await db.get_workspace("foreign-workspace")).locked_by_agent_id == (
-                    "foreign-agent"
+            await mktask(db, "foreign", status=TaskStatus.IN_PROGRESS)
+            updates["locked_by_task_id"] = "foreign"
+        await db.update_workspace("ws-agent-1", **updates)
+        before = await db.get_workspace("ws-agent-1")
+        (wd / "progress").write_bytes(b"keep exact bytes")
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == ("drain_requested" if disagreement == "disabled" else "prepare_failed")
+        assert (await db.get_session(sid)).claim_phase != "active"
+        assert (await db.get_session(sid)).claims == 0
+        assert (await db.get_task("t1")).branch_name is None
+        assert read_claim_file(wd) is None
+        assert (wd / "progress").read_bytes() == b"keep exact bytes"
+        assert git("rev-parse", "HEAD") == head
+        assert git("branch", "--show-current") == branch
+        assert git("write-tree") == index
+        assert (wd / "tracked").read_text() == "staged source"
+        assert (wd / "untracked").read_bytes() == b"untracked source"
+        after = await db.get_workspace("ws-agent-1")
+        assert after.workspace_path == before.workspace_path
+        assert after.enabled == before.enabled
+        assert after.locked_by_task_id == before.locked_by_task_id
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+
+    @pytest.mark.parametrize("disagreement", ["generation", "resume_generation", "instance", "disabled", "task"])
+    async def test_preparation_rechecks_identity_after_reservation(
+        self, handler, db, tmp_path, monkeypatch, disagreement,
+    ):
+        from src.claim_file import read_claim_file
+        from src.database.tables import workspaces
+
+        await mktask(db, "t1", profile_id="worker")
+        await mktask(db, "foreign", status=TaskStatus.IN_PROGRESS)
+        sid, wd = await pool_session(db, tmp_path)
+        prepare = handler._prepare_and_activate_locked
+
+        async def raced(*args, **kwargs):
+            if disagreement == "instance":
+                await db.update_session(sid, instance_token="successor")
+            else:
+                if disagreement == "resume_generation":
+                    kwargs["slot"] = None
+                values = {"generation": workspaces.c.generation + 1} if disagreement in {"generation", "resume_generation"} else (
+                    {"enabled": False} if disagreement == "disabled" else {"locked_by_task_id": "foreign"}
                 )
+                async with db.immediate() as conn:
+                    await conn.execute(update(workspaces).where(workspaces.c.id == "ws-agent-1").values(**values))
+            return await prepare(*args, **kwargs)
+
+        monkeypatch.setattr(handler, "_prepare_and_activate_locked", raced)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "prepare_failed"
+        assert (await db.get_session(sid)).claim_phase != "active"
+        assert (await db.get_task("t1")).branch_name is None
+        assert read_claim_file(wd) is None
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_not_awaited()
+        if disagreement == "task":
+            assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "foreign"
+        if disagreement == "instance":
+            assert (await db.get_session(sid)).task_id == "t1"
+            assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+
+    async def test_activation_rechecks_resumed_generation_before_publishing_branch(
+        self, handler, db, tmp_path,
+    ):
+        from src.database.tables import workspaces
+
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "claimed"
+        before = await db.get_task("t1")
+        await db.update_session(sid, claim_phase="preparing")
+        await db.set_task_meta("t1", "needs_attention", "preserve diagnosis")
+        async with db.immediate() as conn:
+            await conn.execute(update(workspaces).where(workspaces.c.id == "ws-agent-1").values(
+                generation=workspaces.c.generation + 1,
+            ))
+        assert await db.activate_claim(
+            sid, "t1", epoch=1, now=time.time(), branch_name="aq/foreign",
+            clear_preparation_metadata=True, instance_token="t",
+        ) is None
+        assert (await db.get_task("t1")).branch_name == before.branch_name
+        assert (await db.get_session(sid)).claim_phase == "preparing"
+        assert (await db.get_session(sid)).claims == 1
+        assert await db.get_task_meta("t1", "needs_attention") == "preserve diagnosis"
 
     async def test_reparent_cannot_turn_a_claimed_leaf_into_a_container(
         self, handler, db, tmp_path
@@ -1963,6 +2081,94 @@ class TestClaim:
         explained = await handler._cmd_explain_task({"task_id": "child"})
         detail = next(r["detail"] for r in explained["reasons"] if r["code"] == "needs_attention")
         assert f"{reason} (retained; claim epoch {held.last_claim_epoch})" in detail
+
+    async def test_unproved_cleanup_retains_source_and_blocks_expiry_retry_and_handoff(
+        self, handler, db, config, tmp_path,
+    ):
+        from src.claim_file import write_claim_file
+        from src.git.manager import GitManager
+        from src.git.process import PREPARE_CLEANUP_HOLD, ProcessCleanupError
+
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        sid, wd = await pool_session(db, tmp_path)
+        git = GitManager()
+        await git._arun(["init", "--initial-branch=aq/child"], cwd=str(wd))
+        await git._arun(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+                        "commit", "--allow-empty", "-m", "source"], cwd=str(wd))
+        await git._arun(["update-ref", "refs/aq/retained/source", "HEAD"], cwd=str(wd))
+        (wd / "staged").write_text("staged bytes")
+        await git._arun(["add", "staged"], cwd=str(wd))
+        (wd / "untracked").write_text("untracked bytes")
+
+        async def source_snapshot():
+            return (
+                await git._arun(["rev-parse", "HEAD"], cwd=str(wd)),
+                await git._arun(["diff", "--cached", "--binary"], cwd=str(wd)),
+                await git._arun(["show-ref"], cwd=str(wd)),
+                (wd / "staged").read_bytes(), (wd / "untracked").read_bytes(),
+                (wd / ".aq/claim.json").read_bytes(),
+            )
+
+        before = None
+
+        async def unproved(slot, task, **kwargs):
+            nonlocal before
+            write_claim_file(str(wd), {
+                "task_id": task.id, "claim_epoch": task.claim_epoch, "session_id": sid,
+            })
+            before = await source_snapshot()
+            try:
+                raise PermissionError("killpg denied; api_key=private-test-value")
+            except PermissionError as cause:
+                raise ProcessCleanupError("process-group cleanup unproved") from cause
+
+        reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
+        reset.side_effect = unproved
+        release = AsyncMock(return_value=True)
+        handler.orchestrator.arelease_integration_writer_for_retry = release
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "prepare_failed"
+        assert "ProcessCleanupError" in result["reason"]
+        assert "PermissionError" in result["reason"]
+        assert "private-test-value" not in result["reason"]
+        release.assert_not_awaited()
+        held = await db.get_session(sid)
+        receipt = await db.get_task_meta("child", "claim_workspace")
+        hold = await db.get_task_meta("child", PREPARE_CLEANUP_HOLD)
+        assert hold["claim_epoch"] == held.last_claim_epoch
+        assert hold["workspace_generation"] == receipt["generation"]
+        assert hold["disposition"] == "retained"
+        assert hold["reason"] == result["reason"]
+        reconciler = SessionReconciler(
+            db, config, SessionProviderRegistry({}), bus=handler.orchestrator.bus,
+            orchestrator=handler.orchestrator, epoch="restarted",
+        )
+        await reconciler._step_prepare_timeout(
+            [held], held.claim_phase_at + config.swarm.prepare_timeout + 1,
+        )
+        assert (await db.get_session(sid)).task_id == "child"
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "child"
+        assert (await ownership.get_owner(fence.target))["handoff_state"] == "attached"
+        await expire_claim_refusal(db, sid)
+        retried = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert retried["result"] == "prepare_failed"
+        assert reset.await_count == 1
+        owner = await ownership.get_owner(fence.target)
+        # Even apparently reusable source cannot substitute for process proof.
+        for confirm in (
+            handler.orchestrator.aconfirm_integration_pool_owner_handoff,
+            handler.orchestrator.aconfirm_stopped_integration_pool_owner_handoff,
+            handler.orchestrator.aconfirm_integration_owner_handoff,
+            handler.orchestrator.aconfirm_integration_owner_stopped_for_repair,
+        ):
+            assert not await confirm(owner)
+        assert not await handler.orchestrator.aconfirm_integration_pool_published_repair_handoff(
+            owner, "reservation", remote_head_reader=AsyncMock(),
+        )
+        assert before == await source_snapshot()
+        assert await db.get_task_meta("child", "claim_workspace") == receipt
+        assert await db.get_task_meta("child", PREPARE_CLEANUP_HOLD) == hold
+        assert await db.get_task_meta("child", "claim_prepare_backoff_attempts") is None
 
     async def test_identical_retained_preparation_refusals_drain_after_restart(
         self, handler, db, tmp_path
@@ -3148,12 +3354,14 @@ class TestClaim:
         sid, _wd = await pool_session(db, tmp_path, "recovery", "agent-recovery")
         assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "no_ready_work"
         reset.side_effect = None
+        await db.set_task_meta("t1", "claim_preparation_failure", {"reason": "old deployment"})
         await db.resume_task("t1")
         assert (await settled_claim(scoped(handler, sid), {"next": True}))["result"] == "claimed"
         assert await db.get_task_meta("t1", "slot_reset_failure") is None
         assert await db.get_task_meta("t1", "needs_attention") is None
         assert await db.get_task_meta("t1", "claim_prepare_backoff_attempts") is None
         assert await db.get_task_meta("t1", "prepare_failure") is None
+        assert await db.get_task_meta("t1", "claim_preparation_failure") is None
 
     async def test_textless_reset_failure_is_described_identically_everywhere(
         self, handler, db, tmp_path, caplog
@@ -3196,33 +3404,50 @@ class TestClaim:
         detail = next(r["detail"] for r in explained["reasons"] if r["code"] == "needs_attention")
         assert f": {reasons.pop()} (attempt 3; manual retry)" in detail
 
+    @pytest.mark.parametrize("new_epoch", [False, True])
     async def test_late_prepare_failure_cannot_rewrite_a_replaced_session(
-        self, handler, db, tmp_path
+        self, handler, db, tmp_path, monkeypatch, new_epoch,
     ):
         """A preparation outlived by a restart keeps its record but not the streak."""
         await mktask(db, "t1", profile_id="worker")
         sid, _wd = await pool_session(db, tmp_path)
 
-        finish = asyncio.Event()
+        failed = False
+        replaced = False
+        stale_task = None
+        get_session = db.get_session
+        get_task = db.get_task
 
         async def replaced_then_timeout(*args, **kwargs):
-            await finish.wait()
-            await db.update_session(sid, instance_token="replacement")
+            nonlocal failed
+            failed = True
             raise TimeoutError()
+
+        async def replace_after_rollback(session_id):
+            nonlocal replaced, stale_task
+            # Reset now holds the session lock. A successor can replace it
+            # only after the failed preparation transaction has unwound.
+            if failed and not replaced:
+                replaced = True
+                await db.update_session(sid, instance_token="replacement")
+                if new_epoch:
+                    stale_task = await get_task("t1")
+                    await db.update_task("t1", claim_epoch=2)
+                    await db.set_task_meta("t1", "prepare_failure", {"successor": True})
+            return await get_session(session_id)
+
+        async def task_before_epoch_race(task_id):
+            nonlocal stale_task
+            if stale_task is not None:
+                observed, stale_task = stale_task, None
+                return observed
+            return await get_task(task_id)
 
         reset = handler.orchestrator._worktree_slots.return_value.reset_slot_for_task
         reset.side_effect = replaced_then_timeout
-        h = scoped(handler, sid)
-        with patch("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0.01):
-            progress = await h._cmd_task_claim({"next": True})
-        assert progress["result"] == "claim_in_progress", progress
-        preparation = handler.orchestrator.claim_preparations[
-            (sid, "t1", progress["claim_epoch"])
-        ]
-        finish.set()
-        # Observe the original job. A follow-up poll belongs to the replacement
-        # launch and must not replay this preparation's failure.
-        result = await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
+        monkeypatch.setattr(db, "get_session", replace_after_rollback)
+        monkeypatch.setattr(db, "get_task", task_before_epoch_race)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
         assert result["result"] == "prepare_failed"
         assert result["reason"].startswith("slot_reset: TimeoutError (no message)")
         session = await db.get_session(sid)
@@ -3230,10 +3455,13 @@ class TestClaim:
         assert session.desired_state == "running"
         record = await db.get_task_meta("t1", "prepare_failure")
         # The record names the instance that failed, not the replacement.
-        assert (record["reason"], record["instance_token"]) == (result["reason"], "t")
-        cached = handler.orchestrator.claim_preparation_results[sid]
-        assert await h._take_completed_preparation(session) is None
-        assert handler.orchestrator.claim_preparation_results[sid] is cached
+        if new_epoch:
+            assert record == {"successor": True}
+        else:
+            assert (record["reason"], record["instance_token"]) == (result["reason"], "t")
+            assert record["disposition"] == "superseded"
+        assert await db.get_task_meta("t1", "slot_reset_failure") is None
+        assert session.task_id == "t1"
 
     async def test_claim_file_write_failure_releases_and_reports(
         self, handler, db, tmp_path, monkeypatch
@@ -4666,10 +4894,13 @@ async def test_prepare_timeout_waits_for_live_reset(handler, db, config, tmp_pat
         # including after its original HTTP response allowance has elapsed.
         from src.doctor.pool_checks import run_check
 
-        await db.update_session(sid, claim_phase_at=time.time() - 3 * config.swarm.prepare_timeout)
-        finding = await run_check(
-            db, "pools.preparing_stuck", config=config, handler=handler, repair=True
-        )
+        # Preparation now holds the session identity lock through reset.
+        # Age the request by its clock rather than blocking on that row lock.
+        with monkeypatch.context() as aged:
+            aged.setattr(time, "time", lambda: row.claim_phase_at + 3 * config.swarm.prepare_timeout)
+            finding = await run_check(
+                db, "pools.preparing_stuck", config=config, handler=handler, repair=True
+            )
         assert finding.data.get("count", 0) == 0
         expired = row.claim_phase_at + config.swarm.prepare_timeout + 1
         await reconciler._step_prepare_timeout([row], expired)
@@ -7220,3 +7451,225 @@ async def test_pr_missing_current_source_cannot_erase_recorded_artifact(db, pull
         )
     )
     assert not (await observe_admission(db, ["dependent"], env.service)).allowed
+@pytest.mark.parametrize("phase", ["before_checkout", "after_checkout", "after_claim_file"])
+async def test_cancelled_preparation_retains_identity_then_fences_successor(
+    handler, db, config, tmp_path, monkeypatch, phase,
+):
+    from src.claim_file import read_claim_file
+    from src.git.manager import GitManager
+
+    await mktask(db, "t1", profile_id="worker")
+    sid, wd = await pool_session(db, tmp_path)
+    git = GitManager()
+    await git._arun(["init", "--initial-branch=main"], cwd=str(wd))
+    await git._arun(["-c", "user.name=Test", "-c", "user.email=t@t.com",
+                    "commit", "--allow-empty", "-m", "source"], cwd=str(wd))
+    reached = asyncio.Event()
+
+    async def interruptible_reset(*args, **kwargs):
+        if phase == "before_checkout":
+            reached.set()
+            await asyncio.Event().wait()
+        await git._arun(["switch", "-c", "aq/t1"], cwd=str(wd))
+        if phase == "after_checkout":
+            reached.set()
+            await asyncio.Event().wait()
+        return "aq/t1"
+
+    activate = db.activate_claim
+
+    async def interruptible_activate(*args, **kwargs):
+        assert read_claim_file(str(wd))["claim_epoch"] == 1
+        reached.set()
+        await asyncio.Event().wait()
+
+    if phase == "after_claim_file":
+        monkeypatch.setattr(db, "activate_claim", interruptible_activate)
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = interruptible_reset
+    request = asyncio.create_task(scoped(handler, sid)._cmd_task_claim({"next": True}))
+    try:
+        await asyncio.wait_for(reached.wait(), timeout=5)
+        old = await db.get_session(sid)
+        receipt = await db.get_task_meta("t1", "claim_workspace")
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=5)
+        record = await db.get_task_meta("t1", "prepare_failure")
+        assert record["disposition"] == "cancelled" and record["claim_epoch"] == 1
+        assert "CancelledError" in record["reason"]
+        assert await db.get_task_meta("t1", "claim_workspace") == receipt
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "t1"
+        assert await git.aget_current_branch(str(wd)) == (
+            "main" if phase == "before_checkout" else "aq/t1"
+        )
+        reconciler = SessionReconciler(
+            db, config, SessionProviderRegistry({}), bus=handler.orchestrator.bus,
+            orchestrator=handler.orchestrator, epoch="test",
+        )
+        await reconciler._step_prepare_timeout(
+            [old], old.claim_phase_at + config.swarm.prepare_timeout + 1,
+        )
+        assert (await db.get_task("t1")).status == TaskStatus.READY
+        monkeypatch.setattr(db, "activate_claim", activate)
+        handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+            return_value="aq/t1",
+        )
+        await db.set_task_meta("t1", "claim_prepare_backoff_until", time.time() - 1)
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert result["result"] == "claimed"
+        current = read_claim_file(str(wd))
+        assert current["claim_epoch"] == 2 and current["session_id"] == sid
+        assert (await db.get_task_meta("t1", "claim_workspace"))["claim_epoch"] == 2
+        # A delayed failure from the first attempt cannot overwrite epoch 2.
+        from src.preparation_failure import describe_preparation_failure
+        await db.set_task_meta("t1", "prepare_failure", {"successor": True})
+        await handler._record_prepare_failure(
+            await db.get_task("t1"), describe_preparation_failure(TimeoutError(), "old"),
+            session=old, slot=await db.get_workspace("ws-agent-1"), epoch=1,
+            disposition="cancelled",
+        )
+        assert await db.get_task_meta("t1", "prepare_failure") == {"successor": True}
+        assert read_claim_file(str(wd)) == current
+    finally:
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+
+
+@pytest.mark.parametrize("requirements,primary", [
+    ([], "project-repo"), (["vault"], "project-repo"),
+    (["project-repo", "vault"], "project-repo"), (["native"], "native"),
+    (["native", "vault"], "native"), (["missing"], None),
+    (["readonly-dir"], None), (["native", "project-repo"], None),
+    (["native", "native"], None),
+])
+@pytest.mark.parametrize("held_kind", ["project-repo", "native"])
+async def test_pool_claim_kind_uses_actual_held_workspace(
+    handler, db, tmp_path, requirements, primary, held_kind,
+):
+    from dataclasses import replace
+
+    native = await db.resolve_workspace_kind(PROJECT_ID, "project-repo")
+    await db.upsert_workspace_kind(replace(native, id="native", project_id=PROJECT_ID))
+    await mktask(db, "kind-task", profile_id="worker")
+    await db.add_task_workspace_requirements("kind-task", [(k, None) for k in requirements])
+    sid, _ = await pool_session(db, tmp_path)
+    await db.update_workspace("ws-agent-1", kind_id=held_kind)
+    demand = await db.count_ready_by_profile(PROJECT_ID, by_workspace_kind=True)
+    assert demand == ({("worker", primary): 1} if primary else {})
+    worker = scoped(handler, sid)
+    if primary != held_kind:
+        assert (await worker._cmd_task_claim({"task_id": "kind-task"}))["result"] == "claim_conflict"
+        assert (await worker._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
+        assert (await db.get_task("kind-task")).claim_epoch == 0
+    else:
+        result = await worker._cmd_task_claim({"task_id": "kind-task"})
+        assert result["result"] == "claimed", result
+        assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "kind-task"
+
+
+async def test_disabled_workspace_keeps_held_claim_but_drains_before_next(handler, db, tmp_path):
+    await mktask(db, "kind-task", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    worker = scoped(handler, sid)
+    assert (await worker._cmd_task_claim({"next": True}))["result"] == "claimed"
+    await db.update_workspace("ws-agent-1", enabled=False)
+    assert (await worker._cmd_task_claim({"next": True}))["result"] == "claimed"
+    assert (await db.get_workspace("ws-agent-1")).locked_by_task_id == "kind-task"
+
+
+async def test_disabled_idle_workspace_drains_without_taking_task(handler, db, tmp_path):
+    await mktask(db, "kind-task", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    await db.update_workspace("ws-agent-1", enabled=False)
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["result"] == "drain_requested", result
+    assert (await db.get_task("kind-task")).claim_epoch == 0
+
+
+async def test_holder_proof_cannot_be_reused_after_its_transaction(handler, db, tmp_path):
+    """A proof confers no authority once its session/workspace locks end."""
+    await mktask(db, "proof-task", profile_id="worker")
+    sid, _wd = await pool_session(db, tmp_path)
+    handler._prepare_and_activate = AsyncMock(return_value={"result": "preparing"})
+    await scoped(handler, sid)._cmd_task_claim({"next": True})
+    task = await db.get_task("proof-task")
+    async with db.immediate() as conn:
+        proof = await db.lock_claim_workspace_proof(
+            conn, sid, task.id, epoch=task.claim_epoch, lock_task_status=False,
+        )
+        assert proof is not None
+    async with db.immediate() as conn:
+        assert await db.activate_claim(
+            sid, task.id, epoch=task.claim_epoch, now=NOW, conn=conn, workspace_proof=proof,
+        ) is None
+    assert (await db.get_session(sid)).claim_phase == "preparing"
+    assert await db.activate_claim(sid, task.id, epoch=task.claim_epoch, now=NOW) is not None
+
+
+@pytest.mark.parametrize("changed", ["receipt", "assignment", "cleanup"])
+async def test_activation_rechecks_mutable_holder_evidence(handler, db, tmp_path, changed):
+    """Reset's key-share task lock cannot freeze later admission evidence."""
+    await mktask(db, "proof-task", profile_id="worker")
+    sid, _wd = await pool_session(db, tmp_path)
+    handler._prepare_and_activate = AsyncMock(return_value={"result": "preparing"})
+    await scoped(handler, sid)._cmd_task_claim({"next": True})
+    task = await db.get_task("proof-task")
+    async with db.immediate() as conn:
+        proof = await db.lock_claim_workspace_proof(
+            conn, sid, task.id, epoch=task.claim_epoch, lock_task_status=False,
+        )
+        assert proof is not None
+        if changed == "receipt":
+            await db.set_task_meta(task.id, "claim_workspace", {"superseded": True})
+        elif changed == "cleanup":
+            await db.set_task_meta(task.id, "prepare_cleanup_unproved", {"writer": "unknown"})
+        else:
+            await db.update_task(task.id, assigned_agent_id=None)
+        activated = await db.activate_claim(
+            sid, task.id, epoch=task.claim_epoch, now=NOW, conn=conn, workspace_proof=proof,
+        )
+        assert activated is None
+    assert (await db.get_session(sid)).claim_phase == "preparing"
+
+
+@pytest.mark.parametrize("pending,captured,retired", [
+    (False, 0, True), (True, 0, False), (False, 1, False), (False, 2, False),
+    ("false", 0, False), (False, "0", False), (False, 0.0, False), (False, None, False),
+])
+@pytest.mark.parametrize("accepted", [False, True])
+async def test_activation_retires_only_accepted_completed_older_stop(
+    handler, db, tmp_path, pending, captured, retired, accepted,
+):
+    await mktask(db, "receipt-task", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    handler._prepare_and_activate = AsyncMock(return_value={"result": "preparing"})
+    await scoped(handler, sid)._cmd_task_claim({"next": True})
+    task = await db.get_task("receipt-task")
+    assert task.claim_epoch == 1
+    stop = {"cleanup_pending": pending, "identity": {"task": {"claim_epoch": captured}}}
+    await db.set_task_meta(task.id, "retained_workspace_stop", stop)
+    await db.set_task_meta(task.id, "needs_attention", {"reason": "old"})
+    await db.add_task_context(task.id, type="retained_workspace_checkpoint",
+                              label="saved", content="durable")
+    async with db.immediate() as conn:
+        proof = await db.lock_claim_workspace_proof(conn, sid, task.id, epoch=task.claim_epoch)
+        assert proof is not None
+        if not accepted:
+            # Mutate under our own lock to exercise the actual session CAS, not
+            # an earlier proof refusal or a mocked activation return value.
+            from sqlalchemy import update
+            from src.database.tables import sessions
+            await conn.execute(update(sessions).where(sessions.c.id == sid).values(
+                desired_state="draining",
+            ))
+        result = await db.activate_claim(
+            sid, task.id, epoch=task.claim_epoch, now=NOW, conn=conn, workspace_proof=proof,
+        )
+    assert (result is not None) is accepted
+    assert await db.get_task_meta(task.id, "retained_workspace_stop") == (
+        None if retired and accepted else stop
+    )
+    assert (await db.get_task_meta(task.id, "needs_attention") is None) is accepted
+    contexts = await db.get_task_contexts(task.id)
+    assert any(c["type"] == "retained_workspace_checkpoint" and c["content"] == "durable" for c in contexts)
