@@ -94,7 +94,8 @@ def classify(payload: object) -> tuple[int, str]:
         failed = [name for name, check in checks.items()
                   if isinstance(check, dict) and not check.get("ok")]
         if payload.get("ready") is not True or failed:
-            return UNUSABLE, "/ready reports not ready: " + (", ".join(failed) or "no reason reported")
+            detail = json.dumps({name: checks[name] for name in failed}, sort_keys=True)
+            return UNUSABLE, "/ready reports not ready: " + (detail if failed else "no reason reported")
         return READY, "database ok"
     error = _first_line(database.get("error") or "no error reported")
     return UNUSABLE, f"database check failed: {error}"

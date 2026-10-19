@@ -10,7 +10,13 @@ predecessors in its own fixture. Successful predecessors are reused in a complet
 run. Failure invalidates that chain and cleans its state before another item.
 All other scenarios begin with empty task frontiers and no live sessions. Cleanup
 uses public commands, restores swarm, fake-provider modes and the failover policy,
-and deletes scenario tasks including terminal rows. Cleanup failure fails the
+and deletes scenario tasks including terminal rows. After explicitly restoring
+the required failover policy, both S16 and shared-world cleanup wait at most
+15 seconds for an actual `/ready` success. The activation write can precede the
+background health snapshot; its cached disabled verdict must not poison the next
+scenario. An expired wait reports the failing checks and prevents world reuse;
+it never accepts an inactive policy or changes the general preflight's refusal
+of confirmed database and required-policy failures. Cleanup failure fails the
 item and prevents reuse of a contaminated daemon. Final teardown runs even when
 environment preparation or a scenario fails.
 

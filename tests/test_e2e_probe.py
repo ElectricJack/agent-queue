@@ -215,6 +215,7 @@ class _StubDaemon:
         self.ready_body = ready_body
         self.ready_status = ready_status
         self.recovery = recovery
+        self.ready_requests = 0
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -222,6 +223,7 @@ class _StubDaemon:
                 if self.path == "/api/health":
                     payload, status = {"status": "ok"}, 200
                 elif self.path == "/ready":
+                    outer.ready_requests += 1
                     payload, status = outer.ready_body, outer.ready_status
                     if outer.recovery is not None:
                         outer.ready_body, outer.ready_status = outer.recovery
@@ -271,6 +273,41 @@ def test_fetch_reads_the_diagnosis_out_of_a_503_ready_body():
 def test_fetch_reports_ready_against_a_healthy_daemon():
     with _StubDaemon(READY_BODY, 200) as stub:
         assert probe.fetch(stub.url, timeout=10)[0] == probe.READY
+
+
+def test_restored_policy_waits_for_ready_snapshot_after_activation(monkeypatch):
+    from functools import partial
+
+    from scripts.e2e import smoke
+
+    disabled = {"ready": False, "checks": {
+        **READY_BODY["checks"],
+        "required_playbooks": {"ok": False, "disabled": ["provider-failover"]},
+    }}
+    with _StubDaemon(disabled, 503, recovery=(READY_BODY, 200)) as stub:
+        monkeypatch.setattr(smoke, "API_URL", stub.url)
+        monkeypatch.setattr(smoke, "wait_for", partial(smoke.wait_for, interval=0.01))
+        smoke.wait_for_restored_readiness()
+        assert stub.recovery is None
+        assert stub.ready_requests == 2
+
+
+def test_probe_cli_keeps_failed_policy_diagnosis_without_database_reset_hint():
+    disabled = {"ready": False, "checks": {
+        **READY_BODY["checks"],
+        "required_playbooks": {"ok": False, "disabled": ["provider-failover"]},
+    }}
+    with _StubDaemon(disabled, 503) as stub:
+        result = subprocess.run(
+            [sys.executable, str(PROBE), "--url", stub.url, "--wait", "15"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+    assert result.returncode == probe.UNUSABLE
+    assert "required_playbooks" in result.stderr
+    assert "provider-failover" in result.stderr
+    assert "disabled" in result.stderr
+    assert "database check failed" not in result.stderr
+    assert "reset" not in result.stderr
 
 
 def test_fetch_reports_unreachable_when_nothing_is_listening():

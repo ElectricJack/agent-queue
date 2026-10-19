@@ -1922,6 +1922,30 @@ def set_failover_policy_enabled(enabled: bool) -> None:
     check(result.get("enabled") is enabled, f"could not set {FAILOVER_PLAYBOOK}: {result}")
 
 
+def wait_for_restored_readiness() -> None:
+    """Wait for the health snapshot to observe an explicitly restored policy.
+
+    S16 temporarily disables a required policy. Re-enabling its activation is
+    synchronous, but the cached /ready verdict is collected independently. Do
+    not pass that disabled snapshot on to the next scenario's preflight.
+    """
+    from scripts.e2e.probe import READY, fetch
+
+    last = None
+    deadline = time.monotonic() + 15
+
+    def restored():
+        nonlocal last
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        last = fetch(API_URL, timeout=min(2, remaining))
+        return last[0] == READY
+
+    wait_for(restored, what="readiness after restoring the failover policy", timeout=15,
+             diagnostic=lambda: f"last readiness probe={last!r}")
+
+
 def held_tasks() -> dict[str, dict]:
     rows = collection_rows(api_checked("provider_held_tasks", {"project_id": PROJECT}), "tasks")
     return {row["task_id"]: row for row in rows}
@@ -2054,6 +2078,7 @@ def _run_failover_phase(state: dict, phase) -> str:
             _restore_providers()
         finally:
             set_failover_policy_enabled(True)
+            wait_for_restored_readiness()
 
 
 def _s16(state: dict) -> str:

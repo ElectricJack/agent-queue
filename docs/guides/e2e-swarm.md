@@ -102,6 +102,11 @@ remove tasks (including terminal rows) and sessions and restore swarm/provider/
 playbook switches. Failed cleanup prevents further use of that world, and fixture
 teardown always destroys its owned resources. No daemon is shared across workers.
 
+S16 and shared-world cleanup explicitly restore the required provider-failover
+policy, then wait up to 15 seconds for `/ready` to confirm the restoration in
+its background snapshot. A persistent readiness failure still fails cleanup
+and prevents reuse. Probe failures include the failed checks' diagnostic data.
+
 Each item has its own 540-second pytest limit. The scenario step has an
 eleven-minute deadline and a cache-miss dependency install has a separate
 twelve-minute deadline; the 26-minute job budget is their sum plus setup and
