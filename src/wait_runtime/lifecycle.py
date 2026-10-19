@@ -3,7 +3,7 @@
 import time
 import json
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import Float, cast, func, insert, select, update
 
 from src.database.queries.wait_queries import register_wait
 from src.database.tables import continuations, events, messages, tasks, wait_records
@@ -47,15 +47,19 @@ class WaitLifecycle:
             pressure = getattr(self.orch, '_wait_slot_pressure', {}).get(
                 (scope.project_id, task_profile), 0,
             )
+            def measured_decision(cond, evidence):
+                return decide_sleep(measured_inputs(
+                    cond, evidence, policy=policy, medians=self.medians[scope.project_id],
+                    pressure=pressure, anchor=anchor, now=now,
+                ))
+
             receipt = await register_wait(
                 conn, scope=scope, condition=args["condition"],
                 idempotency_key=args["idempotency_key"], registry=self.service.registry,
                 policy=policy, source_watermark=watermark, now=now,
                 ceiling_anchor_at=anchor,
-                decide_sleep=lambda cond, evidence: decide_sleep(measured_inputs(
-                    cond, evidence, policy=policy, medians=self.medians[scope.project_id],
-                    pressure=pressure, anchor=anchor, now=now,
-                )),
+                decide_sleep=measured_decision,
+                observe_sleep_inputs=lambda cond, evidence: measured_decision(cond, evidence).inputs,
                 claimed=args.get("claimed"),
                 escalate_after_seconds=args.get("escalate_after_seconds"),
             )
@@ -87,6 +91,9 @@ class WaitLifecycle:
 
     async def sleep_decide(self, args, *, principal, scope, handler):
         from src.waits.conditions import Condition
+        from src.wait_runtime.measurements import capture_costs
+
+        await capture_costs(self, args['wait_id'])
 
         async with self.db._engine.begin() as conn:
             await lock_graph(conn)
@@ -95,6 +102,8 @@ class WaitLifecycle:
             ))).mappings().first()
             if wait is None:
                 raise WaitError('wait.source_unresolved', 'wait disappeared')
+            if wait['cleared_at'] is not None:
+                return {'success': True, 'measurements_updated': True}
             evicted = wait['decision_reason'] == 'evicted'
             if wait['sleep_decision'] == 'in_place':
                 policy = project_policy(self.orch.config.wait_policy, wait['project_id'])
@@ -117,6 +126,8 @@ class WaitLifecycle:
                     return {'success': True, 'decision': 'in_place', 'inputs': dict(decision.inputs)}
                 await self.suspend(conn, wait, reason=decision.reason, now=self.clock())
         result = await self.hibernate.advance(args["wait_id"], handler=handler)
+        if result.get('parked'):
+            await capture_costs(self, args['wait_id'])
         if result.get('parked') and evicted:
             # The suspension is now proved. Complete the waiting arbitration
             # immediately from fresh occupancy, rather than waiting a pool tick.
@@ -190,6 +201,15 @@ class WaitLifecycle:
             ids = list((await conn.execute(select(continuations.c.wait_id).where(
                 continuations.c.resume_state.in_(("sleeping", "queued")),
                 continuations.c.facts["workspace_released_at"].astext.is_(None),
+            ))).scalars())
+            # First-turn accounting can arrive after ACK. Retry only recent
+            # continuations missing measured usage, at most once per 30 seconds.
+            ids.extend((await conn.execute(select(continuations.c.wait_id).where(
+                continuations.c.resume_state == 'acknowledged',
+                continuations.c.created_at >= self.clock() - 86400,
+                continuations.c.facts['costs']['resume_tokens'].astext.is_(None),
+                func.coalesce(cast(continuations.c.facts['usage_checked_at'].astext, Float), 0)
+                <= self.clock() - 30,
             ))).scalars())
         for wait_id in ids:
             await self.service.command("wait_sleep_decide", {"wait_id": wait_id})

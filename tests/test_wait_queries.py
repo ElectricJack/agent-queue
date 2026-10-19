@@ -599,6 +599,19 @@ async def test_loop_policy_can_force_hibernation_before_insert(env):
     assert receipt["ceiling_at"] is None
 
 
+async def test_loop_policy_records_measurements_without_using_ordinary_decision(env):
+    loop = AsyncMock(return_value=SleepDecision("hibernate", "wait.loop_detected"))
+    receipt = await register(
+        env, loop_check=loop, decide_sleep=lambda *_: 1 / 0,
+        observe_sleep_inputs=lambda *_: {"resume_cost_minutes": 2, "slot_pressure": 1},
+    )
+    assert receipt["decision"]["reason"] == "wait.loop_detected"
+    saved = (await records(env))[0]
+    assert saved["decision_inputs"]["resume_cost_minutes"] == 2
+    assert saved["decision_inputs"]["slot_pressure"] == 1
+    assert saved["decision_inputs"]["loop_detected"] is True
+
+
 async def send(
     env,
     message_id,

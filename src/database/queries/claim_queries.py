@@ -99,6 +99,14 @@ SETTLED_POOL_CLAIM_STATUSES = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.val
 ACCEPTED_CLOSE_KEY = "accepted_close"
 
 
+@lru_cache(maxsize=1)
+def _ordinary_activation_eligibility():
+    """Reuse SQL syntax; activation still evaluates current graph and labels."""
+    return apply_label_filters(select(tasks.c.id).where(
+        ~blocked_predicate(),
+    ), exclude_hold=True)
+
+
 def active_train_repair_bindings():
     """Current active batch-repair delegate identities, independent of titles."""
     operation = _URGENT_OPERATION
@@ -1395,9 +1403,7 @@ class ClaimQueryMixin:
 
                 stmt = stmt.where(
                     ordinary_activation_guard(task_id),
-                    apply_label_filters(select(tasks.c.id).where(
-                        tasks.c.id == task_id, ~blocked_predicate(),
-                    ), exclude_hold=True).exists(),
+                    _ordinary_activation_eligibility().where(tasks.c.id == task_id).exists(),
                 )
             row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
             if row is None:

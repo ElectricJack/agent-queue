@@ -149,13 +149,16 @@ async def register_wait(
     loop_check=None,
     on_loop_detected=None,
     ceiling_anchor_at=None,
+    observe_sleep_inputs=None,
 ) -> dict:
     """Register and return a stable receipt, or a structured refusal.
 
     ``policy``, ``decide_sleep`` and ``loop_check`` are server-injected seams
     for their owning leaves. decide_sleep(cond, evidence) is synchronous;
     loop_check(conn, scope, evidence, now) returns an overriding SleepDecision
-    or None. Runtime flag checks belong to the caller; v1 never calls here.
+    or None. observe_sleep_inputs optionally supplies audit inputs when the loop
+    policy bypasses the ordinary sleep decision. Runtime flag checks belong to
+    the caller; v1 never calls here.
 
     Supply exactly one of read_source_watermark or source_watermark. The async
     callback calls db.wait_source_watermark() on a separate short READ COMMITTED
@@ -286,9 +289,9 @@ async def register_wait(
     if decision is None:
         decision = decide_sleep(cond, evidence)
     else:
-        measured = decide_sleep(cond, evidence)
+        measured = observe_sleep_inputs(cond, evidence) if observe_sleep_inputs else {}
         decision = SleepDecision(decision.mode, decision.reason,
-                                 {**measured.inputs, **decision.inputs, 'loop_detected': True})
+                                 {**measured, **decision.inputs, 'loop_detected': True})
         if getattr(policy, 'hibernation_enabled', True) is False:
             decision = SleepDecision('in_place', 'flag', decision.inputs)
     if not isinstance(decision, SleepDecision) or decision.mode not in {"in_place", "hibernate"}:

@@ -10414,6 +10414,20 @@
         611,
         661
       ]
+    },
+    "src/wait_runtime/measurements.py::capture_costs": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        46,
+        90
+      ]
+    },
+    "src/database/queries/claim_queries.py::_ordinary_activation_eligibility": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        100,
+        107
+      ]
     }
   },
   "shared_state": {

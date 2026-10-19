@@ -196,7 +196,43 @@ adds no claim round trips. Resume owns the continuation reservation scope (inclu
 `profile_id`) and `new_session_id`; occupancy counts its reservation before launch,
 then the live new session once, never the stopped origin session.
 
-The service does not discover deadlines, dispatch source outcomes, launch continuations
-or evict sessions. Those listener/dispatcher/resume/eviction integration checks remain
-required in their owning leaves before activation. No installed policy is changed by
-this implementation.
+The admission reader does not discover deadlines, dispatch source outcomes, launch
+continuations or evict sessions. The runtime composition below owns those operations
+and their integration checks. No installed policy is changed by this implementation.
+
+## Continuation runtime composition
+
+`src/wait_runtime/service.py` now composes the listener, dispatcher, scheduler
+admission deadlines, hibernation transaction, resume transaction and pool eviction.
+The database-only condition, graph and receipt code remains in `src/waits`; it does
+not import command, session or orchestrator packages. All v2 feature flags remain
+false by default.
+
+A task suspension retains its claim, token and workspace until the exact provider
+instance is stopped, the task branch is published, and the checkout is detached.
+The database park transaction then advances the claim epoch and retains the branch
+owner's reservation. An uncertain stop, publication or detach preserves ownership
+and records an operational hold. A source outcome during suspension is committed
+once and becomes resumable only after park.
+
+Resume uses `AdmissionReader` and a continuation-scoped reservation. It retires an
+unused pool process when a fresh session needs its seat, and counts that process
+until it actually stops. The resumed checkout has a new path; the saved head must
+remain an ancestor of the current branch. A new session receives an immutable
+outcome envelope and held-message snapshot. Rendering prime records delivery;
+only the exact session/instance/claim/generation ACK consumes that snapshot and
+returns the task to `IN_PROGRESS`. A failed launch retries once, then waits for a
+new, current provider recovery event.
+
+Sleep decisions record server-observed duration, resume cost, pressure and ceiling
+inputs. Thirty-day medians require the configured minimum sample count; otherwise
+configured defaults apply. `aq wait graph --costs` exposes aggregate measurements.
+Teardown runs from registration through workspace release, setup covers the new
+checkout, and rebuild runs from fresh-session start through the first successful
+prime. Token totals come from completed turns in the exact session transcript,
+including all calls and streamed counter revisions. Missing usage stays null;
+recent acknowledged continuations retry late first-turn accounting every 30 seconds.
+An eviction request selects the newest in-place wait, then less urgent priority,
+then lower resume cost. It sends one checkpoint request while keeping the source
+condition registered. Pool arbitration runs again immediately after proved park;
+a checkpoint request alone never authorizes a replacement process.

@@ -212,7 +212,7 @@ class ResumeTransaction:
                 async with self.db._engine.begin() as conn:
                     _, _, current = await locked_suspension(conn, intent['wait_id'])
                     facts = {**current['facts'], 'costs': {**current['facts'].get('costs', {}),
-                        'rebuild_seconds': max(0, self.clock() - current['facts'][
+                        'setup_seconds': max(0, self.clock() - current['facts'][
                             'resume_attempt_started_at'])}}
                     await conn.execute(update(continuations).where(
                         continuations.c.id == current['id'],

@@ -182,6 +182,8 @@ class HibernationTransaction:
             # delivery after this point. External stop/save effects are idempotent.
             facts = dict(intent["facts"] or {})
             state = dict(facts.get("hibernation", {}))
+            if now < state.get('push_retry_at', 0):
+                return {'success': True, 'push_pending': True}
             state.setdefault("stop_started_at", now)
             facts["hibernation"] = state
             await conn.execute(update(continuations).where(
@@ -236,6 +238,9 @@ class HibernationTransaction:
                     await conn.execute(update(continuations).where(
                         continuations.c.id == current["id"],
                     ).values(saved_head=saved.commit, version=current["version"] + 1))
+        # A failed push can still leave a newly committed local head. Record
+        # that recovery evidence without treating it as publication proof.
+        local_head = saved.commit or await self.orch.git.arev_parse(session["work_dir"], "HEAD")
         workspace = await self.db.get_workspace_for_task(task["id"])
         detached = False
         if saved.status in {"clean", "pushed"} and saved.commit and workspace:
@@ -257,10 +262,17 @@ class HibernationTransaction:
         async with self.db._engine.begin() as conn:
             task, wait, intent = await locked_suspension(conn, wait_id)
             if saved.status not in {"clean", "pushed"} or not saved.commit:
-                facts = {**intent["facts"], "local_head": saved.commit}
+                state = dict(intent['facts'].get('hibernation', {}))
+                attempts = state.get('push_attempts', 0) + 1
+                state.update(push_attempts=attempts,
+                             push_retry_at=self.clock() + min(30, 2 ** min(attempts, 5)))
+                facts = {**intent["facts"], "local_head": local_head,
+                         'hibernation': state, 'push_error': saved.error}
                 await conn.execute(update(continuations).where(
                     continuations.c.id == intent["id"],
                 ).values(facts=facts))
+                if self.clock() < intent['created_at'] + policy.transition_budget_seconds:
+                    return {'success': True, 'push_pending': True}
                 return await self.hold(conn, task, wait, {**intent, "facts": facts},
                                        "push_failed", handler,
                                        detail=saved.error or "No published head proof")
@@ -297,8 +309,7 @@ class HibernationTransaction:
             _, _, current = await locked_suspension(conn, wait["id"])
             facts = {**current["facts"], "workspace_released_at": self.clock(),
                      "costs": {**current['facts'].get('costs', {}),
-                               'teardown_seconds': max(0, self.clock() - current['facts'].get(
-                                   'hibernation', {}).get('stop_started_at', current['created_at']))}}
+                               'teardown_seconds': max(0, self.clock() - wait['created_at'])}}
             await conn.execute(update(continuations).where(
                 continuations.c.id == current["id"],
             ).values(facts=facts, version=current["version"] + 1))

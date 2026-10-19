@@ -518,7 +518,7 @@ async def test_begin_suspension_is_idempotent_and_binds_registration_cursor(env)
         assert current['suspension_generation'] == 1
 
 
-@pytest.mark.parametrize('failure', [None, 'push', 'stop', 'detach'])
+@pytest.mark.parametrize('failure', [None, 'push', 'stop', 'detach', 'push_retry'])
 async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, monkeypatch, failure):
     from src.wait_runtime.hibernate import HibernationTransaction
 
@@ -538,6 +538,9 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
     saved = SimpleNamespace(status='failed' if failure == 'push' else 'pushed',
                             commit='a' * 40, error='push failed')
     save = AsyncMock(return_value=saved)
+    if failure == 'push_retry':
+        save.side_effect = [SimpleNamespace(status='failed', commit=None, error='temporary'),
+                            saved]
     detach = AsyncMock(return_value=failure != 'detach')
     monkeypatch.setattr('src.orchestrator.stranded_work.save_wip_to_task_branch', save)
     monkeypatch.setattr(
@@ -545,17 +548,32 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
     monkeypatch.setattr('src.wait_runtime.hibernate.remove_claim_file_if_matches', lambda *a: True)
     orch = SimpleNamespace(
         db=env.db, config=SimpleNamespace(wait_policy=SimpleNamespace(
-            transition_budget_seconds=0.02, hibernation_enabled=True)),
+            transition_budget_seconds=0.02 if failure in {'push', 'stop'} else 120,
+            hibernation_enabled=True)),
         _task_control_lock=lambda _: asyncio.Lock(),
         session_providers=SimpleNamespace(create=lambda *a: provider),
         session_reconciler=SimpleNamespace(_process_names=lambda _: ('codex',)),
-        git=SimpleNamespace(resolve_commit_identity=lambda _: None), bus=None, _git_mutex=None,
+        git=SimpleNamespace(resolve_commit_identity=lambda _: None,
+                            arev_parse=AsyncMock(return_value='a' * 40)), bus=None, _git_mutex=None,
         token_store=SimpleNamespace(revoke_session=AsyncMock()),
         _release_workspace_and_cleanup=AsyncMock(),
     )
     handler = SimpleNamespace(wait_escalation_create=AsyncMock(return_value={'success': True}))
     driver = HibernationTransaction(SimpleNamespace(orch=orch), clock=lambda: NOW + 1)
     result = await driver.advance(env.wait_id, handler=handler)
+    if failure == 'push_retry':
+        assert result['push_pending']
+        assert (await env.db.get_task('owner')).claim_epoch == 1
+        orch._release_workspace_and_cleanup.assert_not_awaited()
+        orch.token_store.revoke_session.assert_not_awaited()
+        assert (await intent(env))['facts']['local_head'] == 'a' * 40
+        assert (await driver.advance(env.wait_id, handler=handler))['push_pending']
+        assert save.await_count == 1
+        driver.clock = lambda: NOW + 5
+        result = await driver.advance(env.wait_id, handler=handler)
+        assert result['parked'] and save.await_count == 2
+        handler.wait_escalation_create.assert_not_awaited()
+        return
     if failure:
         assert result['held']
         assert (await env.db.get_task('owner')).claim_epoch == 1
@@ -914,3 +932,78 @@ async def test_resume_reserves_common_capacity_only_after_idle_process_stops(env
     assert len(reservations) == 1 and reservations[0]['state'] == 'granted'
     assert reservations[0]['scope']['profile_id'] == 'worker'
     assert (await env.db.get_task('owner')).status.value == 'RESUME_PENDING'
+
+
+async def test_resume_hold_requires_new_current_provider_generation(env):
+    from src.database.tables import provider_availability
+    from src.models import AgentProfile
+
+    driver, _, _ = await bound_resume(env)
+    await env.db.create_profile(AgentProfile(id='worker-codex', name='Worker'))
+    driver.orch.provider_availability = SimpleNamespace(provider_for_profile=lambda *a, **k: 'fake')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            profile_id='worker-codex', route_source='override'))
+        await conn.execute(update(continuations).values(resume_state='held',
+            hold_reason='resume_launch_failed', launch_attempts=2,
+            facts={'resume_attempt_started_at': NOW + 30}))
+        await conn.execute(insert(provider_availability).values(provider='fake', state='available',
+            since=NOW + 60, updated_at=NOW + 60, generation=2))
+    event = {'source_key': 'resource_invalidation:provider:fake', 'source_revision': '1',
+             'occurred_at': NOW + 50, 'payload': {'identity': 'fake', 'facts': {'generation': 1}}}
+    async with env.db._engine.begin() as conn:
+        await driver.recovery_event(conn, event)
+    assert (await intent(env))['resume_state'] == 'held'
+    event.update(source_revision='2', occurred_at=NOW + 60,
+                 payload={'identity': 'fake', 'facts': {'generation': 2}})
+    async with env.db._engine.begin() as conn:
+        await driver.recovery_event(conn, event)
+    row = await intent(env)
+    assert row['resume_state'] == 'queued' and row['launch_attempts'] == 0
+    assert row['hold_reason'] is None
+
+
+def test_turn_measurement_counts_all_calls_and_streaming_maxima():
+    from src.sessions.transcripts import TranscriptEntry
+    from src.wait_runtime.measurements import first_turn_tokens
+
+    def entry(key, tokens, *, done=False, ts=NOW):
+        return TranscriptEntry(uuid=key, parent_uuid=None, type='assistant', text='',
+            model=None, usage={'input_tokens': tokens, 'output_tokens': 1}, ts=ts,
+            usage_call_id=key, turn_complete=done)
+
+    entries = [entry('prior', 999, done=True, ts=NOW - 2), entry('a', 10, ts=NOW - 1),
+               entry('a', 12), entry('b', 20, done=True), entry('later', 500, done=True)]
+    assert first_turn_tokens(entries, since=NOW) == 34
+    assert first_turn_tokens(entries[:3], since=NOW) is None
+
+
+async def test_completed_turn_costs_arriving_after_ack_are_recorded(env, monkeypatch):
+    from src.database.tables import wait_measurements
+    from src.wait_runtime import measurements
+    from src.waits.resume_ack import acknowledge, mark_delivered
+
+    _, _, scope = await bound_resume(env)
+    current = await intent(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(continuations).values(facts={
+            **current['facts'], 'costs': {'setup_seconds': 3},
+        }))
+        await conn.execute(insert(wait_measurements).values(id='sample', project_id='p',
+            condition_kind='task', source_class='task', wait_id=env.wait_id,
+            decision='hibernate', waited_seconds=10, hibernated=True, evicted=False,
+            recorded_at=NOW + 10))
+        await mark_delivered(conn, continuation_id='c', session_id='fresh',
+            instance_token='fresh-token', claim_epoch=2, now=NOW + 40)
+        await acknowledge(conn, dict(wait_id=env.wait_id, continuation_id='c', generation=1),
+                          scope=scope, now=NOW + 41)
+    observed = AsyncMock(side_effect=[11, 34])
+    monkeypatch.setattr(measurements, 'session_turn_tokens', observed)
+    lifecycle = SimpleNamespace(db=env.db, clock=lambda: NOW + 70)
+    await measurements.capture_costs(lifecycle, env.wait_id)
+    async with env.db._engine.connect() as conn:
+        sample = (await conn.execute(select(wait_measurements))).mappings().one()
+    assert sample['summary_tokens'] == 11 and sample['resume_tokens'] == 34
+    assert sample['setup_seconds'] == 3 and sample['rebuild_seconds'] == 10
+    await measurements.capture_costs(lifecycle, env.wait_id)
+    assert observed.await_count == 2

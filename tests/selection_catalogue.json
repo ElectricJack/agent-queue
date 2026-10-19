@@ -18450,7 +18450,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:3191f9dd062e253185b1f93507d482be808a075bd50718304817e7c8cb478e8f",
+      "digest": "sha256:d6d6392dcf29f94e6db3e643f5a7f1be49caea48232076dc6adbe335eeb0f318",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -18467,9 +18467,12 @@
         "src.prime.hook_envelopes",
         "src.profiles.capabilities",
         "src.scheduler",
+        "src.sessions.transcripts",
+        "src.wait_runtime",
         "src.wait_runtime.eviction",
         "src.wait_runtime.hibernate",
         "src.wait_runtime.lifecycle",
+        "src.wait_runtime.measurements",
         "src.wait_runtime.resume",
         "src.wait_runtime.scheduler",
         "src.waits.conditions",

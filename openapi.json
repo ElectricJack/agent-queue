@@ -81071,6 +81071,11 @@
             "type": "boolean",
             "title": "Fleet",
             "default": false
+          },
+          "costs": {
+            "type": "boolean",
+            "title": "Costs",
+            "default": false
           }
         },
         "additionalProperties": false,

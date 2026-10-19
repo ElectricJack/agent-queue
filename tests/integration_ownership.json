@@ -9343,6 +9343,20 @@
         611,
         661
       ]
+    },
+    "src/wait_runtime/measurements.py::capture_costs": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        46,
+        90
+      ]
+    },
+    "src/database/queries/claim_queries.py::_ordinary_activation_eligibility": {
+      "reason": "Combined admission and continuation runtime: integration import, branch-owner fence, source observation or shared dependency; charged without changing the recorded budget.",
+      "landing_span": [
+        100,
+        107
+      ]
     }
   },
   "exclusions": {
@@ -14092,7 +14106,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin._release_stale_container_claim_on::38814c21c0f19182dcafaa65739a065688b16d03d4250ec173f37f0c7f0e18b8": {
-      "line": 2034,
+      "line": 2040,
       "owner": "ClaimQueryMixin._release_stale_container_claim_on",
       "call": "log_event",
       "owner_fingerprint": "f4c16c961ffa7c4364b8713dfc9b61be23d715455e54ca7e4b11886dbc017a03",
@@ -14101,10 +14115,10 @@
       "reason": "Audit of an exact stopped pool claim release: session id, claim epoch and prior task status only; no git ref replay or duplicate integration lifecycle authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.activate_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 1417,
+      "line": 1423,
       "owner": "ClaimQueryMixin.activate_claim",
       "call": "delete",
-      "owner_fingerprint": "2c8ca4cbfea981f8373ef5c4025facb13dc56531cee648da1261c49955b71ab2",
+      "owner_fingerprint": "f08c855ac2b4b2e75e52860bc186259cfd0a0edd4b230f67742e27173613631a",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Ordinary deletion of stale attention and preparation-backoff metadata after guarded PostgreSQL claim activation. Re-reviewed for clearing both session refusal budgets atomically: locks and admission guards remain before writes, with no remote OID, publication intent, ref replay or duplicate delivery lifecycle authority."
@@ -15532,7 +15546,7 @@
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: META_STALL_LAST_ACTION"
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.release_historical_pool_claim::40f5d4ab427280d02e45d5ca338736bda98df4dcaeca6e714ac37d455b037e37": {
-      "line": 2415,
+      "line": 2421,
       "owner": "ClaimQueryMixin.release_historical_pool_claim",
       "call": "delete",
       "owner_fingerprint": "33f786f583e284469fe110ba22079b81831aed80c4ae9748522dbb2b46caff44",
@@ -16297,7 +16311,7 @@
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
     },
     "src/database/queries/claim_queries.py::ClaimQueryMixin.park_task_for_continuation::9db730027a1de7e70c139ab21146787d9948bcc16f5a6fec39ca36519907ee96": {
-      "line": 1117,
+      "line": 1125,
       "owner": "ClaimQueryMixin.park_task_for_continuation",
       "call": "log_event",
       "owner_fingerprint": "21abdb7096408de95dde1329941055b5228d0d661d59671eb637416576ea9a47",
@@ -16324,10 +16338,10 @@
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
     },
     "src/database/queries/wait_queries.py::register_wait::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 439,
+      "line": 442,
       "owner": "register_wait",
       "call": "insert",
-      "owner_fingerprint": "080bd0fc1f60c258a556d6c63b520d1791c0048a242ab2686a264d51b40f7757",
+      "owner_fingerprint": "2b56c1c49222623d1ac39b9cf4d221376a87cf73735792d18be9bb15e50b5891",
       "integration_signal": true,
       "disposition": "ordinary",
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
@@ -16360,7 +16374,7 @@
       "reason": "Wait registration, continuation park/delivery/ACK or existing task recovery audit; no new integration journal or reference replay authority."
     },
     "src/wait_runtime/lifecycle.py::WaitLifecycle.suspend::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
-      "line": 161,
+      "line": 172,
       "owner": "WaitLifecycle.suspend",
       "call": "insert",
       "owner_fingerprint": "a73d1f3c6ac312e2b3b5c93467514cf7b3f5993e859f936c215cf078d9201eae",
