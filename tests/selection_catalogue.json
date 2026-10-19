@@ -18476,17 +18476,20 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:a3f558e5efe09d13afbed67337c7ac7fff923e4542b40bbe6916729d0d18dc69",
+      "digest": "sha256:aaacefcd8267b25580c3f069b65fb95b97a2e58d90692ff7987e515d55cf9a1b",
       "imports": [
         "src.commands.handler",
         "src.config",
         "src.database.queries.claim_queries",
+        "src.integration.lock",
+        "src.integration.models",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.task_checkpoint",
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
-        "src.sessions.proctable"
+        "src.sessions.proctable",
+        "src.workspace_registration"
       ],
       "markers": [
         "parametrize"
