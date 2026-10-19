@@ -1,5 +1,72 @@
 # Preparation cancellation investigation — wise-stone-87
 
+## Current disposition — 2026-10-19
+
+The task's current engineering direction supersedes the historical engineering
+hold and requests completion of owned source work plus an operational handoff
+to `supervisor-global`. The source fixes are published in
+[PR 1520](https://github.com/ElectricJack/agent-queue/pull/1520), at
+`2d6fecad0fd322fd19a0b37a261112351979996e`. The earlier sections below retain
+their original evidence and dates; their no-retry language does not impose a new
+hold on Matter work. Historical Matter causality and live repair remain unproved.
+
+The completed source also includes retained-workspace checkpoint and stop cleanup,
+successor fencing, and the native fleet merge. See the
+[retained-workspace specification](../../superpowers/specs/2026-10-13-retained-workspace-stop-rework.md#source-ci-rework-epoch-4)
+for that implementation and its validation history.
+
+### Final source evidence
+
+On October 19, this worker restored the exact published task branch using
+`aq git pull` and queried
+[hosted run 38505674226](https://github.com/ElectricJack/agent-queue/actions/runs/38505674226).
+The run is completed/successful, names the exact `2d6fecad0` head, and all 16
+jobs succeeded. Native ancestry retains both `b393925c8` and `69a45b259`.
+The `src`, `scripts` and `migrations` trees match combined production
+`9e3d97dc376b35262b5c8da11e3e57adda2a8d19` exactly.
+
+The prior completion record `e9d314b5-e29c-40f1-919c-d59387a107bf` records
+4,493 area tests passed, 16 skipped, one existing strict xfail; nine strict
+performance tests passed with unchanged budgets; 19 targeted restart and
+uncertainty tests passed; and a real disposable swarm passed all 20 scenarios.
+Those are preserved historical receipts, not tests rerun for this documentation
+handoff. Its log references are `/tmp/wise87-epoch4-area-final.log`,
+`/tmp/wise87-epoch4-perf-final.log`, `/tmp/wise87-epoch4-fixture-restart.log` and
+`/tmp/wise87-epoch4-e2e.log`. The recorded xfail is
+`test_verify_skips_the_automerge_under_worktree_mode` (unfinished phase-three
+auto-merge). This handoff changes documentation only.
+
+### Operational handoff
+
+Use existing `escalation-5068725d` and its recovery owners; no duplicate incident
+or repair task is needed. `supervisor-global` owns the operator handoff. Matter's
+own authorized operator/recovery owner owns all live Matter observations and
+actions. This source worker has neither performed nor authorized those actions.
+
+| Owner | Remaining action | Evidence to return |
+| --- | --- | --- |
+| `supervisor-global` / integration owner | Establish the delivery and loaded deployment of the published fixes through the configured integration path. | Delivered and running source SHAs, including whether the relevant fixes are present. A green source PR alone is not deployment evidence. |
+| Matter incident owner | Attribute the actual failed preparation, using retained evidence or a fresh naturally occurring failure. | Scrubbed `prepare_failure`, complete bounded traceback, timer owner and stage, loaded source SHA, task, session instance, claim epoch, registered path and acquisition generation for the same attempt. If historical evidence is unavailable, record that limitation explicitly. |
+| Matter recovery owner | Classify each current retained holder and use the supported control for its actual state after satisfying that control's checks. | Source and checkpoint receipt, current owner/generation and operation/job pins, provider/process quiescence, control result, and a qualified successor preparation proving reclaimed capacity without lost work or a late writer. |
+| `supervisor-global` with Matter owner | Record the incident acceptance disposition separately from source completion. | Actual live recovery results and the remaining historical-cause limitation, if any; retain any required human review or external-action decision. |
+
+For BLOCKED/FAILED work with an exact task binding, the supported recovery path
+is `aq task stop <id>`; pending manual-pause cleanup uses `aq task pause <id>`.
+These are instructions for the authorized owner after identifying the current
+holder, not commands for this worker to run on foreign tasks. Both paths retain
+source when their proofs fail. Dirty or unpublished work needs its durable full
+checkpoint before capacity reuse. A task-null agent lock has no task-scoped stop
+binding: the published implementation deliberately refuses it, and the existing
+operator reconciliation owner must handle it. No general orphan-lock release
+API or live task-null repair was delivered by this task.
+
+A failure with unknown writer liveness, an unmerged index, or a changed identity
+must be returned with the precise refused check. Do not infer safe release from
+a clean/detached HEAD, absent marker, zero claims or an old stopped session.
+Neither handoff nor fixture success supplies the missing historical evidence.
+The owned source and handoff are complete; the original task's full live
+acceptance remains unmet and must be reported as such at close.
+
 ## Finding and scope
 
 The published starting point was `d63fd995723b6377ed79146bdf3d381adb47f6f7`.
