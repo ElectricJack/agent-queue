@@ -45,6 +45,7 @@ from src.discord.render_budget import (
     GLYPHS,
     clip_section,
     compose,
+    cut,
     link_line,
 )
 
@@ -63,6 +64,7 @@ QUIET_LINE = "Quiet: {sessions} sessions working, nothing needs you."
 MAX_LANDED = 10
 MAX_STUCK = 10
 MAX_NEEDS_YOU = 5
+MAX_WAITING_ON_YOU = 10
 
 #: A task blocked this long is worth naming as stuck rather than as ordinary
 #: waiting.  Mechanism, not policy: the supervisor may still call it normal in
@@ -90,6 +92,12 @@ def facts_hash(facts: dict[str, Any]) -> str:
             "asks": needs.get("identity_hash", "unavailable"),
             "ask_count": needs.get("count"),
             "ask_health": needs.get("source_health", "refreshing"),
+            "waiting_on_you": [
+                (item["wait_id"], item.get("review_id"), item.get("revision"),
+                 item.get("thread_id"))
+                for item in facts.get("waiting_on_you", {}).get("items", [])
+            ],
+            "waiting_on_you_count": facts.get("waiting_on_you", {}).get("count", 0),
             "counts": facts.get("counts", {}),
         },
         sort_keys=True,
@@ -206,6 +214,7 @@ def render_authored_digest(
     base_url: str = "",
     notice: str = "",
     marker: str = "",
+    facts: dict[str, Any] | None = None,
 ) -> str:
     """The post for ``aq digest post``: the supervisor's words inside §3.2.
 
@@ -219,12 +228,19 @@ def render_authored_digest(
     # §3.2's three body lines are what a landed / stuck / needs-you answer
     # spends, so that is the cap here and ``section_lines`` stays the renderer
     # rule for the sections it was written for.
-    body = clip_section(body, DIGEST.body_lines or 0)
+    reminder = waiting_on_you_text(facts or {})
+    body = clip_section(body, (DIGEST.body_lines or 0) - bool(reminder))
     sections = [clean for raw in body.splitlines() if (clean := sanitise(raw))]
     if not sections:
         raise ValueError("digest body is empty after sanitizing")
     if sections[0][0] not in GLYPHS:
         sections[0] = f"{GLYPH_DIGEST} {sections[0]}"
+    if reminder:
+        # Reserve the reminder and footer before trimming authored prose.
+        footer = link_line(base_url, inbox_path(), notice=notice)
+        reserved = len(reminder) + len(footer) + len(marker) + 3
+        prose = compose(sections, DIGEST, chars=max(0, DIGEST.chars - reserved))
+        sections = [*prose.splitlines()[:2], reminder]
     return compose(
         sections,
         DIGEST,
@@ -245,8 +261,16 @@ def fallback_text(deterministic: str, facts: dict[str, Any]) -> str:
     invented prose.
     """
     if (facts.get("needs_you") or {}).get("source_health", "refreshing") != "healthy":
-        return compose([f"{GLYPH_DIGEST} Needs you is refreshing; open the inbox for current requests."], DIGEST)
+        return render_authored_digest(
+            "Needs you is refreshing; open the inbox for current requests.", facts=facts)
     if deterministic.strip():
+        if waiting_on_you_text(facts):
+            lines = deterministic.strip().splitlines()
+            footer = lines.pop() if lines[-1].startswith("<http") else ""
+            reminder = waiting_on_you_text(facts)
+            prose = compose(lines[:2], DIGEST,
+                            chars=DIGEST.chars - len(footer) - len(reminder) - 2)
+            return compose([*prose.splitlines(), reminder], DIGEST, link=footer)
         return deterministic
     counts = facts.get("counts", {})
     needs = int(counts.get("needs_you") or 0)
@@ -256,7 +280,17 @@ def fallback_text(deterministic: str, facts: dict[str, Any]) -> str:
         line = f"{GLYPH_DIGEST} Needs you: {needs} waiting {noun}; {working} sessions working."
     else:
         line = f"{GLYPH_DIGEST} {working} sessions working."
-    return compose([line], DIGEST)
+    return render_authored_digest(line, facts=facts)
+
+
+def waiting_on_you_text(facts: dict[str, Any]) -> str:
+    reminders = facts.get("waiting_on_you") or {}
+    items = reminders.get("items", [])
+    count = reminders.get("count", len(items) + reminders.get("more", 0))
+    if not count:
+        return ""
+    names = "; ".join(sanitise(str(row.get("task_id") or row["subject"])) for row in items[:3])
+    return cut(f"Waiting on you ({count})" + (f": {names}" if names else ""), 180)
 
 
 def _capped(rows: list[dict[str, Any]], cap: int) -> dict[str, Any]:
@@ -276,6 +310,7 @@ def bounded_facts(
     overdue_deliveries: int = 0,
     previous_facts_hash: str | None = None,
     deadline: float | None = None,
+    waiting_on_you: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The frozen brief for one window: counts exact, lists capped and counted."""
     return {
@@ -299,6 +334,12 @@ def bounded_facts(
             **asks,
             "items": asks["items"][:MAX_NEEDS_YOU],
             "omitted": max(0, asks["count"] - min(MAX_NEEDS_YOU, len(asks["items"]))),
+        },
+        "waiting_on_you": {
+            **_capped(sorted(waiting_on_you or [], key=lambda row: (
+                row["created_at"], row["wait_id"])), MAX_WAITING_ON_YOU),
+            "count": len(waiting_on_you or []),
+            "more": max(0, len(waiting_on_you or []) - MAX_WAITING_ON_YOU),
         },
         "sessions": {"working": int(sessions_working), "total": int(sessions_total)},
         "previous_facts_hash": previous_facts_hash or "",

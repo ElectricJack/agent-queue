@@ -18401,7 +18401,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:57323603d2d6069ea7c036ddc773525c440513d0efcbceb0b3bfbfde9d9b3beb",
+      "digest": "sha256:f3b35c5721e3532a20bc347c355bd29819a00fed15f29a7e21ae517bd25f65b9",
       "imports": [
         "src.api.codegen",
         "src.api.models.wait",
@@ -18416,14 +18416,18 @@
         "src.commands.contracts.wait_v2",
         "src.commands.principal",
         "src.config",
+        "src.database.queries.continuation_queries",
         "src.database.queries.wait_queries",
         "src.database.tables",
         "src.doctor.models",
         "src.mcp_registration",
+        "src.models",
         "src.profiles.capabilities",
         "src.profiles.capability_sync",
         "src.profiles.drift",
         "src.tools.definitions",
+        "src.wait_runtime.lifecycle",
+        "src.wait_runtime.service",
         "src.waits.conditions",
         "src.waits.legacy",
         "src.waits.registry"
