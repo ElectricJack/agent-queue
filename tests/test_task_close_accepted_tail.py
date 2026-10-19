@@ -35,6 +35,7 @@ from tests.test_pool_lifecycle_integration import (
     only_pool_session,
     ready,
     scoped,
+    settled_claim,
     single_worker_pool,
 )
 
@@ -67,7 +68,7 @@ async def _claimed(orch, db, handler, tid="t1"):
     await orch._reconcile_pools()
     await orch.wait_for_pool_launches()
     session = await only_pool_session(db)
-    res = await scoped(handler, session.id)._cmd_task_claim({"next": True, "wait": 2})
+    res = await settled_claim(scoped(handler, session.id), {"next": True, "wait": 2})
     assert (res["result"], res["task"]["id"]) == ("claimed", tid), res
     return session, res["claim_epoch"]
 
