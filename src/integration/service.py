@@ -123,11 +123,12 @@ class IntegrationService:
                 )
             if not background and self._reconciliation_task is not None:
                 await self._reconciliation_task
-            from src.integration.outbox import PROMOTION_EVENT_TYPES
+            from src.integration.outbox import ACTIVE_OUTBOX_EVENT_TYPES
 
             # Promotion policy authors intents for the train; legacy events
             # stay fenced from their old writers while the train owns delivery.
-            filters = {"event_types": PROMOTION_EVENT_TYPES} if self._train is not None else {}
+            # Batch review/release policy also uses this shared durable outbox.
+            filters = {"event_types": ACTIVE_OUTBOX_EVENT_TYPES} if self._train is not None else {}
             await self._source("integration outbox", self._outbox.dispatch_due,
                                self._clock(), **filters)
 
