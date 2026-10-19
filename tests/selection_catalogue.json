@@ -7184,12 +7184,12 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:f3acff7ae8bc485861bea621b8e2f2aad9f84ceb343a930e68c097c9b18156ec",
+      "digest": "sha256:aa0809359057b98ffb2bc33f947be5c22e1170afcda5a3c8bff994c6966ad015",
       "imports": [],
       "markers": [
         "parametrize"
       ],
-      "summary": "Shared seed construction must finish without launching background Git writers."
+      "summary": "Git fixtures build independent repositories without filesystem snapshots."
     },
     "tests/test_github_access_architecture.py": {
       "areas": [
@@ -9295,12 +9295,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a3623e780ca9810f6f847ef05ad71aed056cc152eede53ebd9c9d7393ef620e3",
+      "digest": "sha256:fad0804d209c5cf3d8ab546621f78cab366e7431315a8d1eaa5388fdddf88023",
       "imports": [],
       "markers": [
         "parametrize"
       ],
-      "summary": "Physical-line ownership, table and no-hidden-journal integration ratchets."
+      "summary": "Physical-line ownership and table integration ratchets."
     },
     "tests/test_integration_source_ancestry.py": {
       "areas": [

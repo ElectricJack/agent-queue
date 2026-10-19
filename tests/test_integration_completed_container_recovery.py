@@ -37,7 +37,7 @@ from src.integration.ownership import BranchOwnership
 from src.integration.repository_git import RepositoryGit
 from src.integration.train import TrainTarget
 from src.models import SessionRecord
-from tests.test_delivery_consumers import git, origin_template  # noqa: F401 - pytest fixture
+from tests.test_delivery_consumers import git
 from tests.test_integration_train_sources import (  # noqa: F401 - pytest fixture
     MAIN,
     completed,
