@@ -108,7 +108,10 @@ def normalize(args: dict) -> dict:
             raise ChangeSetError("action must be pause, resume, block or archive")
         if "action" in edit and "status" in edit:
             raise ChangeSetError("use either action or status")
-        if edit.get("status") in ("PAUSED", "ASSIGNED", "IN_PROGRESS", "COMPLETED"):
+        if edit.get("status") in (
+            "PAUSED", "ASSIGNED", "IN_PROGRESS", "COMPLETED",
+            "WAITING", "HIBERNATED", "RESUME_PENDING",
+        ):
             raise ChangeSetError("use pause/resume actions; execution and completion are owned")
         if "title" in edit and (not isinstance(edit["title"], str) or not edit["title"].strip()):
             raise ChangeSetError("title must be a non-empty string")
@@ -161,10 +164,12 @@ def _fields(spec, allowed):
 
 
 @asynccontextmanager
-async def boundary(db, project_id):
+async def boundary(db, project_id, *, source_lock=None):
     # Routing plans are re-selected under this fleet lock. Acquire it first
     # so their read/decision/write cannot straddle a hint change in this set.
     async with db.routing_apply_lock() as conn:
+        if source_lock is not None:
+            await source_lock(conn)
         # Hierarchy writers already take this lock before writing task rows.
         await db.lock_hierarchy_project(conn, project_id)
         # All scheduler, claim and routing UPDATEs acquire ROW EXCLUSIVE,

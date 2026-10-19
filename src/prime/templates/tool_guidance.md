@@ -70,6 +70,6 @@ closed task or retrying close.
 Summarize normal success with `--brief`. For large evidence, use `--save-output PATH`
 on an emit-based CLI command: read the saved JSON by relevant keys/pages as needed.
 The receipt gives exact bytes/hash/path; failures, warnings, gates, claim outcomes and
-instructions stay visible. Keep full error details and evidence paths in task comments.
+instructions stay visible. Save full error details to files and link evidence paths in task comments.
 Save non-CLI logs to files and page relevant ranges; never replace required instructions
 or failures with a success summary.

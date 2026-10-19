@@ -15,6 +15,7 @@ import time
 from pydantic import ValidationError
 from sqlalchemy import insert, select, update
 
+from src.waits.sources import insert_message_with_source_event
 from src.task_templates import render_task_template
 from src.commands.contracts.object_loop import (
     ObjectCheckpointReadArgs, ObjectLoopReconcileArgs, ObjectLoopStartArgs,
@@ -350,7 +351,7 @@ class ObjectLoopCommandsMixin:
         message_id = "msg-object-start-" + hashlib.sha256(identity.encode()).hexdigest()
         async with self.db.immediate() as conn:
             await self.db._upsert_meta(epic.id, "object_start_refusal", refusal, conn=conn)
-            await conn.execute(pg_insert(messages).values(
+            await insert_message_with_source_event(conn, pg_insert(messages).values(
                 id=message_id, project_id=request.project_id,
                 from_kind="system", from_id="object-loop",
                 to_kind="session", to_id=f"supervisor-{request.project_id}",

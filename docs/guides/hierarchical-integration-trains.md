@@ -18,6 +18,7 @@ aq integration status PROJECT_ID
 aq task show TASK_ID
 aq doctor --check integration.subjects_overdue
 aq doctor --check integration.subjects_held
+aq doctor --check integration.train_batches_stalled
 ```
 
 Status projects each live subject's phase, last journal record, policy pin and
@@ -70,6 +71,31 @@ admission plus cadence. The status state is `settling`, with the admission
 times and `seal_at` in `detail`. Admission timing survives daemon restarts
 but never substitutes for the current PR gate or Git delivery proof.
 Epic collection and local development targets freeze immediately.
+
+Passing ordinary repair close reseals its current open batch and wakes the
+delivery target. A later visit recovers a missed close handoff, including after
+repair archival. Neither action changes frozen sources or bypasses candidate
+checks. `integration.train_batches_stalled` and `stall.sweep` flag sealed batches
+with no progress past the settling cap, allowing bounded visits and announced
+retry deadlines. Paused batches and unfinished repairs retain their own
+diagnostics. Inspect the named lane and checks before changing batch intent.
+
+The daemon also opens one durable escalation per sealed, open batch after 60
+minutes without progress. It notifies the project supervisor and queues a Discord
+incident through the escalation outbox. Snapshot errors, running visits and retry
+deadlines do not postpone this alert; a recent repair update does. Paused, aborted
+and promoted batches are excluded. Cancel the incident after recovery; the alert
+itself does not pause or resume delivery.
+
+An empty loose object in a retained integration clone triggers automatic recovery
+after a failed fetch. The daemon quarantines zero-byte objects under
+`.git/aq-empty-object-backups/`, refetches the authorized origin without trusting
+local tips, and requires `git fsck --full` to pass. A `pending` marker retains an
+interrupted or failed recovery for the next visit. Local candidates and refs stay
+in place: an object available only locally cannot be restored from origin, so its
+snapshot remains unknown and requires operator recovery. Retained clones enable
+Git fsync for committed data. See the
+[recovery contract](../specs/design/integration-repository-recovery.md).
 
 The `IntegrationTrain.visit(target, seal_now=True)` and
 `DatabaseBatches.open_batch(..., seal_now=True)` hooks bypass the timing
@@ -325,6 +351,16 @@ used 961 Git commands in 2.864 seconds; the warm pass used zero commands with
 - `aq integration refresh-epic --task EPIC_ID --apply` starts or advances the attested refresh; pending checks or repairs continue through the train.
 - `aq integration record-root-noop ROOT_TASK_ID` previews a no-artifact completion for an unheld no-code root; apply requires `--apply --head HEAD_SHA --reason REASON`.
 
+Removing a required check from project policy causes the next root or epic
+target visit to supersede an open, unpromoted batch that froze that check. Its
+sources can seal under the updated policy; the original snapshot and sources
+remain in the audit history. Special epic sync and refresh batches retain their
+purpose in an atomic replacement. The visit names `batch_required_checks_removed`
+and reports whether it released the batch. Explicit pauses and human holds stay
+in force: resume a paused batch, or release the recorded human decision, before
+replacement can proceed. Missing Git proof retains the batch. Promotion requests
+keep their separately pinned check sets.
+
 The controls keyed by a task, operation, batch or reservation — `redrive-root`,
 `redrive-child`, `reopen-collection`, `reserve-owner`, `release-owner` — take no `project_id`,
 so authorization resolves their target project server-side. `record-noop` is an
@@ -346,6 +382,20 @@ aq integration close-delivered-pr PROJECT_ID PR_NUMBER
 ```
 
 ## Repair and collection recovery
+
+`aq task reparent --task-id CHILD_ID --root` can move an unheld no-commit leaf
+out of an epic. An unused reservation is replaced from the default branch.
+A materialized branch must still equal its recorded base; its branch and base
+remain unchanged while delivery now targets the default branch. Moving to
+another parent requires that parent's checkpoint to match the materialized
+base. The transaction advances affected parent generations and invalidates
+their verification. Live writers, workspace locks, attached branch owners,
+delivery receipts, completed work and sealed ancestors refuse the move.
+
+Branch ownership cannot attach to the shared repository base checkout. Recovery
+ignores a stale base-workspace attachment when the task branch is elsewhere,
+without snapshotting, detaching, unlocking or disabling the operator checkout.
+A task branch actually checked out in the base still requires operator attention.
 
 The train owns current integration work. Inspect `aq integration status PROJECT_ID`
 and the blocker returned by its batch or repair operation. A stopped attachment uses
@@ -408,7 +458,12 @@ the claim to READY. `aq task stop TASK_ID` uses the same proof for a retained pr
 and also returns it to READY; `aq task restart TASK_ID` can then retry it. This preserves
 the task's existing resume point and never discards dirty or unpublished work.
 
-Preview `aq integration release-owner --task-id TASK_ID --dry-run`. The existing
+The orphan sweep automatically preserves and releases a confirmed stopped pool
+writer's retained active claim to READY before the `session_not_live` fallback.
+It leaves refused proofs and operator holds in place for recovery and respects
+`integration.owner_recovery_sweep: false`.
+
+Preview `aq integration release-owner --task-id TASK_ID` (or add `--dry-run`). The existing
 owner recovery probes the provider, verifies the current fence, preserves
 unpublished work and releases only a proved stopped attachment. It refuses a
 live writer, reused checkout or changed fence. Repair handoff and retry remain
@@ -416,7 +471,7 @@ Subject decisions under the frozen policy and unchanged stage budget.
 
 A project supervisor can use this control for a task left
 `BLOCKED/session_close_hard_failure` with `integration_handoff_unproven`. Review
-the dry-run result, then remove `--dry-run` to release the stopped attachment.
+the dry-run result, then add `--apply` to release the stopped attachment.
 If its session is still live, stop that exact session through the normal session
 control and wait for confirmed termination; a stopped database status alone is
 insufficient. Release preserves the task's failure status. After reviewing the
@@ -487,7 +542,15 @@ An unchanged failing head, exhausted recovery or a container root instead
 notifies the supervisor with a named blocker. Existing source-CI repairs keep
 their paired admission path. See [root PR check recovery](../specs/design/root-pr-check-recovery.md).
 
-Source CI observation of a train root's exact PR head files a repair only when
+New source-CI recovery retains the original branch and PR and reopens a leaf task
+once. The budget persists across repaired heads and checkpoint generations.
+A further genuine failure, including failure on a historical repair delegate,
+notifies the supervisor once; it never creates another task, repair PR or chain.
+Existing historical delegates retain their ownership and delivery protections.
+Containers notify the supervisor to coordinate repair on the original branch.
+After the original source lands, the supervisor closes its obsolete repair PRs.
+
+Source CI observation of a train root's exact PR head reopens the original task only when
 at least one required check genuinely failed (`failure`, `timed_out`,
 `action_required`). A run whose non-success required checks are *all* cancelled
 is infrastructure — typically a GitHub Actions outage, annotated "The job was
@@ -544,6 +607,31 @@ separately; absent branches receive reservations for ordinary materialization.
 Existing origins, checkpoints and retired completion history are preserved.
 An unknown remote state or conflicting branch ownership refuses the edit and
 rolls back its database changes.
+
+A reservation is cut by the branch materialization drain
+(`src/integration/branch_materialization.py`), ten origins per pass, so a
+large backfill reaches its last origins minutes later; until then those tasks
+are honestly `origin_not_materialized` and `reserve-owner` refuses them because
+the origin is not yet materialized. Backfill keeps a pre-existing managed owner row and leases
+it to the task with the finite ref-lease TTL, which a long backlog can outlive.
+The drain then re-leases that row before cutting the ref, but only under all of
+these, checked under the project hierarchy lock and the ref lease lock:
+
+* the origin is live, reserved, unmaterialized, and names the task's exact
+  branch in the project's designated integration repository;
+* the owner row is a managed `worker` lease held by that same task, expired,
+  and attached to no session or workspace;
+* the task has no assigned agent, no attached session and no locked workspace.
+
+Re-leasing bumps the fence (`BranchLock.acquire_on`), so any older grant is
+fenced out, and records an `integration.origin_lease_reacquired` event with the
+previous and new fence. The cut itself is unchanged: an absent ref is created
+at the pinned base, an exact one is accepted, a ref published at any other
+commit is refused (`delivery_target_fixed`) and kept, and an unreadable remote
+stays unknown. A foreign or unexpired holder, a live writer, or legacy
+ownership is never re-leased. Task status, holds, routes and budgets are left
+as they are; only a DEFINED, unblocked task becomes READY. No operator step is
+needed. The drain retries the origin on its next pass.
 
 For projects enabled before this backfill existed, run `aq doctor --check
 integration.branch_origins`, then add `--fix` to repair through a generation-fenced

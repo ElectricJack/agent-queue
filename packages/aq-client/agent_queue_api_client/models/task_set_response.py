@@ -7,6 +7,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.task_set_response_display_state_type_0 import TaskSetResponseDisplayStateType0
+from ..models.task_set_response_status import TaskSetResponseStatus
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -41,7 +42,7 @@ class TaskSetResponse:
         child_state_counts (None | TaskSetResponseChildStateCountsType0 | Unset):
         descendant_state_counts (None | TaskSetResponseDescendantStateCountsType0 | Unset):
         description (str | Unset):  Default: ''.
-        status (str | Unset):  Default: ''.
+        status (TaskSetResponseStatus | Unset):  Default: TaskSetResponseStatus.VALUE_0.
         priority (int | Unset):  Default: 0.
         assigned_agent (None | str | Unset):
         retry_count (int | Unset):  Default: 0.
@@ -93,7 +94,7 @@ class TaskSetResponse:
     child_state_counts: None | TaskSetResponseChildStateCountsType0 | Unset = UNSET
     descendant_state_counts: None | TaskSetResponseDescendantStateCountsType0 | Unset = UNSET
     description: str | Unset = ""
-    status: str | Unset = ""
+    status: TaskSetResponseStatus | Unset = TaskSetResponseStatus.VALUE_0
     priority: int | Unset = 0
     assigned_agent: None | str | Unset = UNSET
     retry_count: int | Unset = 0
@@ -187,7 +188,9 @@ class TaskSetResponse:
 
         description = self.description
 
-        status = self.status
+        status: str | Unset = UNSET
+        if not isinstance(self.status, Unset):
+            status = self.status.value
 
         priority = self.priority
 
@@ -607,7 +610,12 @@ class TaskSetResponse:
 
         description = d.pop("description", UNSET)
 
-        status = d.pop("status", UNSET)
+        _status = d.pop("status", UNSET)
+        status: TaskSetResponseStatus | Unset
+        if isinstance(_status, Unset):
+            status = UNSET
+        else:
+            status = TaskSetResponseStatus(_status)
 
         priority = d.pop("priority", UNSET)
 

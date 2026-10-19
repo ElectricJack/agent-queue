@@ -6,7 +6,6 @@ Mirrors key tests from test_git_manager.py but exercises the async methods
 
 import asyncio
 import pathlib
-import shutil
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
@@ -17,6 +16,7 @@ from src.git.manager import ChildPreparationConflict, GitError, GitManager, Remo
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 REPOSITORY = GitHubRepositoryBinding(1, "org/repo")
@@ -40,51 +40,25 @@ def _commit_file(clone: str, filename: str, content: str, message: str) -> str:
     return _git(["rev-parse", "HEAD"], cwd=clone)
 
 
-@pytest.fixture(scope="session")
-def _empty_repo_seed(tmp_path_factory):
-    """Create a bare repo to act as 'origin'."""
-    tmp_path = tmp_path_factory.mktemp("empty-git-seed")
+@pytest.fixture
+def bare_repo(tmp_path):
+    """A fresh empty origin, populated only if this test requests a clone."""
     bare = str(tmp_path / "origin.git")
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", bare], check=True, capture_output=True
-    )
+    init_bare_seed(bare)
     return bare
 
 
 @pytest.fixture
-def bare_repo(tmp_path, _empty_repo_seed):
-    """An isolated empty origin; requesting clone seeds it as before."""
-    bare = str(tmp_path / "origin.git")
-    shutil.copytree(_empty_repo_seed, bare)
-    return bare
-
-
-@pytest.fixture(scope="session")
-def _clone_seed(tmp_path_factory, _empty_repo_seed):
-    """Clone the bare repo and add an initial commit."""
-    tmp_path = tmp_path_factory.mktemp("clone-seed")
-    bare_repo = str(tmp_path / "origin.git")
-    shutil.copytree(_empty_repo_seed, bare_repo)
+def clone(tmp_path, bare_repo):
+    """Build this test's working clone and initial history with Git."""
     clone_path = str(tmp_path / "clone")
-    subprocess.run(["git", "clone", bare_repo, clone_path], check=True, capture_output=True)
+    clone_seed(bare_repo, clone_path)
     _git(["config", "user.name", "Test"], cwd=clone_path)
     _git(["config", "user.email", "t@t.com"], cwd=clone_path)
     pathlib.Path(clone_path, "README.md").write_text("init")
     _git(["add", "."], cwd=clone_path)
     _git(["commit", "-m", "init"], cwd=clone_path)
     _git(["push", "origin", "main"], cwd=clone_path)
-    return clone_path
-
-
-@pytest.fixture
-def clone(tmp_path, bare_repo, _clone_seed):
-    """Copy the populated origin and clone; mutations never reach the seed."""
-    shutil.copytree(
-        pathlib.Path(_clone_seed).parent / "origin.git", bare_repo, dirs_exist_ok=True
-    )
-    clone_path = str(tmp_path / "clone")
-    shutil.copytree(_clone_seed, clone_path)
-    _git(["config", "remote.origin.url", bare_repo], cwd=clone_path)
     return clone_path
 
 
@@ -1066,7 +1040,9 @@ class TestBranchSourceIsNotShadowedByASameNamedTag:
 
         ops = GitOpsMixin()
         ops.git = mgr
+        ops.db = AsyncMock()
         ops._task_uses_git = AsyncMock(return_value=True)
+        ops._task_produces_no_code = AsyncMock(return_value=False)
         inspect = AsyncMock(wraps=mgr.areserved_paths_in_diff)
         mgr.areserved_paths_in_diff = inspect
         ctx = SimpleNamespace(
@@ -2382,28 +2358,51 @@ class TestRootDeliveryGatesTheWholeTree:
         ]
 
 
-async def test_cancelling_git_operation_reaps_process(mgr, tmp_path, monkeypatch):
+@pytest.mark.parametrize("runner", ["local", "result"])
+@pytest.mark.parametrize("during_spawn", [False, True])
+async def test_cancelling_git_operation_reaps_process_before_next_writer(
+    mgr, tmp_path, monkeypatch, runner, during_spawn,
+):
     import sys
 
     original_create = asyncio.create_subprocess_exec
     started = asyncio.Event()
+    release_spawn = asyncio.Event()
     processes = []
 
     async def create(*args, **kwargs):
         proc = await original_create(sys.executable, "-c", "import time; time.sleep(60)", **kwargs)
         processes.append(proc)
         started.set()
+        if during_spawn:
+            await release_spawn.wait()
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-    request = asyncio.create_task(mgr._arun_unlocked(["reset", "--hard"], cwd=str(tmp_path)))
+    async def writer():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            if runner == "result":
+                await mgr.arun_git_result(["commit-tree", "HEAD"], cwd=str(tmp_path), lock_held=True)
+            else:
+                await mgr._arun_unlocked(["reset", "--hard"], cwd=str(tmp_path))
+
+    async def next_writer():
+        async with mgr.arepository_transaction(str(tmp_path)):
+            assert processes[0].returncode is not None
+
+    request = asyncio.create_task(writer())
+    next_request = None
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
+        next_request = asyncio.create_task(next_writer())
         request.cancel()
+        release_spawn.set()
         with pytest.raises(asyncio.CancelledError):
             await request
         assert processes[0].returncode is not None
+        await asyncio.wait_for(next_request, timeout=5)
     finally:
+        release_spawn.set()
         for proc in processes:
             if proc.returncode is None:
                 proc.kill()
@@ -2411,6 +2410,8 @@ async def test_cancelling_git_operation_reaps_process(mgr, tmp_path, monkeypatch
         if not request.done():
             request.cancel()
         await asyncio.gather(request, return_exceptions=True)
+        if next_request is not None:
+            await asyncio.gather(next_request, return_exceptions=True)
 
 
 # ------------------------------------------------------------------

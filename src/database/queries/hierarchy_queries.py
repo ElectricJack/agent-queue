@@ -41,6 +41,7 @@ from src.database.queries.task_queries import (
     STALE_OPEN_ATTENTION,
     TransitionResult,
 )
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -225,13 +226,16 @@ def childless_held_open_container():
 def _settlement_clauses() -> list:
     """The §7 conditions both settlement legs share, correlated to ``tasks``.
 
-    Container flag ∧ no live session holds it ∧ no non-COMPLETED child ∧ not
-    a childless held-open container ∧ no hierarchy/train collection episode
-    owns its completion.  The caller joins ``projects`` and adds the status.
+    Container flag ∧ not an ingestion batch member awaiting fidelity review
+    (design §4: a held container never auto-settles) ∧ no live session holds
+    it ∧ no non-COMPLETED child ∧ not a childless held-open container ∧ no
+    hierarchy/train collection episode owns its completion.  The caller
+    joins ``projects`` and adds the status.
     """
     child = tasks.alias("child")
     return [
         container_flag_exists(),
+        not_ingest_held(),
         ~exists(
             select(literal(1)).where(
                 and_(
@@ -450,6 +454,20 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
 def _ordinary_repair_branch(repository_id: str | None = None):
     """Ordinary repairs use the leased batch ref, without a legacy origin/stage."""
     owner = integration_branch_owners
+    allocation = (
+        integration_batches.c.id + ":"
+        + func.cast(integration_batches.c.repair_attempt_count, Text)
+    )
+    # The sync dedup key is deliberately independent of allocation number.
+    # Bind that arm to ordinary_repair_id(batch, attempt), so an old sync
+    # cannot become runnable under a later allocation's batch identity.
+    # Fixed protocol strings are SQL literals, not another set of parameters
+    # for every origin/reservation predicate in the bounded candidate read.
+    repair_prefix = literal_column("'repair:'", type_=Text)
+    sync_id = literal_column("'repair-'", type_=Text) + func.encode(
+        func.sha256(func.convert_to(allocation, literal_column("'UTF8'"))),
+        literal_column("'hex'"),
+    )
     source = task_context.join(owner, owner.c.holder == task_context.c.task_id).join(
         integration_batches, integration_batches.c.id == tasks.c.created_by_id,
     )
@@ -457,9 +475,14 @@ def _ordinary_repair_branch(repository_id: str | None = None):
         source = source.join(projects, projects.c.id == tasks.c.project_id)
     return exists(select(literal(1)).select_from(source).correlate(tasks).where(
         tasks.c.created_by_kind == "system",
-        tasks.c.dedup_key == (
-            "repair:" + integration_batches.c.id + ":"
-            + func.cast(integration_batches.c.repair_attempt_count, Text)
+        or_(
+            tasks.c.dedup_key == (repair_prefix + allocation),
+            and_(
+                tasks.c.dedup_key == (repair_prefix + integration_batches.c.id
+                                     + literal_column("':'", type_=Text)
+                                     + literal_column("'sync-default-branch'", type_=Text)),
+                tasks.c.id == sync_id,
+            ),
         ),
         task_context.c.id == tasks.c.id,
         task_context.c.task_id == tasks.c.id,
@@ -697,10 +720,18 @@ def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
     )
 
 
+# Built once: the claim frontier evaluates these predicates on every claim, and
+# a fresh alias copies every column of its table (see claim_queries).
+_CROSS_PREREQUISITE_EDGE = task_dependencies.alias("cross_prerequisite_edge")
+_CROSS_PREREQUISITE_SOURCE = tasks.alias("cross_prerequisite_source")
+_REFRESH_PENDING_PARENT = tasks.alias("refresh_pending_parent")
+_CONTAINMENT_PARENT = tasks.alias("containment_parent")
+
+
 def _cross_parent_prerequisites():
     """Completed cross-parent blocks edges, correlated to the dependent task."""
-    edge = task_dependencies.alias("cross_prerequisite_edge")
-    source = tasks.alias("cross_prerequisite_source")
+    edge = _CROSS_PREREQUISITE_EDGE
+    source = _CROSS_PREREQUISITE_SOURCE
     return source, select(literal_column("1")).select_from(
         edge.join(source, source.c.id == edge.c.depends_on_task_id),
     ).correlate(tasks).where(
@@ -737,7 +768,7 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
 
 def open_epic_refresh_batches():
     """Open refresh batch ids for this task's epic; ordinary collections are unrelated."""
-    parent = tasks.alias("refresh_pending_parent")
+    parent = _REFRESH_PENDING_PARENT
     return select(integration_batches.c.id).select_from(
         integration_batches.join(parent, parent.c.repo_id == integration_batches.c.repository_id),
     ).correlate(tasks).where(
@@ -758,7 +789,7 @@ def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
     withhold a child whose epic already contains every proven source.
     """
     _, cross_edge = _cross_parent_prerequisites()
-    parent = tasks.alias("containment_parent")
+    parent = _CONTAINMENT_PARENT
     has_epic = exists(select(literal_column("1")).where(
         parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
     ))
@@ -853,6 +884,7 @@ class HierarchyQueryMixin:
                             # One array bind avoids expanding the whole READY frontier
                             # into thousands of parameters on each scheduler tick.
                             tasks.c.id == any_(bindparam("task_ids", task_ids, type_=ARRAY(Text))),
+                            not_ingest_held(),
                             materialized_origin_when_hierarchical(),
                             delivered_prerequisites_for_projects(hierarchy_modes),
                         )
@@ -1738,6 +1770,12 @@ class HierarchyQueryMixin:
             .where(tasks.c.id == task_id)
             .values(parent_task_id=parent_id, updated_at=time.time())
         )
+        from src.waits.sources import record_dependency_change
+
+        if old_parent:
+            await record_dependency_change(conn, task_id, old_parent, "parent-child", "removed")
+        if parent_id:
+            await record_dependency_change(conn, task_id, parent_id, "parent-child", "added")
         affected |= await self._collect_affected({task_id}, conn)
         if defer_projection:
             return TransitionResult()
@@ -1886,6 +1924,15 @@ class HierarchyQueryMixin:
             .values(parent_task_id=parent_id, updated_at=now)
         )
 
+        from src.waits.sources import record_dependency_change
+
+        for row in child_rows:
+            if row.parent_task_id == parent_id:
+                continue
+            if row.parent_task_id:
+                await record_dependency_change(conn, row.id, row.parent_task_id,
+                                               "parent-child", "removed")
+            await record_dependency_change(conn, row.id, parent_id, "parent-child", "added")
         affected = await self._collect_affected(set(ids), conn)
         affected.add(parent_id)
         affected |= old_parents

@@ -10,6 +10,8 @@ function StatusPill({ status }: { status: string }) {
   const tone =
     status === "COMPLETED"
       ? "bg-emerald-500/10 text-emerald-400"
+      : ["WAITING", "HIBERNATED", "RESUME_PENDING"].includes(status)
+        ? "bg-cyan-500/10 text-cyan-300"
       : status === "IN_PROGRESS"
         ? "bg-indigo-500/10 text-indigo-400"
         : status === "BLOCKED"
@@ -76,29 +78,48 @@ export function TaskExplain({ taskId }: { taskId: string }) {
   if (error) return <p className="text-sm text-red-400">{(error as Error).message}</p>;
   if (!data) return null;
   const reasons = data.reasons ?? [];
-  if (reasons.length === 0) {
-    return (
-      <p className="text-sm text-emerald-400">
-        No blockers — this task is ready or already running.
-      </p>
-    );
-  }
+  const timing = data.claim_timing;
   return (
-    <ul className="space-y-2">
-      {reasons.map((r, idx) => (
-        <li
-          key={`${r.code}-${idx}`}
-          className="rounded border border-gray-800 bg-gray-950 p-3 text-sm"
-        >
-          <div className="mb-1 flex items-center gap-2">
-            <span className="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
-              {r.code}
-            </span>
-            {r.ref && <span className="font-mono text-xs text-gray-500">ref: {r.ref}</span>}
-          </div>
-          <p className="text-gray-300">{r.detail}</p>
-        </li>
-      ))}
-    </ul>
+    <div className="space-y-3">
+      {timing && (
+        <div className="rounded border border-gray-800 bg-gray-950 p-3 text-sm">
+          <h3 className="font-semibold text-gray-300">Claim preparation</h3>
+          <p className="text-gray-400">
+            {timing.current_phase ? `Preparing: ${timing.current_phase}` : timing.result}
+            {` · ${timing.total_seconds.toFixed(2)}s total`}
+          </p>
+          <dl className="mt-2 grid grid-cols-2 gap-1 text-gray-400">
+            {Object.entries(timing.phases ?? {}).map(([phase, seconds]) => (
+              <div key={phase} className="flex justify-between gap-2">
+                <dt>{phase.replace(/_/g, " ")}</dt><dd>{seconds.toFixed(2)}s</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-2 text-xs text-gray-500">Phase times include nested work.</p>
+        </div>
+      )}
+      {reasons.length === 0 ? (
+        <p className="text-sm text-emerald-400">
+          No blockers — this task is ready or already running.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {reasons.map((r, idx) => (
+            <li
+              key={`${r.code}-${idx}`}
+              className="rounded border border-gray-800 bg-gray-950 p-3 text-sm"
+            >
+              <div className="mb-1 flex items-center gap-2">
+                <span className="rounded bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
+                  {r.code}
+                </span>
+                {r.ref && <span className="font-mono text-xs text-gray-500">ref: {r.ref}</span>}
+              </div>
+              <p className="text-gray-300">{r.detail}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

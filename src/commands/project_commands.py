@@ -227,7 +227,7 @@ class ProjectCommandsMixin:
         for session in sessions:
             if session.task_id is None:
                 continue
-            result = await self._cmd_message_send({
+            result = await self._queue_message_notification({
                 "project_id": project_id,
                 "from_kind": "system",
                 "from_id": "project-pause",

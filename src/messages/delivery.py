@@ -200,17 +200,9 @@ class MessageDeliveryEngine:
         if activity == "sleeping":
             if pending[0].body_kind == "schedule_prompt":
                 return result
-            if all(msg.body_kind == "conversation_input" for msg in pending):
+            if all(msg.body_kind in {"conversation_input", "ask_input"} for msg in pending):
                 return result
             if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
-                return result
-            if not await self._sessions.ensure_started(
-                kind=kind, target_id=target_id, project_id=resolved_project
-            ):
-                logger.warning(
-                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
-                    pending[0].id, to_kind, to_id,
-                )
                 return result
 
         if activity == "absent":
@@ -234,6 +226,20 @@ class MessageDeliveryEngine:
             if scheduled:
                 await self.cron_service.finish_delivery(msg.id, delivered=False)
             return result
+        # Recheck durable eligibility before a cold start as well as a nudge.
+        if activity == "sleeping":
+            if not await self._sessions.ensure_started(
+                kind=kind, target_id=target_id, project_id=resolved_project
+            ):
+                if scheduled:
+                    await self.cron_service.finish_delivery(msg.id, delivered=False)
+                logger.warning(
+                    "Message wake failed message_id=%s recipient=%s:%s; remains pending",
+                    msg.id, to_kind, to_id,
+                )
+                return result
+            if not await self._db.message_notification_is_pending(msg.id):
+                return result
         try:
             ok = await self._sessions.nudge(
                 kind=kind, target_id=target_id, project_id=resolved_project,
@@ -257,6 +263,8 @@ class MessageDeliveryEngine:
             "Message wake submitted message_id=%s recipient=%s:%s",
             msg.id, to_kind, to_id,
         )
+        if msg.body_kind in {"wait_outcome", "wait_decision"}:
+            await self._db.mark_wait_wake_delivered(msg.id, now=now)
         if scheduled:
             await self.cron_service.finish_delivery(msg.id, delivered=True)
         return result
@@ -302,6 +310,8 @@ class MessageDeliveryEngine:
         # when older queued feedback is injected by prime later.
         candidates.sort(key=lambda msg: (msg.delivered_at or 0, msg.created_at, msg.id), reverse=True)
         for msg in candidates:
+            if await self._db.message_held_by_wait(msg.id) is True:
+                continue
             # Internal question handoffs use explicit question commands;
             # never fabricate a user reply from the supervisor's transcript.
             if msg.body_kind in (
@@ -324,13 +334,17 @@ class MessageDeliveryEngine:
                 continue
             if msg.delivered_at is None or msg.delivered_at > cutoff:
                 continue
+            resumed = await self._db.message_reply_window_start(msg.id)
+            baseline = resumed if isinstance(resumed, (int, float)) else msg.delivered_at
+            if baseline > cutoff:
+                continue
             if msg.reply_to_id is not None:
                 # Already a reply; not the message under sweep.
                 continue
             # Once the window has closed no answering turn can still arrive,
             # so the backlog is never answered — and the transcript need not
             # be read to learn that.
-            window = self._reply_window(msg.delivered_at)
+            window = self._reply_window(baseline)
             if window <= now:
                 continue
             if await self._has_reply(msg):
@@ -351,7 +365,7 @@ class MessageDeliveryEngine:
                 kind=kind,
                 target_id=target_id,
                 project_id=project_id,
-                since=msg.delivered_at,
+                since=baseline,
                 until=window,
             )
             if not is_model_prose(tail):
@@ -361,7 +375,8 @@ class MessageDeliveryEngine:
             # reply that won the race, and any other conversation delivered
             # to this recipient inside the window, leave the turn unbound.
             reply = await self._db.create_transcript_tail_reply(
-                msg, body=tail, attribution_window=window - msg.delivered_at,
+                msg, body=tail, attribution_window=window - baseline,
+                **({"window_start": baseline} if baseline != msg.delivered_at else {}),
             )
             if reply is None:
                 continue
@@ -408,7 +423,7 @@ class MessageDeliveryEngine:
         now = time.time()
         parked = 0
         for msg in pending:
-            if msg.to_kind != "session" or msg.body_kind == "conversation_input":
+            if msg.to_kind != "session" or msg.body_kind in {"conversation_input", "ask_input"}:
                 continue
             if (now - msg.created_at) < PARK_AFTER_SECONDS:
                 continue
@@ -540,10 +555,10 @@ def _render_nudge(batch: list[Message]) -> str:
     if batch[0].body_kind == "schedule_prompt":
         schedule_id = batch[0].id.split(":")[1]
         return f"Handle `aq cron show {shlex.quote(schedule_id)} --consume --json`."
-    if batch[0].body_kind == "wait_result":
+    if batch[0].body_kind in {"wait_result", "wait_outcome", "wait_decision"}:
         # The durable message identity is also the wait pointer. Worker
         # grants include wait_get; no generic message command is needed.
-        wait_id = batch[0].id.removeprefix("wait:").removesuffix(":result")
+        wait_id = batch[0].id.removeprefix("wait:").removesuffix(":result").removesuffix(":outcome")
         return f"Handle `aq wait show {shlex.quote(wait_id)} --consume --json`."
     if batch[0].body_kind == "job_result":
         job_id = batch[0].id.removeprefix("job:").removesuffix(":terminal")

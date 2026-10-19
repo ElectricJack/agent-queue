@@ -12,6 +12,7 @@ import json
 import time
 from typing import Any
 
+from src.waits.sources import insert_message_with_source_event
 from src.commands.operator_authority import local_or_operator
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
 from src.commands.supervisor_authority import integration_operator
@@ -26,10 +27,8 @@ from src.models import TaskStatus
 
 _TASK_OWNER_ROLES = frozenset({"worker", "repair", "verifier"})
 
-#: Stored origin of a source-CI repair.  The router reads it as the policy's
-#: ``integration_repair`` origin; the delegate claim, restart and release
-#: paths that key on a stored ``integration_repair`` never see it, because a
-#: source-CI repair is a root with its own branch, not a stage delegate.
+#: Historical source-CI delegate origin, retained for routing and lineage.
+#: New recovery reopens the original task instead of filing a delegate.
 SOURCE_CI_REPAIR_ORIGIN = "source_ci_repair"
 
 
@@ -61,6 +60,79 @@ def _with_reason(success: bool, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class IntegrationCommandsMixin:
+    async def retained_repository_recovery(self, state, *, load=False):
+        """Daemon port for its managed cache, never a caller-supplied repair command."""
+        from src.integration.repository_incidents import record_incident
+
+        return await record_incident(self, state, load=load)
+
+    async def _cmd_integration_clear_retained_recovery(self, args: dict) -> dict:
+        """Lift a retained-cache admission hold after the store passes a full fsck."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationClearRetainedRecoveryArgs
+        from src.integration.repository_incidents import admission_holds, clear_incident
+        from src.integration.repository_recovery import clear_retained_recovery
+
+        try:
+            request = IntegrationClearRetainedRecoveryArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_found", f"invalid clear request: {exc}")
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        holds = [state for state in await admission_holds(self.db, request.project_id)
+                 if request.incident_id in (None, state["id"])]
+        if not holds:
+            return _failure("not_found", "no retained recovery incident holds this project")
+        incidents = []
+        for state in holds:
+            try:
+                result = await clear_retained_recovery(
+                    self.orchestrator.git, state, by=principal,
+                    record=lambda cleared, state=state: clear_incident(self, state, cleared),
+                )
+            except (GitError, OSError, ValueError) as exc:
+                incidents.append({"id": state["id"], "cache": state["cache"],
+                                  "outcome": "unavailable", "error": str(exc)})
+                continue
+            incidents.append({"id": state["id"], "cache": state["cache"],
+                              "outcome": "cleared" if result["cleared"] else "not_clean",
+                              "fsck": result["fsck"]})
+        outcomes = {item["outcome"] for item in incidents}
+        outcome = next(name for name in ("not_clean", "unavailable", "cleared")
+                       if name in outcomes)
+        payload = {"outcome": outcome, "project_id": request.project_id,
+                   "evidence": {"incidents": incidents}}
+        if outcome != "cleared":
+            payload["reason"] = "a held retained cache failed its full fsck or is unavailable"
+        return _with_reason(outcome == "cleared", payload)
+
+    async def _cmd_integration_supersede_completion(self, args: dict) -> dict:
+        """Preview/apply one human-directed supersession, without the close pipeline."""
+        from src.commands.contracts.integration import IntegrationSupersedeCompletionArgs
+        from src.integration.finished_owners import stop_confirmer_for
+        from src.integration.superseded_completion import SupersededCompletion
+        from src.sessions.obsolete import (
+            ObsoleteClose, ObsoleteCloseRefused, obsolete_owner_release_for,
+        )
+
+        request = IntegrationSupersedeCompletionArgs.model_validate(args)
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("refused", refusal)
+        closer = ObsoleteClose(
+            self.db, release_owner=obsolete_owner_release_for(self.orchestrator),
+            git_manager=self.orchestrator.git,
+        )
+        try:
+            result = await SupersededCompletion(
+                self.db, closer=closer, confirm_stopped=stop_confirmer_for(self.orchestrator),
+            ).run(request, principal=principal)
+        except (ValueError, GitError, HierarchyError, ObsoleteCloseRefused) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_migrate_provenance_refs(self, args: dict) -> dict:
         from src.commands.contracts.integration import IntegrationMigrateProvenanceRefsArgs
         from src.integration.provenance_migration import ProvenanceMigration
@@ -430,7 +502,19 @@ class IntegrationCommandsMixin:
         train = getattr(self.orchestrator, "integration_train", None)
         if train is None:
             return _failure("unavailable", "the integration train is not active")
-        return {"success": True, **await train.tick(args.get("now"))}
+        visit_now = args.get("now")
+        now = time.time() if visit_now is None else visit_now
+        # The check reads durable batches even when every snapshot fails before
+        # selection. It is independent of lane errors and retry scheduling.
+        checked_at = getattr(self, "_train_stall_checked_at", None)
+        if (getattr(self, "db", None) is not None
+                and (checked_at is None or now < checked_at or now - checked_at >= 60)):
+            from src.integration.stall_alerts import alert_stalled_batches
+
+            await alert_stalled_batches(self, now=now)
+            self._train_stall_checked_at = now
+        result = await train.tick(visit_now)
+        return {"success": True, **result}
 
     async def _cmd_integration_engine_transfer(self, args: dict) -> dict:
         from pydantic import ValidationError
@@ -476,9 +560,9 @@ class IntegrationCommandsMixin:
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
         identity = self._integration_source_ci_identity(observation)
-        # Serialize the complete observe/file/link sequence across daemons.
-        # A restart releases this transaction lock; ensure_task recovers a
-        # filed-but-not-yet-linked assignment by its immutable dedup key.
+        # Serialize the complete observe/reopen sequence across daemons.
+        # A restart releases this transaction lock; the reopen and its
+        # durable budget commit together, so replay cannot spend it twice.
         async with self.db._engine.begin() as conn:
             await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
                                {"key": identity})
@@ -494,7 +578,7 @@ class IntegrationCommandsMixin:
         return "source-ci:" + hashlib.sha256(json.dumps(key).encode()).hexdigest()
 
     async def _record_integration_source_ci(self, observation) -> dict:
-        from sqlalchemy import select, update
+        from sqlalchemy import select
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from src.database.tables import (
             archived_tasks, integration_source_ci, projects, task_completion_records,
@@ -502,7 +586,7 @@ class IntegrationCommandsMixin:
         )
         from src.integration.models import HierarchicalIntegrationPolicy
         from src.integration.reviews import ReviewEvidenceProducer
-        from src.integration.source_ci import SourceCIObservation, repair_description
+        from src.integration.source_ci import SourceCIObservation
         from src.integration.source_repairs import RETIREMENT_KEY, prove_source_delivered
 
         if not isinstance(observation, SourceCIObservation):
@@ -573,9 +657,6 @@ class IntegrationCommandsMixin:
                     ).limit(1))
                 if status != TaskStatus.FAILED.value and retired is None:
                     delegate_open = True
-                elif status == TaskStatus.FAILED.value and policy.root.repair.on_exhausted != "continue":
-                    return _failure("human_required", "source repair failed under finite policy")
-            attempt = record["repair_attempt"] + (0 if delegate_open else 1)
         # Canonical delivery truth, asked of the same evidence the root
         # scheduler admits a delivered root on: the exact completion
         # generation, the exact repository and the exact default target.  It
@@ -611,55 +692,117 @@ class IntegrationCommandsMixin:
                 "source_head": source["head"], "generation": source["generation"],
                 "delivery": proof.as_evidence(),
             }
-        # Creation stays on the normal CommandHandler filing/routing path.
-        # The enclosing source lock protects replay and competing ticks.
-        created = await self._cmd_ensure_task({
-            "project_id": source["project_id"], "repo_id": source["repository_id"],
-            "dedup_key": f"{self._integration_source_ci_identity(observation)}:{attempt}",
-            "title": f"Repair source CI: {observation.task_id} ({source['head'][:12]})",
-            "description": repair_description(observation), "task_type": "bugfix",
-            "root": True, "reason": "authorized exact source CI recovery",
-            "intelligence_class": policy.root.repair.debug_intelligence_class,
-            "_created_by_kind": SOURCE_CI_REPAIR_ORIGIN,
-            "_created_by_id": self._integration_source_ci_identity(observation),
-        })
-        if not created.get("success"):
-            return created
-        retired = []
+        return await self._reopen_source_ci_once(observation, producer, conditions, proof)
+
+    async def _reopen_source_ci_once(self, observation, producer, conditions, proof) -> dict:
+        """Reopen the original branch once; further failures notify its supervisor."""
+        import uuid
+
+        from sqlalchemy import insert, select, update
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from src.database.tables import (
+            archived_tasks, integration_source_ci, messages, projects, task_context, tasks,
+        )
+        from src.integration.models import HierarchicalIntegrationPolicy
+        from src.integration.source_ci import repair_description
+
+        source = observation.source
+        delivery = await self.db.observe_removal_delivery(
+            [observation.task_id], for_mutation=True,
+        )
+        transition = None
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])
-            current = (await conn.execute(select(integration_source_ci).where(*conditions)
-                       .with_for_update())).mappings().one()
-            if current["repair_attempt"] >= attempt:
-                return {"success": True, "outcome": "already_repairing",
-                        "repair_task_id": current["repair_task_id"]}
-            history = list(current["repair_history"] or [])
-            if current["repair_task_id"]:
-                history.append({"task_id": current["repair_task_id"],
-                                "attempt": current["repair_attempt"]})
+            project = (await conn.execute(select(projects).where(
+                projects.c.id == source["project_id"]))).mappings().one()
+            policy = HierarchicalIntegrationPolicy.model_validate(
+                project["hierarchical_integration_policy"])
+            if (not policy.root.repair.source_ci
+                    or project["hierarchical_integration_generation"] != observation.policy_generation
+                    or await producer._pull_request_source_on(conn, observation.task_id) != source
+                    or not await producer._authorization_on(
+                        conn, observation.task_id, source, observation.policy_generation,
+                        allow_reviewed=True)):
+                return _failure("stale", "source policy, authorization or exact identity changed")
+            task = (await conn.execute(select(tasks).where(
+                tasks.c.id == observation.task_id).with_for_update())).mappings().one()
+            previous = await conn.scalar(select(task_context.c.id).where(
+                task_context.c.task_id == observation.task_id,
+                task_context.c.type == "reopen_feedback",
+                task_context.c.label.in_(["Source CI Repair", "Root PR check failure"]),
+            ).limit(1))
+            legacy_delegate = await conn.scalar(select(integration_source_ci.c.task_id).where(
+                integration_source_ci.c.repair_task_id == observation.task_id,
+            ).limit(1))
+            past_attempt = await conn.scalar(select(integration_source_ci.c.task_id).where(
+                integration_source_ci.c.task_id == observation.task_id,
+                integration_source_ci.c.repair_attempt > 0,
+            ).limit(1))
+            exhausted = bool(previous or legacy_delegate or past_attempt
+                             or task["created_by_kind"] == SOURCE_CI_REPAIR_ORIGIN)
+            container = False
+            for table in (tasks, archived_tasks):
+                if await conn.scalar(select(table.c.id).where(
+                    table.c.parent_task_id == observation.task_id,
+                ).limit(1)):
+                    container = True
+                    break
+            if exhausted or container:
+                blocker = ("source_ci_repair_exhausted" if exhausted
+                           else "source_ci_repair_needs_owner")
+                guidance = ("One automatic source-CI repair is the limit." if exhausted else
+                            "A container cannot be claimed by a pool worker. Coordinate repair "
+                            "of its original branch with the existing owner.")
+                # One notification per original task, across heads and restarts.
+                await conn.execute(pg_insert(messages).values(
+                    id=("msg-source-ci-budget-" if exhausted else "msg-source-ci-owner-")
+                       + observation.task_id,
+                    project_id=source["project_id"], from_kind="system",
+                    from_id="integration-source-ci", to_kind="session",
+                    to_id=f"supervisor-{source['project_id']}",
+                    subject=f"Source CI repair requires supervisor: {observation.task_id}",
+                    body=(guidance + " Preserve the source "
+                          "branch and PR; diagnose or explicitly route further recovery. "
+                          "Do not file a repair of this repair.\n\n"
+                          + repair_description(observation)),
+                    created_at=time.time(), priority=50, archive_after_inject=1,
+                    body_kind="integration_source_ci",
+                ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+                return {"success": True, "outcome": "supervisor_notified",
+                        "blocker": blocker, "task_id": observation.task_id,
+                        "delivery": proof.as_evidence()}
+            feedback = repair_description(observation)
+            # Feedback and budget commit with READY. A crash cannot spend the
+            # budget without reopening, or reopen twice without recording it.
+            transition = await self.db._apply_transition(
+                conn, observation.task_id, TaskStatus.READY,
+                context="reopen_with_feedback", integration_delivery=delivery,
+                description=task["description"] + "\n\n---\n**Reopen Feedback:**\n" + feedback,
+                assigned_agent_id=None,
+            )
+            await conn.execute(insert(task_context).values(
+                id=str(uuid.uuid4())[:12], task_id=observation.task_id,
+                type="reopen_feedback", label="Source CI Repair", content=feedback,
+                created_at=time.time(),
+            ))
             await conn.execute(update(integration_source_ci).where(*conditions).values(
-                repair_task_id=created["task_id"], repair_attempt=attempt, repair_history=history))
-            # Filing releases the hierarchy lock. A reopen during that gap
-            # must also retire the newly linked delegate, never leave an
-            # orphan writer able to complete the rejected source.
-            if await producer._pull_request_source_on(conn, observation.task_id) != source:
-                from src.integration.source_repairs import retire_reopened_source_repairs_on
-
-                retired = await retire_reopened_source_repairs_on(
-                    self.db, conn, observation.task_id, context="source_changed_during_repair_filing",
-                    source_head=source["head"],
-                )
-        for transition in retired:
-            await self.db.log_blocked_flips(transition.flipped)
-            await self.db._notify_settled(transition.settled)
-            await self.db._notify_ready(transition.ready)
-        if retired:
-            return _failure("source_ci_repair_superseded", "source reopened during repair filing")
-        return {
-                "success": True, "outcome": "repair_created",
-                "repair_task_id": created["task_id"],
-                "delivery": proof.as_evidence(),
-            }
+                repair_attempt=1))
+            await self.db.add_task_comment(
+                observation.task_id, feedback, author_kind="agent",
+                author_id="service:integration-source-ci", conn=conn,
+            )
+            await self.db.log_event(
+                "integration.source_ci_reopened", project_id=source["project_id"],
+                task_id=observation.task_id,
+                payload=json.dumps({"source_head": source["head"],
+                    "generation": source["generation"], "attempt": 1}), conn=conn,
+            )
+        await self.db.log_blocked_flips(transition.flipped)
+        await self.db._notify_settled(transition.settled)
+        await self.db._notify_ready(transition.ready)
+        return {"success": True, "outcome": "reopened", "task_id": observation.task_id,
+                "delivery": proof.as_evidence()}
 
     async def _record_source_ci_infrastructure(
         self, conn, conditions, record, observation, policy
@@ -809,7 +952,7 @@ class IntegrationCommandsMixin:
             else:
                 why = None
             if why is not None:
-                await conn.execute(pg_insert(messages).values(
+                await insert_message_with_source_event(conn, pg_insert(messages).values(
                     id=f"msg-source-ancestry-{evidence['id']}",
                     project_id=source["project_id"],
                     from_kind="system",
@@ -1778,6 +1921,26 @@ class IntegrationCommandsMixin:
             "dry_run": request.dry_run,
             **result,
         }
+
+    async def _cmd_integration_recover_completed_container(self, args: dict) -> dict:
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRecoverCompletedContainerArgs
+        from src.integration.completed_container_recovery import CompletedContainerRecovery
+
+        try:
+            request = IntegrationRecoverCompletedContainerArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", str(exc))
+        operator, refusal = await integration_operator(self.db, request.project_id)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        result = await CompletedContainerRecovery(
+            self.db, self._integration_repository_git(),
+            git_first=lambda: self.config.integration.git_first,
+            authorize=lambda: integration_operator(self.db, request.project_id),
+        ).run(request, operator_id=operator)
+        return _with_reason(result["outcome"] != "refused", result)
 
     async def _cmd_integration_reopen_collection(self, args: dict) -> dict:
         """Recover a suspended producer, cancelled collection or failed verifier."""

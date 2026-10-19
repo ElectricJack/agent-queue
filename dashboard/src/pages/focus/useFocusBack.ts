@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { confirmDraftNavigation } from "../../components/asks/useDraftWarning";
 import { FOCUS_ROOT } from "./routes";
 
 /**
@@ -12,6 +13,6 @@ export function useFocusBack(): () => void {
   const location = useLocation();
   return useCallback(() => {
     if (location.key !== "default") navigate(-1);
-    else navigate(FOCUS_ROOT, { replace: true });
+    else if (confirmDraftNavigation()) navigate(FOCUS_ROOT, { replace: true });
   }, [navigate, location.key]);
 }

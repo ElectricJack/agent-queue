@@ -77,6 +77,9 @@ worker template.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
     "artifact_verify",
     "object_checkpoint_read",
     "job_retain",
@@ -141,6 +144,7 @@ worker template.
     "review_attachment_add",
     "review_attachment_list",
     "review_comment",
+    "review_feedback_complete",
     "review_show",
     "review_submit",
     "github_issue_close_rejected",

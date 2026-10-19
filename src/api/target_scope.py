@@ -57,9 +57,16 @@ from typing import Any, Final
 from sqlalchemy import select
 
 from src.database.tables import (
+    agent_waits,
+    continuations,
+
+    ask_decision_previews,
+    ask_decisions,
+    conversation_inputs,
     escalation_messages,
     escalations,
     gates,
+    human_asks,
     integration_batches,
     integration_branch_owners,
     integration_candidate_resolutions,
@@ -73,6 +80,7 @@ from src.database.tables import (
     task_branch_origins,
     test_selection_promotions,
     test_selections,
+    wait_records,
 )
 
 #: Argument names that name a row owned by exactly one project.  An argument
@@ -101,10 +109,10 @@ async def _project_id_of(db, table, value: str) -> Ownership:
     """Whether *value* exists in *table*, and its nullable ``project_id``."""
     async with db._engine.connect() as conn:
         row = (
-            await conn.execute(
-                select(table.c.project_id).where(table.c.id == value)
-            )
-        ).mappings().one_or_none()
+            (await conn.execute(select(table.c.project_id).where(table.c.id == value)))
+            .mappings()
+            .one_or_none()
+        )
     return (False, None) if row is None else (True, row["project_id"])
 
 
@@ -130,12 +138,27 @@ def _entity_resolver(getter: str) -> Resolver:
     return resolve
 
 
+async def _wait_project(db, value: str) -> Ownership:
+    """A bridged legacy id names its v2 record; otherwise retain v1 reads."""
+    async with db._engine.connect() as conn:
+        row = (
+            await conn.execute(
+                select(wait_records.c.project_id).where(
+                    (wait_records.c.id == value) | (wait_records.c.legacy_id == value)
+                )
+            )
+        ).first()
+    if row is not None:
+        return True, row.project_id
+    return await _project_id_of(db, agent_waits, value)
+
+
 async def _owner_column_value(db, table, column, value: str) -> Ownership:
     """Whether *value* exists in *table*, and its nullable owner column."""
     async with db._engine.connect() as conn:
         row = (
-            await conn.execute(select(column).where(table.c.id == value))
-        ).mappings().one_or_none()
+            (await conn.execute(select(column).where(table.c.id == value))).mappings().one_or_none()
+        )
     return (False, None) if row is None else (True, row[column.name])
 
 
@@ -215,10 +238,29 @@ async def _decision_object_project(db, identity: str, args: dict) -> Ownership:
             return False, None
 
 
-# Tagged objects need both arguments; their IDs never gain an untyped resolver.
+def _context_resolver(resolver: Resolver) -> ContextResolver:
+    """Limit a row resolver to commands that use this argument's identity."""
+
+    async def resolve(db, value: str, args: dict) -> Ownership:
+        return await resolver(db, value)
+
+    return resolve
+
+
+# Tagged objects need both arguments; shared argument names stay command-scoped.
 CONTEXT_TARGET_RESOLVERS: Final[dict[tuple[str, str], ContextResolver]] = {
     ("decision_record", "object_id"): _decision_object_project,
     ("decision_list", "object_id"): _decision_object_project,
+    ("ask_decide", "preview_id"): _context_resolver(_foreign_resolver(
+        ask_decision_previews, ask_decision_previews.c.ask_id, "ask_id"
+    )),
+    ("ask_retry_operation", "decision_id"): _context_resolver(_foreign_resolver(
+        ask_decisions, ask_decisions.c.ask_id, "ask_id"
+    )),
+    **{
+        (command, "input_id"): _context_resolver(_row_resolver(conversation_inputs))
+        for command in ("ask_show", "ask_apply_input", "ask_discussion_reply")
+    },
 }
 
 
@@ -257,13 +299,14 @@ TARGET_RESOLVERS: Final[dict[str, Resolver]] = {
     "intent_id": _promotion_intent_project,
     # Rows that carry their own project.
     "batch_id": _row_resolver(integration_batches),
-    "origin_id": _foreign_resolver(
-        task_branch_origins, task_branch_origins.c.task_id, "task_id"
-    ),
+    "origin_id": _foreign_resolver(task_branch_origins, task_branch_origins.c.task_id, "task_id"),
     "event_id": _row_resolver(integration_outbox),
     "escalation_id": _row_resolver(escalations),
     "gate_id": _row_resolver(gates),
+    "ask_id": _row_resolver(human_asks),
     "job_id": _row_resolver(jobs),
+    "wait_id": _wait_project,
+    "continuation_id": _foreign_resolver(continuations, continuations.c.task_id, "task_id"),
     "repository_id": _row_resolver(repos),
     "selection_id": _row_resolver(test_selections),
     "subject_id": _row_resolver(integration_subjects),
@@ -309,7 +352,8 @@ def target_references(args: dict, *, command: str | None = None) -> dict[str, li
 def unresolvable_targets(args: dict, *, command: str | None = None) -> list[str]:
     """Target references this module has no ownership resolver for."""
     return sorted(
-        name for name in target_references(args, command=command)
+        name
+        for name in target_references(args, command=command)
         if name not in TARGET_RESOLVERS and (command, name) not in CONTEXT_TARGET_RESOLVERS
     )
 
@@ -348,7 +392,8 @@ async def target_scope_error(command: str, args: dict, project_id: str, *, db) -
         for value in ids:
             context_resolver = CONTEXT_TARGET_RESOLVERS.get((command, name))
             found, owning = (
-                await context_resolver(db, value, args) if context_resolver is not None
+                await context_resolver(db, value, args)
+                if context_resolver is not None
                 else await _target_project(db, name, value)
             )
             if not found:
@@ -358,10 +403,7 @@ async def target_scope_error(command: str, args: dict, project_id: str, *, db) -
                 return f"out of scope: {command} targets a row owned by no project"
             if owning == project_id:
                 continue
-            return (
-                f"out of scope: {command} targets another project "
-                f"({name} belongs to {owning})"
-            )
+            return f"out of scope: {command} targets another project ({name} belongs to {owning})"
     if len(unmatched) == sum(len(ids) for ids in references.values()):
         # Every id matched no row, so the call names no target this check has
         # seen.  Admitting it would trust the handler to read the same id the
