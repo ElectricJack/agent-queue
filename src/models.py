@@ -1507,6 +1507,8 @@ class SessionRecord:
     claim_failure_count: int = 0
     claim_failure_reason: str | None = None
     claim_failure_at: float | None = None
+    #: Bounded last preparation observation; survives release, grants no authority.
+    failed_preparation: dict | None = None
     #: Persisted pool refusal result/reason/count/retry_at; survives daemon restarts.
     claim_refusal: dict | None = None
 

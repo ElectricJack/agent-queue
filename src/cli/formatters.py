@@ -577,6 +577,65 @@ def _review_text(value: Any, key: str, default: str = "—") -> str:
     return default if result is None or result == "" else str(result)
 
 
+def format_ask_list(data: Any) -> Group:
+    label = {"waiting": "Waiting on AQ", "history": "History"}.get(data.get("view"), "Needs you")
+    table = Table(title=f"{label}: {data['count']} · {data['source_health']}")
+    for label in ("Request", "Question", "Project", "Severity", "Version", "Status"):
+        table.add_column(label)
+    for ask in data["items"]:
+        table.add_row(*[Text(str(value)) for value in (
+            ask["id"], ask["context"].get("title", ""), ask.get("project_id", ""), ask.get("severity", ""),
+            ask["decision_generation"],
+            "Held while paused" if ask.get("held_while_paused") else ask.get("decision_state", ""),
+        )])
+    return Group(table, Text(f"Snapshot: {data['snapshot_at']}"),
+                 Text(f"Next cursor: {data['next_cursor']}" if data.get("next_cursor") else ""))
+
+
+def format_ask_detail(data: Any) -> Group:
+    ask = data["ask"]
+    context = ask["context"]
+    lines = [Text(context.get("title", ask["id"]), style="bold"),
+             Text(context.get("why", "")), Text(context.get("waiting_effect", "")),
+             Text(f"Version: {data['expected']}"),
+             Text(f"Application: {ask.get('application_state', 'unknown')}")]
+    for action in data["actions"]:
+        if action.get("option_key"):
+            lines.append(Text(f"{action['label']}: {action['effect']}"))
+        if action.get("disabled_reason"):
+            lines.append(Text(action["disabled_reason"], style="yellow"))
+    if data.get("decision"):
+        lines.append(Text(f"Decision receipt: {data['decision']['id']}"))
+    import json
+    for name in ("document", "inputs", "history", "obligations", "operations"):
+        if data.get(name):
+            lines.extend([Text(name.title(), style="bold"),
+                          Text(json.dumps(data[name], ensure_ascii=False, indent=2))])
+    for name in ("requested_by", "blocked_work", "links"):
+        if context.get(name):
+            lines.append(Text(f"{name}: {json.dumps(context[name], ensure_ascii=False)}"))
+    lines.append(Text(f"Prepare: aq ask prepare --ask-id {ask['id']} --expected '<version JSON>' "
+                      "--option-key <choice>"))
+    return Group(*lines)
+
+
+def format_ask_preview(data: Any) -> Group:
+    import json
+
+    preview = data["preview"]
+    return Group(Text("Prepared decision — review all effects and feedback", style="bold"),
+                 Text(f"Preview: {preview['id']} · expires {preview.get('expires_at', 'unknown')}"),
+                 Text(json.dumps(preview["packet"], ensure_ascii=False, indent=2)),
+                 Text(f"Packet SHA-256: {preview['packet_sha256']}"))
+
+
+def format_ask_receipt(data: Any) -> Group:
+    import json
+
+    return Group(Text("Request receipt", style="bold"),
+                 Text(json.dumps(data, ensure_ascii=False, indent=2)))
+
+
 def format_review_detail(data: Any) -> Group:
     """Render a review's selected revision and, when requested, its comments."""
     review = _review_value(data, "review", {})
@@ -1364,8 +1423,13 @@ def format_prompt_list(data: dict) -> Table:
     return table
 
 
-def format_workspace_list(data: dict) -> Table:
-    """Format list_workspaces response as a table."""
+def format_workspace_list(data: dict) -> Table | Group:
+    """Format list_workspaces response as a table.
+
+    The Owner column shows the owner classification the daemon could prove
+    and the Checkout column the bounded probe result; a footer names a
+    partial readback, which is never evidence that a workspace is free.
+    """
     workspaces = data.get("workspaces", [])
     table = Table(
         title="Workspaces",
@@ -1378,18 +1442,49 @@ def format_workspace_list(data: dict) -> Table:
     table.add_column("Path", style="dim", ratio=1)
     table.add_column("Type", style="dim")
     table.add_column("Lock", style="dim")
+    table.add_column("Owner", style="dim")
+    table.add_column("Checkout", style="dim")
     for ws in workspaces:
         lock = ""
         if ws.get("locked_by_task_id"):
             lock = f"🔒 {ws['locked_by_task_id']}"
+        elif ws.get("locked_by_agent_id"):
+            lock = f"🔒 agent {ws['locked_by_agent_id']}"
+        owner = ws.get("owner") or {}
+        owner_text = owner.get("classification", "")
+        session = owner.get("session") or {}
+        if session.get("id"):
+            owner_text = f"{owner_text} ({session['id']})"
+        if owner.get("fence") == "mismatch":
+            owner_text += " fence≠"
+        checkout = ws.get("git_status") or ""
+        if checkout == "ok":
+            checkout = (ws.get("branch") or "") + (" *" if ws.get("dirty") else "")
         table.add_row(
             ws.get("id", ""),
             ws.get("name", "—"),
             ws.get("workspace_path", ""),
             ws.get("source_type", ""),
             lock,
+            owner_text,
+            checkout,
         )
-    return table
+    diagnostics = data.get("diagnostics")
+    if not diagnostics or diagnostics.get("complete", True):
+        return table
+    parts = [f"owner facts: {diagnostics.get('owner_facts', 'unknown')}"]
+    counts = diagnostics.get("git_status_counts") or {}
+    unfinished = {k: v for k, v in counts.items() if k in ("timeout", "not_started", "error")}
+    if unfinished:
+        parts.append(", ".join(f"{v} {k}" for k, v in sorted(unfinished.items())))
+    footer = Text()
+    footer.append(
+        f"  Partial readback ({'; '.join(parts)}) within "
+        f"{diagnostics.get('deadline_seconds', '?')}s. ",
+        style="yellow",
+    )
+    footer.append(diagnostics.get("authority", ""), style="dim")
+    return Group(table, footer)
 
 
 def format_active_tasks_all(data: dict) -> Group:

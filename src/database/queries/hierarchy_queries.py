@@ -450,6 +450,20 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
 def _ordinary_repair_branch(repository_id: str | None = None):
     """Ordinary repairs use the leased batch ref, without a legacy origin/stage."""
     owner = integration_branch_owners
+    allocation = (
+        integration_batches.c.id + ":"
+        + func.cast(integration_batches.c.repair_attempt_count, Text)
+    )
+    # The sync dedup key is deliberately independent of allocation number.
+    # Bind that arm to ordinary_repair_id(batch, attempt), so an old sync
+    # cannot become runnable under a later allocation's batch identity.
+    # Fixed protocol strings are SQL literals, not another set of parameters
+    # for every origin/reservation predicate in the bounded candidate read.
+    repair_prefix = literal_column("'repair:'", type_=Text)
+    sync_id = literal_column("'repair-'", type_=Text) + func.encode(
+        func.sha256(func.convert_to(allocation, literal_column("'UTF8'"))),
+        literal_column("'hex'"),
+    )
     source = task_context.join(owner, owner.c.holder == task_context.c.task_id).join(
         integration_batches, integration_batches.c.id == tasks.c.created_by_id,
     )
@@ -457,9 +471,14 @@ def _ordinary_repair_branch(repository_id: str | None = None):
         source = source.join(projects, projects.c.id == tasks.c.project_id)
     return exists(select(literal(1)).select_from(source).correlate(tasks).where(
         tasks.c.created_by_kind == "system",
-        tasks.c.dedup_key == (
-            "repair:" + integration_batches.c.id + ":"
-            + func.cast(integration_batches.c.repair_attempt_count, Text)
+        or_(
+            tasks.c.dedup_key == (repair_prefix + allocation),
+            and_(
+                tasks.c.dedup_key == (repair_prefix + integration_batches.c.id
+                                     + literal_column("':'", type_=Text)
+                                     + literal_column("'sync-default-branch'", type_=Text)),
+                tasks.c.id == sync_id,
+            ),
         ),
         task_context.c.id == tasks.c.id,
         task_context.c.task_id == tasks.c.id,

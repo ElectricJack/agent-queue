@@ -389,3 +389,19 @@ def test_task_detail_shows_the_routing_preference_and_its_verdict():
         prefer_target=None, prefer_mode=None,
     )
     assert all(name != "Routing preference" for name, _ in _route_fields(plain))
+
+
+def test_canonical_ask_formatters_keep_count_health_version_and_full_packet():
+    result = {"items": [{"id": "ask-1", "context": {"title": "[bold]literal[/bold]"},
+                         "decision_generation": 2, "feedback_version": 7}],
+              "count": 101, "snapshot_at": 123, "source_health": "refreshing", "next_cursor": "next"}
+    out = _render("ask_list", result)
+    assert "101" in out and "refreshing" in out and "next" in out
+    assert "[bold]literal[/bold]" in out
+    detail = _render("ask_show", {"ask": result["items"][0], "expected": {
+        "decision_generation": 2, "feedback_version": 7, "source_fingerprint": "exact-source"},
+        "actions": [{"action": "decide", "enabled": False, "disabled_reason": "Only the decider"}]})
+    assert "exact-source" in detail and "Only the decider" in detail
+    packet = _render("ask_prepare_decision", {"preview": {"id": "preview-1", "packet_sha256": "sha",
+        "packet": {"domain": {"feedback": [{"original_text": "Full feedback", "disposition": "fold_in"}]}}}})
+    assert "Full feedback" in packet and "fold_in" in packet and "preview-1" in packet

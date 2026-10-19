@@ -62,6 +62,7 @@ class EscalationCommandsMixin:
         *,
         supervisor_required: bool = False,
         service_allowed: bool = True,
+        conn=None,
     ) -> tuple[Any | None, dict[str, Any] | None]:
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is PrincipalKind.LOCAL:
@@ -90,7 +91,7 @@ class EscalationCommandsMixin:
             return None, _error(
                 "out_of_scope", "a trusted core source or elevated supervisor is required"
             )
-        row = await self.db.get_session(principal.session_id)
+        row, _ = await self.db.get_session_with_profile(principal.session_id, conn=conn)
         if (
             row is None
             or row.profile_id not in {"supervisor", "supervisor-global"}
@@ -260,6 +261,13 @@ class EscalationCommandsMixin:
                     "revision": incident["revision"],
                 },
             )
+        if incident["source_kind"] not in {"question", "gate", "task_recovery"}:
+            from src.asks.models import SourceIdentity
+            ask = await self._publish_source_ask(SourceIdentity(
+                project_id, "free_text", incident["id"], {"id": incident["id"]},
+            ))
+            return {"success": True, "created": created, "escalation": incident,
+                    "ask_id": ask["id"]}
         return {"success": True, "created": created, "escalation": incident}
 
     async def _cmd_escalation_list(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -315,8 +323,17 @@ class EscalationCommandsMixin:
         incident, _, error = await self._escalation_for_caller(args.get("escalation_id"))
         if error:
             return error
+        canonical = await self._cmd_ask_show({
+            "ask_id": incident["id"], "alias_kind": "escalation",
+        })
+        alias = ({"ask_id": canonical["ask"]["id"],
+                  "ask_url": f"/focus/asks/{canonical['ask']['id']}",
+                  "deprecation": "Use aq ask show/reply/prepare/decide for human decisions; "
+                                 "escalation get remains incident diagnostics"}
+                 if canonical.get("success") else {})
         return {
             "success": True,
+            **alias,
             "escalation": incident,
             "messages": await self.db.list_escalation_messages(incident["id"]),
             "deliveries": await self.db.list_escalation_deliveries(incident["id"]),
@@ -592,128 +609,80 @@ class EscalationCommandsMixin:
         parameters, error = await self._validate_apply_binding(incident, reply, args)
         if error:
             return error
-        expected = args.get("expected_revision")
-        key = args.get("idempotency_key")
-        if not isinstance(expected, int) or expected < 0:
-            return _error("invalid_request", "expected_revision must be a non-negative integer")
-        if not isinstance(key, str) or not key or len(key) > 512:
-            return _error("invalid_request", "idempotency_key must contain 1 to 512 characters")
-        try:
-            reservation = await self.db.begin_escalation_action(
-                incident["id"],
-                reply_id=reply["id"],
-                expected_revision=expected,
-                idempotency_key=key,
-                action_kind=args["action_kind"],
-                target_id=args["target_id"],
-                parameters=parameters,
-                executor=principal.describe(),
-            )
-        except EscalationConflict as exc:
-            return _error("identity_conflict", str(exc))
-        except EscalationStateError as exc:
-            code = "stale_revision" if "stale" in str(exc) else "invalid_state"
-            return _error(code, str(exc))
-        except ValueError as exc:
-            return _error("invalid_request", str(exc))
-        if not reservation["created"]:
-            action = reservation["action"]
-            return {
-                "success": True,
-                "applied": False,
-                "replayed": True,
-                "action": action,
-                "escalation": reservation["escalation"],
-            }
+        from dataclasses import asdict
+        from src.asks.models import AskError, DecisionActor, SourceIdentity, digest
+        from src.database.tables import escalations
+        from sqlalchemy import select
 
-        action_result: dict[str, Any]
         try:
-            if args["action_kind"] == "question_answer":
-                action_result = await self.orchestrator.agent_questions.answer(
-                    args["target_id"],
-                    reply["text"],
-                    actor=reply["verified_actor"],
-                    human=True,
-                    verified_escalation_id=incident["id"],
-                )
-            elif args["action_kind"] == "gate_resolve":
-                flipped = await self.orchestrator._resolve_gate_and_emit(
-                    args["target_id"],
-                    resolved_by=principal.describe(),
-                    resolution=reply["text"],
-                )
-                action_result = {
-                    "gate_id": args["target_id"],
-                    "unblocked_task_ids": sorted(flipped or set()),
-                }
+            kind, target = args["action_kind"], args["target_id"]
+            if kind == "gate_resolve":
+                source = await self._gate_ask_source(await self.db.get_gate(target))
+                option = args.get("option_key")
+            elif kind == "question_answer":
+                source = SourceIdentity(incident["project_id"], "question", target, {"id": target})
+                option = "answer"
             else:
-                action_result = await self._cmd_task_recover(
-                    {
-                        "task_id": args["target_id"],
-                        "incident_id": incident["source_identity"],
-                        "decision": parameters["decision"],
-                        "reason": reply["text"],
-                    }
-                )
-        except Exception as exc:  # the durable reservation must still be completed
-            logger.exception("escalation action service failed")
-            action_result = {"error": str(exc)}
-        succeeded = "error" not in action_result and action_result.get("success") is not False
-        outcome = (
-            {
-                "question_answer": "question_answered",
-                "gate_resolve": "gate_resolved",
-                "task_recover": "task_recovery_applied",
-            }[args["action_kind"]]
-            if succeeded
-            else "action_failed"
-        )
-        finished = await self.db.finish_escalation_action(
-            reservation["action"]["id"],
-            succeeded=succeeded,
-            outcome=outcome,
-            result=action_result,
-            error=None if succeeded else str(action_result.get("error") or "action refused"),
-        )
-        if not succeeded:
-            await self.db.append_escalation_message(
-                incident["id"],
-                direction="outbound",
-                transport="core",
-                verified_actor=principal.describe(),
-                text=(
-                    "The requested recovery action failed and this escalation remains open: "
-                    + str(action_result.get("error") or "action refused")
-                ),
-                external_message_id=f"action-failed:{reservation['action']['id']}",
-            )
-        await self._emit_escalation(
-            "escalation.updated.v1",
-            {
-                "escalation_id": incident["id"],
-                "project_id": incident["project_id"],
-                "task_id": incident.get("task_id"),
-                "state": finished["escalation"]["state"],
-                "revision": finished["escalation"]["revision"],
-                "terminal_outcome": finished["escalation"].get("terminal_outcome"),
-                "action_id": finished["action"]["id"],
-                "action_outcome": finished["action"]["outcome"],
-            },
-        )
-        if not succeeded:
-            return {
-                **_error("action_failed", str(action_result.get("error") or "action refused")),
-                "action": finished["action"],
-                "escalation": finished["escalation"],
-            }
-        return {
-            "success": True,
-            "applied": True,
-            "replayed": False,
-            "action": finished["action"],
-            "escalation": finished["escalation"],
-            "action_result": action_result,
-        }
+                source = SourceIdentity(incident["project_id"], "recovery",
+                    incident["source_identity"], {"task_id": target})
+                option = parameters["decision"]
+            ask = await self._publish_source_ask(source)
+            if not args.get("expected"):
+                return {**_error("ask.context_missing",
+                    "Review the request effects and pass its expected version; use prepare first"),
+                    "ask_id": ask["id"], "ask_url": f"/asks/{ask['id']}",
+                    "expected": {k: ask[k] for k in (
+                        "decision_generation", "source_fingerprint", "feedback_version")}}
+            # No interpretation of an uncertain reply can become an approval.
+            # Discussion and natural-language interpretation belong to ask_apply_input.
+            if kind != "question_answer" and reply["text"].strip().casefold() != option:
+                raise AskError("ask.input_ambiguous", "Stored reply must name the exact declared choice")
+            intent = self._ask_intent({"ask_id": ask["id"], "expected": args["expected"],
+                "option_key": option, "overall_note": reply["text"]})
+            actor = DecisionActor(reply["verified_actor"], {"kind": "escalation",
+                "escalation_id": incident["id"], "source": asdict(source)}, reply["id"])
+            service = self._ask_service()
+            async with self._ask_transaction(source, service) as conn:
+                adapter = service.adapters.get(source.kind)
+                snap = await adapter.snapshot(source, conn=conn)
+                current = (await conn.execute(select(escalations).where(
+                    escalations.c.id == incident["id"],
+                ).with_for_update())).mappings().one()
+                key = args.get("idempotency_key")
+                existing = await self.db.get_ask_decision_by_request(
+                    ask["id"], actor.principal_id, key, conn=conn,
+                ) if isinstance(key, str) and not args.get("prepare") else None
+                if not existing and current["revision"] != args.get("expected_revision"):
+                    raise AskError("ask.stale_source", "Escalation revision changed")
+                await adapter.validate(snap, actor, intent, conn=conn, accepted_decision=existing)
+                if args.get("prepare"):
+                    preview = await service.prepare_decision(source, actor, intent, conn=conn)
+                    return {"success": True, "ask_id": ask["id"], "preview": preview,
+                            "expected": args["expected"]}
+                key = args.get("idempotency_key")
+                if not isinstance(key, str) or not 1 <= len(key) <= 512:
+                    raise AskError("ask.context_missing", "A bounded request key is required")
+                evidence_id = f"ask-input-{digest([ask['id'], reply['id']])}"
+                await self.db.insert_ask_correspondence({
+                    "id": evidence_id, "ask_id": ask["id"], "direction": "inbound",
+                    "transport": reply["transport"], "verified_actor": actor.principal_id,
+                    "text": reply["text"], "entry_kind": "decision_evidence",
+                    "received_at": reply["received_at"], "created_at": service.clock(),
+                }, conn=conn)
+                decision, created = await service.decide(source, actor, intent, conn=conn,
+                    preview_id=args.get("preview_id"), idempotency_key=key,
+                    evidence_entry_id=evidence_id)
+            notifications = getattr(adapter, "notifications", None)
+            if notifications:
+                await self._publish_committed(*notifications)
+            result = await self._apply_ask_decision(decision)
+            if created:
+                await self._publish_source_application(decision, result)
+            return {"success": result["application_state"] == "applied", "created": created,
+                    "ask_id": ask["id"], "applied": result["application_state"] == "applied",
+                    "replayed": not created, **result}
+        except AskError as exc:
+            return _error(exc.code, str(exc))
 
     async def _cmd_escalation_sweep(self, args: dict[str, Any]) -> dict[str, Any]:
         """Plan the §5.6 back-fill sweep; apply it only when asked.

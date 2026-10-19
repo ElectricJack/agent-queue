@@ -144,6 +144,7 @@ worker template.
     "review_attachment_add",
     "review_attachment_list",
     "review_comment",
+    "review_feedback_complete",
     "review_show",
     "review_submit",
     "github_issue_close_rejected",

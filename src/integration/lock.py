@@ -41,6 +41,23 @@ class RemoteMoved(GitError):
         super().__init__("remote ref moved; rebuild against its current tip")
 
 
+class BranchLockTimeout(TimeoutError):
+    """The fenced critical section outlived its bound and was cancelled.
+
+    Raised in place of ``asyncio.timeout``'s anonymous ``TimeoutError`` (whose
+    text is empty) so the preparation that ran inside the section records which
+    bound expired on which ref; the cancelled operation stays in ``__cause__``.
+    """
+
+    def __init__(self, target: BranchKey, seconds: float):
+        self.target = target
+        self.seconds = seconds
+        super().__init__(
+            f"branch fence critical section exceeded {seconds:g}s on "
+            f"{target.repository_id}:{target.branch}"
+        )
+
+
 class PublishWithdrawn(BranchOwnershipError):
     """The caller's authorization failed under the fence; nothing was pushed."""
 
@@ -110,16 +127,22 @@ class BranchLock:
     @asynccontextmanager
     async def exclusion(self, fence: Fence, *, conn=None):
         """Hold current authority through bounded I/O, shared with reacquisition."""
-        async with asyncio.timeout(CRITICAL_SECTION_SECONDS):
-            if conn is not None:
-                row = await self.lock_on(conn, fence.target)
-                self.require_current(row, fence)
-                yield row
-            else:
-                async with self.db.immediate() as owned:
-                    row = await self.lock_on(owned, fence.target)
+        bound = asyncio.timeout(CRITICAL_SECTION_SECONDS)
+        try:
+            async with bound:
+                if conn is not None:
+                    row = await self.lock_on(conn, fence.target)
                     self.require_current(row, fence)
                     yield row
+                else:
+                    async with self.db.immediate() as owned:
+                        row = await self.lock_on(owned, fence.target)
+                        self.require_current(row, fence)
+                        yield row
+        except TimeoutError as exc:
+            if not bound.expired() or isinstance(exc, BranchLockTimeout):
+                raise
+            raise BranchLockTimeout(fence.target, CRITICAL_SECTION_SECONDS) from exc
 
     def require_current(self, row: dict | None, fence: Fence) -> None:
         if (

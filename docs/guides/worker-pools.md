@@ -318,7 +318,44 @@ usage-limit screen ends with reason `usage_limit_screen` instead and records a
 rate-limit exit against the provider, so two such workers trip it and pool
 sizing stops relaunching into the limit (provider-failover D13).
 
+**A worker holding a claim must keep working or close it.** Supervisors must not
+park holders on source mapping, integration controls or delivery paperwork.
+With the train off, its controls are not worker publication/close prerequisites;
+the supervisor handles actual refusals through the owning surface. A necessary
+execution question uses concrete guidance or one bounded durable wait.
+
+For Claude and Codex, an explicit completion of the current claim's turn opens
+the stall ladder even if tmux keeps repainting. After
+`sessions.idle_claim_timeout_seconds` of quiet (default 900, 0 disables this
+additional bound), the backstop stops the exact worker and releases its claim
+through guarded pool teardown. New input, tools and turns invalidate the
+completion evidence; unreadable evidence is not a reason to release. Task
+heartbeats, questions and durable waits retain their grace/exemptions. Attached
+integration ownership remains fenced, and repeated failures use the existing
+bounded recovery budget instead of relaunching forever.
+
 ### Repeated claim preparation refusals
+
+Failed claim responses include `session.failed_preparation`, also visible in
+`aq session show`. It retains the last selected task, designated repository/ref,
+origin generation, checkpoint version/generation, observed owner fences, session
+instance, preparation start, claim epoch and failure time/reason after the task
+binding is released. It is bounded and scrubbed; missing evidence stays null.
+Successful activation clears it. `task: null` and `claim_epoch: null` still mean
+there is no active claim: this old observation never authorizes work on the task.
+
+A canonical producer refusal (`canonical branch is not reserved by this task`)
+requires checking the exact current origin, checkpoint and owner, rather than
+assuming ordinary sync-repair allocation failed. An owning project supervisor
+can reserve a detached READY/BLOCKED producer with
+`aq integration reserve-owner --task-id TASK`. An attached or unresolved owner
+requires the provider-backed, work-preserving `release-owner` preview and proof
+described in [integration recovery](hierarchical-integration-trains.md).
+Live or unknown writers, held workspaces, foreign/successor fences and changed
+source/ref evidence remain refused. Never use the historical snapshot as the
+proof or restart the unchanged reporting worker. If an older stopped session
+has no snapshot, the failed task identity remains unresolved until independent
+original evidence identifies it; a null response cannot identify a task.
 
 The session cooldown guard (§4) drains idle workers on their second identical
 blocker and leaves their workspace enabled. This path does not reach the
@@ -734,6 +771,34 @@ and park for the requested `--wait` window. Successful activation or a changed
 admission reason resets the streak. On a second identical failure an idle session
 is marked for drain and receives `drain_requested`, stopping even older workers'
 claim loops. A retained preparation is never released by this guard.
+
+A slot still bound to another task (a foreign `.aq/claim.json`, typically left by a
+paused holder, or a slot lock naming another task) is a workspace fault, not the
+claimant's. Preparation releases the task to `READY` with no `slot_reset_failed`
+ladder attempt, backoff or `needs_attention`, so the next session prepares it in a
+free slot. The refused session receives `drain_requested`, and its workspace is
+disabled under `claim_failures` (restored by the slot reconciler after the cooldown).
+The foreign claim file stays on disk as the holder's evidence.
+
+Pause retires its own claim file before it frees the slot, so a paused holder does
+not leave that foreign marker behind. After Pause has stopped the exact captured
+session and captured the workspace checkpoint, and while the slot is still locked to
+the paused task, it removes `.aq/claim.json` only if all of these hold
+(`retire_paused_slot_claim` in `src/orchestrator/workspace_claim_recovery.py`):
+
+- the slot belongs to the task's project, is locked to the task and its pool agent, and
+  no live session uses its path;
+- the marker names the task, the pre-pause claim epoch (the task's epoch has since moved
+  past it) and one of the captured sessions;
+- that session is stopped and desired stopped, with the captured instance token, no task,
+  `manually_paused`, the same epoch and work_dir, and an ended attempt for this task;
+- the file is the same inode and content read before the checks.
+
+Only then does the pause unlock the slot and announce capacity. If any proof fails, or
+the pause converged without a checkpoint, the marker stays and the foreign-claim
+handling above applies. Retirement removes only the marker. Workspace bytes, the pause
+checkpoint, branches and holder fences are untouched, and the successor's ordinary slot
+reset still salvages dirty work before it checks out.
 
 Workers report a repeated blocker once to the project supervisor. Idle workers
 drain-ack and exit; workers with retained preparation end their turn awaiting the

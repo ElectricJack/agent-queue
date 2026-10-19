@@ -840,6 +840,194 @@ async def test_paused_batch_is_not_released_for_a_superseded_repair(world):
             integration_batches.c.id == "repair-only")) == "paused"
 
 
+@pytest.mark.parametrize("kind", ["root", "epic"])
+async def test_removed_required_check_reseals_all_frozen_sources_and_delivers(world, kind):
+    target = MAIN
+    parent = None
+    boundary = "root"
+    if kind == "epic":
+        parent, boundary = "epic", "parent"
+        await world.db.create_task(Task(id=parent, project_id="p", repo_id="r", title=parent,
+            description="", branch_name="aq/epic", status=TaskStatus.IN_PROGRESS))
+        git(world.origin.clone, "push", "-q", "origin", "main:aq/epic")
+        target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    old_policy = {boundary: {"required_checks": {
+        "version": "v1", "names": ["Linux tests", "Native Windows build and tests"],
+        "producer_id": "101",
+    }}}
+    await world.db.update_project("p", hierarchical_integration_policy=old_policy)
+    sources = {tid: await completed(world, tid, parent=parent) for tid in ("a", "b")}
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), target=target)
+    testing = await train.visit(target)
+    assert testing.state == "testing", testing
+    store = BatchStore(world.db)
+    original = await world.db.get_integration_batch(testing.batch_id)
+    frozen = await store.members(testing.batch_id)
+    before = git(world.origin.url, "rev-parse", target.target_ref)
+    new_policy = {boundary: {"required_checks": {
+        "version": "v2", "names": ["Linux tests"], "producer_id": "101",
+    }}}
+    await world.db.update_project("p", hierarchical_integration_policy=new_policy)
+
+    # A new train instance proves detection needs no project-edit event/cache.
+    train, checks, _ = lane(world, LocalGit(Path(world.origin.url)), target=target)
+    released = await train.visit(target)
+    assert released.state == "blocked", released
+    blocker = released.detail["blockers"][0]
+    assert blocker["code"] == "batch_required_checks_removed"
+    assert blocker["removed_checks"] == ["Native Windows build and tests"]
+    assert blocker["released"] is True
+    assert git(world.origin.url, "rev-parse", target.target_ref) == before
+    aborted = await world.db.get_integration_batch(testing.batch_id)
+    assert aborted["intent"] == aborted["lifecycle"] == "aborted"
+    assert aborted["policy_snapshot"] == original["policy_snapshot"] == old_policy
+    assert await store.members(testing.batch_id) == frozen
+    assert aborted["ejection_record"]["operator_id"] == "service:integration-train"
+
+    replacement = await train.visit(target)
+    assert replacement.state == "testing", replacement
+    assert replacement.batch_id != testing.batch_id
+    assert await store.members(replacement.batch_id) == frozen
+    assert (await world.db.get_integration_batch(replacement.batch_id))["policy_snapshot"] == new_policy
+    assert (await train.visit(target)).batch_id == replacement.batch_id
+    checks.green.add(replacement.candidate_sha)
+    assert (await train.visit(target)).state == "delivered"
+    for source in sources.values():
+        git(world.origin.url, "merge-base", "--is-ancestor", source,
+            git(world.origin.url, "rev-parse", target.target_ref))
+
+
+@pytest.mark.parametrize("change", ["paused", "delivered", "unknown", "version", "add", "missing"])
+async def test_required_check_change_preserves_held_delivered_or_compatible_batch(
+    world, change, monkeypatch,
+):
+    original_policy = {"root": {"required_checks": {
+        "version": "v1", "names": ["Linux", "Windows"],
+    }}}
+    await world.db.update_project("p", hierarchical_integration_policy=original_policy)
+    await completed(world, "a")
+    transport = LocalGit(Path(world.origin.url))
+    train, checks, _ = lane(world, transport)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing"
+    store = BatchStore(world.db)
+    if change == "paused":
+        await store.set_intent(testing.batch_id, "paused", reason="operator hold")
+    elif change == "delivered":
+        git(world.origin.clone, "push", "-q", "origin", f"{testing.candidate_sha}:main")
+    names = ["Linux"]
+    if change == "version":
+        names = ["Windows", "Linux"]
+    elif change == "add":
+        names = ["Linux", "Windows", "Mac"]
+    current_policy = {} if change == "missing" else {"root": {"required_checks": {
+        "version": "v2", "names": names,
+    }}}
+    await world.db.update_project("p", hierarchical_integration_policy=current_policy)
+    if change == "unknown":
+        observed = await snapshot(world)
+        monkeypatch.setattr(type(observed), "contains_source", AsyncMock(return_value=None))
+        # Drive selection with unavailable containment while the real target
+        # stays unchanged; no inferred absence can authorize a release.
+        service = SimpleNamespace(store=store)
+        selected = await train.batches.open_batch(MAIN, observed, service)
+        assert selected.batch is None
+        assert selected.blockers[0]["released"] is False
+    else:
+        visit = await train.visit(MAIN)
+        assert visit.state == ("held" if change == "paused" else
+                               "delivered" if change == "delivered" else "testing"), visit
+        if change == "paused":
+            assert visit.detail["blockers"][0]["removed_checks"] == ["Windows"]
+    row = await world.db.get_integration_batch(testing.batch_id)
+    assert row["intent"] == ("paused" if change == "paused" else "open")
+    assert row["policy_snapshot"] == original_policy
+    assert not row["ejection_record"]
+
+
+async def test_removed_check_supersede_rechecks_policy_and_target(world):
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux", "Windows"]}}})
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    store = BatchStore(world.db)
+    batch = await store.get(testing.batch_id)
+    kwargs = dict(reason="removed Windows", boundary="root", removed_checks=("Windows",))
+    # The edit was reverted before acquiring the policy/batch fences.
+    assert not await store.supersede(batch, "a", **kwargs)
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux"]}}})
+    assert not await store.supersede(batch, "a", authorize=AsyncMock(return_value=False), **kwargs)
+    assert (await store.get(batch.id)).intent == "open"
+    assert not (await world.db.get_integration_batch(batch.id))["ejection_record"]
+
+
+@pytest.mark.parametrize("prefix", ["train-epic-sync-", "train-epic-refresh-"])
+async def test_removed_check_replaces_special_epic_batch_without_losing_its_purpose(world, prefix):
+    old = {"parent": {"required_checks": {"names": ["Linux", "Windows"]}}}
+    new = {"parent": {"required_checks": {"names": ["Linux"]}}}
+    await world.db.update_project("p", hierarchical_integration_policy=old)
+    source = await completed(world, "a")
+    store = BatchStore(world.db)
+    batch = Batch(prefix + "old", "p", "r", "refs/heads/aq/epic")
+    members = (BatchMember("a", source, source),)
+    batch = await store.freeze(batch, members, trees={"a": tree(world, source)})
+    await world.db.update_project("p", hierarchical_integration_policy=new)
+    assert await store.supersede(batch, "a", reason="removed Windows", boundary="parent",
+                                removed_checks=("Windows",), authorize=AsyncMock(return_value=True))
+    old_row = await world.db.get_integration_batch(batch.id)
+    replacement_id = old_row["ejection_record"]["replacement_batch_id"]
+    assert replacement_id.startswith(prefix) and replacement_id != batch.id
+    replacement = await fixture_batches(world.db).current(
+        TrainTarget("p", "r", batch.target_ref, "epic"))
+    assert replacement.id == replacement_id and replacement.intent == "open"
+    assert await store.members(replacement_id) == await store.members(batch.id) == members
+    assert old_row["policy_snapshot"] == old
+    assert (await world.db.get_integration_batch(replacement_id))["policy_snapshot"] == new
+    assert not await store.supersede(batch, "a", reason="retry", boundary="parent",
+                                    removed_checks=("Windows",))
+
+
+async def test_removed_check_preserves_promotion_pins_and_late_operator_hold(world):
+    from src.operator_decisions import OperatorDecisions
+
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux", "Windows"]}}})
+    await completed(world, "a")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    store = BatchStore(world.db)
+    batch = await store.get(testing.batch_id)
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux"]}}})
+    assert await store.removed_required_checks(batch, "root") == ("Windows",)
+    # A human hold arriving after detection must win under the project fence.
+    await OperatorDecisions(world.db).record({
+        "object_kind": "batch", "object_id": batch.id, "operator": "operator",
+        "decision": "Keep this batch", "effect": "hold", "source": "dashboard",
+        "source_ref": "message:hold", "idempotency_key": "hold", "releases": None,
+    }, recorded_by="human:local-operator")
+    assert not await store.supersede(batch, "a", reason="removed Windows", boundary="root",
+                                    removed_checks=("Windows",))
+    held = await train.visit(MAIN)
+    assert held.state == "blocked" and not held.detail["blockers"][0]["released"]
+    assert (await store.get(batch.id)).intent == "open"
+    # Promotion sets belong to the pinned request even if the project changed.
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux", "Windows"]}}})
+    members = await store.members(batch.id)
+    promotion = await store.freeze(Batch("promotion-pins", "p", "r", "refs/heads/staging"),
+        members, trees={m.task_id: tree(world, m.source_sha) for m in members},
+        promotion={"repository_id": "r", "request_id": "promotion:r:release:1",
+                   "step": {"id": "release"}})
+    await world.db.update_project("p", hierarchical_integration_policy={
+        "root": {"required_checks": {"names": ["Linux"]}}})
+    assert await store.removed_required_checks(promotion, "root") == ()
+    assert not await store.supersede(promotion, "a", reason="removed Windows", boundary="root",
+                                    removed_checks=("Windows",))
+
+
 def tree(world, sha):
     return git(world.origin.clone, "rev-parse", f"{sha}^{{tree}}")
 
@@ -1649,6 +1837,224 @@ async def test_pr_admission_is_serial_and_preserves_refusals(world):
     members, _, _ = pending
     assert sorted(m.task_id for m in members) == ["b", "c"]
     assert [b["code"] for b in blockers] == ["awaiting_pr"]
+
+
+async def test_selection_quantum_rotates_past_slow_refusals_and_the_member_cap(world):
+    sources = {tid: await completed(world, tid) for tid in
+               ("a", "b", "c", "d", "e", "f", "g", "independent")}
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches, calls = train.batches, []
+    batches.limit = 2
+    elapsed = 0.0
+    batches._selection_clock = lambda: elapsed
+
+    async def delayed_gate(target, member):
+        nonlocal elapsed
+        calls.append(member.task_id)
+        # Deterministically replay expensive reads, without a machine-time budget.
+        elapsed += 61
+        if member.task_id != "independent":
+            return {"code": "unknown" if member.task_id == "a" else "awaiting_pr_checks",
+                    "task_id": member.task_id, "ref": member.task_id}
+
+    batches.pr_gate = delayed_gate
+    service = (await train.lane_for(MAIN)).service
+    for tid in sources:
+        metrics = SelectionMetrics()
+        with selection_metrics_scope(metrics):
+            selected = await batches.open_batch(MAIN, await snapshot(world), service)
+        assert calls[-1] == tid
+        if tid != "independent":
+            assert selected.batch is None
+            assert any(b["code"] == "selection_deferred" for b in selected.blockers)
+            assert metrics.counts["candidate_work_deferred"] == 1
+        else:
+            assert [(m.task_id, m.source_sha) for m in selected.members] == [
+                (tid, sources[tid])]
+            assert selected.batch is not None
+    assert calls == list(sources)
+
+
+async def test_selection_freezes_eligible_prefix_before_a_stalled_later_pr(world):
+    source = await completed(world, "a-independent")
+    await completed(world, "b-stalled")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches, elapsed, calls = train.batches, 0.0, []
+    batches._selection_clock = lambda: elapsed
+    entered, stopped = asyncio.Event(), asyncio.Event()
+
+    async def gate(target, member):
+        nonlocal elapsed
+        calls.append(member.task_id)
+        if member.task_id == "a-independent":
+            elapsed += 61  # Retained timings show a single proof/PR can spend the quantum.
+            return
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    batches.pr_gate = gate
+    service = (await train.lane_for(MAIN)).service
+    selecting = asyncio.create_task(batches.open_batch(MAIN, await snapshot(world), service))
+    stalled = asyncio.create_task(entered.wait())
+    result = None
+    try:
+        await asyncio.wait_for(asyncio.wait({selecting, stalled},
+            return_when=asyncio.FIRST_COMPLETED), 20)
+        if selecting.done():
+            result = selecting.result()
+    finally:
+        if not selecting.done():
+            selecting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await selecting
+        stalled.cancel()
+        await asyncio.gather(stalled, return_exceptions=True)
+    assert result is not None, f"Eligible prefix lost to stalled PR; calls={calls}, joined={stopped.is_set()}"
+    assert [(m.task_id, m.source_sha) for m in result.members] == [("a-independent", source)]
+    assert calls == ["a-independent"]
+
+
+async def test_cancelled_git_proof_advances_selection_without_reusing_mutable_inputs(
+    world, monkeypatch,
+):
+    first = await completed(world, "a")
+    await completed(world, "b")
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches = train.batches
+    elapsed = 0.0
+    batches._selection_clock = lambda: elapsed
+
+    async def delayed_green(target, member):
+        nonlocal elapsed
+        elapsed += 61
+
+    batches.pr_gate = delayed_green
+    service = (await train.lane_for(MAIN)).service
+    entered, stopped = asyncio.Event(), asyncio.Event()
+    run = world.truth.git.arun_git_result
+    writes = []
+
+    async def delayed_git(args, **kwargs):
+        if "push" in args:
+            writes.append(args)
+        if "diff" in args and first in args and not stopped.is_set():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+        return await run(args, **kwargs)
+
+    monkeypatch.setattr(world.truth.git, "arun_git_result", delayed_git)
+    selecting = asyncio.create_task(batches.open_batch(
+        MAIN, await snapshot(world), service,
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), 20)
+    finally:
+        selecting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await selecting
+    assert stopped.is_set() and not writes
+    async with world.db._engine.connect() as conn:
+        assert not (await conn.execute(select(integration_batches))).first()
+    # A new visit reloads the completion and fetches new source/target OIDs.
+    next_head = world.origin.work("b", "revised source")
+    await close(world.db, "b", [next_head], close_id="b-revised", origin=world.origin)
+    selected = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None
+    assert [(m.task_id, m.source_sha) for m in selected.members] == [("b", next_head)]
+    assert git(world.origin.url, "rev-parse", "aq/b") == next_head
+    assert not writes
+
+
+async def test_rotating_admission_windows_retain_exact_source_cadence(world):
+    for tid in ("a", "b"):
+        await completed(world, tid)
+    now = 1000.0
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now, settling=True)
+    batches = train.batches
+    batches.limit = 1
+    service = (await train.lane_for(MAIN)).service
+    for index in range(4):
+        selected = await batches.open_batch(MAIN, await snapshot(world), service)
+        assert selected.batch is None and selected.detail["reason"] == "settling"
+        assert selected.detail["first_admission_at"] == 1000 + (index % 2) * 100
+        now += 100
+    selected = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is not None and selected.members[0].task_id == "a"
+
+
+async def test_rotating_cadence_resets_evaluated_refusal_and_preserves_unseen_hint(world):
+    for tid in ("a", "b"):
+        await completed(world, tid)
+    now = 1000.0
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)), clock=lambda: now, settling=True)
+    batches = train.batches
+    batches.limit = 1
+    service = (await train.lane_for(MAIN)).service
+    assert (await batches.open_batch(MAIN, await snapshot(world), service)).detail[
+        "first_admission_at"] == 1000
+    now = 1100
+    assert (await batches.open_batch(MAIN, await snapshot(world), service)).detail[
+        "first_admission_at"] == 1100
+    batches.pr_gate = AsyncMock(return_value={"code": "unknown", "ref": "a", "task_id": "a"})
+    now = 1200
+    assert (await batches.open_batch(MAIN, await snapshot(world), service)).batch is None
+    batches.pr_gate = green_pr
+    now = 1300
+    assert (await batches.open_batch(MAIN, await snapshot(world), service)).detail[
+        "first_admission_at"] == 1100  # b was not evaluated during a's refusal.
+    now = 1500
+    selected = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert selected.batch is None and selected.detail["first_admission_at"] == 1500
+
+
+async def test_frozen_batch_selection_does_not_probe_unrelated_completed_roots(world, monkeypatch):
+    await completed(world, "frozen")
+    await completed(world, "missing", done=False)
+    await close(world.db, "missing", [])
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    testing = await train.visit(MAIN)
+    frozen = await BatchStore(world.db).members(testing.batch_id)
+    await completed(world, "unrelated")
+    scan = AsyncMock(side_effect=AssertionError("new frontier cannot delay the frozen batch"))
+    monkeypatch.setattr(train.batches, "_candidate_ids", scan)
+    selected = await train.batches.open_batch(
+        MAIN, await snapshot(world), (await train.lane_for(MAIN)).service,
+    )
+    assert selected.existing and selected.batch.id == testing.batch_id
+    assert selected.members == frozen
+    [unknown] = [b for b in selected.blockers if b.get("task_id") == "missing"]
+    assert unknown["code"] == "missing_git_provenance"
+    assert unknown["observation"] == "last_selection"
+    assert unknown["observed_target_sha"] == git(world.origin.url, "rev-parse", "main")
+    assert unknown["observed_at"] > 0
+    scan.assert_not_awaited()
+
+
+async def test_selection_quantum_never_admits_a_dependent_without_its_source(world):
+    prerequisite = await completed(world, "z-prerequisite")
+    await completed(world, "a-dependent", needs=("z-prerequisite",))
+    train, _, _ = lane(world, LocalGit(Path(world.origin.url)))
+    batches = train.batches
+    elapsed = 0.0
+    batches._selection_clock = lambda: elapsed
+
+    async def gate(target, member):
+        nonlocal elapsed
+        elapsed += 61
+
+    batches.pr_gate = gate
+    service = (await train.lane_for(MAIN)).service
+    first = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert first.batch is None
+    next_visit = await batches.open_batch(MAIN, await snapshot(world), service)
+    assert [(m.task_id, m.source_sha) for m in next_visit.members] == [
+        ("z-prerequisite", prerequisite)]
 
 
 async def test_visit_timeout_cause_is_visible_in_status_without_a_batch(world):
@@ -2765,6 +3171,42 @@ async def test_visit_freezes_gates_and_fast_forwards_through_the_lease(world):
     assert (await train.visit(MAIN)).state == "idle"
 
 
+@pytest.mark.parametrize("staged_auth", [False, True])
+async def test_train_recovers_empty_loose_object_and_delivers_sealed_batch(world, staged_auth):
+    source = await completed(world, "empty-object-source")
+    transport = LocalGit(Path(world.origin.url))
+    train, checks, retained = lane(world, transport)
+    testing = await train.visit(MAIN)
+    assert testing.state == "testing"
+    checks.green.add(testing.candidate_sha)
+
+    # Replace a reachable source commit in the retained store, after freezing
+    # its batch. Unlink first: local fixture clones may hardlink origin objects.
+    obj = retained.store / ".git" / "objects" / source[:2] / source[2:]
+    obj.unlink(missing_ok=True)
+    obj.parent.mkdir(exist_ok=True)
+    obj.write_bytes(b"")
+    before = git(world.origin.url, "rev-parse", "main")
+    if staged_auth:
+        # Exercise the real credential-isolated import through its file seam;
+        # both source negotiation and destination import must bypass bad tips.
+        async def fetch(store, *, repository_url, all_heads=False, lock_held=False,
+                        refetch=False):
+            await transport._afetch_origin_with_auth_to_url(
+                store, source_url=Path(repository_url).as_uri(), token=None, refetch=refetch)
+        transport.afetch_origin = fetch
+
+    delivered = await train.visit(MAIN)
+    assert delivered.state == "delivered", delivered
+    assert delivered.batch_id == testing.batch_id
+    assert git(world.origin.url, "rev-parse", "main") == testing.candidate_sha != before
+    git(world.origin.url, "merge-base", "--is-ancestor", source, testing.candidate_sha)
+    git(retained.store, "fsck", "--full", "--no-dangling")
+    backups = list((retained.store / ".git" / "aq-empty-object-backups").glob(f"*/{source}"))
+    assert len(backups) == 1 and backups[0].stat().st_size == 0
+    assert not (backups[0].parent.parent / "pending").exists()
+
+
 @pytest.mark.parametrize("scenario", ("clean", "revert"))
 async def test_train_member_with_stale_origin_and_inherited_target_needs_no_repair(world, scenario):
     db, origin = world.db, world.origin
@@ -3753,7 +4195,7 @@ async def test_red_root_pr_reopens_its_worker_with_failed_checks_and_tests(world
         )
         assert task.route == route
         assert await world.db.get_task_meta("red-root", "routing_failed_attempts") is None
-    assert task.integration_mode == "pull_request" and task.pr_url is None
+    assert task.integration_mode == "pull_request" and task.pr_url == before.pr_url
     assert "unit: failure" in task.description
     assert "FAILED tests/test_registry.py::test_new_command" in task.description
     assert "https://github.com/acme/widgets/actions/runs/131/job/151" in task.description
@@ -3835,6 +4277,39 @@ async def test_root_pr_recovery_escalates_once_after_restart(world, unchanged):
         ))).mappings().all()
     assert len(notices) == 1 and notices[0]["to_id"] == "supervisor-p"
     assert (await world.db.get_task("root")).status is TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("earlier", ["source_ci", "legacy_delegate", "root_pr"])
+async def test_root_pr_recovery_cannot_restart_a_source_ci_repair_chain(world, earlier):
+    from src.database.tables import messages
+    from src.integration.root_pr_recovery import RECOVERY_KEY
+
+    train, github, _ = await hosted_train(world, failure_handler=root_pr_recovery(world))
+    source = await completed(world, "root")
+    original = await world.db.get_task("root")
+    if earlier == "source_ci":
+        await world.db.add_task_context("root", type="reopen_feedback",
+            label="Source CI Repair", content="prior changed head")
+    elif earlier == "legacy_delegate":
+        await world.db.update_task("root", created_by_kind="source_ci_repair")
+    else:
+        await world.db.set_task_meta("root", RECOVERY_KEY, {"heads": ["f" * 40]})
+        async with world.db._engine.begin() as conn:
+            policy = await conn.scalar(select(projects.c.hierarchical_integration_policy))
+            policy["root"]["repair"] = {"source_ci": True, "on_exhausted": "continue",
+                                       "debug_intelligence_class": "standard-high"}
+            await conn.execute(update(projects).values(hierarchical_integration_policy=policy))
+    github.pr_runs[source] = "failure"
+    for _ in range(2):
+        blocked = await train.visit(MAIN, seal_now=True)
+        assert blocked.detail["blockers"][0]["code"] == "source_ci_repair_exhausted"
+    task = await world.db.get_task("root")
+    assert task.status is TaskStatus.COMPLETED
+    assert task.pr_url == original.pr_url and task.branch_name == original.branch_name
+    async with world.db._engine.connect() as conn:
+        notices = (await conn.execute(select(messages).where(
+            messages.c.id == "msg-source-ci-budget-root"))).mappings().all()
+    assert len(notices) == 1
 
 
 async def test_root_pr_recovery_preserves_existing_bound_source_repair(world):
@@ -4001,6 +4476,94 @@ async def collect_epic(case):
     assert delivered.state == "delivered", delivered
     assert await case.db.get_task_completion("epic") is None
     return delivered.target_sha
+
+
+@pytest.mark.parametrize("collected_epic", ["controlled_clock"], indirect=True)
+async def test_obsolete_archive_settles_work_but_requires_fresh_collected_completion(
+    collected_epic, monkeypatch
+):
+    from src.database.tables import (
+        integration_parent_episodes, integration_repair_operations, task_integration_checkpoints,
+    )
+    from src.integration.epics import EpicGraphReader
+    from src.integration.train_sources import epic_policy_on, epic_source_base_on
+    from tests.test_integration_service import _minimal_policy_values
+
+    case = collected_epic
+    await completed(case.world, "obsolete", parent="epic", done=False)
+    await case.db.transition_task("obsolete", TaskStatus.PAUSED)
+    head = await collect_epic(case)
+    await review_epic(case)
+    blocked = await case.train.request_visit(case.target)
+    assert ("obsolete", "work_paused") in {
+        (item["task_id"], item["code"]) for item in blocked.detail["blockers"]
+    }
+    reader = EpicGraphReader(policy_on=epic_policy_on, source_base_on=epic_source_base_on)
+    async with case.db.immediate() as conn:
+        # Legacy orphan settlement already cancelled this episode. Its
+        # checkpoint is history, not current aggregate verification.
+        await conn.execute(insert(integration_parent_episodes).values(
+            id="legacy-episode", parent_task_id="epic", repository_id="r", generation=2,
+            pre_collection_checkpoint_sha=case.base, created_at=case.now[0],
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="epic", repository_id="r", branch="aq/epic", generation=2,
+            checkpoint_sha=case.base, state="awaiting_children", version=0,
+            updated_at=case.now[0], episode_id="legacy-episode",
+        ))
+        await conn.execute(insert(integration_repair_operations).values(
+            id="legacy-operation", target_kind="parent", parent_task_id="epic",
+            episode_id="legacy-episode", state="cancelled",
+            policy_snapshot=_minimal_policy_values(), artifact_snapshot={},
+            required_check_version="legacy", created_at=case.now[0], updated_at=case.now[0],
+        ))
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="IN_PROGRESS"))
+
+    await case.db.set_task_meta("epic", "container", True)
+
+    # Observe the same transaction boundary used by archive's parent rollup.
+    settle = case.db.settle_containers
+    async def inspect_archive(seeds, *, conn, **kwargs):
+        graph = await reader.read_on(conn, "epic")
+        assert graph.node("obsolete").request.archived
+        assert not graph.node("obsolete").required
+        return await settle(seeds, conn=conn, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(case.db, "settle_containers", inspect_archive)
+        assert await case.db.archive_task(
+            "obsolete", abandon_undelivered=True, disposition="obsolete",
+            abandon_reason="no eligible legacy-only tables; no drop required",
+            archive_reason="no eligible legacy-only tables; no drop required",
+        )
+    assert (await case.db.get_task("epic")).status == TaskStatus.COMPLETED
+    assert (await case.db.get_archived_task("obsolete"))["status"] == "PAUSED"
+    assert await case.db.get_task_completion("epic") is None
+    assert (await case.db.get_integration_checkpoint("epic"))["checkpoint_sha"] == case.base
+    assert (await case.db.get_integration_operation("legacy-operation"))["state"] == "cancelled"
+
+    # Read-only status still reports the old visit until a bounded fresh visit.
+    status = IntegrationStatusService(case.db, git_first="active", train=case.train)
+    stale = await status.train_status("p")
+    assert any(item["code"] == "work_paused" for item in stale["blockers"])
+    case.now[0] += 1000
+    refreshed = await case.train.request_visit(case.target)
+    assert refreshed.state == "idle"
+    [opened] = refreshed.detail["epic_completions"]
+    assert opened["outcome"] == "opened" and opened["head_sha"] == head
+    assert "`obsolete`" in case.train.lane_for.git.acreate_pr.await_args.kwargs["body"]
+    fresh = await status.train_status("p")
+    assert not any(item["code"] == "work_paused" for item in fresh["blockers"])
+    completion = await case.db.get_task_completion("epic")
+    assert completion.outcome == "pass" and completion.commits == [head]
+    assert git(case.origin.url, "rev-parse", "main") == case.base
+    # Ordinary root delivery still builds and checks its own candidate.
+    root = await case.train.visit(MAIN, seal_now=True)
+    assert root.state == "testing", root
+    case.github.runs[root.candidate_sha] = "success"
+    assert (await case.train.visit(MAIN)).state == "delivered"
+    git(case.origin.url, "merge-base", "--is-ancestor", head,
+        git(case.origin.url, "rev-parse", "main"))
 
 
 async def review_epic(case, *, verdict="approved", decision="approve"):
@@ -4670,11 +5233,19 @@ async def test_closed_epic_sync_after_abort_hands_code_conflicts_to_worker(colle
             await conn.execute(update(task_branch_origins).where(
                 task_branch_origins.c.task_id.in_(("child-a", "child-b")),
             ).values(retired_at=time.time()))
-        for tid in ("child-a", "child-b"):
-            # Exercise already archived legacy inputs without authorizing a new
-            # archive of work that has only reached the epic, not main.
-            await case.db.archive_task(tid, abandon_undelivered=True,
-                                      abandon_reason="legacy archive fixture", disposition="retire")
+        from sqlalchemy import delete
+
+        from src.database.tables import archived_tasks
+
+        # Seed historical delivery archives, without an abandonment decision.
+        # An explicit retire disposition now waives these sources; that is a
+        # different case from preserving required inputs after a legacy archive.
+        async with case.db.immediate() as conn:
+            for tid in ("child-a", "child-b"):
+                row = (await conn.execute(select(tasks).where(tasks.c.id == tid))).mappings().one()
+                values = {key: value for key, value in row.items() if key in archived_tasks.c}
+                await conn.execute(insert(archived_tasks).values(**values, archived_at=time.time()))
+                await conn.execute(delete(tasks).where(tasks.c.id == tid))
     prior = Batch("aborted-epic-work", "p", "r", case.target.target_ref)
     store = BatchStore(case.db)
     members = [BatchMember(tid, source, case.base, order)

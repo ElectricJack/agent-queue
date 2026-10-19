@@ -25,7 +25,7 @@ from sqlalchemy import (
     select,
     update,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, insert as pg_insert
 
 from src.routing.sources import LEGACY
 from src.waits.graph import apply_base_priority_change, lock_component_tasks
@@ -1856,11 +1856,16 @@ class TaskQueryMixin:
                 task_metadata.c.task_id == task_id,
                 task_metadata.c.key == "worker_failure_streak",
             ))
-        if explicit_restart and not _defer_recovery_supersession:
+        if (
+            explicit_restart or context in {"manual_resume", "slot_reset_retry"}
+        ) and not _defer_recovery_supersession:
             released_hold = await self._supersede_restarted_task_recovery_on(
                 conn, task_id, context=context,
             )
-            if released_hold and not any(tid == task_id for tid, _ in result.ready):
+            if (
+                released_hold and not _defer_projection
+                and not any(tid == task_id for tid, _ in result.ready)
+            ):
                 for tid in await self._note_frontier_entry(conn, {task_id}, reason="restarted"):
                     result.ready.append((tid, "restarted"))
         return result
@@ -2452,25 +2457,22 @@ class TaskQueryMixin:
 
     # ---- task_metadata (key-value store) ----
 
-    async def set_task_meta(self, task_id: str, key: str, value) -> None:
+    async def set_task_meta(self, task_id: str, key: str, value, *, conn=None) -> None:
         """Upsert a single metadata key for a task. *value* is JSON-serialised."""
         encoded = json.dumps(value)
-        async with self._engine.begin() as conn:
-            # Try update first; if no row matched, insert.
-            result = await conn.execute(
-                update(task_metadata)
-                .where(
-                    and_(
-                        task_metadata.c.task_id == task_id,
-                        task_metadata.c.key == key,
-                    )
+        async def _write(conn):
+            stmt = pg_insert(task_metadata).values(task_id=task_id, key=key, value=encoded)
+            await conn.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["task_id", "key"], set_={"value": stmt.excluded.value},
                 )
-                .values(value=encoded)
             )
-            if result.rowcount == 0:
-                await conn.execute(
-                    insert(task_metadata).values(task_id=task_id, key=key, value=encoded)
-                )
+
+        if conn is not None:
+            await _write(conn)
+        else:
+            async with self._engine.begin() as conn:
+                await _write(conn)
 
     async def get_task_meta(self, task_id: str, key: str):
         """Return a single metadata value (JSON-decoded), or ``None``."""

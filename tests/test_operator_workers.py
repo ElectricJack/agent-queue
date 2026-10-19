@@ -22,6 +22,7 @@ from src.git.github_contracts import GitHubCredentialIdentity, GitHubRepositoryB
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus, TaskType
 from src.operator_decisions import OperatorDecisions
 from src.profiles.capabilities import CapabilityPolicy
+from tests.test_review_service import decided
 
 
 @pytest.fixture
@@ -266,18 +267,41 @@ async def test_project_policy_copy_runs_through_preflight_and_blocks_global_plac
     assert not (Path(handler.config.vault_root) / "system/templates/spec/base.md").exists()
 
 
-async def test_operator_activation_requires_approved_current_revision_and_exact_hash(operator):
+def setup_playbook_pin():
+    from src.playbooks.definition import PlaybookDefinition, canonical_bytes, source_digest
     from src.reviews.service import PlaybookPin
 
+    source = "# Scoped setup\n"
+    reference = {"path": "setup.md", "start_line": 1, "end_line": 1}
+    definition = PlaybookDefinition.model_validate({
+        "id": "p.setup", "version": 1, "scope": {"type": "project", "project_id": "p"},
+        "source_hash": source_digest(source), "compiled_at": "2026-10-10T00:00:00Z",
+        "rules": [{"id": "setup", "name": "Setup", "trigger": {"event_type": "task.created"},
+                   "entry_step": "done", "source": reference}],
+        "steps": {"done": {"type": "terminal", "title": "Done", "rule": "setup", "outcome": "completed",
+                           "source": reference}},
+    })
+    pin = PlaybookPin(meta={
+        "playbook_id": definition.id, "artifact_sha256": definition.artifact_sha256(),
+        "scope": "project", "scope_identifier": "p", "source_markdown": source,
+        "activate_on_approval": False,
+    }, artifact=canonical_bytes(definition).decode())
+    return source, definition, pin
+
+
+async def test_operator_activation_requires_approved_current_revision_and_exact_hash(operator):
     handler, _ = operator
-    sha = "sha256:" + "b" * 64
+    handler.config.playbooks.enabled = True
+    source, definition, pin = setup_playbook_pin()
+    sha = definition.artifact_sha256()
     service = handler._review_service()
     review = await service.submit(project_id="p", author_task_id="t", kind="other",
-                                  title="Setup", content="# Setup artifact\n", submitted_by="session:s",
-                                  playbook=PlaybookPin(meta={"artifact_sha256": sha}, artifact="{}"))
+                                  title="Setup", content=source, submitted_by="session:s",
+                                  playbook=pin)
     assert not await handler._operator_artifact_approved("p", sha)
-    await service.decide(review_id=review["review_id"], revision=1, decision="approve", note="ok",
-                         decided_by="human:local-operator")
+    approved = await decided(service, review_id=review["review_id"], revision=1,
+                             decision="approve", note="", decided_by="human:local-operator")
+    assert approved["application_state"] == "applied" and approved["playbook"]["stored"], approved
     assert await handler._operator_artifact_approved("p", sha)
     assert not await handler._operator_artifact_approved("foreign", sha)
     assert not await handler._operator_artifact_approved("p", "sha256:" + "c" * 64)
@@ -301,21 +325,11 @@ def test_operator_cli_parses_action_objects_and_preflight_receipt(monkeypatch):
 
 async def test_operator_imports_project_bundle_then_activates_only_after_approval(operator):
     import yaml
-    from src.playbooks.definition import PlaybookDefinition, canonical_bytes, source_digest
-    from src.reviews.service import PlaybookPin
+    from src.playbooks.definition import canonical_bytes
 
     handler, _ = operator
     handler.config.playbooks.enabled = True
-    source = "# Scoped setup\n"
-    reference = {"path": "setup.md", "start_line": 1, "end_line": 1}
-    definition = PlaybookDefinition.model_validate({
-        "id": "p.setup", "version": 1, "scope": {"type": "project", "project_id": "p"},
-        "source_hash": source_digest(source), "compiled_at": "2026-10-10T00:00:00Z",
-        "rules": [{"id": "setup", "name": "Setup", "trigger": {"event_type": "task.created"},
-                   "entry_step": "done", "source": reference}],
-        "steps": {"done": {"type": "terminal", "title": "Done", "rule": "setup", "outcome": "completed",
-                           "source": reference}},
-    })
+    source, definition, pin = setup_playbook_pin()
     sha = definition.artifact_sha256()
     bundle = Path(handler.config.vault_root) / "reviewed" / definition.id
     bundle.mkdir(parents=True)
@@ -338,10 +352,10 @@ async def test_operator_imports_project_bundle_then_activates_only_after_approva
     assert not preflight["ready"] and "approved review" in str(preflight["blockers"]), preflight
     service = handler._review_service()
     review = await service.submit(project_id="p", author_task_id="t", kind="other", title="Setup",
-                                  content=source, submitted_by="session:s", playbook=PlaybookPin(
-                                      meta={"artifact_sha256": sha}, artifact=canonical_bytes(definition).decode()))
-    await service.decide(review_id=review["review_id"], revision=1, decision="approve", note="ok",
-                         decided_by="human:local-operator")
+                                  content=source, submitted_by="session:s", playbook=pin)
+    approved = await decided(service, review_id=review["review_id"], revision=1,
+                             decision="approve", note="", decided_by="human:local-operator")
+    assert approved["application_state"] == "applied" and approved["playbook"]["stored"], approved
     preflight = await execute(operator, "operator_preflight", actions=[plan])
     assert preflight["ready"], preflight
     activated = await execute(operator, "operator_execute", **plan, preflight_id=preflight["preflight_id"])

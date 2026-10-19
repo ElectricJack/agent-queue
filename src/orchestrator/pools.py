@@ -1389,7 +1389,12 @@ class PoolsMixin:
         # Callers may hold an old in-memory row after its worker has already
         # been reserved for a new launch. Completed teardown is idempotent.
         current = await self.db.get_session(session.id)
-        if current is None or current.state == "stopped":
+        if (
+            current is None or current.state == "stopped"
+            or current.instance_token != session.instance_token
+            or current.task_id != session.task_id
+            or current.last_claim_epoch != session.last_claim_epoch
+        ):
             return
         session = current
         # Re-check the shared exemption before timeout-driven cleanup. Death,

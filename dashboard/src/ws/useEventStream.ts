@@ -363,6 +363,11 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     return;
   }
 
+  // Events are hints, never replacement state; even stale/replayed versions refetch.
+  if (/^(ask|review|project)\./.test(type)) {
+    void queryClient.invalidateQueries({ queryKey: ["asks"] });
+  }
+
   // Prefix-based invalidation for the wave-4 event families (gate.*,
   // message.*, session.*, task.blocked/unblocked). Handled *before* the
   // notify.* switch so the union type stays simple.

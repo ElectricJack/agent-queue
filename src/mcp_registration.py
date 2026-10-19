@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXCLUDED_COMMANDS = {
     "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
     "wait_sleep_decide", "wait_evict", "scheduler_wait_sync", "wait_legacy_bridge",
+
+    "ask_intake", "ask_button",
     "reconcile_agent_cron",
     "cron_delivery_begin",
     "cron_delivery_finish",

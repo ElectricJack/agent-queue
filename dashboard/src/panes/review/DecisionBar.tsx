@@ -1,123 +1,16 @@
-import { useRef, useState, type RefObject } from "react";
-import { useIntelligenceClasses } from "../../api/hooks";
-
-export type ReviewDecision = "approve" | "request_changes" | "reject";
-
-export type ResponseRoute = {
-  kind: string;
-  summary: string;
-  class_summaries: Record<string, string>;
-};
-
-export function DecisionBar({
-  disabledReason,
-  onDecide,
-  pending = false,
-  approveButtonRef,
-  responseRoute,
-}: {
-  disabledReason: string | null;
-  onDecide: (decision: ReviewDecision, note: string, responderClass: string) => Promise<void>;
-  pending?: boolean;
-  approveButtonRef?: RefObject<HTMLButtonElement | null>;
-  responseRoute: ResponseRoute;
+import type { RefObject } from "react";
+import type { AskDetailData } from "../../api/asks";
+import { AskDecision } from "../../components/asks/AskDecision";
+export type ResponseRoute = { kind: string; summary: string; class_summaries: Record<string, string> };
+export function DecisionBar({ data, disabledReason, ...drafts }: {
+  approveRef?: RefObject<HTMLButtonElement | null>; responseRoute?: ResponseRoute;
+  data: AskDetailData; disabledReason: string | null; draftBlocked: boolean;
+  pendingSave?: boolean; saveDraft: () => Promise<void>;
 }) {
-  const [note, setNote] = useState("");
-  const [responderClass, setResponderClass] = useState("");
-  const [showRevisionOptions, setShowRevisionOptions] = useState(false);
-  const { data: classData } = useIntelligenceClasses();
-  const [error, setError] = useState<string | null>(null);
-  const localApproveRef = useRef<HTMLButtonElement>(null);
-  const approveRef = approveButtonRef ?? localApproveRef;
-  const disabled = Boolean(disabledReason) || pending;
-  // The revision task is routed by the project's router: the class is a hint.
-  const routeSummary = showRevisionOptions && responderClass
-    ? responseRoute.class_summaries[responderClass]
-      ?? `Request changes → new revision task, routed by the project's router (class hint ${responderClass}); Approve → sent to the supervisor.`
-    : responseRoute.summary;
-
-  const decide = async (decision: ReviewDecision) => {
-    if (disabled) return;
-    setError(null);
-    try {
-      await onDecide(
-        decision, note.trim(),
-        decision !== "approve" ? responderClass : "",
-      );
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not record the decision.");
-    }
-  };
-
-  return (
-    <div className="sticky bottom-0 z-20 border-t border-gray-800 bg-gray-950/95 p-3 backdrop-blur">
-      {disabledReason && <p className="mb-2 text-xs text-amber-300">{disabledReason}</p>}
-      {error && <p role="alert" className="mb-2 text-xs text-red-300">{error}</p>}
-      <p className="mb-2 text-xs text-indigo-200" aria-label="Response route">{routeSummary}</p>
-      <label className="sr-only" htmlFor="review-decision-note">Decision note</label>
-      <div className="flex flex-wrap items-end gap-2">
-        <textarea
-          id="review-decision-note"
-          rows={2}
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-          placeholder="Overall note (optional)"
-          className="min-w-[16rem] flex-1 resize-y rounded border border-gray-700 bg-gray-900 p-2 text-sm text-gray-100 outline-none focus:border-indigo-500"
-          disabled={disabled}
-        />
-        <button
-          ref={approveRef}
-          type="button"
-          onClick={() => void decide("approve")}
-          disabled={disabled}
-          className="rounded bg-emerald-700 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Approve
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowRevisionOptions(true)}
-          disabled={disabled}
-          className="rounded bg-red-800 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Request changes
-        </button>
-        <button
-          type="button"
-          onClick={() => void decide("reject")}
-          disabled={disabled || !note.trim()}
-          className="rounded bg-gray-700 px-3 py-2 text-sm font-medium text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Reject
-        </button>
-      </div>
-      {showRevisionOptions && (
-        <div className="mt-3 border-t border-gray-800 pt-3">
-          <p className="mb-2 text-xs font-medium text-gray-200">Who revises this after your feedback?</p>
-          <div className="mb-3 flex flex-wrap gap-2">
-            <label className="text-xs text-gray-400">
-              Revision intelligence class
-              <select
-                value={responderClass}
-                onChange={(event) => setResponderClass(event.target.value)}
-                disabled={disabled}
-                className="ml-2 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-gray-100"
-              >
-                <option value="">No class hint</option>
-                {(classData?.classes ?? []).map((row) => <option key={row.id} value={row.id}>{row.id}</option>)}
-              </select>
-            </label>
-          </div>
-          <button
-            type="button"
-            onClick={() => void decide("request_changes")}
-            disabled={disabled}
-            className="rounded bg-red-800 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Send changes request
-          </button>
-        </div>
-      )}
-    </div>
-  );
+  const guarded = disabledReason ? { ...data, actions: data.actions.map(action =>
+    action.action === "decide" || action.action === "prepare_decision"
+      ? { ...action, enabled: false, disabled_reason: disabledReason } : action) } : data;
+  return <div className="border-t border-gray-800 bg-gray-950/95">
+    <AskDecision data={guarded} {...drafts} />
+  </div>;
 }

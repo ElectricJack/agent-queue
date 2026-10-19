@@ -195,6 +195,7 @@ class SessionCommandsMixin:
             "claim_failure_count": session.claim_failure_count,
             "claim_failure_reason": session.claim_failure_reason,
             "claim_failure_at": session.claim_failure_at,
+            "failed_preparation": session.failed_preparation,
             "quarantined_at": session.quarantined_at,
             "sleep_reason": session.sleep_reason,
             "epoch": session.epoch,
@@ -1219,12 +1220,9 @@ class SessionCommandsMixin:
                     ),
                 }
 
-        # Deliverables are a worker contract, not a best-effort review hint.
-        # Refuse before any metadata, hierarchy, or pipeline side effect so
-        # the same claim can add evidence or make a visible exception and
-        # retry the close.
-        # A research or design task's document is a ``review`` item even
-        # when nobody declared one (``effective_deliverables``).
+        # Refuse unmet deliverables before metadata, hierarchy or pipeline writes
+        # so this claim can add evidence or an explicit exception and retry.
+        # effective_deliverables includes an implicit review for research/design.
         from src.deliverables import (
             evaluate_deliverables,
             parse_unmet_reasons,
@@ -1292,22 +1290,16 @@ class SessionCommandsMixin:
                 "error": error,
             }
 
-        # A worker's own subtasks are a checklist contract, not the deliverables
-        # gate: refuse before any side effect (same reasoning as the deliverables
-        # check above) so the same claim can settle them and retry. Only outcomes
-        # that complete the task (``pass``) are gated — a failing close must never
-        # be blocked on housekeeping.
-        #
-        # The *refusal* belongs here, before any side effect. The *flip* the
-        # override performs does not: it is a write, and several refusals
-        # still lie between here and the close (open children, live or
-        # manually paused descendants, review evidence, a stale claim, git
-        # verification). Committing it here left a refused close with every
-        # row ``skipped`` and its note overwritten, so the retry had nothing
-        # to settle. Only the decision is taken here; the write happens after
-        # the last refusal point (see ``skip_open_subtasks_at_close`` below).
+        # Gate passing closes on the worker's subtask checklist before writes;
+        # failing closes must not be blocked on housekeeping. Decide here whether
+        # to skip open subtasks, but write only after the final refusal point
+        # (children, descendants, review evidence, claim and git verification).
+        # Skipping earlier erased notes even when close was refused; see
+        # skip_open_subtasks_at_close below for the deferred write.
         skip_open_subtasks_at_close = False
         if outcome == "pass":
+            if feedback_error := await self._review_feedback_close_error(task_id):
+                return feedback_error
             subtasks = await self.db.list_task_subtasks(task_id)
             open_subtasks = [item for item in subtasks if item["status"] in OPEN_SUBTASK_STATUSES]
             if open_subtasks:

@@ -992,6 +992,71 @@ async def truth_snapshot(setup, *, target_ref="refs/heads/main"):
     )
 
 
+@pytest.mark.parametrize("interrupted", [False, True])
+async def test_retained_store_recovers_empty_object_and_hardens_writes(setup, interrupted):
+    from src.git.manager import GitError
+
+    _db, service, source, remote, repo = setup
+    store = await service.store(repo)
+    oid = git(source, "rev-parse", "HEAD")
+    obj = store / ".git" / "objects" / oid[:2] / oid[2:]
+    obj.unlink(missing_ok=True)
+    obj.parent.mkdir(exist_ok=True)
+    obj.write_bytes(b"")
+    normal_fetch = service.git.afetch_origin
+    if interrupted:
+        async def fail_refetch(*args, **kwargs):
+            if kwargs.get("refetch"):
+                raise GitError("refetch temporarily unavailable")
+            return await normal_fetch(*args, **kwargs)
+        with patch.object(service.git, "afetch_origin", fail_refetch):
+            with pytest.raises(GitError, match="temporarily unavailable"):
+                await service.store(repo)
+        assert not obj.exists()
+        assert (store / ".git" / "aq-empty-object-backups" / "pending").exists()
+    assert await service.store(repo) == store
+    git(store, "fsck", "--full", "--no-dangling")
+    assert git(store, "cat-file", "-t", oid) == "commit"
+    assert git(store, "config", "core.fsync") == "committed"
+    assert git(store, "config", "core.fsyncMethod") == "fsync"
+    assert git(remote, "rev-parse", "main") == oid
+
+
+async def test_empty_local_only_object_remains_unknown_and_preserves_local_refs(setup):
+    _db, service, _source, remote, repo = setup
+    store = await service.store(repo)
+    base = git(store, "rev-parse", "HEAD")
+    git(store, "config", "user.name", "Tester")
+    git(store, "config", "user.email", "tester@example.test")
+    local = git(store, "commit-tree", base + "^{tree}", "-p", base, "-m", "local candidate")
+    git(store, "update-ref", "refs/aq/batch-objects/local", local)
+    obj = store / ".git" / "objects" / local[:2] / local[2:]
+    obj.unlink()
+    obj.write_bytes(b"")
+    snapshot = await truth_snapshot(setup)
+    assert snapshot.error and snapshot.error.startswith("snapshot_git_error:")
+    assert git(store, "rev-parse", "refs/aq/batch-objects/local") == local
+    assert (store / ".git" / "aq-empty-object-backups" / "pending").exists()
+    assert git(remote, "rev-parse", "main") == base
+
+
+async def test_concurrent_retained_store_hardening_is_serialized_once(setup):
+    import asyncio
+
+    from unittest.mock import AsyncMock
+
+    _db, service, _source, _remote, repo = setup
+    store = await service.store(repo, fetch=False)
+    service.git._retained_fsync_stores.clear()
+    run = AsyncMock(wraps=service.git._arun_unlocked)
+    with patch.object(service.git, "_arun_unlocked", run):
+        stores = await asyncio.gather(*(service.store(repo, fetch=False) for _ in range(10)))
+    assert stores == [store] * 10
+    configurations = [call.args[0] for call in run.await_args_list if call.args[0][0] == "config"]
+    assert configurations == [["config", "core.fsync", "committed"],
+                              ["config", "core.fsyncMethod", "fsync"]]
+
+
 async def test_snapshot_scopes_generation_and_fences_target_movement(setup):
     from dataclasses import replace
 
@@ -1198,6 +1263,103 @@ async def test_snapshot_git_errors_and_unresolved_sources_are_unknown(setup, fai
         source = {"invalid": "HEAD~1", "missing": "a" * 40, "abbreviated": "abcdef123"}[failure]
         evidence = await (await truth_snapshot(setup)).evaluate(replace(request, reported_source=source))
     assert evidence.state is DeliveryState.UNKNOWN and not evidence.satisfied
+
+
+async def test_corrupt_retained_source_keeps_snapshot_unknown_and_frozen_records(
+    setup, tmp_path, monkeypatch,
+):
+    from src.database.tables import (
+        integration_branch_owners, integration_parent_episodes, integration_repair_operations,
+        task_completion_records, task_metadata,
+    )
+    from src.integration.delivery_truth import (
+        DeliveryState, delivery_snapshot, load_delivery_requests,
+    )
+
+    db, service, source, remote, repo = setup
+    head = await feature(setup, "published")
+    git(source, "push", "origin", f"{head}:main")
+    requests = await load_delivery_requests(
+        db, ["published"], repository_id="r", target_ref="refs/heads/main",
+    )
+    assert (await (await truth_snapshot(setup)).evaluate(requests["published"])).satisfied
+    store = Path(await service.store(repo, fetch=False))
+
+    # A local-only source is absent from origin. Its loss must not be hidden by
+    # the healthy published tip or by resetting the frozen operation records.
+    git(source, "checkout", "-B", "unpublished")
+    (source / "unique.txt").write_text("only retained locally\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "unpublished")
+    unique = git(source, "rev-parse", "HEAD")
+    blob = git(source, "rev-parse", "HEAD:unique.txt")
+    # Keep the new blob loose so this fixture damages its actual object body.
+    git(store, "-c", "fetch.unpackLimit=100000", "fetch",
+        str(source), "HEAD:refs/heads/local-source")
+    git_dir = Path(git(store, "rev-parse", "--absolute-git-dir"))
+    damaged = git_dir / "objects" / blob[:2] / blob[2:]
+    damaged.parent.mkdir(parents=True, exist_ok=True)
+    damaged.chmod(0o600)
+    # Nonempty corruption must remain in place; only zero-byte objects may be quarantined.
+    truncated = damaged.read_bytes()[:1]
+    assert truncated
+    damaged.write_bytes(truncated)
+
+    for identity in ("root", "repair"):
+        await db.create_task(Task(
+            id=identity, project_id="p", repo_id="r", title=identity, description="",
+            status=TaskStatus.IN_PROGRESS,
+        ))
+    manifest = [{"task_id": "published", "source_sha": head},
+                {"task_id": "local-source", "source_sha": unique}]
+    await db.set_task_meta("repair", "development_repair_sources", manifest)
+    await _live_parent_operation(db, "root", operation_id="frozen-operation")
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="retained-owner", repository_id="r", ref="refs/heads/local-source",
+            owner_id="frozen-operation", owner_role="collector", fence_token=7,
+            handoff_state="attached", created_at=1.0, updated_at=2.0,
+        ))
+        await conn.execute(service._operation_insert(
+            id="frozen-batch", project_id="p", repository_id="r", manifest=manifest,
+            evidence={"checkpoint": head}, reason="frozen", created_at=1.0, updated_at=2.0,
+            target_ref="refs/heads/main", state="parked",
+        ))
+
+    preserved = (tasks, task_metadata, task_completion_records, integration_parent_episodes,
+                 integration_repair_operations, integration_branch_owners, events)
+
+    async def records():
+        async with db._engine.connect() as conn:
+            return {table.name: (await conn.execute(select(table))).mappings().all()
+                    for table in preserved}
+
+    before = await records()
+    refs = git(store, "for-each-ref", "--format=%(refname) %(objectname)")
+
+    async def native_fetch(path, **kwargs):
+        return await service.git._afetch_origin_with_auth_to_url(
+            # The file-URL fixture needs no App credential broker.
+            str(path), source_url=remote.as_uri(), token=None,
+        )
+
+    monkeypatch.setattr(service.git, "afetch_origin", native_fetch)
+    snapshot = await truth_snapshot(setup)
+    assert snapshot.error and not await snapshot.is_fresh()
+    evidence = await snapshot.evaluate(requests["published"])
+    assert evidence.state is DeliveryState.UNKNOWN and not evidence.satisfied
+    assert await records() == before
+    assert git(store, "for-each-ref", "--format=%(refname) %(objectname)") == refs
+    assert damaged.read_bytes() == truncated
+
+    # A different, healthy store can still produce fresh native delivery proof.
+    healthy = tmp_path / "healthy"
+    git(tmp_path, "clone", str(remote), str(healthy))
+    independent = await delivery_snapshot(
+        service.git, str(healthy), project_id="p", repository_id=repo.id,
+        repository_url=repo.url, target_ref="refs/heads/main",
+    )
+    assert (await independent.evaluate(requests["published"])).state is DeliveryState.CONTAINED
 
 
 async def test_unlabelled_generation_is_unknown_until_retained_in_git(setup):

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.api.auth import RequestScope
+from src.api.auth import RequestScope, SessionTokenStore
 from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.commands.message_commands import MESSAGES_DISABLED_ERROR, message_to_dict
@@ -1046,14 +1046,15 @@ class TestInboxMailboxFence:
         )
         assert "out of scope" in result["error"]
 
-    async def test_elevated_supervisor_reads_any_mailbox(self, setup):
-        handler, _db, _bus = setup
-        await handler._cmd_message_send(_send_args(to_id="somebody-else"))
+    async def test_elevated_project_supervisor_reads_another_session_in_its_project(self, setup):
+        handler, db, _bus = setup
+        await _seed_session_row(db)
+        await handler._cmd_message_send(_send_args(to_id="sess-1"))
         result = await handler.execute(
             "message_inbox",
             {
                 "to_kind": "session",
-                "to_id": "somebody-else",
+                "to_id": "sess-1",
                 "_scope": _session_scope(elevated=True),
             },
         )
@@ -1273,6 +1274,423 @@ class TestStatusRecipientProject:
             {"message_id": sent["message_id"], "project_id": "global"}
         )
         assert result == {"error": f"Message '{sent['message_id']}' not found"}
+
+
+class TestProjectSupervisorInboxIdentity:
+    """Use disposable tokens to distinguish recipient identity from grants."""
+
+    async def test_project_uuid_inject_reads_aliases_cron_and_status(self, setup):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-sup-p1", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="sup-token", started_at=1, state="running",
+        ))
+        token_store = SessionTokenStore(db)
+        token = await token_store.mint(
+            session_id="sess-sup-p1", session_instance_token="sup-token", task_id=None,
+            project_id="p1", elevated=True,
+        )
+        authenticated = await token_store.validate(token)
+        assert authenticated is not None
+        scope = {
+            "kind": authenticated.kind,
+            "session_id": authenticated.session_id,
+            "project_id": authenticated.project_id,
+            "task_id": authenticated.task_id,
+            "elevated": authenticated.elevated,
+            "session_instance_token": authenticated.session_instance_token,
+        }
+        sent = await _execute_as(
+            handler, "message_send", _send_args(body="own logical mailbox"), scope
+        )
+        named = await db.create_message(
+            project_id="p1", from_kind="user", from_id="fixture",
+            to_kind="session", to_id="n-supervisor--p1", body="own named mailbox",
+        )
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        report = await db.create_message(
+            project_id="p2", from_kind="session", from_id="supervisor-p2",
+            to_kind="session", to_id="supervisor-p1", body="report addressed to p1",
+        )
+        schedule = await _execute_as(handler, "cron_register", {
+            "every": 60, "prompt": "own scheduled prompt", "idempotency_key": "inbox",
+        }, scope)
+        assert schedule["success"], schedule
+        from src.agent_cron import AgentCronService
+
+        tick = await AgentCronService(handler).tick(now=schedule["schedule"]["next_fire_at"])
+        assert tick["queued"] == 1, tick
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": authenticated.session_id, "inject": True,
+        }, scope)
+        assert "error" not in result, result
+        assert {row["body"] for row in result["messages"]} == {
+            "own logical mailbox", "own named mailbox", "own scheduled prompt",
+            "report addressed to p1",
+        }
+        assert result["injected"] == 4
+        assert result["archived"] == 1
+        for row in result["messages"]:
+            status = await _execute_as(
+                handler, "message_status", {"message_id": row["id"]}, scope
+            )
+            assert status["message"]["body"] == row["body"]
+        assert sent["message_id"] in {row["id"] for row in result["messages"]}
+        assert named.id in {row["id"] for row in result["messages"]}
+        assert report.id in {row["id"] for row in result["messages"]}
+
+    async def test_global_uuid_under_project_token_reproduces_denial_without_consumption(
+        self, setup
+    ):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-global", project_id=None, profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="global-token", started_at=1, state="running",
+        ))
+        sent = await db.create_message(
+            project_id=None, from_kind="system", from_id="fixture",
+            to_kind="session", to_id="sess-global", body="global fixture body",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": "sess-global", "inject": True,
+        }, _supervisor_scope("p1"))
+        assert result == {"error": "out of scope: system messages require global admin"}
+        assert (await db.get_message(sent.id)).delivered_at is None
+
+    async def test_projectless_row_in_own_uuid_reproduces_the_same_denial(self, setup):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-sup-p1", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="sup-token", started_at=1, state="running",
+        ))
+        sent = await db.create_message(
+            project_id=None, from_kind="system", from_id="fixture",
+            to_kind="session", to_id="sess-sup-p1", body="projectless owned fixture",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": "sess-sup-p1", "inject": True,
+        }, _supervisor_scope("p1"))
+        assert result == {"error": "out of scope: system messages require global admin"}
+        assert (await db.get_message(sent.id)).delivered_at is None
+        # Status's existing recipient-project view can read this same owned row.
+        status = await _execute_as(handler, "message_status", {
+            "message_id": sent.id,
+        }, _supervisor_scope("p1"))
+        assert status["message"]["body"] == "projectless owned fixture"
+
+    @pytest.mark.parametrize("recipient", [
+        "supervisor-p2", "n-supervisor--p2", "sess-sup-p2", "supervisor-global",
+        "n-supervisor--global",
+    ])
+    async def test_foreign_mailbox_refused_even_for_a_row_from_own_project(self, setup, recipient):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        await db.create_session(SessionRecord(
+            id="sess-sup-p2", project_id="p2", profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--p2", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="other-token", started_at=1, state="running",
+        ))
+        sent = await db.create_message(
+            project_id="p1", from_kind="user", from_id="fixture",
+            to_kind="session", to_id=recipient, body="foreign recipient fixture",
+        )
+        args = {
+            "to_kind": "session", "to_id": recipient, "inject": True,
+        }
+        scope = _supervisor_scope("p1")
+        # The canonical global alias is refused by the API before handler dispatch.
+        error = check_command_scope("message_inbox", args, RequestScope(**scope))
+        result = {"error": error} if error else await handler.execute(
+            "message_inbox", {**args, "_scope": scope}
+        )
+        assert "out of scope" in result.get("error", ""), result
+        assert "foreign recipient fixture" not in str(result)
+        assert (await db.get_message(sent.id)).delivered_at is None
+
+    async def test_shared_profile_inbox_filters_pending_and_consumed_before_limit(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        rows = {}
+        for project, state, priority in (
+            ("p2", "pending", 1), ("p1", "pending", 2),
+            ("p2", "consumed", 1), ("p1", "consumed", 2),
+            (None, "pending", 0),
+        ):
+            row = await db.create_message(
+                project_id=project, from_kind="system", from_id="fixture",
+                to_kind="profile", to_id="supervisor", body=f"{project} {state}",
+                priority=priority,
+            )
+            rows[project, state] = row
+            if state == "consumed":
+                await db.mark_delivered(row.id)
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "profile", "to_id": "supervisor", "inject": True,
+            "include_consumed": True, "limit": 1,
+        }, _supervisor_scope("p1"))
+        assert "error" not in result, result
+        assert [row["body"] for row in result["messages"]] == ["p1 pending"]
+        assert [row["body"] for row in result["consumed_messages"]] == ["p1 consumed"]
+        assert (await db.get_message(rows["p2", "pending"].id)).delivered_at is None
+        assert (await db.get_message(rows[None, "pending"].id)).delivered_at is None
+
+    async def test_foreign_task_inbox_refused_without_consumption(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other"))
+        await db.create_task(Task(
+            id="foreign-task", project_id="p2", title="foreign fixture", description="",
+        ))
+        sent = await db.create_message(
+            project_id="p1", from_kind="user", from_id="fixture",
+            to_kind="task", to_id="foreign-task", body="foreign task fixture",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "task", "to_id": "foreign-task", "inject": True,
+        }, _supervisor_scope("p1"))
+        assert "out of scope" in result.get("error", ""), result
+        assert "foreign task fixture" not in str(result)
+        assert (await db.get_message(sent.id)).delivered_at is None
+
+    @pytest.mark.parametrize("recipient", ["supervisor-p1", "n-supervisor--p1"])
+    async def test_explicit_own_alias_still_reads_its_messages(self, setup, recipient):
+        handler, db, _bus = setup
+        sent = await db.create_message(
+            project_id="p1", from_kind="user", from_id="fixture",
+            to_kind="session", to_id=recipient, body="own explicit inbox",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": recipient,
+        }, _supervisor_scope("p1"))
+        assert [row["id"] for row in result["messages"]] == [sent.id]
+        assert (await db.get_message(sent.id)).delivered_at is None
+async def _seed_project_supervisor(db, project_id="p1", **overrides):
+    values = dict(
+        id=f"sess-sup-{project_id}", project_id=project_id, profile_id="supervisor",
+        harness="codex", provider="fake", name=f"n-supervisor--{project_id}",
+        lifecycle="named", work_dir="/tmp", epoch="test", instance_token="current-launch",
+        started_at=1, state="running",
+    )
+    values.update(overrides)
+    await db.create_session(SessionRecord(**values))
+    return {**_supervisor_scope(project_id), "session_instance_token": "current-launch"}
+
+
+class TestProjectlessSupervisorInbound:
+    @pytest.mark.parametrize("recipient", ["sess-sup-p1", "supervisor-p1", "n-supervisor--p1"])
+    async def test_history_pending_inject_and_status_share_exact_own_mailbox(self, setup, recipient):
+        handler, db, bus = setup
+        scope = await _seed_project_supervisor(db)
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        directive = await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="session", to_id=recipient, body="own directive", thread_id="directive",
+        )
+        foreign = await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="session", to_id="supervisor-p2", body="foreign directive",
+        )
+        unrelated = await db.create_message(
+            project_id=None, from_kind="user", from_id="dashboard",
+            to_kind="session", to_id="supervisor-global", body="private global chat",
+        )
+        sessions = _NudgeRecorder()
+        engine = MessageDeliveryEngine(
+            db=db, sessions=sessions, config=MessagesConfig(enabled=True), bus=None,
+        )
+        assert (await engine.run_delivery_pass())["delivered"] == 0
+        assert any(
+            target == recipient and directive.id in pointer
+            for kind, target, pointer in sessions.nudges if kind == "session"
+        )
+        # Newer unrelated rows must not crowd out inbound mail before LIMIT.
+        for address in ("supervisor-p1", "n-supervisor--p1", "sess-sup-p1"):
+            history = await _execute_as(handler, "message_list", {
+                "to_kind": "session", "to_id": address, "since": directive.created_at - 1,
+                "limit": 1,
+            }, scope)
+            assert [m["id"] for m in history["messages"]] == [directive.id], history
+            pending = await _execute_as(handler, "message_inbox", {
+                "to_kind": "session", "to_id": address,
+            }, scope)
+            assert [m["id"] for m in pending["messages"]] == [directive.id], pending
+        assert (await db.get_message(directive.id)).delivered_at is None
+        injected = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": "sess-sup-p1", "inject": True,
+        }, scope)
+        assert injected["injected"] == 1, injected
+        status = await _execute_as(handler, "message_status", {"message_id": directive.id}, scope)
+        assert status["state"] == "acknowledged", status
+        consumed = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": "supervisor-p1", "include_consumed": True,
+        }, scope)
+        assert consumed["count"] == 0 and consumed["consumed"] == 1, consumed
+        for other in (foreign, unrelated):
+            denied = await _execute_as(handler, "message_status", {"message_id": other.id}, scope)
+            assert "not found" in denied["error"]
+            assert (await db.get_message(other.id)).delivered_at is None
+        assert [e["message_id"] for e in bus.of_type("message.delivered")] == [directive.id]
+
+    @pytest.mark.parametrize("mailbox", ["supervisor-p2", "n-supervisor--global", "foreign-uuid"])
+    async def test_foreign_projectless_inbox_cannot_be_consumed(self, setup, mailbox):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        await db.create_project(Project(id="p2", name="other", supervisor_enabled=True))
+        message = await db.create_message(
+            project_id=None, from_kind="system", from_id="notice", to_kind="session",
+            to_id=mailbox, body="not yours",
+        )
+        result = await _execute_as(handler, "message_inbox", {
+            "to_kind": "session", "to_id": mailbox, "inject": True,
+        }, scope)
+        assert "out of scope" in result["error"], result
+        assert (await db.get_message(message.id)).delivered_at is None
+
+    @pytest.mark.parametrize("changes", [
+        {"profile_id": "worker"}, {"lifecycle": "pool"}, {"name": "untrusted-alias"},
+        {"state": "stopped"}, {"instance_token": "replacement-launch"},
+    ])
+    async def test_unbound_supervisor_never_expands_projectless_history(self, setup, changes):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db, **changes)
+        message = await db.create_message(
+            project_id=None, from_kind="system", from_id="notice", to_kind="session",
+            to_id="supervisor-p1", body="directive",
+        )
+        history = await _execute_as(handler, "message_list", {}, scope)
+        assert history["messages"] == []
+        report = await _execute_as(handler, "message_send", {
+            "to_kind": "session", "to_id": "supervisor-global", "from_id": "cli", "body": "ack",
+        }, scope)
+        assert "out of scope" in report["error"]
+        assert (await db.get_message(message.id)).delivered_at is None
+
+    async def test_omitted_project_cannot_fall_back_to_unfenced_history(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        await db.create_message(
+            project_id=None, from_kind="user", from_id="dashboard", to_kind="session",
+            to_id="supervisor-global", body="private",
+        )
+        history = await handler.execute("message_list", {"_scope": scope})
+        assert history["messages"] == []
+
+
+class TestScopedGlobalReports:
+    async def test_report_and_reply_derive_sender_and_retain_project_and_audit(self, setup):
+        handler, db, bus = setup
+        scope = await _seed_project_supervisor(db)
+        directive = await db.create_message(
+            project_id=None, from_kind="session", from_id="supervisor-global",
+            to_kind="session", to_id="supervisor-p1", body="directive", thread_id="shared",
+        )
+        report = await _execute_as(handler, "message_send", {
+            "to_kind": "session", "to_id": "supervisor-global", "from_kind": "system",
+            "from_id": "forged", "body": "scoped report", "thread_id": "report-thread",
+        }, scope)
+        assert "error" not in report, report
+        row = report["message"]
+        assert (row["project_id"], row["from_kind"], row["from_id"], row["to_id"]) == (
+            "p1", "session", scope["session_id"], "supervisor-global",
+        )
+        reply = await _execute_as(handler, "message_reply", {
+            "message_id": directive.id, "body": "ack", "from_kind": "user", "from_id": "forged",
+        }, scope)
+        assert "error" not in reply, reply
+        row = reply["reply"]
+        assert (row["project_id"], row["from_kind"], row["from_id"], row["to_id"]) == (
+            "p1", "session", scope["session_id"], "supervisor-global",
+        )
+        assert row["thread_id"] == "shared" and row["reply_to_id"] == directive.id
+        assert (await db.get_message(directive.id)).read_at is not None
+        assert (await db.get_message(directive.id)).delivered_at is not None
+        assert bus.of_type("message.sent")[-1]["project_id"] == "p1"
+        assert bus.of_type("message.replied")[-1]["project_id"] == "p1"
+        # Sending a report does not own the global recipient or allow an
+        # answer attributed to that recipient on the report's project row.
+        denied = await _execute_as(handler, "message_reply", {
+            "message_id": report["message_id"], "body": "pretend global answer",
+        }, scope)
+        assert "global admin" in denied["error"], denied
+        assert (await db.get_message(report["message_id"])).read_at is None
+        assert (await db.get_message(report["message_id"])).delivered_at is None
+        read = await _execute_as(handler, "message_status", {
+            "message_id": report["message_id"],
+        }, scope)
+        assert read["state"] == "queued", read
+
+    async def test_untrusted_named_alias_never_consumes_global_report(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db, name="supervisor-global")
+        report = await db.create_message(
+            project_id="p1", from_kind="session", from_id="other-supervisor",
+            to_kind="session", to_id="supervisor-global", body="report",
+        )
+        result = await _execute_as(handler, "message_status", {"message_id": report.id}, scope)
+        assert result["state"] == "queued", result
+        assert (await db.get_message(report.id)).read_at is None
+
+    @pytest.mark.parametrize("sender", ["global-uuid", "n-supervisor--global"])
+    async def test_reply_binds_global_sender_uuid_and_alias_to_persisted_row(self, setup, sender):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        await db.create_session(SessionRecord(
+            id="global-uuid", project_id=None, profile_id="supervisor", harness="codex",
+            provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+            epoch="test", instance_token="global-launch", started_at=1, state="running",
+        ))
+        message = await db.create_message(
+            project_id=None, from_kind="session", from_id=sender,
+            to_kind="session", to_id=scope["session_id"], body="directive",
+        )
+        result = await _execute_as(handler, "message_reply", {
+            "message_id": message.id, "body": "ack",
+        }, scope)
+        assert result["reply"]["to_id"] == "supervisor-global", result
+
+    @pytest.mark.parametrize(("from_kind", "from_id", "to_id"), [
+        ("session", "supervisor-global", "somebody-else"),
+        ("session", "foreign-uuid", "supervisor-p1"),
+        ("system", "notice", "supervisor-p1"),
+        ("user", "dashboard", "supervisor-p1"),
+    ])
+    async def test_unrelated_reply_refused_before_read_or_write(self, setup, from_kind, from_id, to_id):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        message = await db.create_message(
+            project_id=None, from_kind=from_kind, from_id=from_id,
+            to_kind="session", to_id=to_id, body="private",
+        )
+        result = await _execute_as(handler, "message_reply", {
+            "message_id": message.id, "body": "ack",
+        }, scope)
+        assert "out of scope" in result["error"], result
+        assert (await db.get_message(message.id)).read_at is None
+        assert len(await db.list_messages()) == 1
+
+    async def test_global_mailbox_ownership_and_explicit_system_scope_stay_denied(self, setup):
+        handler, db, _bus = setup
+        scope = await _seed_project_supervisor(db)
+        for command, args in [
+            ("message_inbox", {"to_kind": "session", "to_id": "supervisor-global", "inject": True}),
+            ("message_list", {"system_only": True}),
+            ("message_send", {"system_only": True, "to_kind": "session", "to_id": "supervisor-global"}),
+        ]:
+            assert "global admin" in check_command_scope(command, args, RequestScope(**scope))
+        for address in ("n-supervisor--global", "global-uuid"):
+            if address == "global-uuid":
+                await db.create_session(SessionRecord(
+                    id=address, project_id=None, profile_id="supervisor", harness="codex",
+                    provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+                    epoch="test", instance_token="global-launch", started_at=1, state="running",
+                ))
+            denied = await _execute_as(handler, "message_send", {
+                "to_kind": "session", "to_id": address, "from_id": "cli", "body": "report",
+            }, scope)
+            assert "out of scope" in denied["error"], denied
+        assert await db.list_messages() == []
 
 
 class _NudgeRecorder:

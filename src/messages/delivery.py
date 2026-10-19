@@ -200,7 +200,7 @@ class MessageDeliveryEngine:
         if activity == "sleeping":
             if pending[0].body_kind == "schedule_prompt":
                 return result
-            if all(msg.body_kind == "conversation_input" for msg in pending):
+            if all(msg.body_kind in {"conversation_input", "ask_input"} for msg in pending):
                 return result
             if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
                 return result
@@ -417,7 +417,7 @@ class MessageDeliveryEngine:
         now = time.time()
         parked = 0
         for msg in pending:
-            if msg.to_kind != "session" or msg.body_kind == "conversation_input":
+            if msg.to_kind != "session" or msg.body_kind in {"conversation_input", "ask_input"}:
                 continue
             if (now - msg.created_at) < PARK_AFTER_SECONDS:
                 continue

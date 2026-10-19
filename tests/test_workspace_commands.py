@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import time
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig
+from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
 from src.models import (
     Agent,
     AgentProfile,
@@ -18,6 +20,7 @@ from src.models import (
     Project,
     Project as _Project,
     RepoSourceType,
+    SessionRecord,
     SYSTEM_KIND_SCOPE,
     Task,
     Workspace as _Workspace,
@@ -108,6 +111,52 @@ class TestAddWorkspaceKindId:
         })
         assert "error" in result
         assert "does-not-exist" in result["error"]
+
+
+async def test_slow_workspace_annotations_do_not_block_independent_inventory_reads(
+    setup, monkeypatch,
+):
+    handler, db, tmp_path = setup
+    path = tmp_path / "owned-source"
+    path.mkdir()
+    protected = path / "checkpoint.txt"
+    protected.write_text("preserved source\n")
+    await db.create_workspace(_Workspace(
+        id="owned-workspace", project_id="p1", workspace_path=str(path),
+        source_type=RepoSourceType.LINK, kind_id="game-repo",
+    ))
+    git = handler.orchestrator.git
+    git.aread_status_summary = AsyncMock(return_value=("sample", False))
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def stalled(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with monkeypatch.context() as fault:
+        fault.setattr(git, "aread_status_summary", stalled)
+        request = asyncio.create_task(handler._cmd_list_workspaces({"project_id": "p1"}))
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            assert [ws.id for ws in await db.list_workspaces(project_id="p1")] == [
+                "owned-workspace",
+            ]
+            kinds = await handler._cmd_list_workspace_kinds({"project_id": "p1"})
+            assert any(kind["id"] == "game-repo" for kind in kinds["workspace_kinds"])
+            assert not request.done()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert cancelled.is_set()
+        finally:
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+    complete = await handler._cmd_list_workspaces({"project_id": "p1"})
+    assert complete["workspaces"][0]["branch"] == "sample"
+    assert protected.read_text() == "preserved source\n"
 
 
 class TestListWorkspaceKinds:
@@ -541,3 +590,192 @@ class TestListWorkspacesAnnotations:
         assert slot_row["slot_index"] == 0
         assert slot_row["mode"] == KIND_MODE_WORKTREE
         assert slot_row["branch"] == "aq/tsk-1"
+
+
+async def _live_session(orch, sid, *, task_id, work_dir, phase="active", epoch=None):
+    await orch.db.create_session(SessionRecord(
+        id=sid, task_id=task_id, project_id="p1", profile_id="p", harness="fake",
+        provider="fake", name=sid, lifecycle="pool", state="running",
+        desired_state="running", work_dir=str(work_dir), epoch="epoch",
+        instance_token=sid, started_at=100.0, last_activity=110.0,
+    ))
+    await orch.db.update_session(
+        sid, agent_id=task_id + "-a", claim_phase=phase, last_claim_epoch=epoch
+    )
+
+
+class TestListWorkspacesBoundedDiagnostics:
+    """Bounded owner/checkout readback (src/workspace_listing.py)."""
+
+    async def test_complete_list_with_held_owner(self, worktree_handler):
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir = await _make_slot_for(orch)
+        task = await orch.db.get_task("tsk-1")
+        await _live_session(orch, "sess-1", task_id="tsk-1", work_dir=slot_dir,
+                            epoch=task.claim_epoch)
+        await orch.db.set_task_meta("tsk-1", CLAIMED_BY_SESSION_KEY, "sess-1")
+
+        result = await handler._cmd_list_workspaces({"project_id": "p1"})
+        diag = result["diagnostics"]
+        assert diag["complete"] is True
+        assert diag["owner_facts"] == "complete"
+        assert diag["incomplete_rows"] == 0
+        assert diag["git_status_counts"] == {"ok": 2}
+
+        row = next(r for r in result["workspaces"] if r["id"] == slot_ws.id)
+        assert (row["presence"], row["git_status"], row["branch"]) == (
+            "present", "ok", "aq/tsk-1")
+        assert row["beyond_cap"] is False
+        owner = row["owner"]
+        assert owner["classification"] == "held"
+        assert owner["session"]["id"] == "sess-1"
+        assert owner["task"]["claimed_by_session"] == "sess-1"
+        assert owner["session_matches_claim"] is True
+        assert owner["fence"] in ("consistent", "unknown")
+
+    async def test_stale_historical_slot_stays_distinct(self, worktree_handler, tmp_path):
+        handler, orch, _ = worktree_handler
+        slot_ws, _ = await _make_slot_for(orch)
+        await orch.db.create_workspace(_Workspace(
+            id="ws-historic", project_id="p1",
+            workspace_path=str(tmp_path / "gone" / "slot-5"),
+            source_type=RepoSourceType.CLONE, kind_id="project-repo",
+            slot_index=5, base_workspace_id="ws-base",
+        ))
+        rows = {r["id"]: r for r in
+                (await handler._cmd_list_workspaces({"project_id": "p1"}))["workspaces"]}
+
+        historic, active = rows["ws-historic"], rows[slot_ws.id]
+        assert (historic["presence"], historic["git_status"], historic["beyond_cap"]) == (
+            "missing", "missing", True)
+        assert historic["branch"] is None and historic["dirty"] is None
+        assert historic["owner"]["classification"] == "unlocked"
+        assert (active["presence"], active["git_status"], active["beyond_cap"]) == (
+            "present", "ok", False)
+        assert active["locked_by_task_id"] == "tsk-1"
+
+    async def test_preparing_writer_is_not_probed(self, worktree_handler, monkeypatch):
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir = await _make_slot_for(orch)
+        await _live_session(orch, "sess-1", task_id="tsk-1", work_dir=slot_dir,
+                            phase="preparing")
+        probed: list[str] = []
+        real = orch.git.aread_status_summary
+
+        async def _spy(path, **kw):
+            probed.append(path)
+            return await real(path, **kw)
+
+        monkeypatch.setattr(orch.git, "aread_status_summary", _spy)
+        result = await handler._cmd_list_workspaces({"project_id": "p1"})
+        row = next(r for r in result["workspaces"] if r["id"] == slot_ws.id)
+        assert row["owner"]["classification"] == "preparing"
+        assert row["git_status"] == "skipped_active_writer"
+        assert row["branch"] is None
+        assert row["locked_by_task_id"] == "tsk-1"
+        assert str(slot_dir) not in probed
+
+    async def test_stuck_git_returns_partial_within_deadline(
+        self, worktree_handler, monkeypatch
+    ):
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir = await _make_slot_for(orch)
+        real = orch.git.aread_status_summary
+
+        async def _stuck(path, **kw):
+            if path == str(slot_dir):
+                await asyncio.sleep(3600)
+            return await real(path, **kw)
+
+        monkeypatch.setattr(orch.git, "aread_status_summary", _stuck)
+        started = time.monotonic()
+        result = await handler._cmd_list_workspaces(
+            {"project_id": "p1", "deadline_seconds": 1})
+        assert time.monotonic() - started < 1 + 5.0
+
+        diag = result["diagnostics"]
+        assert diag["complete"] is False
+        assert diag["incomplete_rows"] == 1
+        rows = {r["id"]: r for r in result["workspaces"]}
+        slot = rows[slot_ws.id]
+        assert slot["git_status"] == "timeout"
+        assert slot["branch"] is None and slot["dirty"] is None
+        # The lock and owner readback survive the stuck probe.
+        assert slot["locked_by_task_id"] == "tsk-1"
+        assert slot["owner"]["facts"] == "complete"
+        assert rows["ws-base"]["git_status"] == "ok"
+
+    async def test_owner_facts_failure_keeps_lock_fields(
+        self, worktree_handler, monkeypatch
+    ):
+        handler, orch, _ = worktree_handler
+        slot_ws, _ = await _make_slot_for(orch)
+
+        async def _boom(rows):
+            raise RuntimeError("connection reset")
+
+        monkeypatch.setattr(orch.db, "read_workspace_owner_facts", _boom)
+        result = await handler._cmd_list_workspaces({"project_id": "p1"})
+        assert result["diagnostics"]["complete"] is False
+        assert result["diagnostics"]["owner_facts"] == "unavailable"
+        row = next(r for r in result["workspaces"] if r["id"] == slot_ws.id)
+        assert row["owner"]["classification"] == "unknown"
+        assert row["locked_by_task_id"] == "tsk-1"
+        assert row["locked_by_agent_id"] == "tsk-1-a"
+        assert row["beyond_cap"] is None
+        assert row["branch"] == "aq/tsk-1"
+
+    async def test_no_git_skips_probes(self, worktree_handler):
+        handler, orch, _ = worktree_handler
+        await _make_slot_for(orch)
+        result = await handler._cmd_list_workspaces({"project_id": "p1", "git": False})
+        assert {r["git_status"] for r in result["workspaces"]} == {"skipped"}
+        assert all(r["branch"] is None for r in result["workspaces"])
+        assert result["diagnostics"]["git_requested"] is False
+        assert result["diagnostics"]["complete"] is True
+
+    @pytest.mark.parametrize(
+        "args", [{"deadline_seconds": "soon"}, {"deadline_seconds": True}, {"git": "yes"}])
+    async def test_invalid_arguments(self, worktree_handler, args):
+        handler, _, _ = worktree_handler
+        result = await handler._cmd_list_workspaces({"project_id": "p1", **args})
+        assert "error" in result
+
+    async def test_cancellation_cancels_probes(self, worktree_handler, monkeypatch):
+        handler, orch, _ = worktree_handler
+        await _make_slot_for(orch)
+        started_probe = asyncio.Event()
+        cancelled: list[str] = []
+
+        async def _stuck(path, **kw):
+            started_probe.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cancelled.append(path)
+                raise
+
+        monkeypatch.setattr(orch.git, "aread_status_summary", _stuck)
+        task = asyncio.create_task(handler._cmd_list_workspaces({"project_id": "p1"}))
+        await asyncio.wait_for(started_probe.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled
+
+    async def test_owner_facts_query(self, worktree_handler):
+        _, orch, _ = worktree_handler
+        slot_ws, slot_dir = await _make_slot_for(orch)
+        await _live_session(orch, "sess-1", task_id="tsk-1", work_dir=slot_dir)
+        await orch.db.set_task_meta("tsk-1", CLAIMED_BY_SESSION_KEY, "sess-1")
+        await orch.db.create_task(Task(id="tsk-zz", project_id="p1",
+                                       title="tsk-zz", description=""))
+        await _live_session(orch, "sess-other", task_id="tsk-zz",
+                            work_dir="/elsewhere")
+
+        facts = await orch.db.read_workspace_owner_facts([slot_ws])
+        assert [t["id"] for t in facts["tasks"]] == ["tsk-1"]
+        assert facts["tasks"][0]["claimed_by_session"] is not None
+        assert [s["id"] for s in facts["sessions"]] == ["sess-1"]
+        assert await orch.db.read_workspace_owner_facts([]) == {
+            "tasks": [], "sessions": []}

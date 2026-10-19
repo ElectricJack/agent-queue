@@ -200,6 +200,14 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         # requests (revision 89) shipped after SQLite removal.
         "branch_deletion_audit",
         "branch_retirements",
+        # Human ask/decision ledgers shipped in PostgreSQL revision 91.
+        # Legacy files have neither these audit records nor their JSONB checks.
+        "human_asks", "ask_source_aliases", "ask_decision_previews",
+        "approved_document_snapshots", "ask_decisions",
+        "review_feedback_obligations", "ask_reconciliation_cases",
+        # External ask bindings, action tokens and destination modes were
+        # introduced in PostgreSQL transport revision 93, never in SQLite.
+        "human_communication_modes", "ask_external_bindings", "ask_action_tokens",
         # Durable record/knowledge tables shipped after SQLite removal in
         # revision 55. Legacy files have no record identities, revisions,
         # informational links or outbox state; backfill/import is explicit.
@@ -260,6 +268,23 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
 _POSTGRES_ONLY_COLUMNS = {
     "archived_tasks": frozenset({"route"}),
     "token_ledger": frozenset({"session_id", "attempt_id", "call_id", "model_source"}),
+    "doc_reviews": frozenset({"pending_decision_id"}),
+    "doc_review_comments": frozenset({"source_discussion_id", "responder_disposition"}),
+    "escalation_messages": frozenset({
+        "ask_id", "input_id", "source_version", "reply_to_entry_id",
+    }),
+    "escalation_actions": frozenset({
+        "ask_id", "decision_id", "operation_kind", "operation_key", "lease_owner",
+        "lease_expires_at", "retry_at", "receipt",
+    }),
+    "conversation_inputs": frozenset({
+        "ask_id", "project_id", "guild_id", "reference_message_id", "external_thread_id",
+        "source_version", "retention_entry_id",
+    }),
+    "outbound_deliveries": frozenset({
+        "ask_id", "binding_id", "project_id", "decision_generation", "display_version",
+        "mode_generation", "root_generation", "send_kind", "write_started_at", "attempt_token",
+    }),
 }
 
 # Non-null PostgreSQL-era columns whose target default supplies missing values.
@@ -268,6 +293,10 @@ _POSTGRES_ONLY_COLUMNS = {
 _POSTGRES_DEFAULT_COLUMNS = {
     "tasks": frozenset({"legacy_completion_id"}),
     "archived_tasks": frozenset({"legacy_completion_id"}),
+    "doc_reviews": frozenset({"feedback_version", "decision_generation"}),
+    "escalation_messages": frozenset({"entry_kind"}),
+    "escalation_actions": frozenset({"dependency_keys", "lease_generation"}),
+    "conversation_inputs": frozenset({"routing_state", "routing_evidence", "receipt"}),
 }
 
 

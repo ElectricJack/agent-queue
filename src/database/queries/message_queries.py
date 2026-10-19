@@ -233,6 +233,7 @@ class MessageQueriesMixin:
         reply_to_id: str | None = None,
         body_kind: str | None = None,
         pane_open: str | None = None,
+        conn=None,
     ) -> Message:
         """Insert one message row and return the materialised dataclass."""
         msg = Message(
@@ -252,7 +253,7 @@ class MessageQueriesMixin:
             body_kind=body_kind,
             pane_open=pane_open,
         )
-        async with self._engine.begin() as conn:
+        async def write(conn):
             if msg.reply_to_id is not None:
                 # Serialise with the transcript-tail sweep, which re-checks
                 # for a reply under the same lock before fabricating one.
@@ -288,6 +289,11 @@ class MessageQueriesMixin:
                 ).returning(messages.c.created_seq)
             )
             msg.created_seq = result.scalar_one()
+        if conn is None:
+            async with self._engine.begin() as owned:
+                await write(owned)
+        else:
+            await write(conn)
         return msg
 
     async def get_message(self, message_id: str) -> Message | None:
@@ -303,6 +309,7 @@ class MessageQueriesMixin:
         to_id: str,
         *,
         limit: int = 50,
+        project_id: str | None = None,
         notification_at: float | None = None,
         notification_delays: tuple[float, ...] = (),
         newest_first: bool = False,
@@ -315,6 +322,8 @@ class MessageQueriesMixin:
 
         The notification caller supplies its retry delays. Apply eligibility
         before the limit so unread mail in backoff cannot starve newer mail.
+        A project filter partitions shared profile mailboxes for scoped readers;
+        session/task recipient queues remain unfiltered for cross-project reports.
         """
         stmt = (
             select(messages)
@@ -334,6 +343,8 @@ class MessageQueriesMixin:
             )
             .limit(limit)
         )
+        if project_id is not None:
+            stmt = stmt.where(messages.c.project_id == project_id)
         if notification_at is not None and notification_delays:
             stmt = stmt.where(~wake_already_delivered(), ~stale_wait_wake())
             delay = case(
@@ -406,6 +417,7 @@ class MessageQueriesMixin:
         to_id: str,
         *,
         limit: int = 50,
+        project_id: str | None = None,
     ) -> list[Message]:
         """Rows this recipient already consumed — the re-read path.
 
@@ -438,6 +450,8 @@ class MessageQueriesMixin:
             .order_by(messages.c.priority.asc(), messages.c.created_at.asc())
             .limit(limit)
         )
+        if project_id is not None:
+            stmt = stmt.where(messages.c.project_id == project_id)
         async with self._engine.begin() as conn:
             result = await conn.execute(stmt)
             return [_row_to_message(r) for r in result.mappings().fetchall()]
@@ -726,10 +740,16 @@ class MessageQueriesMixin:
         since: float | None = None,
         limit: int = 100,
         session_addresses: list[str] | None = None,
+        inbound_session_addresses: list[str] | None = None,
+        recipient_ids: list[str] | None = None,
     ) -> list[Message]:
         """List messages newest-first; system_only selects NULL-project records.
 
         Omitting project_id still means all projects, including system records.
+        ``inbound_session_addresses`` extends a project view only to inbound
+        mail for server-verified recipients. ``recipient_ids`` treats their
+        canonical aliases as one recipient. Both filters apply before LIMIT;
+        neither parameter is an authority derived from client arguments.
 
         ``since`` is an exclusive lower bound on ``created_at`` — the
         polling form ``aq chat --once`` uses it to fetch only what arrived
@@ -739,12 +759,20 @@ class MessageQueriesMixin:
         if system_only:
             conditions.append(messages.c.project_id.is_(None))
         elif project_id:
-            conditions.append(messages.c.project_id == project_id)
+            project_view = messages.c.project_id == project_id
+            if inbound_session_addresses:
+                project_view = or_(project_view, and_(
+                    messages.c.to_kind == "session",
+                    messages.c.to_id.in_(inbound_session_addresses),
+                ))
+            conditions.append(project_view)
         if thread_id:
             conditions.append(messages.c.thread_id == thread_id)
         if to_kind:
             conditions.append(messages.c.to_kind == to_kind)
-        if to_id:
+        if recipient_ids is not None:
+            conditions.append(messages.c.to_id.in_(recipient_ids))
+        elif to_id:
             conditions.append(messages.c.to_id == to_id)
         if not include_archived:
             conditions.append(messages.c.archived_at.is_(None))

@@ -151,17 +151,19 @@ aq integration release-owner --task-id repair-repair-batch-…-1 --dry-run
 
 # Satisfied. Run it for real — this pushes the preserved ref and writes the
 # audit row in the same logical step as the release.
-aq integration release-owner --task-id repair-repair-batch-…-1
+aq integration release-owner --task-id repair-repair-batch-…-1 --apply
 # => same shape, dry_run: false, one row now in integration_owner_recoveries
 ```
 
 You can also target a specific owner row directly instead of a task:
 
 ```bash
-aq integration release-owner --owner-row-id o-a3f7…
+aq integration release-owner --owner-row-id o-a3f7… --apply
 ```
 
-`release-owner` takes no `--project-id`: the task (or the owner row's repository) names the
+`release-owner` previews by default; `--apply` explicitly preserves work and releases
+the stopped attachment. `--dry-run` and `--apply` are mutually exclusive.
+It takes no `--project-id`: the task (or the owner row's repository) names the
 project, and the caller's token has to name the same one. A project's supervisor session may
 therefore run this recovery for its own work and is refused for another project's — see
 [aq-surface §7.3](../specs/design/aq-surface.md#73-elevated-scopes-and-the-commands-that-carry-no-project_id).

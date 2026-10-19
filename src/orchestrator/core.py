@@ -369,9 +369,11 @@ class Orchestrator(
         # ``(session_id, claim_epoch)``; resolved by
         # ``ClaimCommandsMixin._resolve_claim_waiters``.
         self.claim_waiters: dict[tuple[str, int | None], asyncio.Future] = {}
-        # Actual request tasks, distinct from notification futures: a live
+        # Daemon-owned preparation tasks, distinct from notification futures: a live
         # workspace reset must finish or be cancelled before reclaiming it.
         self.claim_preparations: dict[tuple[str, str, int | None], asyncio.Task] = {}
+        self.claim_preparation_results: dict[str, tuple[int, str, str, dict]] = {}
+        self.claim_timings: dict = {}
         # Worker-pool sizing state (swarm-work-model §11), owned by
         # ``PoolsMixin``.  ``_pool_surplus_since`` tracks how long each
         # ``(project_id, profile_id)`` key has been in continuous surplus,
@@ -410,6 +412,7 @@ class Orchestrator(
         # and delivery both live in the service, so nothing about the cycle
         # depends on whether Discord is reachable.
         self.digest_schedule = None
+        self.delivery_scheduler = None
         # The one dashboard origin every externally posted link names
         # (escalations, digest, reviews, digest_preview).  Reads config per
         # call, so a hot-reloaded ``dashboard.server`` bites at once.
@@ -1222,9 +1225,23 @@ class Orchestrator(
             )
         ws = owned_workspaces[0] if owned_workspaces else None
         if ws:
-            if not await self._checkpoint_paused_workspace(task_id, ws, deferrable=deferrable):
+            preserved = await self._checkpoint_paused_workspace(task_id, ws, deferrable=deferrable)
+            if not preserved:
                 return  # Backing off between bounded retries; the cascade calls again.
             self._remove_sentinel(ws.workspace_path)
+            if preserved == "captured":
+                # Retire our own marker while the slot is still locked to this
+                # task: unlocking first lets a successor bind it and refuse the
+                # marker as foreign. An unproved marker stays as evidence.
+                from src.orchestrator.workspace_claim_recovery import retire_paused_slot_claim
+
+                if not await retire_paused_slot_claim(
+                    self.db, ws.id, ws.workspace_path, task_id=task_id,
+                    claim_epoch=snapshot.get("claim_epoch"), agent_id=agent_id,
+                    captured=captured,
+                ):
+                    logger.info("Paused task %s keeps its claim file in %s",
+                                task_id, ws.workspace_path)
         await self.db.delete_task_meta(task_id, PAUSE_CHECKPOINT_RETRY_META)
         await self.db.finish_task_pause(task_id, snapshot)
         if adapter is not None and self._adapters.get(agent_id) is adapter:
@@ -1232,11 +1249,14 @@ class Orchestrator(
         self._task_exec_start.pop(task_id, None)
         self._task_pre_exec_sha.pop(task_id, None)
 
-    async def _checkpoint_paused_workspace(self, task_id: str, ws, *, deferrable: bool) -> bool:
+    async def _checkpoint_paused_workspace(
+        self, task_id: str, ws, *, deferrable: bool
+    ) -> str | bool:
         """Preserve a paused slot's work, and converge even when that is impossible.
 
-        Returns True when the pause may finish, False while a bounded retry is
-        still backing off.  Capture failure used to raise unconditionally, and
+        Returns ``"captured"`` when the work is preserved, True when the pause
+        may finish without a checkpoint, False while a bounded retry is still
+        backing off.  Capture failure used to raise unconditionally, and
         the monitoring cascade retries a pending pause every cycle — so a slot
         that had already been reassigned, or a repository that cannot produce a
         commit at all, spun forever on "remains paused; stop cleanup will
@@ -1262,7 +1282,7 @@ class Orchestrator(
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
         else:
-            return True
+            return "captured"
         attempts = int(state.get("attempts", 0)) + 1
         if attempts < PAUSE_CHECKPOINT_MAX_ATTEMPTS and Path(ws.workspace_path).is_dir():
             await self.db.set_task_meta(
@@ -1460,7 +1480,7 @@ class Orchestrator(
                     "Integration branch handoff is unproven; task resources were retained. "
                     + session_stop
                     + f"Preview `aq integration release-owner --task-id {task_id} --dry-run`, "
-                    "then apply without --dry-run to preserve work and release the attachment. "
+                    "then add --apply to preserve work and release the attachment. "
                     f"Retry `aq task stop {task_id}` if still in progress, "
                     f"then `aq task restart {task_id}`. No recovery incident is required."
                 )
@@ -2945,6 +2965,16 @@ class Orchestrator(
         else:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def cancel_claim_preparations(self) -> None:
+        """Stop owned resets and await Git/transaction cleanup before closing the DB."""
+        preparations = tuple(self.claim_preparations.values())
+        for preparation in preparations:
+            if not preparation.done():
+                preparation.cancel()
+        if preparations:
+            await asyncio.gather(*preparations, return_exceptions=True)
+        self.claim_preparation_results.clear()
+
     async def shutdown(self) -> None:
         """Gracefully shut down all subsystems in dependency order.
 
@@ -2962,6 +2992,7 @@ class Orchestrator(
         if self._tracked_deploy_check is not None and not self._tracked_deploy_check.done():
             self._tracked_deploy_check.cancel()
             await asyncio.gather(self._tracked_deploy_check, return_exceptions=True)
+        await self.cancel_claim_preparations()
         await stop_ready_owner_recovery(self)
         await self.message_delivery_service.stop()
         await self.provider_availability.close()
@@ -3272,6 +3303,12 @@ class Orchestrator(
             # had something to say.  Escalations are pumped first above and
             # the digest pump stands down while any are owed a send, which is
             # §7's priority rule.  ``tick`` never raises.
+            if self.delivery_scheduler is not None:
+                try:
+                    await self.delivery_scheduler.tick()
+                except Exception:
+                    logger.warning("Shared delivery pump failed", exc_info=True)
+
             if self.digest_schedule is not None:
                 try:
                     await self.digest_schedule.tick()
@@ -3313,6 +3350,16 @@ class Orchestrator(
             # Conversation retention runs even with intake disabled when old
             # rows remain. Delay notices go through the currently bound outbox.
             await self._maintain_conversations(now=now)
+
+            # Only replay persisted approval intents; policy still creates the role task.
+            if self._command_handler is not None:
+                try:
+                    from src.commands.principal import ExecutionPrincipal, principal_context
+
+                    with principal_context(ExecutionPrincipal.service("spec-ingest-reconcile")):
+                        await self._command_handler.execute("spec_ingest_reconcile", {})
+                except Exception:
+                    logger.warning("Spec ingestion dispatch retry failed", exc_info=True)
 
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
@@ -3378,6 +3425,14 @@ class Orchestrator(
 
     async def _maintain_conversations(self, *, now: float) -> None:
         """Hourly maintenance; an outbox or database outage cannot stop scheduling."""
+        handler = getattr(self, "_command_handler", None)
+        if handler is not None:
+            try:
+                from src.commands.principal import ExecutionPrincipal, principal_context
+                with principal_context(ExecutionPrincipal.service("ask-maintenance")):
+                    await handler.execute("ask_reconcile", {"apply": True, "limit": 100})
+            except Exception:
+                logger.warning("Ask intake reconciliation failed", exc_info=True)
         if now - self._last_conversation_maintenance < 3600:
             return
         self._last_conversation_maintenance = now
@@ -3770,6 +3825,7 @@ class Orchestrator(
         )
         from src.integration.delivery_branches import live_branch_references
         from src.integration.provenance_migration import ProvenanceMigration
+        from src.models import RepoSourceType
 
         try:
             projects = await self.db.list_projects()
@@ -3816,7 +3872,24 @@ class Orchestrator(
                 failures.append(f"{project.name}: workspace list failed ({exc})")
                 repositories, workspaces = [], []
             extra_paths = [getattr(project, "workspace_path", None)]
+            repository_origins = []
             for repository in repositories:
+                origin = repository.url
+                if getattr(repository, "source_type", None) is RepoSourceType.LINK:
+                    extra_paths.append(repository.source_path)
+                    if not origin:
+                        try:
+                            if not repository.source_path or not Path(repository.source_path).is_dir():
+                                raise ValueError("registered source path is unavailable")
+                            origin = await self.git._arun(
+                                ["remote", "get-url", "origin"], cwd=repository.source_path
+                            )
+                        except Exception as exc:
+                            failures.append(
+                                f"{repository.source_path}: linked origin unavailable ({exc})"
+                            )
+                if origin:
+                    repository_origins.append((repository, origin))
                 extra_paths.append(repository.checkout_base_path)
                 if retirement is not None:
                     extra_paths.append(str(retirement.retained_store(repository.id)))
@@ -3859,8 +3932,12 @@ class Orchestrator(
                 except Exception as exc:
                     failures.append(f"{checkout}: origin unavailable ({exc})")
                     continue
-                matches = [repo for repo in repositories
-                           if repository_urls_match(repository_url, repo.url, base=checkout)]
+                matches = [repo for repo, origin in repository_origins
+                           if repository_urls_match(repository_url, origin, base=checkout)]
+                bound = [repo for repo in matches
+                         if repo.id == getattr(project, "integration_repository_id", None)]
+                if bound:
+                    matches = bound
                 if len(matches) != 1:
                     # Ref exclusion needs a repository identity: skip, reported once.
                     unregistered.setdefault(repository_url, []).append(checkout)

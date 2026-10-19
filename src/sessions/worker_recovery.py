@@ -22,6 +22,7 @@ from src.sessions.transcripts.base import parse_iso_ts
 logger = logging.getLogger(__name__)
 STREAK_KEY = "worker_failure_streak"
 CONTINUATION_KEY = "worker_recovery_note"
+DISPOSITION_KEY = "worker_recovery_disposition"
 THRASH_CAUSE = "context_thrash"
 GUARDED_CAUSES = frozenset({THRASH_CAUSE, "stalled", "stuck_timeout"})
 MAX_SAME_CAUSE = 2
@@ -92,6 +93,7 @@ async def record_failure(db, session, task, cause: str, *, now: float) -> dict |
     """Count once per instance, surviving new claims and daemon restarts."""
     transition = None
     async with db.immediate() as conn:
+        await db.lock_hierarchy_project(conn, task.project_id)
         live = (await conn.execute(
             select(sessions).where(sessions.c.id == session.id).with_for_update()
         )).mappings().first()
@@ -181,3 +183,128 @@ async def save_continuation(db, session, task, record: dict) -> None:
         # that attempt's continuation or resurrect an explicitly cleared streak.
         if current == task.claim_epoch and raw and json.loads(raw) == record:
             await db._upsert_meta(task.id, CONTINUATION_KEY, note, conn=conn)
+
+
+async def pool_recovery_disposition(db, session, task, record: dict) -> dict | None:
+    """Observe teardown under the failed claim's fence, without releasing it.
+
+    Teardown can stop the writer yet retain an integration attachment. That is
+    a deferred continuation, not a successful retry. A successor or explicit
+    task decision always wins over this historical failure observation.
+    """
+    transition = None
+    async with db.immediate() as conn:
+        # Owner recovery takes the hierarchy lock before releasing its writer.
+        # Match that order before locking the session/task/owner observations.
+        await db.lock_hierarchy_project(conn, task.project_id)
+        row = (await conn.execute(
+            select(sessions).where(sessions.c.id == session.id).with_for_update()
+        )).mappings().first()
+        current = (await conn.execute(
+            select(tasks).where(tasks.c.id == task.id).with_for_update()
+        )).mappings().first()
+        raw = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task.id, task_metadata.c.key == STREAK_KEY,
+        ))
+        if (
+            row is None or current is None or not raw or json.loads(raw) != record
+            or current["claim_epoch"] != record["claim_epoch"]
+            or row["last_claim_epoch"] != record["claim_epoch"]
+            or row["instance_token"] != record["instance_token"]
+            or row["desired_state"] != "stopped"
+            or current["profile_id"] != task.profile_id
+            or current["intelligence_class"] != task.intelligence_class
+        ):
+            return None
+        previous = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task.id, task_metadata.c.key == DISPOSITION_KEY,
+        ))
+        if previous and json.loads(previous).get("failure") == record:
+            return None  # Already reported; duplicate observations are silent.
+        failure_status = (TaskStatus.BLOCKED if record["count"] >= MAX_SAME_CAUSE
+                          else TaskStatus.IN_PROGRESS)
+        if (
+            row["state"] == "stopped" and row["task_id"] is None
+            and current["assigned_agent_id"] is None
+            and current["status"] == TaskStatus.READY.value
+            and record["count"] < MAX_SAME_CAUSE
+        ):
+            disposition = "retry_ready"
+        elif (
+            row["state"] == "stopped" and row["end_reason"] == record["cause"]
+            and row["task_id"] == task.id and row["claim_phase"] == "active"
+            and current["assigned_agent_id"] == task.assigned_agent_id
+            and current["status"] == failure_status.value
+        ):
+            disposition = "handoff_deferred"
+            if current["status"] == TaskStatus.IN_PROGRESS.value:
+                attention = f"session_{record['cause']}_handoff_deferred"
+                await db._upsert_meta(task.id, "needs_attention", attention, conn=conn)
+                transition = await db._apply_transition(
+                    conn, task.id, TaskStatus.BLOCKED, context=attention, resume_after=None,
+                )
+        elif (
+            row["state"] == "stopped" and row["task_id"] is None
+            and current["assigned_agent_id"] is None
+            and current["status"] == TaskStatus.BLOCKED.value
+            and record["count"] >= MAX_SAME_CAUSE
+        ):
+            disposition = "attention_required"
+        elif (
+            row["state"] in {"starting", "running", "draining"}
+            and row["task_id"] == task.id and row["claim_phase"] == "active"
+            and current["assigned_agent_id"] == task.assigned_agent_id
+            and current["status"] == failure_status.value
+        ):
+            disposition = "stop_unconfirmed"
+        else:
+            return None  # No confirmed stop/release, or another decision owns it.
+        receipt = {"failure": record, "disposition": disposition,
+                   "branch": task.branch_name, "work_dir": session.work_dir}
+        await db._upsert_meta(task.id, DISPOSITION_KEY, receipt, conn=conn)
+    if transition is not None:
+        await db.log_blocked_flips(transition.flipped)
+        await db._notify_settled(transition.settled)
+        await db._notify_ready(transition.ready)
+    return receipt
+
+
+async def prepare_guarded_recovery(db, session, task, record: dict) -> bool:
+    """Reset continuation controls only while this failure still owns the task."""
+    from sqlalchemy import delete
+
+    async with db.immediate() as conn:
+        row = (await conn.execute(
+            select(sessions).where(sessions.c.id == session.id).with_for_update()
+        )).mappings().first()
+        current = (await conn.execute(
+            select(tasks).where(tasks.c.id == task.id).with_for_update()
+        )).mappings().first()
+        raw = await conn.scalar(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task.id, task_metadata.c.key == STREAK_KEY,
+        ))
+        expected = (TaskStatus.BLOCKED if record["count"] >= MAX_SAME_CAUSE
+                    else TaskStatus.IN_PROGRESS)
+        if (
+            row is None or current is None or not raw or json.loads(raw) != record
+            or current["claim_epoch"] != record["claim_epoch"]
+            or current["status"] != expected.value
+            or current["assigned_agent_id"] != task.assigned_agent_id
+            or current["profile_id"] != task.profile_id
+            or current["intelligence_class"] != task.intelligence_class
+            or row["task_id"] != task.id
+            or row["instance_token"] != record["instance_token"]
+            or row["desired_state"] != "running"
+            or row["state"] not in {"starting", "running", "draining"}
+            or (session.lifecycle == "pool"
+                and row["last_claim_epoch"] != record["claim_epoch"])
+        ):
+            return False
+        if record["cause"] == THRASH_CAUSE:
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == task.id,
+                task_metadata.c.key == "session_resume_key",
+            ))
+        await db._upsert_meta(task.id, "stall_nudges", "0", conn=conn)
+        await db._upsert_meta(task.id, "stall_last_action_at", "0", conn=conn)
+    return True

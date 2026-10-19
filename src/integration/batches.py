@@ -30,6 +30,22 @@ from src.integration.provenance import CompletionIdentity, GitProvenance
 
 logger = logging.getLogger(__name__)
 
+
+def removed_required_checks(frozen, current, boundary: str) -> tuple[str, ...]:
+    """Compare explicit named sets; an absent policy never authorizes release."""
+    def names(policy):
+        selected = (policy or {}).get(boundary) or {}
+        checks = (selected.get("required_checks") or {}).get("names")
+        if not isinstance(checks, (list, tuple)) or not all(
+            isinstance(name, str) and name.strip() for name in checks
+        ):
+            return None
+        return set(checks)
+
+    old, new = names(frozen), names(current)
+    return tuple(sorted(old - new)) if old is not None and new is not None else ()
+
+
 def ejection_instruction(batch_identity):
     """Only a batch-owned eject record for its frozen member releases inputs.
 
@@ -391,8 +407,24 @@ class BatchStore:
                     "replacement_batch_id": replacement.id if replacement else None,
                     "operator_id": operator_id, "reason": reason}), conn=conn)
 
-    async def supersede(self, batch: Batch, task_id: str, *, reason: str) -> bool:
-        """Abort an open batch a refreshed stack replaced; release its inputs.
+    async def removed_required_checks(self, batch: Batch, boundary: str) -> tuple[str, ...]:
+        async with self.db._engine.connect() as conn:
+            row = (await conn.execute(select(
+                integration_batches.c.policy_snapshot, integration_batches.c.trigger,
+                projects.c.hierarchical_integration_policy,
+            ).join(projects, projects.c.id == integration_batches.c.project_id).where(
+                integration_batches.c.id == batch.id,
+            ))).mappings().one_or_none()
+        if row is None or row["trigger"] == "promotion":
+            return ()
+        return removed_required_checks(
+            row["policy_snapshot"], row["hierarchical_integration_policy"], boundary,
+        )
+
+    async def supersede(self, batch: Batch, task_id: str, *, reason: str,
+                        boundary: str | None = None, removed_checks: tuple[str, ...] = (),
+                        authorize=None) -> bool:
+        """Abort an obsolete open batch and release its inputs.
 
         Its frozen candidate can no longer publish the refreshed source, so it
         must not keep the target. Unlike an ordinary abort, its unchanged
@@ -403,6 +435,12 @@ class BatchStore:
         if not reason.strip():
             raise ValueError("supersede requires a nonblank reason")
         async with self.db.immediate() as conn:
+            policy = None
+            if boundary is not None:
+                # PolicyActivation holds this row for its generation CAS.
+                policy = await conn.scalar(select(projects.c.hierarchical_integration_policy).where(
+                    projects.c.id == batch.project_id,
+                ).with_for_update())
             await self._target_lock(conn, batch)
             row = (await conn.execute(select(integration_batches).where(
                 integration_batches.c.id == batch.id,
@@ -411,6 +449,18 @@ class BatchStore:
                 return False
             if Batch.from_row(row) != batch:
                 return False
+            if boundary is not None and (
+                row["trigger"] == "promotion" or not removed_checks
+                or removed_required_checks(row["policy_snapshot"], policy, boundary) != removed_checks
+            ):
+                return False
+            if boundary is not None:
+                from src.operator_decisions import history_on, related_on
+
+                # Human decision writes take the same project row lock.
+                refs = await related_on(conn, "batch", batch.id)
+                if any(item["active"] for item in await history_on(conn, batch.project_id, refs)):
+                    return False
             member = await conn.scalar(select(integration_batch_members.c.task_id).where(
                 integration_batch_members.c.batch_id == batch.id,
                 integration_batch_members.c.task_id == task_id,
@@ -426,8 +476,24 @@ class BatchStore:
                 raise SupersedeMemberUnavailable(task_id, ambiguous=bool(source_projects))
             if source_projects != [batch.project_id]:
                 raise SupersedeMemberUnavailable(task_id, foreign_project=True)
+            if authorize is not None and not await authorize():
+                return False
+            replacement = None
+            frozen = []
+            if boundary is not None and (batch.epic_sync or batch.epic_refresh):
+                # These batches freeze collected/default heads, not the ordinary
+                # pending frontier. Retain that purpose and all their inputs in
+                # a new identity, or their deterministic creator would recover
+                # the aborted batch forever.
+                replacement = replace(batch, id=batch.id + "-policy-" + hashlib.sha256(
+                    repr((policy, removed_checks)).encode()).hexdigest()[:16],
+                    created_at=self.clock(), repair_attempt_count=0)
+                frozen = (await conn.execute(select(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == batch.id,
+                ).order_by(integration_batch_members.c.ordinal))).mappings().all()
             instruction = {"batch_id": batch.id, "project_id": batch.project_id,
-                           "task_id": task_id, "replacement_batch_id": None,
+                           "task_id": task_id,
+                           "replacement_batch_id": replacement.id if replacement else None,
                            "operator_id": "service:integration-train", "reason": reason}
             await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch.id,
@@ -438,6 +504,11 @@ class BatchStore:
 
             await request_batch_retirement_on(conn, row, reason="superseded batch candidate",
                                              now=self.clock())
+            if replacement is not None:
+                await self._freeze_on(conn, replacement, tuple(
+                    BatchMember(item["task_id"], item["source_sha"], item["source_base_sha"],
+                                item["ordinal"]) for item in frozen),
+                    trees={item["task_id"]: item["reviewed_tree_sha"] for item in frozen})
             await self.db.log_event("integration.batch_superseded", project_id=batch.project_id,
                 task_id=task_id, payload=json.dumps(instruction),
                 conn=conn)
