@@ -2909,10 +2909,15 @@ class TestClaim:
         at_unlock = []
         finish = db.finish_task_pause
 
-        async def finish_task_pause(task_id, snapshot):
+        async def finish_task_pause(task_id, snapshot, *, before_release=None):
             slot = await db.get_workspace("ws-agent-1")
-            at_unlock.append((read_claim_file(wd), slot.locked_by_task_id))
-            await finish(task_id, snapshot)
+
+            def observe_release():
+                if before_release is not None:
+                    before_release()
+                at_unlock.append((read_claim_file(wd), slot.locked_by_task_id))
+
+            await finish(task_id, snapshot, before_release=observe_release)
 
         db.finish_task_pause = finish_task_pause
         handler._current_scope = None  # the fixture's operator invokes supported Pause

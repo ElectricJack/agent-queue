@@ -2120,7 +2120,9 @@ async def test_checkpoint_validation_precedes_destructive_reset(env, tmp_path, c
     assert await env.db.get_task_meta("t", "manual_pause_checkpoint")
 
 
-@pytest.mark.parametrize("conflict", ["foreign_task", "legacy_foreign_branch", "foreign_project"])
+@pytest.mark.parametrize("conflict", [
+    "foreign_task", "legacy_foreign_branch", "legacy_foreign_owned_branch", "foreign_project",
+])
 async def test_checkpoint_task_identity_precedes_all_git_changes(env, tmp_path, monkeypatch, conflict):
     from src.git.manager import GitError
     from src.orchestrator.task_checkpoint import restore_checkpoint
@@ -2138,7 +2140,7 @@ async def test_checkpoint_task_identity_precedes_all_git_changes(env, tmp_path, 
     assert saved["pause_workspace_id"] == "workspace"
     if conflict == "foreign_task":
         saved["task_id"] = "peer"
-    elif conflict == "legacy_foreign_branch":
+    elif conflict in {"legacy_foreign_branch", "legacy_foreign_owned_branch"}:
         saved.pop("task_id")
         saved["branch"] = "aq/peer"
     else:
@@ -2157,7 +2159,10 @@ async def test_checkpoint_task_identity_precedes_all_git_changes(env, tmp_path, 
     monkeypatch.setattr(env.orch.git, "aclear_stale_locks", unexpected_git)
     ws = await env.db.get_workspace("workspace")
     with pytest.raises(GitError, match="unchanged"):
-        await env.orch._worktree_slots().reset_slot_for_task(ws, await env.db.get_task("t"))
+        await env.orch._worktree_slots().reset_slot_for_task(
+            ws, await env.db.get_task("t"),
+            target_branch="main" if conflict == "legacy_foreign_owned_branch" else None,
+        )
     # Supplying a previously prepared plan must not bypass task validation.
     with pytest.raises(GitError, match="unchanged"):
         await restore_checkpoint(env.db, env.orch.git, "t", str(repo), saved=saved)

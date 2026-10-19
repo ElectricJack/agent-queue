@@ -20,7 +20,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -725,6 +725,12 @@ class TestAbandonedMergeRecovery:
 
 
 class TestOperatorHandoffCheckpoint:
+    def _record_foreign_checkout(self, mgr, path):
+        # Model a previous user's registered checkout, retaining its source identity.
+        mgr.write_sentinel(path, replace(
+            mgr.read_sentinel(path), branch="aq/foreign", task_id="foreign",
+        ))
+
     async def _checkpoint(self, mgr, base_ws, kind, *, dirty=False):
         from src.orchestrator.task_checkpoint import CHECKPOINT_META, capture_checkpoint
 
@@ -777,6 +783,7 @@ class TestOperatorHandoffCheckpoint:
         _git(["add", "foreign.txt"], path)
         _git(["commit", "-m", "foreign slot head"], path)
         foreign = _git(["rev-parse", "HEAD"], path)
+        self._record_foreign_checkout(mgr, path)
 
         branch = await mgr.reset_slot_for_task(
             slot, FakeTask(), target_branch=owned_branch,
@@ -812,6 +819,7 @@ class TestOperatorHandoffCheckpoint:
         tip = _git(["rev-parse", "HEAD"], path)
         _git(["push", "origin", branch], path)
         _git(["switch", "-c", "aq/foreign", saved["head"]], path)
+        self._record_foreign_checkout(mgr, path)
         _git(["branch", "-D", branch], path)
         _git(["update-ref", "-d", f"refs/remotes/origin/{branch}"], path)
         if not published:
@@ -858,6 +866,7 @@ class TestOperatorHandoffCheckpoint:
         await capture_checkpoint(mgr.db, mgr.git, "tsk-1", str(path))
         saved = await mgr.db.get_task_meta("tsk-1", CHECKPOINT_META)
         _git(["switch", "-c", "aq/foreign", "aq/owned"], path)
+        self._record_foreign_checkout(mgr, path)
         slot_head = _git(["rev-parse", "HEAD"], path)
         (path / "keep.txt").write_text("destination edits\n")
         if unproved:

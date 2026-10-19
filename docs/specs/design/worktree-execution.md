@@ -160,7 +160,9 @@ fencing checks still run before this reconciliation.
 
 Exact owned-branch preparation also reconciles a manual-pause checkpoint against
 the owned continuation, rather than the branch currently checked out in the reused
-slot. A saved branch label may differ: the checkpoint HEAD must be proved reachable
+slot. A saved branch label may differ when the checkpoint explicitly identifies the
+same task and its project identity matches; legacy snapshots without a task identity
+retain the branch-label check. The checkpoint HEAD must be proved reachable
 from the owned branch tip or its proved continuation commit. If the local owned ref
 is absent, use its exact origin ref after an authorized fresh fetch; a checkpoint
 equal to that tip or the base is valid even with no task commits. Related local progress

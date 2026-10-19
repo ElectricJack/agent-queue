@@ -158,14 +158,18 @@ async def salvage_checkpoint(
         return True
 
 
-async def _validate_checkpoint_task(db, task_id, saved, expected_branch=None):
+async def _validate_checkpoint_task(
+    db, task_id, saved, expected_branch=None, *, owned_continuation=False,
+):
     task = await db.get_task(task_id)
     if (task is None or saved.get("task_id", task_id) != task_id
             or saved.get("pause_project_id", task.project_id) != task.project_id):
         raise GitError("Paused checkpoint task identity differs; workspace was left unchanged")
     expected = expected_branch or getattr(task, "branch_name", None)
     current = getattr(task, "branch_name", None)
-    if (expected is None or saved["branch"] != expected.removeprefix("refs/heads/")
+    branch_label_required = not owned_continuation or saved.get("task_id") != task_id
+    if (expected is None
+            or branch_label_required and saved["branch"] != expected.removeprefix("refs/heads/")
             or current is not None and current.removeprefix("refs/heads/")
             != expected.removeprefix("refs/heads/")):
         raise GitError("Paused checkpoint branch lacks task ownership proof; "
@@ -185,7 +189,11 @@ async def prepare_checkpoint(
     if saved.get("branch") is None:
         raise GitError("Paused checkpoint has detached HEAD and no proved branch; "
                        "retain the checkpoint for guarded recovery; workspace was left unchanged")
-    await _validate_checkpoint_task(db, task_id, saved, expected_branch)
+    # An owned continuation proves reachability below, even when the snapshot
+    # predates a branch rename. Task and project identity still must match.
+    await _validate_checkpoint_task(
+        db, task_id, saved, expected_branch, owned_continuation=owned_branch is not None,
+    )
     if not Path(saved["source"]).is_dir():
         raise GitError("Paused task checkpoint repository is missing; workspace was left unchanged")
     target_roots = set()

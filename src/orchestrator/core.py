@@ -1302,15 +1302,16 @@ class Orchestrator(
                 ) for path in (ws.workspace_path, base.workspace_path)]
                 if Path(roots[0]).resolve() != Path(roots[1]).resolve():
                     raise PauseFenceError("Paused workspace belongs to a different repository")
-            if not await self._checkpoint_paused_workspace(
+            preserved = await self._checkpoint_paused_workspace(
                 task_id, ws, deferrable=deferrable, snapshot=snapshot
-            ):
+            )
+            if not preserved:
                 return  # Backing off between bounded retries; the cascade calls again.
         await self.db.delete_task_meta(task_id, PAUSE_CHECKPOINT_RETRY_META)
         def release_sentinel():
             self._validate_paused_workspace_identity(task_id, ws, snapshot)
             self._remove_sentinel(ws.workspace_path)
-            if ws.is_slot:
+            if ws.is_slot or preserved == "captured":
                 from src.claim_file import remove_claim_file_if_matches
 
                 # Checkpoint persistence already committed. Retire the marker
@@ -1353,13 +1354,15 @@ class Orchestrator(
 
     async def _checkpoint_paused_workspace(
         self, task_id: str, ws, *, deferrable: bool, snapshot: dict
-    ) -> bool:
+    ) -> str | bool:
         """Preserve work with bounded automatic retries and exact source fences.
 
         Managed slots require a full checkpoint and remain owned after the
         automatic budget expires; explicit Pause can retry the same source.
-        Legacy non-slot workspaces retain their bounded best-effort salvage
-        behavior. Identity changes and unknown writer termination always retain
+        Return ``"captured"`` after successful preservation, or True after
+        legacy best-effort cleanup without a checkpoint. Legacy non-slot
+        workspaces retain their bounded best-effort salvage behavior.
+        Identity changes and unknown writer termination always retain
         resources for guarded recovery, regardless of the retry budget.
         """
         from src.orchestrator.task_checkpoint import (
@@ -1420,7 +1423,7 @@ class Orchestrator(
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
         else:
-            return True
+            return "captured"
         await validate()
         attempts = int(state.get("attempts", 0)) + 1
         if attempts < PAUSE_CHECKPOINT_MAX_ATTEMPTS and Path(ws.workspace_path).is_dir():
