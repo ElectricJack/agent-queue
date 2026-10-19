@@ -137,30 +137,35 @@ class RouteNeededMixin:
             last = emitted_at.get(task.id, 0.0)
             if now - last < ROUTE_NEEDED_INTERVAL_SECONDS:
                 continue
-            emitted_at[task.id] = now
             if task.project_id not in routers:
                 project = await self.db.get_project(task.project_id)
                 routers[task.project_id] = (
                     getattr(project, "assignment_playbook_id", None) if project else None
                 )
-            await self._emit_task_event(
-                "task.route_needed",
-                task,
-                description=task.description or "",
-                priority=task.priority,
-                task_type=str(_value(task.task_type) or ""),
-                intelligence_class=(task.intelligence_class or "").strip() or None,
-                profile_id=task.profile_id or None,
-                # Mandatory routing §6.1 (additive): the project's bound
-                # router, which the router's guard compares with its own id,
-                # and the filer's class hint.
-                router=routers[task.project_id],
-                class_hint=(getattr(task, "class_hint", None) or "").strip() or None,
-            )
+            await self._emit_route_needed_event(task, router=routers[task.project_id])
             count += 1
         if count:
             logger.debug("route_needed: emitted for %d task(s)", count)
         return count
+
+    async def _emit_route_needed_event(self, task, *, router: str | None) -> None:
+        """Request routing explicitly or from the cascade, with the same payload.
+
+        Explicit re-runs bypass candidate filtering and the throttle. Stamp only
+        successful emissions, so a failed request can retry on the next cascade.
+        """
+        await self._emit_task_event(
+            "task.route_needed",
+            task,
+            description=task.description or "",
+            priority=task.priority,
+            task_type=str(_value(task.task_type) or ""),
+            intelligence_class=(task.intelligence_class or "").strip() or None,
+            profile_id=task.profile_id or None,
+            router=router,
+            class_hint=(getattr(task, "class_hint", None) or "").strip() or None,
+        )
+        self.__dict__.setdefault("_route_needed_emitted", {})[task.id] = time.time()
 
     def _clear_route_needed_throttle(self, task_id: str) -> None:
         """Let the next cascade emit for *task_id* at once (spec §6.1, ``aq task route``)."""
