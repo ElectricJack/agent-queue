@@ -242,6 +242,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`report_reconcile`](report_reconcile.md) | Report Reconcile | Recover reserved hourly report requests after lost events. |
 | [`report_request`](report_request.md) | Report Request | Queue one author wake for a reserved report. |
 | [`report_submit`](report_submit.md) | Report Submit | Submit one authored report before its deadline. |
+| [`scheduler_wait_sync`](scheduler_wait_sync.md) | Scheduler Wait Sync | Scheduler wait sync through verified wait state. |
 | [`supervisor_inbox_history`](supervisor_inbox_history.md) | Supervisor Inbox History | Page conversations by update time or one conversation's inputs by receipt time. |
 | [`supervisor_inbox_post`](supervisor_inbox_post.md) | Supervisor Inbox Post | Accept verified gateway input or local test/replay provenance into the global inbox. |
 | [`supervisor_inbox_reply`](supervisor_inbox_reply.md) | Supervisor Inbox Reply | Record an explicit live global-supervisor answer and queue its Discord delivery. |
@@ -257,10 +258,22 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`test_selection_recheck`](test_selection_recheck.md) | Test Selection Recheck | Check whether a recorded selection snapshot is stale. |
 | [`test_selection_revoke`](test_selection_revoke.md) | Test Selection Revoke | Locally revoke an omission-policy promotion once. |
 | [`test_selection_show`](test_selection_show.md) | Test Selection Show | Read a selection and its appended observations. |
+| [`wait_ack`](wait_ack.md) | Wait Ack | Wait ack through verified wait state. |
 | [`wait_cancel`](wait_cancel.md) | Wait Cancel | Cancel a current-claim wait and queue its result. |
+| [`wait_checkpoint`](wait_checkpoint.md) | Wait Checkpoint | Wait checkpoint through verified wait state. |
+| [`wait_deadline_fire`](wait_deadline_fire.md) | Wait Deadline Fire | Wait deadline fire through verified wait state. |
+| [`wait_decide`](wait_decide.md) | Wait Decide | Wait decide through verified wait state. |
+| [`wait_evict`](wait_evict.md) | Wait Evict | Wait evict through verified wait state. |
+| [`wait_explain`](wait_explain.md) | Wait Explain | Wait explain through verified wait state. |
 | [`wait_get`](wait_get.md) | Wait Get | Read a durable wait, optionally consuming its notification. |
+| [`wait_graph`](wait_graph.md) | Wait Graph | Wait graph through verified wait state. |
+| [`wait_legacy_bridge`](wait_legacy_bridge.md) | Wait Legacy Bridge | Wait legacy bridge through verified wait state. |
+| [`wait_lift`](wait_lift.md) | Wait Lift | Wait lift through verified wait state. |
 | [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |
 | [`wait_register`](wait_register.md) | Wait Register | Register one bounded typed wait and end the turn. |
+| [`wait_resume_dispatch`](wait_resume_dispatch.md) | Wait Resume Dispatch | Wait resume dispatch through verified wait state. |
+| [`wait_sleep_decide`](wait_sleep_decide.md) | Wait Sleep Decide | Wait sleep decide through verified wait state. |
+| [`wait_source_commit`](wait_source_commit.md) | Wait Source Commit | Wait source commit through verified wait state. |
 
 <!-- aq:generated:end -->
 

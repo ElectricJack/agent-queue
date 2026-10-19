@@ -45,6 +45,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
+from src.waits.sources import execute_batch_mutation
 from src.task_templates import render_task_template
 from src.database.tables import integration_batches
 from src.integration.batches import candidate_ref
@@ -314,7 +315,7 @@ class CandidateBaselineService:
                     self.backoff_seconds * (2 ** reruns), self.backoff_max_seconds
                 )
                 outcome = {"outcome": "requested", "due_at": values["baseline_rerun_at"]}
-            await conn.execute(update(integration_batches).where(
+            await execute_batch_mutation(conn, update(integration_batches).where(
                 integration_batches.c.id == batch_id,
                 integration_batches.c.target_ref.is_not(None),
             ).values(**values))

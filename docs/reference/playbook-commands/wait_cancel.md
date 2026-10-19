@@ -14,12 +14,13 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait.py`](../../../src/commands/contracts/wait.py) |
-| Contract fingerprint | `sha256:c1c108440614afd2fd5829cb82fc85d5e22422b0243bba7616087917bd6e7c5b` |
+| Contract fingerprint | `sha256:e4daf859327d0c9e56e18437cccc884a5ce43a640d4f4084c42c7c24dfdd8dd1` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
+| `schema_version` | `1 \| 2` | no | `1` | — |
 | `project_id` | `string \| null` | no | `null` | — |
 | `task_id` | `string \| null` | no | `null` | — |
 | `session_id` | `string \| null` | no | `null` | — |
@@ -30,7 +31,15 @@
 
 | Field | Type | Description |
 |---|---|---|
-| `wait` | `AgentWaitRecord` | — |
+| `wait` | `AgentWaitRecord \| object \| null` | — |
+| `wait_id` | `string \| null` | — |
+| `condition` | `object \| null` | — |
+| `evidence` | `object \| null` | — |
+| `decision` | `object \| null` | — |
+| `escalate_at` | `number \| null` | — |
+| `ceiling_at` | `number \| null` | — |
+| `continuation_id` | `string \| null` | — |
+| `warnings` | `string[]` | — |
 | `next_step` | `string \| null` | — |
 
 ## Nested objects
@@ -73,7 +82,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Resolve using project_id, task_id, session_id, wait_id, claim_epoch | — | always |
+| Resolve using schema_version, project_id, task_id, session_id, wait_id, claim_epoch | — | always |
 
 <!-- aq:generated:end -->
 

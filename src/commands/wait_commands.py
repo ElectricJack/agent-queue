@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from src.agent_waits import WaitError, deadline_for, typed_match, wait_next_step
 from src.commands.principal import PrincipalKind, current_principal
+from src.waits.conditions import WaitError as VerifiedWaitError
 
 
 def _error(code, message):
@@ -87,7 +88,11 @@ class WaitCommandsMixin:
         try:
             from src.commands.contracts.wait import WaitRegisterArgs
 
+            if args.get("schema_version") == 2 and not args.get("condition"):
+                return _error("wait.condition_required", "version 2 requires a typed condition")
             values = WaitRegisterArgs.model_validate(args)
+            if values.schema_version == 2 or self._wait_v2_enabled():
+                return await self._wait_v2_register(values, args)
             identity = await self._wait_identity(args, mutation=True)
             match = typed_match(values.kind, values.ref, values.after_seq, values.due_at)
             now = time.time()
@@ -102,7 +107,7 @@ class WaitCommandsMixin:
                 now=now,
             )
             return {"success": True, "wait": row, "next_step": wait_next_step(row)}
-        except WaitError as exc:
+        except (WaitError, VerifiedWaitError) as exc:
             return _error(exc.code, exc)
         except (ValidationError, TypeError, ValueError) as exc:
             return _error("wait.invalid", exc)
@@ -112,6 +117,9 @@ class WaitCommandsMixin:
             from src.commands.contracts.wait import WaitGetArgs
 
             values = WaitGetArgs.model_validate(args)
+            if values.schema_version == 2 or self._wait_v2_enabled():
+                if await self._wait_v2_row(values.wait_id):
+                    return await self._wait_v2_get(values, args)
             filters = await self._wait_read_filter(args)
             row = await self.db.get_agent_wait(values.wait_id)
             if row is None:
@@ -138,24 +146,32 @@ class WaitCommandsMixin:
                         "Do not treat historical registration as permission to keep waiting."
                     )
             return {"success": True, "wait": row, "next_step": next_step}
-        except WaitError as exc:
+        except (WaitError, VerifiedWaitError) as exc:
             return _error(exc.code, exc)
         except (ValidationError, TypeError, ValueError) as exc:
             return _error("wait.invalid", exc)
 
     async def _cmd_wait_list(self, args):
         try:
+            if args.get("schema_version") == 2 or self._wait_v2_enabled():
+                return await self._wait_v2_list(args)
             filters = await self._wait_read_filter(args)
             limit, offset = int(args.get("limit", 100)), int(args.get("offset", 0))
             if not 1 <= limit <= 100 or offset < 0:
                 raise WaitError("wait.invalid", "limit must be 1–100 and offset nonnegative")
             rows = await self.db.list_agent_waits(**filters, limit=limit, offset=offset)
             return {"success": True, "waits": rows, "count": len(rows)}
-        except (WaitError, ValueError, TypeError) as exc:
+        except (WaitError, VerifiedWaitError, ValueError, TypeError) as exc:
             return _error(getattr(exc, "code", "wait.invalid"), exc)
 
     async def _cmd_wait_cancel(self, args):
         try:
+            from src.commands.contracts.wait import WaitCancelArgs
+
+            values = WaitCancelArgs.model_validate(args)
+            if values.schema_version == 2 or self._wait_v2_enabled():
+                if await self._wait_v2_row(values.wait_id):
+                    return await self._wait_v2_cancel(args)
             principal = current_principal()
             if (
                 principal is not None
@@ -177,8 +193,10 @@ class WaitCommandsMixin:
                 str(args.get("wait_id") or ""), identity=identity, now=time.time()
             )
             return {"success": True, "wait": row}
-        except WaitError as exc:
+        except (WaitError, VerifiedWaitError) as exc:
             return _error(exc.code, exc)
+        except (ValidationError, TypeError, ValueError) as exc:
+            return _error("wait.invalid", exc)
 
     async def _cmd_reconcile_agent_waits(self, args):
         principal = current_principal()

@@ -159,6 +159,13 @@ start code work, tests or QA from a digest author turn.
     "NotebookEdit"
   ],
   "aq_commands": [
+    "wait_get",
+    "wait_list",
+    "wait_explain",
+    "wait_graph",
+    "wait_decide",
+    "wait_lift",
+    "waits.fleet_summary",
     "task_batch_propose",
     "task_batch_update",
     "task_batch_commit",

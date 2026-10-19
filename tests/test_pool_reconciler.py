@@ -2064,3 +2064,22 @@ async def test_timeout_pool_cleanup_respects_wait_but_operator_stop_wins(orch, d
     assert (await db.get_session(sid)).state == "stopped"
     await db.reconcile_agent_waits(now=now + 1)
     assert (await db.get_agent_wait(wait["id"]))["state"] == "cancelled"
+
+
+@pytest.mark.parametrize("status,expected_busy", [
+    (TaskStatus.WAITING, 1), (TaskStatus.HIBERNATED, 0),
+])
+async def test_suspended_status_pool_supply_and_frontier(orch, db, status, expected_busy):
+    from src.scheduler import PoolKey
+
+    await ready(db, "held")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    session = (await db.list_sessions(lifecycle="pool"))[0]
+    await db.transition_task("held", status, force=True)
+    await db.update_session(session.id, task_id="held", claim_phase="active")
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey("worker")] == 0
+    supply = measurement.supply[PoolKey("worker")]
+    assert supply.running_busy == expected_busy
+    assert supply.running_idle == 0

@@ -39,6 +39,9 @@ EXPECTED_AGENT_COMMANDS = {
     "wait_get",
     "wait_list",
     "wait_cancel",
+    "wait_explain",
+    "wait_checkpoint",
+    "wait_ack",
     # Recurring prompts derive their session owner and fence worker claims.
     "cron_register",
     "cron_get",

@@ -56,6 +56,9 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    "wait_source_commit", "wait_deadline_fire", "wait_resume_dispatch",
+    "wait_sleep_decide", "wait_evict", "scheduler_wait_sync",
+
     "ask_intake", "ask_button",
     "reconcile_agent_cron",
     "cron_delivery_begin",
@@ -178,6 +181,9 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "policy_export",
             "policy_diff",
             "policy_apply",
+            "wait_register", "wait_get", "wait_list", "wait_cancel",
+            "wait_explain", "wait_graph", "wait_checkpoint", "wait_ack",
+            "wait_decide", "wait_lift", "wait_legacy_bridge",
         }
     )
     | DASHBOARD_STATE_COMMANDS

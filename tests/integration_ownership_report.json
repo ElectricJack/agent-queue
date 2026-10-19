@@ -9746,25 +9746,25 @@
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
     },
-    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
-      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
-    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
-      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
-    },
-    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
-      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
-      "landing_span": [
-        1036,
-        1106
-      ],
-      "baseline_span": null
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, continuations, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, wait_records, workspaces": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
       "reason": "Claim queries import integration ownership, repair and origin tables alongside ordinary workspace/session tables; includes managed job pins used by the retained-binding guard.",
       "landing_span": [
         53,
         71
+      ],
+      "baseline_span": null
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
+      "landing_span": [
+        1036,
+        1106
       ],
       "baseline_span": null
     },
@@ -9775,6 +9775,12 @@
         648
       ],
       "baseline_span": null
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    },
+    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
     },
     "src/commands/supervisor_authority.py::operator_or_global_supervisor": {
       "reason": "Authority gate for audited recovery-hold release, including train delegates; checks local operator or live global supervisor identity without granting publication authority."

@@ -25,6 +25,8 @@ import yaml
 from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from src.waits.sources import execute_task_status_mutation
+from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks,
     integration_batch_members,
@@ -548,7 +550,7 @@ class BackmergeAdmission:
                         and previous["origin_ref"] == origin_ref
                         and old_id != tid
                         and await self.gitops.is_ancestor(repo, previous["source_sha"], source)):
-                    await conn.execute(update(tasks).where(tasks.c.id == old_id)
+                    await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id == old_id)
                                        .values(status="FAILED", updated_at=self.clock()))
                     await conn.execute(insert(task_metadata).values(task_id=old_id,
                         key="backmerge_result", value=json.dumps({"reason": "superseded", "by": tid}))
@@ -1790,7 +1792,7 @@ class DatabaseBatches:
                 from src.integration.promotion_steps import settle_promotion
 
                 await settle_promotion(self.db, batch, observation, clock=self.clock, conn=conn)
-            await conn.execute(
+            await execute_batch_mutation(conn,
                 update(integration_batches)
                 .where(integration_batches.c.id == batch.id,
                        integration_batches.c.target_ref.is_not(None),

@@ -1046,6 +1046,7 @@ class SessionCommandsMixin:
         in_flight = bool(task.assigned_agent_id) and task.status in (
             TaskStatus.ASSIGNED,
             TaskStatus.IN_PROGRESS,
+            TaskStatus.WAITING,
         )
         if not (live or locked or in_flight):
             return False
@@ -1135,6 +1136,13 @@ class SessionCommandsMixin:
         task = await self.db.get_task(str(task_id))
         if task is None:
             return {"success": False, "error": f"No task '{task_id}'"}
+        if task.status in (TaskStatus.WAITING, TaskStatus.HIBERNATED, TaskStatus.RESUME_PENDING):
+            return {
+                "success": False,
+                "code": "wait.ack_required",
+                "error": "A suspended task must acknowledge its wake before closing; "
+                "operators may use a one-shot close disposition.",
+            }
         # A crash may commit accepted repair bookkeeping before releasing its
         # original claim. The completion service revalidates its durable receipt
         # and exact held claim; this is not generic permission to re-close tasks.
@@ -1953,6 +1961,10 @@ class SessionCommandsMixin:
         if session is None:
             session = await self.db.get_session_for_task(str(task_id))
         if session is not None:
+            from src.waits.holding import active_wait_for
+
+            if await active_wait_for(self.db, session) is not None:
+                return {"success": True, "ignored": "wait_active"}
             await self.db.touch_session_activity(session.id, now)
         if task.assigned_agent_id:
             try:

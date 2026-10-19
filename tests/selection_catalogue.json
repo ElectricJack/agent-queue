@@ -39,7 +39,18 @@
       "modules": [
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
-        "tests/test_agent_waits.py"
+        "tests/test_agent_waits.py",
+        "tests/test_wait_commands.py",
+        "tests/test_wait_decisions.py",
+        "tests/test_wait_dispatch.py",
+        "tests/test_wait_graph.py",
+        "tests/test_wait_hibernation.py",
+        "tests/test_wait_holding.py",
+        "tests/test_wait_migration.py",
+        "tests/test_wait_outcomes.py",
+        "tests/test_wait_queries.py",
+        "tests/test_wait_resource_sources.py",
+        "tests/test_waits.py"
       ]
     },
     "api-contract": {
@@ -8194,7 +8205,7 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:7d495a1e58b2b5a61d1d16c1b3e9a59c8adce69a7ae42958c1f7c186a45647c4",
+      "digest": "sha256:e3c0e33602a228d00afb805356041a434d4e1f9285e96b6239793fec54bc2e41",
       "imports": [
         "src.commands",
         "src.config",
@@ -8213,7 +8224,8 @@
         "src.integration.repository_recovery",
         "src.integration.train",
         "src.integration.train_sources",
-        "src.models"
+        "src.models",
+        "src.waits.sources"
       ],
       "markers": [
         "parametrize"
@@ -16087,13 +16099,14 @@
         "session-runtime"
       ],
       "default_arm": true,
-      "digest": "sha256:6d0a4b57368a7dc8ae82b7123ebd9d4b27350adf997a55a73e27bcbf803ae463",
+      "digest": "sha256:3c9c577db0aa7ae525ae014ec7e7457f02b74abc7af84e93efc8d558985e17f9",
       "imports": [
         "src.agent_waits",
         "src.commands",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.config",
+        "src.database.queries.wait_queries",
         "src.database.tables",
         "src.integration.lock",
         "src.integration.models",
@@ -16118,7 +16131,10 @@
         "src.sessions.transcripts",
         "src.sessions.transcripts.claude",
         "src.sessions.transcripts.codex",
-        "src.sessions.worker_recovery"
+        "src.sessions.worker_recovery",
+        "src.waits.conditions",
+        "src.waits.mail",
+        "src.waits.registry"
       ],
       "markers": [
         "parametrize",
@@ -18350,6 +18366,263 @@
         "asyncio"
       ],
       "summary": "Tests for the internal vibecop plugin."
+    },
+    "tests/test_wait_commands.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:57323603d2d6069ea7c036ddc773525c440513d0efcbceb0b3bfbfde9d9b3beb",
+      "imports": [
+        "src.api.codegen",
+        "src.api.models.wait",
+        "src.api.scope",
+        "src.api.target_scope",
+        "src.cli.auto_commands",
+        "src.cli.inventory",
+        "src.cli.waits",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.contracts.wait",
+        "src.commands.contracts.wait_v2",
+        "src.commands.principal",
+        "src.config",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.mcp_registration",
+        "src.profiles.capabilities",
+        "src.profiles.capability_sync",
+        "src.profiles.drift",
+        "src.tools.definitions",
+        "src.waits.conditions",
+        "src.waits.legacy",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified wait surfaces, principal fences and dormant runtime composition."
+    },
+    "tests/test_wait_decisions.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:dc5accba4cdb745e213ea3054efc2532b25de09c89374388435b161dffafcbe9",
+      "imports": [
+        "src.config",
+        "src.database.queries.continuation_queries",
+        "src.database.tables",
+        "src.event_schemas",
+        "src.handoffs",
+        "src.messages.delivery",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.holding",
+        "src.waits.mail"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Operational deadlines never wake workers; only fenced supervisor decisions do."
+    },
+    "tests/test_wait_dispatch.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:3a4994ec5d5b318c2eea58cf97ea6d594df8370ff7f234cce377c143b7d8462f",
+      "imports": [
+        "src.commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.integration.checks",
+        "src.models",
+        "src.orchestrator.core",
+        "src.playbooks.run_state",
+        "src.playbooks.waits",
+        "src.scheduler",
+        "src.waits.conditions",
+        "src.waits.listener",
+        "src.waits.registry",
+        "src.waits.resource_sources",
+        "src.waits.service",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Authoritative source transitions write unconditional, transactional wait events."
+    },
+    "tests/test_wait_graph.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:3cdef87877891a366dd387d18ce4c59a65ce8c8e8fb782b37643dbc917580df5",
+      "imports": [
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.explain",
+        "src.waits.graph",
+        "src.waits.registry"
+      ],
+      "markers": [],
+      "summary": "Wait graph propagation, retraction, cycles and persisted explanations."
+    },
+    "tests/test_wait_hibernation.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:09cc0bea2e470709b3eafbbc7bf560a328745cf183adf6ecf71f7434076eaf08",
+      "imports": [
+        "src.cli.waits",
+        "src.commands",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries.continuation_queries",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.prime",
+        "src.prime.budgets",
+        "src.prime.hook_envelopes",
+        "src.profiles.capabilities",
+        "src.waits.conditions",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Checkpoint and fresh-prime boundary, without enabling stop/launch services."
+    },
+    "tests/test_wait_holding.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:aa50fa50d4d4cc288591fc963924fb3ca9556b435f2c575acc07fc1bb384e70f",
+      "imports": [
+        "src.config",
+        "src.database.tables",
+        "src.messages.delivery",
+        "src.waits.conditions",
+        "src.waits.holding"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified waits suppress routine delivery until the holder acknowledges."
+    },
+    "tests/test_wait_migration.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:a699ed3975e1d07ff6f7bee0f703f6e17c9c3c925f57194d482d2db5921bbcf4",
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Verified-wait DDL on fresh and pre-v2 disposable PostgreSQL schemas."
+    },
+    "tests/test_wait_outcomes.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:c23415302372244dbd08175ff7bc02aad8a850d69a18d30fd3820b495fb55f13",
+      "imports": [
+        "src.config",
+        "src.database.tables",
+        "src.messages.delivery",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.dispatcher",
+        "src.waits.graph",
+        "src.waits.holding",
+        "src.waits.listener",
+        "src.waits.mail",
+        "src.waits.source_locking"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Real transactional dispatch and mail acknowledgement; lifecycle hooks are explicit."
+    },
+    "tests/test_wait_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:aa841352a2d1a5caf22a0386941082f39e7ddc954bb4afcd2e5d696eb1ecfd0c",
+      "imports": [
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.queries.wait_source_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.conditions",
+        "src.waits.registry",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified registration and source races on disposable PostgreSQL."
+    },
+    "tests/test_wait_resource_sources.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:85c7a299ef0bcd324d8461cfe2c80ec20044e46bf60e6bef64f7c16fc5ae0a67",
+      "imports": [
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.core",
+        "src.scheduler",
+        "src.waits.resource_sources",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Actual resource producers, persisted registry bindings and fresh service proofs."
+    },
+    "tests/test_waits.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f581ac56616efbce581113c7f0e2a8db267a6a128c7870bbb4e7efc628365a25",
+      "imports": [
+        "src.api.models.task",
+        "src.commands.task_commands",
+        "src.database.queries.metrics_queries",
+        "src.database.tables",
+        "src.models",
+        "src.orchestrator.events",
+        "src.sessions.obsolete",
+        "src.state_machine",
+        "src.waits.conditions",
+        "src.waits.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified-wait lifecycle vocabulary (implementation §6; services remain opt-in)."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [

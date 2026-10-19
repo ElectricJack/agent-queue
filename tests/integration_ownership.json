@@ -8675,25 +8675,25 @@
     "src/sessions/obsolete.py::import from src.database.tables import agents, integration_batch_members, integration_batches, integration_branch_owners, integration_subjects, projects, sessions, task_completion_records, task_metadata, tasks, workspaces": {
       "reason": "Integration import, registered surface, schema, policy or adapter. Reviewed at the git-first stage 1/2 landing; widened for the operator one-shot close (amber-quest-41): agent binding, workspace locks, completion record and open-batch refusal for a train root."
     },
-    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
-      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    "src/commands/task_commands.py::import from src.models import SUSPENDED_TASK_STATUSES, BLOCKING_DEP_TYPES, DEP_TYPE_VALUES, INTEGRATION_MODES, TASK_TYPE_VALUES, WORKSPACE_MODE_VALUES, DepType, Task, TaskStatus, TaskType, VerificationType, WorkspaceMode": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
-    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
-      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
-    },
-    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
-      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
-      "landing_span": [
-        1036,
-        1106
-      ],
-      "baseline_span": null
+    "src/database/queries/task_queries.py::import from src.database.tables import agents, archived_tasks, continuations, events, gates, integration_branch_owners, integration_repair_operations, integration_repair_stages, projects, repos, sessions, task_branch_origins, task_comments, task_completion_records, task_context, task_criteria, task_dependencies, task_gates, task_integration_checkpoints, task_labels, task_metadata, task_results, task_subtasks, task_tools, task_workspace_requirements, tasks, wait_records, workspaces": {
+      "reason": "Shared task lifecycle/claim import; charged to integration ownership because the same adapter guards delivery and retained branches."
     },
     "src/database/queries/claim_queries.py::import from src.database.tables import agents, integration_batches, integration_branch_owners, integration_repair_operations, integration_repair_stages, job_workspace_pins, projects, sessions, task_branch_origins, task_completion_records, task_delivery_receipts, task_integration_checkpoints, task_metadata, task_session_attempts, task_workspace_requirements, tasks, workspaces": {
       "reason": "Claim queries import integration ownership, repair and origin tables alongside ordinary workspace/session tables; includes managed job pins used by the retained-binding guard.",
       "landing_span": [
         53,
         71
+      ],
+      "baseline_span": null
+    },
+    "src/database/queries/claim_queries.py::ClaimQueryMixin._repair_pool_workspace_lock": {
+      "reason": "Claim preparation moves only an idle misplaced workspace lock to the session checkout. Reads attached/pending integration ownership and job pins to refuse retained bindings before updating ordinary workspace locks; no integration state or Git ref mutation.",
+      "landing_span": [
+        1036,
+        1106
       ],
       "baseline_span": null
     },
@@ -8704,6 +8704,12 @@
         648
       ],
       "baseline_span": null
+    },
+    "src/database/queries/workspace_queries.py::WorkspaceQueryMixin.read_workspace_owner_facts": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
+    },
+    "src/database/queries/workspace_queries.py::import from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY": {
+      "reason": "Read-only list_workspaces owner readback: reads the claimed-by-session task metadata key (an owned claim primitive) to report the claim holder beside the workspace lock; writes nothing and adds no delivery state or authority."
     },
     "src/commands/supervisor_authority.py::operator_or_global_supervisor": {
       "reason": "Authority gate for audited recovery-hold release, including train delegates; checks local operator or live global supervisor identity without granting publication authority."
@@ -8896,11 +8902,21 @@
     "src/commands/operator_commands.py::OperatorCommandsMixin._operator_action": "Validates one operator-worker action against the command's schema, project target scope, profile grant and human decision; dispatch goes through the charged command handler. No integration storage, lifecycle or ref authority.",
     "src/commands/operator_commands.py::OperatorCommandsMixin._cmd_operator_preflight": "Operator-worker setup preflight: collects blockers from the charged integration read commands it dispatches and records an ordinary task comment, message and audit event. No integration storage, lifecycle or ref authority.",
     "src/doctor/escalation_checks.py::undelivered_escalations": "The delivery_status field describes human-notification transport, not code integration. This read-only query inspects escalation_deliveries receipts without reading or writing integration state; the stall sweep adapter remains charged.",
+    "src/database/tables.py::wait_records": "Verified-wait condition and outcome storage owned by session waits; integration_outcome is a source kind, not an integration delivery journal.",
+    "src/database/tables.py::continuations": "Verified-wait resume checkpoint and admission storage owned by sessions; no Git ref mutation or delivery replay state.",
+    "src/database/tables.py::wait_source_events": "Generic wait outbox for all source kinds. Payloads are evidence hints; consumers re-observe authoritative state, never replay integration refs or lifecycle from this table.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source evidence bridge for batch transitions. It writes only the universal wait outbox; integration policy and authoritative batch state remain in src/integration.",
+    "src/waits/sources.py::execute_batch_mutation": "Transaction-preserving bridge from existing batch writes to the generic wait source outbox; contains no integration policy, ref replay or duplicate authority.",
     "src/commands/ask_communication_commands.py::AskCommunicationCommandsMixin._cmd_ask_show": "Generic audience-scoped human request, review evidence and notification-transport display for all ask sources. delivery_status describes external messages; integration source authorization and adapters remain independently charged.",
     "src/database/queries/ask_delivery_queries.py::AskDeliveryQueriesMixin.ask_delivery_status": "Notification root and reconciliation-case observations for every ask source; delivery_status is transport receipt state, with no Git, branch, integration gate or publication authority.",
     "src/commands/ask_commands.py::AskCommandsMixin._ask_service": "Generic registry/service assembly for reviews, specifications and all human sources. Static integration adapter registration and IntegrationAdapter are independently charged; no integration decision or domain write occurs here.",
     "src/asks/source_operations.py::apply": "Generic human-source operation leasing, pause gating and reconciliation, dispatching through the registered source adapter. No integration branch, subject, gate or policy state is interpreted or written here; IntegrationAdapter and authorize_source retain the charged integration authority and receipts.",
-    "src/asks/source_operations.py::import from src.asks.sources import authorize_source, finish_on": "Generic human-source authorization and completion imports; the integration branch of authorize_source remains independently charged, and finish_on only updates ask operations/projections."
+    "src/asks/source_operations.py::import from src.asks.sources import authorize_source, finish_on": "Generic human-source authorization and completion imports; the integration branch of authorize_source remains independently charged, and finish_on only updates ask operations/projections.",
+    "src/database/tables.py::wait_edges": "Generic verified-wait dependency edges used for cycle detection and priority donation; no integration delivery or Git ref authority.",
+    "src/database/tables.py::wait_deadlines": "Generic verified-wait deadline scheduling and generation fences for all wait kinds; no integration delivery journal.",
+    "src/database/tables.py::wait_escalations": "Generic verified-wait escalation evidence and supervisor decisions; no integration delivery or Git ref mutation state.",
+    "src/database/tables.py::admission_reservations": "Scheduler admission reservations for continuations and other work; train_repair is priority provenance, not integration delivery authority.",
+    "src/database/tables.py::wait_priority_projection": "Derived task priority donation projection from the verified-wait graph; no integration delivery or Git ref authority."
   },
   "owned_fingerprints": [
     "0003870bf7ecea2ab9a41288b28bfe85be663baca1c9855bae4671222bd7c9ab",
@@ -13059,6 +13075,15 @@
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: REPAIR_RECORD_META"
     },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::2142606549fbb7fc55f12062ec13ac7e0c300036166e68b70a945ed44a752050": {
+      "line": 1376,
+      "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
+      "call": "set_task_meta",
+      "owner_fingerprint": "b03aa7987a94e3a91020bda2a0abef11329b4e2aa7df4119cf56409a8141dfd6",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Ordinary slot-reset failure diagnostics after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: 'slot_reset_failure'; contains no remote OIDs, publication intent or ref replay authority."
+    },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::6a228f11c57cb47938f52d2fd7326591678f2c7af3ca331ebf2cb0fd60c52b3a": {
       "line": 1581,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
@@ -13085,6 +13110,15 @@
       "integration_signal": false,
       "disposition": "ordinary",
       "reason": "Ordinary task lifecycle, holds, resource jobs or audit storage; no ref replay authority. Metadata key: 'needs_attention'"
+    },
+    "src/commands/claim_commands.py::ClaimCommandsMixin._branch_fenced_prepare_failed::064f8fcc1a52d145e4f7ee9a86a696a94b43a48b4533d10ca7ad822f1aac750d": {
+      "line": 1036,
+      "owner": "ClaimCommandsMixin._branch_fenced_prepare_failed",
+      "call": "set_task_meta",
+      "owner_fingerprint": "6dc53e72699f31ce9c89c26eb979120a8729c29f5bbffaa2564b2727e3337b27",
+      "integration_signal": true,
+      "disposition": "ordinary",
+      "reason": "Branch-fence refusal diagnostics (reason, branch, repository, workspace, session, failed_at) written in the same command as the release_claim to READY that follows; cleared by the next successful activation. Metadata key: branch_fenced_prepare_failed; a claim preparation marker with no remote OIDs, publication intent or ref replay authority."
     },
     "src/commands/dashboard_state_commands.py::DashboardStateCommandsMixin._dashboard_mutate::7082de1161d61e4a5bb9e39c7bafb5ade15fe812419227082e188dc17f7e77ae": {
       "line": 225,
@@ -15435,6 +15469,24 @@
       "disposition": "ordinary",
       "reason": "Ordinary slot-reset failure reason, attempt count and automatic/manual retry guidance after non-transient preparation errors; PostgreSQL contention bypasses this write. Metadata key: slot_reset_failure; no publication intent, authoritative ref OIDs or replay authority."
     },
+    "src/commands/task_commands.py::TaskCommandsMixin._emit_task_graph_change::40f1ded3b71fdf05bc239a91f7ea3ab1bd5a43a5dea463aa278b1b31a633b1a5": {
+      "line": 1031,
+      "owner": "TaskCommandsMixin._emit_task_graph_change",
+      "call": "log_event",
+      "owner_fingerprint": "e6468a703af0c7d8c9e685e233ef25b07302fc256c3c728d78398f0b6caf258f",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Ordinary dashboard graph audit event carries committed task status for reconnect replay; no branch/ref identity or delivery authority."
+    },
+    "src/database/queries/event_queries.py::EventQueryMixin.log_events::7f9a172d90564131599dcbc17c8abdfadd20f21c0ea0e36f65fa816d1433dfc8": {
+      "line": 50,
+      "owner": "EventQueryMixin.log_events",
+      "call": "insert",
+      "owner_fingerprint": "7aa14b4c07e9e2c8f22c2d9b1bd3940ac686a60d93e475cadf01cfc7496d9ba6",
+      "integration_signal": false,
+      "disposition": "ordinary",
+      "reason": "Generic bulk audit-log writer used for pool.bounds_rescoped fanout; preserves the existing audit rows and has no integration ref replay authority."
+    },
     "src/commands/claim_commands.py::ClaimCommandsMixin._prepare_and_activate_locked::a013c7a46d34c2c833b5b1129a77bc31978b9ed19c44d76097646187d4fe028d": {
       "line": 1615,
       "owner": "ClaimCommandsMixin._prepare_and_activate_locked",
@@ -16384,6 +16436,17 @@
     "src/task_templates.py::bind_task_templates": "Generic context-local binding of editable task instruction templates to the configured vault; no integration state, branch ownership or delivery authority.",
     "src/task_templates.py::render_task_template": "Generic read-only Markdown template renderer shared by repair, issue, review, object and promotion task producers. Performs one-pass literal substitution, with no integration policy, storage or execution authority; integration-specific callers remain charged independently.",
     "src/task_templates.py::task_template_scope": "Generic context manager for temporarily binding task instruction templates in embedded callers and tests; no integration state, ref identity or lifecycle authority.",
+    "src/models.py::SUSPENDED_TASK_STATUSES": "Generic task lifecycle vocabulary shared with verified waits; contains no delivery state or ref mutation.",
+    "src/waits/sources.py::execute_batch_mutation": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::insert_message_with_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_batch_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_source_event": "Generic wait source outbox infrastructure; source hooks retain their integration ownership.",
+    "src/waits/sources.py::record_task_transition": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
+    "src/waits/sources.py::record_dependency_change": "Generic task/dependency source evidence shared by all wait consumers; not integration policy.",
+    "src/waits/sources.py::record_dependency_source_change": "Generic dependency observation fanout on upstream evidence changes; integration callers remain charged independently.",
+    "src/waits/sources.py::execute_task_status_mutation": "Generic task status outbox bridge for guarded bulk/legacy writes; integration-specific callers retain their ownership.",
+    "src/waits/source_sql.py::task_transition_statement": "Generic guarded task/dependency source outbox CTE, used by all task status writers; writes only ordinary task state and universal wait evidence, with no integration policy or ref replay authority. Integration-specific callers remain charged.",
+    "src/waits/sources.py::payload_hash": "Generic canonical JSON SHA-256 for universal wait evidence, including resource invalidation authentication; no integration lifecycle, ref identity or replay authority.",
     "src/preparation_failure.py::describe_preparation_failure": "Generic dependency: pure description of a preparation exception (stage, type, scrubbed bounded message, cause chain); no storage, fence or publication authority.",
     "src/projects/github.py::scrub_secrets": "Generic credential scrubber shared by GitHub clients, authentication diagnostics and Git transport; contains no integration policy or state.",
     "src/main.py::_bind_report_outbox": "Generic startup binding of human request, conversation and report notification services to their transport; no integration subject, branch, publication state or ref authority. Integration orchestration in run remains independently charged.",

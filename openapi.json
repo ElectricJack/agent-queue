@@ -21746,6 +21746,53 @@
         }
       }
     },
+    "/api/wait/ack": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Acknowledge a verified wait outcome for the held claim.",
+        "description": "Acknowledge a verified wait outcome for the held claim.",
+        "operationId": "wait_ack",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitAckArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitAckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wait/cancel": {
       "post": {
         "tags": [
@@ -21758,7 +21805,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitCancelRequest"
+                "$ref": "#/components/schemas/WaitCancelArgs"
               }
             }
           },
@@ -21771,6 +21818,147 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/checkpoint": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Save a continuation checkpoint for the held claim's verified wait.",
+        "description": "Save a continuation checkpoint for the held claim's verified wait.",
+        "operationId": "wait_checkpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitCheckpointArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitCheckpointResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/decide": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Record a supervisor decision for a verified wait.",
+        "description": "Record a supervisor decision for a verified wait.",
+        "operationId": "wait_decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitDecideArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitDecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/explain": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Explain a verified wait's condition, evidence and outcome.",
+        "description": "Explain a verified wait's condition, evidence and outcome.",
+        "operationId": "wait_explain",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitExplainArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitExplainResponse"
                 }
               }
             }
@@ -21805,7 +21993,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitGetRequest"
+                "$ref": "#/components/schemas/WaitGetArgs"
               }
             }
           },
@@ -21840,6 +22028,147 @@
         }
       }
     },
+    "/api/wait/graph": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Inspect the dependency graph of verified waits.",
+        "description": "Inspect the dependency graph of verified waits.",
+        "operationId": "wait_graph",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitGraphArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitGraphResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/legacy-bridge": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Wait legacy bridge through verified wait state.",
+        "description": "Wait legacy bridge through verified wait state.",
+        "operationId": "wait_legacy_bridge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitLegacyBridgeArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitBridgeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/lift": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Lift an escalated verified wait with an authorized decision.",
+        "description": "Lift an escalated verified wait with an authorized decision.",
+        "operationId": "wait_lift",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitLiftArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitDecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wait/list": {
       "post": {
         "tags": [
@@ -21852,7 +22181,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitListRequest"
+                "$ref": "#/components/schemas/WaitListArgs"
               }
             }
           },
@@ -21899,7 +22228,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WaitRegisterRequest"
+                "$ref": "#/components/schemas/WaitRegisterArgs"
               }
             }
           },
@@ -34347,7 +34676,7 @@
               }
             ],
             "title": "Status",
-            "description": "New status \u2014 admin override, bypasses state machine (optional)"
+            "description": "New lifecycle status (optional); suspended states require wait controls"
           },
           "max_retries": {
             "anyOf": [
@@ -40088,6 +40417,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -51198,6 +51542,15 @@
       },
       "MessageWaitArgs": {
         "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
           "project_id": {
             "anyOf": [
               {
@@ -51399,6 +51752,9 @@
               "PAUSED": 0.0,
               "BLOCKED": 0.0,
               "WAITING_INPUT": 0.0,
+              "WAITING": 0.0,
+              "HIBERNATED": 0.0,
+              "RESUME_PENDING": 0.0,
               "other": 0.0,
               "total": 0.0
             }
@@ -75798,6 +76154,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -76152,6 +76523,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           }
@@ -76224,6 +76610,21 @@
           "WAITING_INPUT": {
             "type": "number",
             "title": "Waiting Input",
+            "default": 0
+          },
+          "WAITING": {
+            "type": "number",
+            "title": "Waiting",
+            "default": 0
+          },
+          "HIBERNATED": {
+            "type": "number",
+            "title": "Hibernated",
+            "default": 0
+          },
+          "RESUME_PENDING": {
+            "type": "number",
+            "title": "Resume Pending",
             "default": 0
           },
           "other": {
@@ -77385,6 +77786,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -77884,6 +78300,21 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "",
+              "DEFINED",
+              "READY",
+              "ASSIGNED",
+              "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED"
+            ],
             "title": "Status",
             "default": ""
           },
@@ -80350,25 +80781,8 @@
         ],
         "title": "ValidationError"
       },
-      "WaitCancelRequest": {
+      "WaitAckArgs": {
         "properties": {
-          "wait_id": {
-            "type": "string",
-            "title": "Wait Id",
-            "description": ""
-          },
-          "claim_epoch": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Claim Epoch",
-            "description": ""
-          },
           "project_id": {
             "anyOf": [
               {
@@ -80378,8 +80792,7 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id",
-            "description": ""
+            "title": "Project Id"
           },
           "task_id": {
             "anyOf": [
@@ -80390,8 +80803,7 @@
                 "type": "null"
               }
             ],
-            "title": "Task Id",
-            "description": ""
+            "title": "Task Id"
           },
           "session_id": {
             "anyOf": [
@@ -80402,15 +80814,563 @@
                 "type": "null"
               }
             ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "wait_id"
         ],
-        "title": "WaitCancelRequest"
+        "title": "WaitAckArgs"
+      },
+      "WaitAckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id"
+          },
+          "acknowledged": {
+            "type": "boolean",
+            "title": "Acknowledged"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "acknowledged"
+        ],
+        "title": "WaitAckResponse"
+      },
+      "WaitBridgeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitBridgeResponse"
+      },
+      "WaitCancelArgs": {
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitCancelArgs"
+      },
+      "WaitCheckpointArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Summary"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "summary"
+        ],
+        "title": "WaitCheckpointArgs"
+      },
+      "WaitCheckpointResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "continuation_id": {
+            "type": "string",
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "continuation_id",
+          "generation"
+        ],
+        "title": "WaitCheckpointResponse"
+      },
+      "WaitDecideArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "extend",
+              "wake",
+              "cancel",
+              "reroute",
+              "escalate_to_human"
+            ],
+            "title": "Decision"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note"
+          },
+          "extend_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 86400.0,
+                "minimum": 60.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extend Seconds"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Generation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "decision",
+          "note"
+        ],
+        "title": "WaitDecideArgs"
+      },
+      "WaitDecideResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id"
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "decision"
+        ],
+        "title": "WaitDecideResponse"
+      },
+      "WaitExplainArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "history": {
+            "type": "boolean",
+            "title": "History",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitExplainArgs"
+      },
+      "WaitExplainResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "explanation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explanation"
+          },
+          "waits": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Waits"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitExplainResponse"
       },
       "WaitFactsDTO": {
         "properties": {
@@ -80490,99 +81450,201 @@
         ],
         "title": "WaitFactsDTO"
       },
-      "WaitGetRequest": {
+      "WaitGetArgs": {
         "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
           "wait_id": {
             "type": "string",
-            "title": "Wait Id",
-            "description": ""
+            "minLength": 1,
+            "title": "Wait Id"
           },
           "consume": {
             "type": "boolean",
             "title": "Consume",
-            "description": "",
             "default": false
           },
           "claim_epoch": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 0.0
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Claim Epoch",
-            "description": ""
-          },
-          "project_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Project Id",
-            "description": ""
-          },
-          "task_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Task Id",
-            "description": ""
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Claim Epoch"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "wait_id"
         ],
-        "title": "WaitGetRequest"
+        "title": "WaitGetArgs"
       },
-      "WaitListRequest": {
+      "WaitGraphArgs": {
         "properties": {
-          "limit": {
+          "project_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Limit",
-            "description": ""
+            "title": "Project Id"
           },
-          "offset": {
+          "fleet": {
+            "type": "boolean",
+            "title": "Fleet",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitGraphArgs"
+      },
+      "WaitGraphResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "graph": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Graph"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "graph"
+        ],
+        "title": "WaitGraphResponse"
+      },
+      "WaitLegacyBridgeArgs": {
+        "properties": {
+          "project_id": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Offset",
-            "description": ""
+            "title": "Project Id"
+          },
+          "apply": {
+            "type": "boolean",
+            "title": "Apply",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WaitLegacyBridgeArgs"
+      },
+      "WaitLiftArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Wait Id"
+          },
+          "response": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Response"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Generation"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait_id",
+          "response"
+        ],
+        "title": "WaitLiftArgs"
+      },
+      "WaitListArgs": {
+        "properties": {
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "default": 1
           },
           "project_id": {
             "anyOf": [
@@ -80593,8 +81655,7 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id",
-            "description": ""
+            "title": "Project Id"
           },
           "task_id": {
             "anyOf": [
@@ -80605,8 +81666,7 @@
                 "type": "null"
               }
             ],
-            "title": "Task Id",
-            "description": ""
+            "title": "Task Id"
           },
           "session_id": {
             "anyOf": [
@@ -80617,12 +81677,25 @@
                 "type": "null"
               }
             ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Session Id"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
           }
         },
+        "additionalProperties": false,
         "type": "object",
-        "title": "WaitListRequest"
+        "title": "WaitListArgs"
       },
       "WaitListResponse": {
         "properties": {
@@ -80633,7 +81706,15 @@
           },
           "waits": {
             "items": {
-              "$ref": "#/components/schemas/AgentWaitRecord"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/AgentWaitRecord"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                }
+              ]
             },
             "type": "array",
             "title": "Waits"
@@ -80703,77 +81784,16 @@
         "title": "WaitNodeDetailDTO",
         "description": "WaitStep only."
       },
-      "WaitRegisterRequest": {
+      "WaitRegisterArgs": {
         "properties": {
-          "kind": {
-            "type": "string",
-            "title": "Kind",
-            "description": ""
-          },
-          "ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+          "schema_version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
             ],
-            "title": "Ref",
-            "description": ""
-          },
-          "after_seq": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "After Seq",
-            "description": ""
-          },
-          "due_at": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Due At",
-            "description": ""
-          },
-          "timeout": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Timeout",
-            "description": ""
-          },
-          "idempotency_key": {
-            "type": "string",
-            "title": "Idempotency Key",
-            "description": ""
-          },
-          "claim_epoch": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Claim Epoch",
-            "description": ""
+            "title": "Schema Version",
+            "default": 1
           },
           "project_id": {
             "anyOf": [
@@ -80784,8 +81804,7 @@
                 "type": "null"
               }
             ],
-            "title": "Project Id",
-            "description": ""
+            "title": "Project Id"
           },
           "task_id": {
             "anyOf": [
@@ -80796,8 +81815,7 @@
                 "type": "null"
               }
             ],
-            "title": "Task Id",
-            "description": ""
+            "title": "Task Id"
           },
           "session_id": {
             "anyOf": [
@@ -80808,16 +81826,170 @@
                 "type": "null"
               }
             ],
-            "title": "Session Id",
-            "description": ""
+            "title": "Session Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "job",
+                  "task",
+                  "message",
+                  "timer",
+                  "dependency",
+                  "ci_check",
+                  "ci_run",
+                  "pull_request",
+                  "batch",
+                  "human",
+                  "resource",
+                  "playbook_condition"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "claimed": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed"
+          },
+          "escalate_after_seconds": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 86400.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalate After Seconds"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Seq"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 86400.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
-          "kind",
           "idempotency_key"
         ],
-        "title": "WaitRegisterRequest"
+        "title": "WaitRegisterArgs"
       },
       "WaitResponse": {
         "properties": {
@@ -80827,7 +81999,106 @@
             "default": true
           },
           "wait": {
-            "$ref": "#/components/schemas/AgentWaitRecord"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentWaitRecord"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Id"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "escalate_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalate At"
+          },
+          "ceiling_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling At"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continuation Id"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
           },
           "next_step": {
             "anyOf": [
@@ -80843,9 +82114,6 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "wait"
-        ],
         "title": "WaitResponse"
       },
       "WithheldTask": {

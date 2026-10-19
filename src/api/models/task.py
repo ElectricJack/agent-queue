@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
+from src.models import TaskStatus
 
 from . import TaskRef
+
+
+# Preserve loose response projections and their empty legacy default while
+# exposing the lifecycle vocabulary from the enum to generated clients.
+TaskStatusValue = Annotated[str, Field(json_schema_extra={
+    "enum": ["", *(status.value for status in TaskStatus)],
+})]
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +193,7 @@ class TaskDetail(TaskDisplayFields):
     project_id: str
     title: str
     description: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
     priority: int = 0
     assigned_agent: str | None = None
     retry_count: int = 0
@@ -250,7 +258,7 @@ class TaskDict(BaseModel):
     model_config = {"extra": "allow"}
     id: str
     title: str = ""
-    status: str = ""
+    status: TaskStatusValue = ""
 
 
 # ---------------------------------------------------------------------------

@@ -557,6 +557,7 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `title` | TEXT | NOT NULL | Short display name |
 | `description` | TEXT | NOT NULL | Full prompt/instructions for the agent |
 | `priority` | INTEGER | NOT NULL DEFAULT 100 | Lower number = higher priority |
+| `effective_priority` | INTEGER | NOT NULL DEFAULT 100 | Derived wait-graph priority; revision a00000000103 backfills existing rows from priority once |
 | `status` | TEXT | NOT NULL DEFAULT 'DEFINED' | See task state machine |
 | `held_batch_id` | TEXT | nullable, indexed by `ix_tasks_held_batch_id` | Independent ingestion admission hold; cleared by atomic batch release. Added by revision `a00000000100` |
 | `verification_type` | TEXT | NOT NULL DEFAULT 'auto_test' | One of: auto_test, qa_agent, human |
@@ -1319,6 +1320,7 @@ sentinel for system-wide kinds.
 | `auto_attach` | BOOLEAN | NOT NULL DEFAULT false | Attached without being declared |
 | `mode` | TEXT | NOT NULL DEFAULT 'worktree' | Git provisioning strategy: worktree, exclusive-clone, or directory-isolated |
 | `worktree_setup` | TEXT | NOT NULL DEFAULT '[]' | JSON array of setup commands — **operator-authored, trusted** |
+| `max_slots` | INTEGER | nullable, CHECK max_slots > 0 | Additive revision a00000000102 prerequisite; limit enforcement is outside this schema leaf |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
@@ -3536,6 +3538,234 @@ updates against the epoch.
 | `digest` | JSON | nullable | Resolution evidence summary |
 | `idempotency_key` | TEXT | NOT NULL | Registration key (`uq_agent_waits_idempotency`) |
 | `result_message_id` | TEXT | nullable | Message that carried the result to the owner |
+
+
+### Table: `wait_records`
+
+Verified typed conditions, their source watermark, evidence, sleep decision and immutable outcome. Agent commentary lives in claimed separately from verified evidence. Partial unique indexes admit one pending non-scheduler wait per owner, deduplicate registrations and legacy translations, and allow multiple distinct scheduler blockers.
+
+Added by revision `a00000000103`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `project_id` | TEXT | NOT NULL, FK → projects.id |
+| `owner_kind` | TEXT | NOT NULL |
+| `owner_id` | TEXT | NOT NULL |
+| `origin` | TEXT | NOT NULL |
+| `session_id` | TEXT | nullable |
+| `claim_epoch` | INTEGER | nullable |
+| `condition_kind` | TEXT | NOT NULL |
+| `condition` | JSONB | NOT NULL |
+| `source_key` | TEXT | NOT NULL |
+| `source_generation` | INTEGER | NOT NULL |
+| `source_watermark_seq` | BIGINT | NOT NULL |
+| `verification_state` | TEXT | NOT NULL |
+| `evidence_ref` | TEXT | NOT NULL |
+| `verified_at` | FLOAT | NOT NULL |
+| `created_at` | FLOAT | NOT NULL |
+| `escalate_at` | FLOAT | nullable |
+| `due_at` | FLOAT | nullable |
+| `ceiling_anchor_at` | FLOAT | nullable |
+| `sleep_decision` | TEXT | nullable |
+| `decision_reason` | TEXT | nullable |
+| `decision_inputs` | JSONB | nullable |
+| `idempotency_key` | TEXT | nullable |
+| `request_hash` | TEXT | NOT NULL |
+| `claimed` | TEXT | nullable |
+| `outcome` | TEXT | NOT NULL, DEFAULT pending |
+| `resolved_at` | FLOAT | nullable |
+| `result_ref` | TEXT | nullable |
+| `blocking` | BOOLEAN | NOT NULL, DEFAULT false |
+| `cleared_at` | FLOAT | nullable |
+| `legacy_kind` | TEXT | nullable |
+| `legacy_id` | TEXT | nullable |
+| `wake_delivered_at` | FLOAT | nullable |
+| `version` | INTEGER | NOT NULL, DEFAULT 1 |
+
+### Table: `wait_edges`
+
+Semantic and resource edges in the wait graph. Waiter and blocker keys identify tasks, batches, slots, branches or sessions; only active edges participate in priority inheritance.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `waiter_key` | TEXT | NOT NULL |
+| `waiter_project_id` | TEXT | NOT NULL |
+| `blocker_key` | TEXT | NOT NULL |
+| `blocker_project_id` | TEXT | NOT NULL |
+| `relation` | TEXT | NOT NULL |
+| `source_revision` | TEXT | NOT NULL |
+| `active` | BOOLEAN | NOT NULL, DEFAULT true |
+| `created_at` | FLOAT | NOT NULL |
+| `cleared_at` | FLOAT | nullable |
+
+### Table: `wait_source_events`
+
+Transactional source outbox. The identity sequence is the registration watermark; the unique source key, generation and revision make repeated source writes idempotent. The undispatched partial index drives recovery after a listener restart.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `seq` | BIGINT | PRIMARY KEY, IDENTITY |
+| `id` | TEXT | NOT NULL |
+| `source_key` | TEXT | NOT NULL |
+| `source_generation` | INTEGER | NOT NULL |
+| `source_revision` | TEXT | NOT NULL |
+| `occurred_at` | FLOAT | NOT NULL |
+| `committed_at` | FLOAT | NOT NULL |
+| `outcome_ref` | TEXT | NOT NULL |
+| `payload_hash` | TEXT | NOT NULL |
+| `payload` | JSONB | NOT NULL |
+| `dispatched_at` | FLOAT | nullable |
+
+### Table: `wait_listener_cursors`
+
+Durable source and timer listener cursors. Lease owner and expiry elect one dispatcher; last_seq records the dispatched watermark.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `listener_key` | TEXT | PRIMARY KEY |
+| `last_seq` | BIGINT | NOT NULL |
+| `lease_owner` | TEXT | nullable |
+| `lease_expires_at` | FLOAT | nullable |
+| `updated_at` | FLOAT | NOT NULL |
+
+### Table: `wait_deadlines`
+
+Generation-fenced due, escalation, ceiling, transition and reservation deadlines. The due index excludes fired or cancelled rows; the wait/type/generation unique key prevents duplicate firing intents.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `deadline_type` | TEXT | NOT NULL |
+| `due_at` | FLOAT | NOT NULL |
+| `generation` | INTEGER | NOT NULL |
+| `fired_at` | FLOAT | nullable |
+| `cancelled_at` | FLOAT | nullable |
+
+### Table: `wait_escalations`
+
+Wait-specific supervisor decisions linked to the authoritative escalation. Original age and prior escalation identity preserve history when a deadline is extended; nullable decision fields represent an unanswered incident.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `generation` | INTEGER | NOT NULL |
+| `escalation_id` | TEXT | NOT NULL, FK → escalations.id |
+| `raised_at` | FLOAT | NOT NULL |
+| `original_age_seconds` | FLOAT | NOT NULL |
+| `supervisor_session_id` | TEXT | nullable |
+| `decision` | TEXT | nullable |
+| `decided_at` | FLOAT | nullable |
+| `note` | TEXT | nullable |
+| `prior_escalation_id` | TEXT | nullable |
+
+### Table: `continuations`
+
+Saved hibernation state and fresh-session resume intents. Summary size is bounded to 8 KiB of UTF-8 bytes. One active continuation per task and one intent per wait/suspension generation prevent duplicate writable resumes. A failed transition preserves branch, facts and hold reason.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `task_id` | TEXT | NOT NULL, FK → tasks.id |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `suspension_generation` | INTEGER | NOT NULL |
+| `summary` | TEXT | nullable |
+| `summary_sha256` | TEXT | nullable |
+| `summary_degraded` | BOOLEAN | NOT NULL, DEFAULT false |
+| `facts` | JSONB | NOT NULL |
+| `branch` | TEXT | NOT NULL |
+| `saved_head` | TEXT | nullable |
+| `prior_status` | TEXT | NOT NULL |
+| `held_cursor_seq` | BIGINT | NOT NULL |
+| `resume_state` | TEXT | NOT NULL |
+| `hold_reason` | TEXT | nullable |
+| `launch_attempts` | INTEGER | NOT NULL, DEFAULT 0 |
+| `new_session_id` | TEXT | nullable |
+| `envelope_id` | TEXT | nullable |
+| `created_at` | FLOAT | nullable |
+| `stopped_at` | FLOAT | nullable |
+| `resumed_at` | FLOAT | nullable |
+| `acknowledged_at` | FLOAT | nullable |
+| `version` | INTEGER | NOT NULL, DEFAULT 1 |
+
+### Table: `admission_reservations`
+
+Priority and FIFO admission intent for branch blockers, resumes and train repairs. An identity sequence orders arrivals. A partial unique expression index on COALESCE(task_id, continuation_id) admits one pending, overdue or granted reservation per subject.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `project_id` | TEXT | NOT NULL, FK → projects.id |
+| `task_id` | TEXT | nullable, FK → tasks.id |
+| `continuation_id` | TEXT | nullable, FK → continuations.id |
+| `scope` | JSONB | NOT NULL |
+| `effective_priority` | INTEGER | NOT NULL |
+| `provenance` | TEXT | NOT NULL |
+| `deadline_at` | FLOAT | NOT NULL |
+| `fifo_seq` | BIGINT | NOT NULL, IDENTITY |
+| `state` | TEXT | NOT NULL |
+| `lease_owner` | TEXT | nullable |
+| `lease_expires_at` | FLOAT | nullable |
+| `consumed_by_session_id` | TEXT | nullable |
+| `created_at` | FLOAT | NOT NULL |
+| `granted_at` | FLOAT | nullable |
+| `consumed_at` | FLOAT | nullable |
+
+### Table: `wait_measurements`
+
+Recorded wait durations and hibernation costs, bucketed by project, condition kind and source class. Nullable token and timing measurements preserve missing observations instead of reporting zero.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY |
+| `project_id` | TEXT | NOT NULL, FK → projects.id |
+| `condition_kind` | TEXT | NOT NULL |
+| `source_class` | TEXT | NOT NULL |
+| `wait_id` | TEXT | NOT NULL, FK → wait_records.id |
+| `decision` | TEXT | NOT NULL |
+| `waited_seconds` | FLOAT | NOT NULL |
+| `hibernated` | BOOLEAN | NOT NULL |
+| `evicted` | BOOLEAN | NOT NULL |
+| `summary_tokens` | INTEGER | nullable |
+| `resume_tokens` | INTEGER | nullable |
+| `teardown_seconds` | FLOAT | nullable |
+| `setup_seconds` | FLOAT | nullable |
+| `rebuild_seconds` | FLOAT | nullable |
+| `recorded_at` | FLOAT | NOT NULL |
+
+### Table: `wait_priority_projection`
+
+Derived-priority provenance per task: donor identity, donor path, graph version and computation time. Base priority remains operator input on tasks.
+
+Added by revision `a00000000097`; schema only until the verified-waits cutover.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `task_id` | TEXT | PRIMARY KEY, FK → tasks.id |
+| `donor_task_id` | TEXT | nullable |
+| `donor_path` | JSONB | NOT NULL |
+| `graph_version` | BIGINT | NOT NULL |
+| `computed_at` | FLOAT | NOT NULL |
 
 ### Table: `jobs`
 

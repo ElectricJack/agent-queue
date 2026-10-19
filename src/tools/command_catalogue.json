@@ -1724,12 +1724,18 @@
             "enum": [
               "DEFINED",
               "READY",
+              "ASSIGNED",
               "IN_PROGRESS",
+              "WAITING",
+              "HIBERNATED",
+              "RESUME_PENDING",
+              "WAITING_INPUT",
+              "PAUSED",
               "COMPLETED",
               "FAILED",
               "BLOCKED"
             ],
-            "description": "New status \u2014 admin override, bypasses state machine (optional)"
+            "description": "New lifecycle status (optional); suspended states require wait controls"
           },
           "max_retries": {
             "type": "integer",
@@ -8151,149 +8157,453 @@
       "name": "wait_register",
       "description": "Register a bounded typed wait and end the turn until its result pointer arrives.",
       "input_schema": {
-        "type": "object",
         "additionalProperties": false,
-        "required": [
-          "kind",
-          "idempotency_key"
-        ],
         "properties": {
-          "kind": {
-            "type": "string",
+          "schema_version": {
+            "default": 1,
             "enum": [
-              "job",
-              "task",
-              "message",
-              "timer"
-            ]
-          },
-          "ref": {
-            "type": "string",
-            "maxLength": 256
-          },
-          "after_seq": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "due_at": {
-            "type": "number"
-          },
-          "timeout": {
-            "type": "number",
-            "exclusiveMinimum": 0,
-            "maximum": 86400
-          },
-          "idempotency_key": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256
-          },
-          "claim_epoch": {
-            "type": "integer",
-            "minimum": 0
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
           },
           "project_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
           },
           "task_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
           },
           "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "job",
+                  "task",
+                  "message",
+                  "timer",
+                  "dependency",
+                  "ci_check",
+                  "ci_run",
+                  "pull_request",
+                  "batch",
+                  "human",
+                  "resource",
+                  "playbook_condition"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Condition"
+          },
+          "claimed": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claimed"
+          },
+          "escalate_after_seconds": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 86400,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Escalate After Seconds"
+          },
+          "owner_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduler",
+                  "integration",
+                  "playbook"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Id"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ref"
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "After Seq"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Due At"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 86400,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeout"
+          },
+          "idempotency_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key",
             "type": "string"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
           }
-        }
+        },
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "WaitRegisterArgs",
+        "type": "object"
       }
     },
     {
       "name": "wait_get",
       "description": "Read a durable wait, optionally consuming its result notification.",
       "input_schema": {
-        "type": "object",
         "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "default": 1,
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "consume": {
+            "default": false,
+            "title": "Consume",
+            "type": "boolean"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          }
+        },
         "required": [
           "wait_id"
         ],
-        "properties": {
-          "wait_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "consume": {
-            "type": "boolean",
-            "default": false
-          },
-          "claim_epoch": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "project_id": {
-            "type": "string"
-          },
-          "task_id": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          }
-        }
+        "title": "WaitGetArgs",
+        "type": "object"
       }
     },
     {
       "name": "wait_list",
       "description": "List the owner's durable wait history.",
       "input_schema": {
-        "type": "object",
         "additionalProperties": false,
         "properties": {
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100
-          },
-          "offset": {
-            "type": "integer",
-            "minimum": 0
+          "schema_version": {
+            "default": 1,
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
           },
           "project_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
           },
           "task_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
           },
           "session_id": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 100,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
           }
-        }
+        },
+        "title": "WaitListArgs",
+        "type": "object"
       }
     },
     {
       "name": "wait_cancel",
       "description": "Cancel a current-claim wait and queue its result.",
       "input_schema": {
-        "type": "object",
         "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "default": 1,
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          }
+        },
         "required": [
           "wait_id"
         ],
-        "properties": {
-          "wait_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "claim_epoch": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "project_id": {
-            "type": "string"
-          },
-          "task_id": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          }
-        }
+        "title": "WaitCancelArgs",
+        "type": "object"
       }
     },
     {
@@ -11129,6 +11439,446 @@
           "actions"
         ],
         "title": "OperatorPreflightArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_ack",
+      "description": "Acknowledge a verified wait outcome for the held claim.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation"
+          }
+        },
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitAckArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_checkpoint",
+      "description": "Save a continuation checkpoint for the held claim's verified wait.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "continuation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Id"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation"
+          }
+        },
+        "required": [
+          "wait_id",
+          "summary"
+        ],
+        "title": "WaitCheckpointArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_decide",
+      "description": "Record a supervisor decision for a verified wait.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "extend",
+              "wake",
+              "cancel",
+              "reroute",
+              "escalate_to_human"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "note": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "extend_seconds": {
+            "anyOf": [
+              {
+                "maximum": 86400,
+                "minimum": 60,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Extend Seconds"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "To"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          }
+        },
+        "required": [
+          "wait_id",
+          "decision",
+          "note"
+        ],
+        "title": "WaitDecideArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_explain",
+      "description": "Explain a verified wait's condition, evidence and outcome.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Claim Epoch"
+          },
+          "wait_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Wait Id"
+          },
+          "history": {
+            "default": false,
+            "title": "History",
+            "type": "boolean"
+          }
+        },
+        "title": "WaitExplainArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_graph",
+      "description": "Inspect the dependency graph of verified waits.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "fleet": {
+            "default": false,
+            "title": "Fleet",
+            "type": "boolean"
+          }
+        },
+        "title": "WaitGraphArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "wait_lift",
+      "description": "Lift an escalated verified wait with an authorized decision.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "response": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Response",
+            "type": "string"
+          },
+          "expected_generation": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Generation"
+          }
+        },
+        "required": [
+          "wait_id",
+          "response"
+        ],
+        "title": "WaitLiftArgs",
         "type": "object"
       }
     },
@@ -17109,6 +17859,52 @@
         "additionalProperties": false
       }
     },
+    "scheduler_wait_sync": {
+      "name": "scheduler_wait_sync",
+      "description": "Scheduler wait sync through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "blockers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "cycle_id": {
+            "minLength": 1,
+            "title": "Cycle Id",
+            "type": "string"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          }
+        },
+        "required": [
+          "project_id",
+          "blockers",
+          "cycle_id"
+        ],
+        "title": "SchedulerWaitSyncArgs",
+        "type": "object"
+      }
+    },
     "session_attach": {
       "name": "session_attach",
       "description": "Return the shell command a human runs to attach.",
@@ -17565,6 +18361,231 @@
         }
       }
     },
+    "wait_deadline_fire": {
+      "name": "wait_deadline_fire",
+      "description": "Wait deadline fire through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "deadline_type": {
+            "enum": [
+              "due",
+              "escalation",
+              "ceiling",
+              "transition",
+              "reservation"
+            ],
+            "title": "Deadline Type",
+            "type": "string"
+          },
+          "generation": {
+            "minimum": 1,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          }
+        },
+        "required": [
+          "wait_id",
+          "deadline_type",
+          "generation"
+        ],
+        "title": "WaitDeadlineFireArgs",
+        "type": "object"
+      }
+    },
+    "wait_evict": {
+      "name": "wait_evict",
+      "description": "Wait evict through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wait_id",
+          "reason"
+        ],
+        "title": "WaitEvictArgs",
+        "type": "object"
+      }
+    },
+    "wait_legacy_bridge": {
+      "name": "wait_legacy_bridge",
+      "description": "Wait legacy bridge through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          }
+        },
+        "title": "WaitLegacyBridgeArgs",
+        "type": "object"
+      }
+    },
+    "wait_resume_dispatch": {
+      "name": "wait_resume_dispatch",
+      "description": "Wait resume dispatch through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "continuation_id": {
+            "minLength": 1,
+            "title": "Continuation Id",
+            "type": "string"
+          },
+          "generation": {
+            "minimum": 1,
+            "title": "Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "continuation_id",
+          "generation"
+        ],
+        "title": "WaitResumeDispatchArgs",
+        "type": "object"
+      }
+    },
+    "wait_sleep_decide": {
+      "name": "wait_sleep_decide",
+      "description": "Wait sleep decide through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "wait_id": {
+            "minLength": 1,
+            "title": "Wait Id",
+            "type": "string"
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Now"
+          }
+        },
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitSleepDecideArgs",
+        "type": "object"
+      }
+    },
+    "wait_source_commit": {
+      "name": "wait_source_commit",
+      "description": "Wait source commit through verified wait state.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "source_key": {
+            "minLength": 1,
+            "title": "Source Key",
+            "type": "string"
+          },
+          "generation": {
+            "minimum": 0,
+            "title": "Generation",
+            "type": "integer"
+          },
+          "revision": {
+            "minLength": 1,
+            "title": "Revision",
+            "type": "string"
+          },
+          "outcome_ref": {
+            "minLength": 1,
+            "title": "Outcome Ref",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Occurred At"
+          }
+        },
+        "required": [
+          "source_key",
+          "generation",
+          "revision",
+          "outcome_ref",
+          "payload"
+        ],
+        "title": "WaitSourceCommitArgs",
+        "type": "object"
+      }
+    },
     "workflow_pipeline_view": {
       "name": "workflow_pipeline_view",
       "description": "Return structured pipeline view data for dashboard rendering of a workflow.",
@@ -17777,6 +18798,13 @@
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "wait_explain": "wait",
+    "wait_graph": "wait",
+    "wait_checkpoint": "wait",
+    "wait_ack": "wait",
+    "wait_decide": "wait",
+    "wait_lift": "wait",
+    "wait_legacy_bridge": "wait",
     "cron_register": "cron",
     "cron_get": "cron",
     "cron_list": "cron",

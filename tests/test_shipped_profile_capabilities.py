@@ -138,9 +138,12 @@ class TestShippedProfile:
         assert set(harness) <= HARNESS_TOOL_NAMES
 
     def test_every_aq_command_is_a_real_command(self, profile_id):
-        """No aspirational names: each one resolves to a dispatchable handler."""
+        """Every grant names a handler or an explicitly defined read scope."""
         parsed = _parsed(profile_id)
-        unknown = sorted(set(parsed.capabilities["aq_commands"]) - _builtin_command_names())
+        from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+        unknown = sorted(set(parsed.capabilities["aq_commands"]) -
+                         (_builtin_command_names() | AQ_FEATURE_CAPABILITIES))
         assert unknown == []
 
     def test_policy_is_constructible_and_not_legacy(self, profile_id):
@@ -180,7 +183,9 @@ def test_supervisor_inbox_grants_exclude_internal_intake():
         "supervisor_inbox_status",
     } <= granted
     assert "supervisor_inbox_post" not in granted
-    assert granted <= _builtin_command_names()
+    from src.profiles.capabilities import AQ_FEATURE_CAPABILITIES
+
+    assert granted <= _builtin_command_names() | AQ_FEATURE_CAPABILITIES
 
 
 # ---------------------------------------------------------------------------

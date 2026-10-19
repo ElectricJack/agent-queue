@@ -522,13 +522,18 @@ async def run(
             ).run(),
             name="aq-review-notifier",
         )
+        from src.waits.service import WaitService
+
+        orch.wait_service = WaitService(orch)
+        wait_service_task = asyncio.create_task(orch.wait_service.run(), name="aq-waits")
         try:
             if freeze_startup_heap:
                 _freeze_startup_heap()
             await _run_scheduler_cycles(orch, shutdown_event)
         finally:
             review_notifier_task.cancel()
-            await asyncio.gather(review_notifier_task, return_exceptions=True)
+            wait_service_task.cancel()
+            await asyncio.gather(review_notifier_task, wait_service_task, return_exceptions=True)
 
     # Start embedded MCP server (if enabled).  Lazy-imports the MCP SDK
     # (~3s) inside the task so it never blocks orchestrator startup.
