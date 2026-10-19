@@ -277,8 +277,17 @@ def build_session_env(*, session_id: str, task_id: str | None, project_id: str,
                       harness_env: dict[str, str]) -> dict[str, str]
 ```
 
-— sets the nine `AQ_*` markers, strips `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` (relocated
-from `src/runtimes/_subprocess.py::isolated_env`; further scrubbing per [trust-and-ops](trust-and-ops.md)).
+— sets the nine `AQ_*` markers; further scrubbing per [trust-and-ops](trust-and-ops.md).
+Launch isolation correction (2026-10-15): discard all inherited `CLAUDE*` controls
+and `AQ_*` values, even when sensitive-variable scrubbing is disabled or its
+allowlist matches those controls. Fresh AQ identity and policy values come from
+the session builder. Only explicit launch configuration may supply Claude
+settings such as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; an enclosing shell's
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` must never reach a worker. The tmux pane must
+receive the scrubbed environment, rather than an overlay on a persistent server's
+environment, while retaining tmux terminal metadata. Daemon startup warns with
+inherited harness-control and `AQ_*` names only, preserving its database guard.
+
 Hook material (Claude `--settings <path>` merge; other harnesses' template files) is
 written into `work_dir` here, rendering the templates the harness profile declares.
 

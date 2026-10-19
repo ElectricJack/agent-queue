@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -13,6 +14,8 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig
 from src.database.queries.claim_queries import CLAIMED_BY_SESSION_KEY
+from src.integration.lock import BranchLock
+from src.integration.models import BranchKey
 from src.models import (
     Agent,
     AgentProfile,
@@ -20,6 +23,7 @@ from src.models import (
     Project,
     Project as _Project,
     RepoSourceType,
+    RepoConfig,
     SessionRecord,
     SYSTEM_KIND_SCOPE,
     Task,
@@ -30,6 +34,7 @@ from src.models import (
 from src.orchestrator import Orchestrator
 from src.orchestrator.worktree_manager import EXCLUDE_BLOCK
 from src.runtimes.base import Runtime
+from src.workspace_registration import path_is_missing
 from tests.db_fixtures import lease_dsn
 
 
@@ -339,6 +344,33 @@ async def test_resumed_exclusive_clone_handoff_excludes_daemon_bookkeeping(
 
 
 class TestWorkspaceDoctor:
+    @pytest.mark.parametrize("locked", [False, True])
+    async def test_missing_registration_without_slot_manager(self, setup, locked):
+        handler, db, tmp_path = setup
+        await db.create_task(Task(id="holder", project_id="p1", title="holder", description=""))
+        await db.create_workspace(_Workspace(
+            id="gone", project_id="p1", workspace_path=str(tmp_path / "gone"),
+            source_type=RepoSourceType.LINK,
+            locked_by_task_id="holder" if locked else None,
+        ))
+        handler.orchestrator._worktree_slots = None
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+        assert result["success"] is True
+        assert len(result["findings"]) == 1
+        finding = result["findings"][0]
+        assert finding["kind"] == "missing_workspace_path"
+        assert finding["workspace_id"] == "gone"
+        assert str(tmp_path / "gone") in finding["detail"]
+        assert ("release its lock" if locked else "remove-workspace --workspace-id gone") in finding[
+            "detail"]
+        assert await db.get_workspace("gone") is not None
+
+    async def test_missing_base_has_no_exclude_error(self, worktree_handler, tmp_path):
+        handler, orch, _ = worktree_handler
+        await orch.db.update_workspace("ws-base", workspace_path=str(tmp_path / "gone"))
+        result = await handler._cmd_workspace_doctor({"project_id": "p1"})
+        assert [f["kind"] for f in result["findings"]] == ["missing_workspace_path"]
+
     async def test_dirty_unlocked_slot_finding(self, worktree_handler):
         handler, orch, base = worktree_handler
         slot_ws, slot_dir = await _make_slot_for(orch)
@@ -568,6 +600,106 @@ class TestWorkspaceReap:
         assert result["success"] is True
         assert slot_ws.id in result["reaped"]
         assert await orch.db.get_workspace(slot_ws.id) is None
+
+
+def test_inaccessible_path_is_not_missing(monkeypatch):
+    def inaccessible(self):
+        raise PermissionError("mount is inaccessible")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "stat", inaccessible)
+        assert path_is_missing("/unavailable") is False
+
+
+class TestRemoveMissingWorkspace:
+    @pytest.mark.parametrize("source_type", [RepoSourceType.LINK, RepoSourceType.CLONE])
+    async def test_removes_matching_repo_with_audit(self, setup, source_type):
+        handler, db, tmp_path = setup
+        missing = str(tmp_path / "gone")
+        await db.create_workspace(_Workspace(
+            id="gone", project_id="p1", workspace_path=missing, source_type=source_type,
+        ))
+        await db.create_repo(RepoConfig(
+            id="matching", project_id="p1", source_type=source_type, url="",
+            source_path=missing if source_type is RepoSourceType.LINK else "",
+            checkout_base_path=missing if source_type is RepoSourceType.CLONE else "",
+        ))
+        await db.create_repo(RepoConfig(
+            id="unrelated", project_id="p1", source_type=source_type,
+            url="", source_path=missing + "-other", checkout_base_path=missing + "-other",
+        ))
+        await db.create_project(Project(id="p2", name="other"))
+        await db.create_repo(RepoConfig(
+            id="other-project", project_id="p2", source_type=source_type,
+            url="", source_path=missing, checkout_base_path=missing,
+        ))
+
+        result = await handler._cmd_remove_workspace({"workspace_id": "gone"})
+
+        assert result["deleted"] == "gone"
+        assert await db.get_workspace("gone") is None
+        assert await db.get_repo("matching") is None
+        assert await db.get_repo("unrelated") is not None
+        assert await db.get_repo("other-project") is not None
+        events = await db.get_recent_events(event_type="workspace.registration_removed")
+        assert len(events) == 1
+        assert json.loads(events[0]["payload"]) == {
+            "workspace_id": "gone", "path": missing, "repository_ids": ["matching"],
+            "reason": "missing_path",
+        }
+
+    @pytest.mark.parametrize("holder", ["task", "binding", "session", "shared", "slot", "lease"])
+    async def test_preserves_owned_or_shared_registration(self, setup, holder):
+        handler, db, tmp_path = setup
+        missing = str(tmp_path / "gone")
+        await db.create_workspace(_Workspace(
+            id="gone", project_id="p1", workspace_path=missing, source_type=RepoSourceType.LINK,
+        ))
+        await db.create_repo(RepoConfig(
+            id="repo", project_id="p1", url="", source_type=RepoSourceType.LINK,
+            source_path=missing,
+        ))
+        if holder == "task":
+            await db.create_task(Task(id="t", project_id="p1", title="t", description="",
+                                      repo_id="repo"))
+        elif holder == "binding":
+            await db.update_project("p1", integration_repository_id="repo")
+        elif holder == "session":
+            await db.create_session(SessionRecord(
+                id="s", project_id="p1", profile_id="p", harness="fake", provider="fake",
+                name="s", lifecycle="pool", state="running", desired_state="running",
+                work_dir=missing, epoch="e", instance_token="s", started_at=1, last_activity=1,
+            ))
+        elif holder == "lease":
+            await BranchLock(db).acquire(BranchKey(repository_id="repo", branch="aq/live"), "live")
+        else:
+            await db.create_workspace(_Workspace(
+                id="other", project_id="p1", source_type=RepoSourceType.LINK,
+                workspace_path=missing + "/." if holder == "shared" else missing + "-slot",
+                base_workspace_id="gone" if holder == "slot" else None,
+                slot_index=0 if holder == "slot" else None,
+            ))
+
+        result = await handler._cmd_remove_workspace({"workspace_id": "gone"})
+
+        assert await db.get_repo("repo") is not None
+        if holder == "shared":
+            assert result["deleted"] == "gone"
+        else:
+            assert "refused" in result["error"]
+            assert await db.get_workspace("gone") is not None
+            assert not await db.get_recent_events(event_type="workspace.registration_removed")
+
+    async def test_task_only_lock_refuses_removal(self, setup):
+        handler, db, tmp_path = setup
+        await db.create_task(Task(id="t", project_id="p1", title="t", description=""))
+        await db.create_workspace(_Workspace(
+            id="gone", project_id="p1", workspace_path=str(tmp_path / "gone"),
+            source_type=RepoSourceType.LINK, locked_by_task_id="t",
+        ))
+        result = await handler._cmd_remove_workspace({"workspace_id": "gone"})
+        assert "locked" in result["error"]
+        assert await db.get_workspace("gone") is not None
 
 
 class TestListWorkspacesAnnotations:

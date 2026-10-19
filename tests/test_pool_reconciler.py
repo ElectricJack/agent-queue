@@ -35,6 +35,23 @@ from tests.db_fixtures import lease_dsn
 PROJECT_ID = "proj"
 
 
+@pytest.mark.parametrize("artifact", [False, True])
+async def test_pool_demand_observes_artifact_sources_only(orch, db, monkeypatch, artifact):
+    from src.scheduler import PoolKey
+
+    await ready(db, "candidate")
+    await db.create_task(Task(
+        id="source", project_id=PROJECT_ID, title="source", description="",
+        status=TaskStatus.COMPLETED, branch_name="aq/source" if artifact else None,
+    ))
+    await db.add_dependency("candidate", "source")
+    observer = AsyncMock(return_value=MagicMock(allowed=set()))
+    monkeypatch.setattr(orch, "_delivery_admission", observer)
+    measurement = await orch._measure_pools()
+    assert measurement.demand[PoolKey("worker")] == int(not artifact)
+    assert observer.await_count == int(artifact)
+
+
 @pytest.mark.parametrize("rejected", [False, True])
 async def test_pool_demand_and_claim_use_the_exact_frontier_builder(
     orch, db, monkeypatch, rejected,

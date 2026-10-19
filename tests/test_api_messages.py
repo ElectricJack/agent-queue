@@ -19,7 +19,7 @@ from src.api.messages import resolve_session_project, router
 from src.commands.handler import CommandHandler
 from src.config import MessagesConfig
 from src.database import Database
-from src.models import Project
+from src.models import AgentProfile, Project, SessionRecord
 from tests.db_fixtures import lease_dsn
 
 pytestmark = pytest.mark.usefixtures("unpooled_postgres")
@@ -200,6 +200,18 @@ def test_router_is_mounted_in_create_app():
 from src.api import dependencies as _deps  # noqa: E402
 from src.api.auth import SessionTokenStore  # noqa: E402
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware  # noqa: E402
+
+
+async def _seed_global_sender(db):
+    await db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor", aq_commands=["message_send", "message_list"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    await db.create_session(SessionRecord(
+        id="global-admin", project_id=None, profile_id="supervisor", harness="codex",
+        provider="fake", name="n-supervisor--global", lifecycle="named", work_dir="/tmp",
+        epoch="boot", instance_token="global-token", started_at=1, state="running",
+    ))
 
 
 async def _seed_messages_app(tmp_path):
@@ -497,7 +509,9 @@ async def test_global_admin_can_send_without_project_and_read_system_chat(tmp_pa
     from httpx import ASGITransport, AsyncClient
     db, store, ch, app = await _seed_messages_app(tmp_path)
     try:
-        token = await store.mint(session_id="global-admin", task_id=None, project_id=None, elevated=True)
+        await _seed_global_sender(db)
+        token = await store.mint(session_id="global-admin", task_id=None, project_id=None,
+                                 elevated=True, session_instance_token="global-token")
         transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
         async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": f"Bearer {token}"}) as client:
             sent = await client.post("/api/sessions/supervisor-global/message", json={"body": "hello"})
@@ -506,7 +520,13 @@ async def test_global_admin_can_send_without_project_and_read_system_chat(tmp_pa
             assert response.status_code == 200
             assert response.json()["project_id"] is None
             assert [m["body"] for m in response.json()["messages"]] == ["hello"]
-        direct = await ch.execute("message_send", {"from_kind": "session", "from_id": "global-admin", "to_kind": "user", "to_id": "user", "body": "update", "_scope": {"kind": "session", "session_id": "global-admin", "elevated": True, "project_id": None}})
+        direct = await ch.execute("message_send", {
+            "from_kind": "session", "from_id": "global-admin", "to_kind": "user",
+            "to_id": "user", "body": "update", "_scope": {
+                "kind": "session", "session_id": "global-admin", "elevated": True,
+                "project_id": None, "session_instance_token": "global-token",
+            },
+        })
         assert direct["message"]["project_id"] is None
         assert await db.get_project("global") is None
     finally:
@@ -529,9 +549,11 @@ async def test_global_admin_send_to_a_task_lands_in_the_tasks_project(tmp_path):
 
     db, store, _ch, app = await _seed_messages_app(tmp_path)
     try:
+        await _seed_global_sender(db)
         await db.create_task(Task(id="t-b", project_id="proj-b", title="B", description=""))
         token = await store.mint(
-            session_id="global-admin", task_id=None, project_id=None, elevated=True
+            session_id="global-admin", task_id=None, project_id=None, elevated=True,
+            session_instance_token="global-token",
         )
         transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
         async with AsyncClient(
@@ -540,7 +562,7 @@ async def test_global_admin_send_to_a_task_lands_in_the_tasks_project(tmp_path):
         ) as client:
             sent = await client.post("/api/messages/send", json={
                 "to_kind": "task", "to_id": "t-b", "thread_id": "approval:t-b",
-                "from_id": "cli", "body": "APPROVED",
+                "body": "APPROVED",
             })
         assert sent.status_code == 200, sent.text
         stored = await db.get_message(sent.json()["message_id"])
@@ -571,13 +593,15 @@ async def test_scoped_inbox_cannot_read_system_replies_to_user(handler, inject):
 
 
 async def test_global_supervisor_can_send_to_a_real_project(handler):
+    await _seed_global_sender(handler.db)
     await handler.db.update_project("agent-queue", supervisor_enabled=True)
     sent = await handler.execute("message_send", {
         "project_id": "agent-queue", "from_kind": "session",
         "from_id": "supervisor-global", "to_kind": "session",
         "to_id": "supervisor-agent-queue", "body": "project instruction",
         "_scope": {"kind": "session", "session_id": "global-admin",
-                   "project_id": None, "elevated": True},
+                   "project_id": None, "elevated": True,
+                   "session_instance_token": "global-token"},
     })
     assert sent["message"]["project_id"] == "agent-queue"
     assert sent["message"]["to_id"] == "supervisor-agent-queue"

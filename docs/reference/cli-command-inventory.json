@@ -4784,6 +4784,38 @@
       }
     },
     {
+      "path": "aq integration clear-retained-recovery",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_clear_retained_recovery",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--incident-id",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration close-delivered-pr",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -5083,6 +5115,48 @@
         "optional": [
           "--apply",
           "--head",
+          "--reason",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration recover-completed-container",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_recover_completed_container",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "task_id",
+          "--project",
+          "--repository",
+          "--branch"
+        ],
+        "optional": [
+          "--apply",
+          "--head",
+          "--completion",
+          "--generation",
+          "--version",
+          "--origin-sha256",
+          "--snapshot-sha256",
           "--reason",
           "--json",
           "--brief",
@@ -5520,6 +5594,47 @@
         ],
         "optional": [
           "--control-only",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration supersede-completion",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_supersede_completion",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "task_id",
+          "--project",
+          "--subject",
+          "--expected-version",
+          "--expected-claim-epoch",
+          "--completion",
+          "--head",
+          "--human-reply",
+          "--reason"
+        ],
+        "optional": [
+          "--proof",
+          "--apply",
           "--json",
           "--brief",
           "--save-output",

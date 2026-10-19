@@ -59,6 +59,8 @@ Never manage the operator daemon.
 
 Record material findings/decisions, exact checks and evidence paths while working with
 `aq task comment {task_id} --body "Finding: ... Evidence: ... Next: ..."`.
+Keep comments concise: state what changed, decisions, and blockers.
+Link evidence files; do not paste logs or repeat status.
 For changed requirements read the full description first and update with
 `aq task set {task_id} --description "..." --expected-description "<read value>"`;
 preserve the goal/acceptance criteria and merge conflicts by rereading. No secrets.

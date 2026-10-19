@@ -261,6 +261,7 @@ async def run(
     # A daemon launched by an interactive Claude Code or Codex session must
     # not retain that session's control variables.  Remove them before setup,
     # config loading, or constructing any child-launching subsystem.
+    inherited_aq_keys = sorted(key for key in os.environ if key.startswith("AQ_"))
     stripped_harness_markers = strip_harness_session_markers(os.environ)
     # The daemon owns the schema: this is what lets ``run_schema_setup``
     # migrate the production database.  ``AQ_DB_SCOPE=worker`` in the
@@ -278,6 +279,13 @@ async def run(
         logger.warning(
             "Stripped inherited harness session marker(s) at daemon startup: %s",
             ", ".join(stripped_harness_markers),
+        )
+    if inherited_aq_keys:
+        logger.warning(
+            "Inherited AQ_* variable(s) at daemon startup: %s. "
+            "Worker launches discard inherited AQ_* and inject fresh session values; "
+            "restart the daemon from a clean operator environment.",
+            ", ".join(inherited_aq_keys),
         )
 
     config = load_config(config_path, profile=profile)

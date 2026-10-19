@@ -66,6 +66,27 @@ def _invoke(runner, args, client):
 
 
 class TestMessageSend:
+    def test_omitted_sender_is_left_for_the_server(self, runner, monkeypatch):
+        monkeypatch.setenv("AQ_SESSION_ID", "forged-environment-session")
+        client = _mock_client({"message_send": {"message_id": "msg-1"}})
+        result = _invoke(
+            runner, ["message", "send", "--to", "session:supervisor-p1", "--body", "hi"],
+            client,
+        )
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert "from_kind" not in args and "from_id" not in args
+
+    def test_explicit_sender_flags_are_preserved(self, runner):
+        client = _mock_client({"message_send": {"message_id": "msg-1"}})
+        result = _invoke(runner, [
+            "message", "send", "--to", "user:dashboard", "--body", "hi",
+            "--from-kind", "session", "--from-id", "own-session",
+        ], client)
+        assert result.exit_code == 0, result.output
+        args = client.execute.await_args.args[1]
+        assert (args["from_kind"], args["from_id"]) == ("session", "own-session")
+
     def test_json_envelope(self, runner):
         client = _mock_client(
             {"message_send": {"message_id": "msg-1", "state": "queued", "message": {}}}
@@ -221,8 +242,8 @@ class TestInboxAndList:
         assert report.exit_code == 0, report.output
         args = client.execute.await_args.args[1]
         assert args["to_id"] == "supervisor-global" and "system_only" not in args
-        # Legacy CLI defaults are labels; the server binds this route's sender.
-        assert (args["from_kind"], args["from_id"]) == ("user", "cli")
+        # The server binds this route's sender; the CLI supplies no labels.
+        assert "from_kind" not in args and "from_id" not in args
 
     def test_inbox_json_envelope(self, runner):
         client = _mock_client(
