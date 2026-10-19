@@ -161,6 +161,15 @@ class PrimeRenderer:
 
         observation = await read_context(sess)
 
+        continuation = None
+        if getattr(sess, "state", None) in live_states and getattr(self.db, "_engine", None):
+            from src.database.queries.continuation_queries import continuation_prime_context
+
+            async with self.db._engine.connect() as conn:
+                continuation = await continuation_prime_context(
+                    conn, task_id=task_id, project_id=task.project_id, session_id=sess.id,
+                )
+
         section_tuple = (
             await _sections.build_role_section(self.config, effective_profile_id),
             await _sections.build_project_role_section(
@@ -182,6 +191,7 @@ class PrimeRenderer:
             await _sections.build_task_context_section(
                 self.db, self.config, task, session_id=session_id,
                 bounded_worker=bounded_worker,
+                continuation=continuation,
             ),
             await _sections.build_workspaces_section(self.db, task, effective_work_dir),
             await _sections.build_messages_section(
@@ -194,6 +204,7 @@ class PrimeRenderer:
                 task=task,
                 session=sess if getattr(sess, "state", None) in live_states else None,
                 work_dir=effective_work_dir,
+                continuation=continuation,
             ),
             _sections.build_l1_facts_section(self.config),
             _sections.build_l2_context_section(self.config),
@@ -222,6 +233,12 @@ class PrimeRenderer:
             ),
         )
 
+        if continuation is not None:
+            section_tuple = (*section_tuple[:2],
+                             _sections.build_wait_outcome_section(continuation),
+                             _sections.build_compaction_summary_section(continuation),
+                             *section_tuple[2:])
+
         doc = PrimeDocument(
             task_id=task_id,
             session_id=session_id,
@@ -234,6 +251,17 @@ class PrimeRenderer:
 
         override_template = load_override(effective_work_dir)
         if override_template:
+            override_body = apply_override(override_template, doc)
+            if continuation is not None:
+                # The resume contract survives an override that predates waits.
+                required_keys = {"wait_outcome", "compaction_summary", "task", "task_context", "messages"}
+                required = tuple(s for s in doc.sections if s.key in required_keys)
+                supplemental = replace(doc, sections=tuple(
+                    replace(s, body="") if s.key in required_keys else s for s in doc.sections
+                ))
+                override_body = replace(doc, sections=required).to_markdown() + "\n" + apply_override(
+                    override_template, supplemental,
+                )
             doc = PrimeDocument(
                 task_id=doc.task_id,
                 session_id=doc.session_id,
@@ -242,7 +270,7 @@ class PrimeRenderer:
                 rendered_at=doc.rendered_at,
                 work_dir=doc.work_dir,
                 branch=doc.branch,
-                override_markdown=apply_override(override_template, doc),
+                override_markdown=override_body,
             )
 
         return _with_pause_notice(doc, project)

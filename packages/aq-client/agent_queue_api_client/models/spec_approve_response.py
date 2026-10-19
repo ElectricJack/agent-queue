@@ -15,18 +15,36 @@ T = TypeVar("T", bound="SpecApproveResponse")
 class SpecApproveResponse:
     """
     Attributes:
+        decision_id (str):
+        packet_sha256 (str):
+        snapshot_id (str):
         success (bool | Unset):  Default: True.
     """
 
+    decision_id: str
+    packet_sha256: str
+    snapshot_id: str
     success: bool | Unset = True
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        decision_id = self.decision_id
+
+        packet_sha256 = self.packet_sha256
+
+        snapshot_id = self.snapshot_id
+
         success = self.success
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
+        field_dict.update(
+            {
+                "decision_id": decision_id,
+                "packet_sha256": packet_sha256,
+                "snapshot_id": snapshot_id,
+            }
+        )
         if success is not UNSET:
             field_dict["success"] = success
 
@@ -35,9 +53,18 @@ class SpecApproveResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
+        decision_id = d.pop("decision_id")
+
+        packet_sha256 = d.pop("packet_sha256")
+
+        snapshot_id = d.pop("snapshot_id")
+
         success = d.pop("success", UNSET)
 
         spec_approve_response = cls(
+            decision_id=decision_id,
+            packet_sha256=packet_sha256,
+            snapshot_id=snapshot_id,
             success=success,
         )
 

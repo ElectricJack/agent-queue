@@ -66,9 +66,9 @@ def test_playbook_config_has_no_runtime_selector_or_v1_admission() -> None:
     assert retired.isdisjoint(fields)
 
 
-def test_no_cutover_or_migration_tools_exist() -> None:
+def test_no_playbook_cutover_or_migration_tools_exist() -> None:
     names = set(_TOOL_CATEGORIES)
-    assert not any("cutover" in name for name in names)
+    assert not any("cutover" in name for name in names if name.startswith("playbook_"))
     assert not any("v1_admission" in name for name in names)
     assert not any("migration_ack" in name for name in names)
     assert not any("migration_unack" in name for name in names)

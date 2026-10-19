@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.database.tables import digest_windows, messages, supervisor_report_requests
 from src.database.queries.morning_report_queries import MorningReportQueriesMixin
 
@@ -18,12 +19,13 @@ _OPEN_STATES = ("reserved", "requested")
 
 class ReportQueriesMixin(MorningReportQueriesMixin):
     async def collect_morning_report_sources(
-        self, *, since: float, until: float, project_ids: tuple[str, ...] | None = None
+        self, *, since: float, until: float, project_ids: tuple[str, ...] | None = None,
+        channel_id: str | None = None
     ) -> dict[str, Any]:
         from src.reports.queries import read_morning_snapshot
 
         return await read_morning_snapshot(
-            self._engine, since=since, until=until, project_ids=project_ids
+            self._engine, since=since, until=until, project_ids=project_ids, channel_id=channel_id
         )
 
     async def reserve_hourly_report_in_transaction(
@@ -168,7 +170,7 @@ class ReportQueriesMixin(MorningReportQueriesMixin):
                         f"Hourly report {request_id} is ready. Read the brief with "
                         f"`aq report brief {request_id}` and submit before the deadline."
                     )
-                await conn.execute(
+                await insert_message_with_source_event(conn,
                     pg_insert(messages)
                     .values(
                         id=message_id,

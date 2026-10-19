@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.session_summary_failed_preparation_type_0 import SessionSummaryFailedPreparationType0
+
 
 T = TypeVar("T", bound="SessionSummary")
 
@@ -44,6 +48,7 @@ class SessionSummary:
             claim_failure_count (int | Unset):  Default: 0.
             claim_failure_reason (None | str | Unset):
             claim_failure_at (float | None | Unset):
+            failed_preparation (None | SessionSummaryFailedPreparationType0 | Unset):
             quarantined_at (float | None | Unset):
             sleep_reason (None | str | Unset):
             epoch (None | str | Unset):
@@ -75,6 +80,7 @@ class SessionSummary:
     claim_failure_count: int | Unset = 0
     claim_failure_reason: None | str | Unset = UNSET
     claim_failure_at: float | None | Unset = UNSET
+    failed_preparation: None | SessionSummaryFailedPreparationType0 | Unset = UNSET
     quarantined_at: float | None | Unset = UNSET
     sleep_reason: None | str | Unset = UNSET
     epoch: None | str | Unset = UNSET
@@ -83,6 +89,8 @@ class SessionSummary:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.session_summary_failed_preparation_type_0 import SessionSummaryFailedPreparationType0
+
         id = self.id
 
         name = self.name
@@ -207,6 +215,14 @@ class SessionSummary:
         else:
             claim_failure_at = self.claim_failure_at
 
+        failed_preparation: dict[str, Any] | None | Unset
+        if isinstance(self.failed_preparation, Unset):
+            failed_preparation = UNSET
+        elif isinstance(self.failed_preparation, SessionSummaryFailedPreparationType0):
+            failed_preparation = self.failed_preparation.to_dict()
+        else:
+            failed_preparation = self.failed_preparation
+
         quarantined_at: float | None | Unset
         if isinstance(self.quarantined_at, Unset):
             quarantined_at = UNSET
@@ -281,6 +297,8 @@ class SessionSummary:
             field_dict["claim_failure_reason"] = claim_failure_reason
         if claim_failure_at is not UNSET:
             field_dict["claim_failure_at"] = claim_failure_at
+        if failed_preparation is not UNSET:
+            field_dict["failed_preparation"] = failed_preparation
         if quarantined_at is not UNSET:
             field_dict["quarantined_at"] = quarantined_at
         if sleep_reason is not UNSET:
@@ -296,6 +314,8 @@ class SessionSummary:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.session_summary_failed_preparation_type_0 import SessionSummaryFailedPreparationType0
+
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -478,6 +498,23 @@ class SessionSummary:
 
         claim_failure_at = _parse_claim_failure_at(d.pop("claim_failure_at", UNSET))
 
+        def _parse_failed_preparation(data: object) -> None | SessionSummaryFailedPreparationType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                failed_preparation_type_0 = SessionSummaryFailedPreparationType0.from_dict(data)
+
+                return failed_preparation_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | SessionSummaryFailedPreparationType0 | Unset, data)
+
+        failed_preparation = _parse_failed_preparation(d.pop("failed_preparation", UNSET))
+
         def _parse_quarantined_at(data: object) -> float | None | Unset:
             if data is None:
                 return data
@@ -534,6 +571,7 @@ class SessionSummary:
             claim_failure_count=claim_failure_count,
             claim_failure_reason=claim_failure_reason,
             claim_failure_at=claim_failure_at,
+            failed_preparation=failed_preparation,
             quarantined_at=quarantined_at,
             sleep_reason=sleep_reason,
             epoch=epoch,

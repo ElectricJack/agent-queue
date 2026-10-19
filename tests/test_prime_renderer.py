@@ -94,6 +94,9 @@ class TestGoldenAssembly:
 
         assert "Operator-customized role." in section.body
         assert ("Never mass-pause" in section.body) == (profile_id == "supervisor")
+        assert ("with the train off, train controls" in section.body) == (
+            profile_id == "supervisor"
+        )
         assert path.read_text() == "## Role\nOperator-customized role.\n"
 
     async def test_an_unrouted_task_takes_no_role_sections(self, db, config):

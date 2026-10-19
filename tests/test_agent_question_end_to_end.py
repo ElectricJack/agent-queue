@@ -19,6 +19,7 @@ from fastapi import FastAPI, Request
 from src.api.auth import RequestScope
 from src.api.dependencies import get_command_handler
 from src.api.execute import router
+from src.asks.models import SourceIdentity
 from src.commands.handler import CommandHandler
 from src.config import AppConfig
 from src.database import Database
@@ -200,6 +201,17 @@ async def capture(flow):
     return rows[0]
 
 
+async def decide_question(flow, question_id, text="Proceed"):
+    ask = await flow.handler._publish_source_ask(
+        SourceIdentity("p", "question", question_id, {"id": question_id}))
+    args = {"ask_id": ask["id"], "expected": {k: ask[k] for k in (
+        "decision_generation", "source_fingerprint", "feedback_version")},
+        "option_key": "answer", "overall_note": text, "idempotency_key": "question-decision"}
+    preview = await flow.handler.execute("ask_prepare_decision", args)
+    assert preview["success"], preview
+    return await flow.handler.execute("ask_decide", {**args, "preview_id": preview["preview"]["id"]})
+
+
 async def test_codex_question_survives_restart_and_answer_waits_for_draft(flow):
     q = await capture(flow)
     # Recreate watcher with zero offsets, like a daemon restart.
@@ -227,9 +239,7 @@ async def test_codex_question_survives_restart_and_answer_waits_for_draft(flow):
         instance_token="supervisor-instance",
     )
     await flow.db.create_session(supervisor)
-    applied = await flow.handler.execute(
-        "escalation_apply_reply",
-        {
+    args = {
             "escalation_id": escalated["escalation_id"],
             "reply_id": accepted["reply"]["id"],
             "expected_revision": accepted["escalation"]["revision"],
@@ -243,10 +253,16 @@ async def test_codex_question_survives_restart_and_answer_waits_for_draft(flow):
                 "project_id": "p",
                 "elevated": True,
             },
-        },
-    )
-    assert applied["success"] is True
-    assert applied["escalation"]["state"] == "resolved"
+        }
+    legacy = await flow.handler.execute("escalation_apply_reply", args)
+    assert legacy["error_code"] == "ask.context_missing"
+    args["expected"] = legacy["expected"]
+    preview = await flow.handler.execute("escalation_apply_reply", {**args, "prepare": True})
+    assert preview["success"], preview
+    args["preview_id"] = preview["preview"]["id"]
+    applied = await flow.handler.execute("escalation_apply_reply", args)
+    assert applied["application_state"] == "unknown", applied
+    assert (await flow.db.get_escalation(escalated["escalation_id"]))["state"] == "reply_received"
     await flow.service.tick()
     assert flow.terminal.submissions == []
     assert (await flow.db.get_agent_question(q["id"]))["state"] == "answered"
@@ -254,6 +270,11 @@ async def test_codex_question_survives_restart_and_answer_waits_for_draft(flow):
     await flow.service.tick()
     await flow.service.tick()
     assert len(flow.terminal.submissions) == 1
+    reconciled = await flow.handler.execute("ask_retry_operation", {
+        "decision_id": applied["decision_id"]})
+    assert reconciled["success"], reconciled
+    assert reconciled["escalation"]["state"] == "resolved"
+    assert (await flow.db.get_agent_question(q["id"]))["answer"] == "Keep projectless runs projectless."
     handle, text = flow.terminal.submissions[0]
     assert handle.name == "s-task" and handle.instance_token == "original-instance"
     # One line naming the durable answer, which the asking worker reads through
@@ -298,29 +319,9 @@ async def test_worker_cannot_spoof_human_answer_through_execute(flow):
 
 async def test_answer_cannot_follow_reused_tmux_name_to_replacement(flow):
     q = await capture(flow)
-    escalated = await flow.service.escalate(q["id"], "Human decision remains")
-    accepted = await flow.db.accept_escalation_reply(
-        escalated["escalation_id"],
-        transport="dashboard",
-        external_message_id="replacement-test-answer",
-        verified_actor="human:dashboard:test",
-        text="Proceed",
-    )
-    await flow.db.begin_escalation_action(
-        escalated["escalation_id"],
-        reply_id=accepted["reply"]["id"],
-        expected_revision=accepted["escalation"]["revision"],
-        idempotency_key="replacement-test-action",
-        action_kind="question_answer",
-        target_id=q["id"],
-        parameters={},
-        executor="session:test-supervisor",
-    )
-    answer = await flow.service.answer(
-        q["id"], "Proceed", actor="human:dashboard", human=True,
-        verified_escalation_id=escalated["escalation_id"],
-    )
-    assert answer["state"] == "answered"
+    answer = await decide_question(flow, q["id"])
+    assert answer["application_state"] == "unknown", answer
+    assert (await flow.db.get_agent_question(q["id"]))["state"] == "answered"
     await flow.db.update_session(flow.session.id, state="stopped", desired_state="stopped")
     replacement = replace(
         flow.session,
@@ -406,3 +407,53 @@ async def test_elevated_supervisor_cannot_supply_human_only_approval(flow):
     assert response.json() == {"ok": False, "error": "this question requires a human answer"}
     assert (await flow.db.get_agent_question(q["id"]))["state"] == "supervisor"
     assert flow.terminal.submissions == []
+
+
+async def test_expired_claim_cannot_accept_a_prepared_question(flow):
+    q = await capture(flow)
+    ask = await flow.handler._publish_source_ask(SourceIdentity("p", "question", q["id"], {"id": q["id"]}))
+    args = {"ask_id": ask["id"], "expected": {k: ask[k] for k in (
+        "decision_generation", "source_fingerprint", "feedback_version")},
+        "option_key": "answer", "overall_note": "Proceed", "idempotency_key": "stale-question"}
+    preview = await flow.handler.execute("ask_prepare_decision", args)
+    assert preview["success"], preview
+    await flow.db.update_task("task", claim_epoch=8)
+    result = await flow.handler.execute("ask_decide", {**args, "preview_id": preview["preview"]["id"]})
+    assert result["error_code"] == "ask.stale_source"
+    assert (await flow.db.get_agent_question(q["id"]))["ask_decision_id"] is None
+    assert flow.terminal.submissions == []
+
+
+async def test_question_answer_while_paused_does_not_resume_worker(flow):
+    q = await capture(flow)
+    await flow.db.update_project("p", status="PAUSED")
+    flow.terminal.draft = False
+    result = await decide_question(flow, q["id"])
+    assert result["application_state"] == "applying", result
+    await flow.service.tick()
+    assert flow.terminal.submissions == []
+    assert (await flow.db.get_agent_question(q["id"]))["state"] == "answered"
+
+    from src.commands.principal import ExecutionPrincipal, principal_context
+    await flow.db.update_project("p", status="ACTIVE")
+    with principal_context(ExecutionPrincipal.service("ask-reconciliation")):
+        resumed = await flow.handler._cmd_ask_retry_operation({"decision_id": result["decision_id"]})
+    assert resumed["success"] and resumed["application_state"] == "applied", resumed
+    assert len(flow.terminal.submissions) == 1
+
+
+async def test_crash_after_terminal_submission_never_sends_twice(flow):
+    q = await capture(flow)
+    flow.terminal.draft = False
+    nudge = flow.terminal.nudge
+    async def crash(handle, text):
+        await nudge(handle, text)
+        raise RuntimeError("lost terminal acknowledgement")
+    flow.terminal.nudge = crash
+    result = await decide_question(flow, q["id"])
+    assert result["application_state"] == "unknown", result
+    await flow.service.tick()
+    retry = await flow.handler.execute("ask_retry_operation", {"decision_id": result["decision_id"]})
+    assert retry["application_state"] == "unknown"
+    assert len(flow.terminal.submissions) == 1
+    assert (await flow.db.get_agent_question(q["id"]))["submission_state"] == "unknown"

@@ -48,7 +48,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from src.models import TaskType
+from src.models import TaskStatus, TaskType
 from src.profiles.catalog import worker_route
 from src.routing.policy import (
     CLASSIFICATION_FLAGS,
@@ -453,6 +453,22 @@ class _Rule:
 #: The risk a policy that reads risks applies when the classifier answered
 #: without one, or failed: not knowing is not evidence the change is safe.
 ASSUMED_RISK = "medium"
+#: Journaled reasons that are rework after a passing attempt, not a verdict on
+#: the class's ability: they never count toward ``escalate.after_failures``.
+REWORK_REASONS = frozenset({"reopen_with_feedback"})
+
+
+def counts_toward_escalation(attempt: Mapping[str, Any]) -> bool:
+    """Whether a journaled attempt is a capability failure for escalation.
+
+    Review feedback on a COMPLETED task reworks a passing attempt; it is not a
+    failure of the class that produced it.  Rows journaled before the journal
+    stopped recording rework are excluded here too.
+    """
+    return (
+        attempt.get("reason") not in REWORK_REASONS
+        and attempt.get("previous_status") != TaskStatus.COMPLETED.value
+    )
 
 
 def _effective_risk(
@@ -531,6 +547,7 @@ def _rule(
         failures = [
             dict(attempt) for attempt in task.failed_attempts
             if attempt.get("intelligence_class") == class_id
+            and counts_toward_escalation(attempt)
         ]
         chosen = class_id
         raised_from = raised_for_risk = None

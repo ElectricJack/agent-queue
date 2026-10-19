@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import and_, case, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.waits.sources import insert_message_with_source_event
 from src.agent_waits import (
     MAX_DIGEST_BYTES,
     TERMINAL_TASK_STATUSES,
@@ -522,7 +523,7 @@ class AgentWaitQueriesMixin:
         # Savepoint keeps the resolved row as outbox intent if insertion fails.
         try:
             async with conn.begin_nested():
-                await conn.execute(
+                await insert_message_with_source_event(conn,
                     pg_insert(messages)
                     .values(
                         id=message_id,
@@ -725,7 +726,7 @@ class AgentWaitQueriesMixin:
                 session["last_claim_epoch"] is None
                 or session["last_claim_epoch"] == row["claim_epoch"]
             )
-            and task["status"] in ("ASSIGNED", "IN_PROGRESS")
+            and task["status"] in ("ASSIGNED", "IN_PROGRESS", "WAITING")
             and task["assigned_agent_id"] == session["agent_id"]
             and (session["lifecycle"] != "pool" or session["claim_phase"] == "active")
         )

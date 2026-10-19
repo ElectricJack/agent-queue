@@ -6,8 +6,10 @@ import time
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import agents, events, sessions, task_results, tasks, workspaces
 from src.models import Agent, AgentState, TaskStatus
+from src.waits.sources import execute_task_status_mutation
 
 
 class AgentQueryMixin:
@@ -121,7 +123,7 @@ class AgentQueryMixin:
                     (
                         TaskStatus.ASSIGNED.value,
                         TaskStatus.IN_PROGRESS.value,
-                        TaskStatus.WAITING_INPUT.value,
+                        TaskStatus.WAITING_INPUT.value, TaskStatus.WAITING.value,
                     )
                 ),
             )
@@ -184,7 +186,7 @@ class AgentQueryMixin:
                     (
                         TaskStatus.ASSIGNED.value,
                         TaskStatus.IN_PROGRESS.value,
-                        TaskStatus.WAITING_INPUT.value,
+                        TaskStatus.WAITING_INPUT.value, TaskStatus.WAITING.value,
                     )
                 ),
             )
@@ -284,12 +286,13 @@ class AgentQueryMixin:
                     )
                     .exists()
                 )
-                result = await conn.execute(
-                    update(tasks)
+                result = await execute_task_status_mutation(conn, update(tasks)
                     .where(
                         tasks.c.id == task_id,
                         tasks.c.status == TaskStatus.READY.value,
                         tasks.c.is_blocked == 0,
+                        # Refusal reason ingest_held: the batch awaits review.
+                        not_ingest_held(),
                         ~live_task,
                         ~busy_owner,
                     )

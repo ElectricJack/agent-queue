@@ -5,7 +5,7 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.wait_list_request import WaitListRequest
+from ...models.wait_list_args import WaitListArgs
 from ...models.wait_list_response import WaitListResponse
 from ...models.wait_list_response_422 import WaitListResponse422
 from ...types import Response
@@ -13,7 +13,7 @@ from ...types import Response
 
 def _get_kwargs(
     *,
-    body: WaitListRequest,
+    body: WaitListArgs,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -63,14 +63,14 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: WaitListRequest,
+    body: WaitListArgs,
 ) -> Response[WaitListResponse | WaitListResponse422]:
     """List the owner's durable wait history.
 
      List the owner's durable wait history.
 
     Args:
-        body (WaitListRequest):
+        body (WaitListArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -94,14 +94,14 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: WaitListRequest,
+    body: WaitListArgs,
 ) -> WaitListResponse | WaitListResponse422 | None:
     """List the owner's durable wait history.
 
      List the owner's durable wait history.
 
     Args:
-        body (WaitListRequest):
+        body (WaitListArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -120,14 +120,14 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: WaitListRequest,
+    body: WaitListArgs,
 ) -> Response[WaitListResponse | WaitListResponse422]:
     """List the owner's durable wait history.
 
      List the owner's durable wait history.
 
     Args:
-        body (WaitListRequest):
+        body (WaitListArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -149,14 +149,14 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: WaitListRequest,
+    body: WaitListArgs,
 ) -> WaitListResponse | WaitListResponse422 | None:
     """List the owner's durable wait history.
 
      List the owner's durable wait history.
 
     Args:
-        body (WaitListRequest):
+        body (WaitListArgs):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

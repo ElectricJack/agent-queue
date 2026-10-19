@@ -13,6 +13,7 @@ def make_bot(*, authorized=("42",), cutover=True):
         discord=DiscordConfig(bot_token="t", guild_id="1", authorized_users=list(authorized))
     )
     bot.orchestrator = SimpleNamespace(_command_handler=MagicMock())
+    bot.orchestrator._command_handler.db.ask_channel_enabled = AsyncMock(return_value=False)
     bot._cutover_complete = MagicMock()
     bot._cutover_complete.is_set.return_value = cutover
     bot._cutover_report = SimpleNamespace(status="complete")

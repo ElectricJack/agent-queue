@@ -25,6 +25,8 @@ import yaml
 from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from src.waits.sources import execute_task_status_mutation
+from src.waits.sources import execute_batch_mutation
 from src.database.tables import (
     archived_tasks,
     integration_batch_members,
@@ -98,6 +100,9 @@ TRAIN_HOLDER = "service:integration-train"
 # detached validation clone sees it. Never pushed.
 RETAINED_CANDIDATE_PREFIX = "refs/heads/aq/train-candidate/"
 MEMBER_LIMIT = 200
+# Leave time in the existing visit deadline to freeze and advance an admitted
+# prefix. This is a cooperative quantum, not a deadline for a fenced writer.
+SELECTION_WORK_SECONDS = 60.0
 #: A promotion lane is rebuilt on every visit; its subject trust and App client
 #: are kept per batch this long after last use, so a held request does not
 #: refetch S's manifest each time. S is immutable; the key carries the policy.
@@ -545,7 +550,7 @@ class BackmergeAdmission:
                         and previous["origin_ref"] == origin_ref
                         and old_id != tid
                         and await self.gitops.is_ancestor(repo, previous["source_sha"], source)):
-                    await conn.execute(update(tasks).where(tasks.c.id == old_id)
+                    await execute_task_status_mutation(conn, update(tasks).where(tasks.c.id == old_id)
                                        .values(status="FAILED", updated_at=self.clock()))
                     await conn.execute(insert(task_metadata).values(task_id=old_id,
                         key="backmerge_result", value=json.dumps({"reason": "superseded", "by": tid}))
@@ -644,6 +649,13 @@ class DatabaseBatches:
         self.repaired_source_gate = getattr(pr_gate, "admit_repaired_source", None)
         self.cleanup = cleanup
         self._refresh_snapshots = {}
+        # Scheduling hints only: every continuation reloads rows and Git proof.
+        # Advance before awaiting a candidate so cancellation cannot pin a prefix.
+        self._selection_after: dict[tuple[str, str, str], str] = {}
+        self._selection_clock = time.monotonic
+        # Refusal diagnostics only, never input to admission or publication.
+        # Frozen visits retain explicitly dated observations without rescanning.
+        self._frontier_observations: dict[tuple[str, str, str], tuple[dict, ...]] = {}
         #: epic task id -> ((epic head, default head), refresh detail)
         self._conflict_refreshes: dict[str, tuple[tuple[str, str], dict[str, Any]]] = {}
 
@@ -719,8 +731,23 @@ class DatabaseBatches:
         stacks = StackedBranches(self.db, clock=self.clock)
         admission_blockers = []
         delivered_ids = set()
-        candidates = (await self._candidate_ids(target, snapshot, blockers=admission_blockers,
-                                                delivered_ids=delivered_ids)
+        current = await self.current(target)
+        if current is None:
+            from src.integration.repository_incidents import admission_holds
+
+            incidents = await admission_holds(self.db, target.project_id)
+            if incidents:
+                return BatchSelection(blockers=({
+                    "code": "retained_repository_recovery", "ref": target.project_id,
+                    "detail": "New project batches wait for retained Git cache recovery",
+                    "incident_ids": [item["id"] for item in incidents],
+                },))
+        frozen_members = await service.store.members(current.id) if current is not None else ()
+        # A frozen batch already owns this target. New candidates must not delay
+        # its checks or its existing repair; publication revalidates its members.
+        candidates = ([member.task_id for member in frozen_members] if current is not None else
+                      await self._candidate_ids(target, snapshot, blockers=admission_blockers,
+                                                delivered_ids=delivered_ids, continuation=True)
                       if not snapshot.error and snapshot.target_oid else [])
         async with self.db._engine.connect() as conn:
             stacked_ids = (await conn.execute(select(task_branch_origins.c.task_id).where(
@@ -728,7 +755,13 @@ class DatabaseBatches:
                     task_branch_origins.c.repository_id == target.repository_id,
                     task_branch_origins.c.retired_at.is_(None),
                     task_branch_origins.c.stack_snapshot.is_not(None)))).scalars().all()
-        for task_id in stacked_ids:
+        refresh_deadline = self._selection_clock() + SELECTION_WORK_SECONDS
+        for index, task_id in enumerate(sorted(stacked_ids, key=candidates.index)):
+            if index and current is None and self._selection_clock() >= refresh_deadline:
+                selection_count("stack_refresh_deferred", len(stacked_ids) - index)
+                break  # Unrefreshed stacks still face current/source containment guards.
+            if current is None:
+                self._selection_after[target.key] = task_id
             with selection_stage("stack_refresh", items=1):
                 outcome = await _finish_on_cancel(
                     stacks.refresh(task_id, service.gitops, snapshot=snapshot))
@@ -743,15 +776,38 @@ class DatabaseBatches:
             # Do not try to freeze a replacement without a release instruction.
             return BatchSelection(blockers=tuple(blockers))
         blockers.extend(admission_blockers)
-        current = await self.current(target)
-        frozen_members = await service.store.members(current.id) if current is not None else ()
+        if current is not None and current.repair_attempt_count:
+            from src.integration.repair import OrdinaryRepairService, ordinary_repair_id
+
+            await OrdinaryRepairService(self.db).resume_completed(
+                ordinary_repair_id(current.id, current.repair_attempt_count),
+                batch_id=current.id, attempt=current.repair_attempt_count)
+        if current is not None and target.kind != "promotion":
+            policy_blocker = await self._supersede_removed_checks(
+                target, snapshot, service, current, frozen_members,
+            )
+            if policy_blocker:
+                return BatchSelection(
+                    current if current.intent == "paused" else None,
+                    frozen_members if current.intent == "paused" else (),
+                    (policy_blocker,), existing=True,
+                )
         pending = None
+        evaluated_ids: set[str] = set()
         if not snapshot.error and snapshot.target_oid:
             pending = await self.pending(target, snapshot, blockers=blockers,
                                          gate_pr=current is None,
                                          include_ids={member.task_id for member in frozen_members},
-                                         candidate_ids=candidates, delivered_ids=delivered_ids)
+                                         candidate_ids=candidates, delivered_ids=delivered_ids,
+                                         evaluated_ids=evaluated_ids,
+                                         selection_deadline=(self._selection_clock() + SELECTION_WORK_SECONDS
+                                                             if current is None else None))
             await _finish_on_cancel(self._refresh_conflicting_epics(target, snapshot, blockers))
+            if current is None:
+                self._frontier_observations[target.key] = tuple({
+                    **blocker, "observation": "last_selection", "observed_at": self.clock(),
+                    "observed_target_sha": snapshot.target_oid,
+                } for blocker in blockers if blocker.get("task_id"))
         if current is not None:
             if target.kind == "root":
                 await self._clear_admissions(target)
@@ -803,16 +859,25 @@ class DatabaseBatches:
                         "task_ids": sorted(delivered),
                     })
                     return BatchSelection(blockers=tuple(blockers))
+            # These previous refusals explain sources outside the frozen batch.
+            # Append only after its fresh member guards: diagnostics confer no
+            # authority and cannot withhold or release the current batch.
+            reported = {blocker.get("task_id") for blocker in blockers}
+            member_ids = {member.task_id for member in members}
+            blockers.extend(blocker for blocker in self._frontier_observations.get(target.key, ())
+                            if blocker["task_id"] not in reported | member_ids)
             return BatchSelection(current, members, tuple(blockers), existing=True)
         if pending is None:
-            if target.kind == "root" and not snapshot.error and snapshot.target_oid and not blockers:
-                await self._clear_admissions(target)
+            if target.kind == "root" and not snapshot.error and snapshot.target_oid:
+                await self._clear_admissions(target,
+                    evaluated_ids=evaluated_ids if blockers else None)
             return BatchSelection(blockers=tuple(blockers))
         members, requests, dependencies = pending
         now = self.clock()
         if target.kind == "root":
             policy = await self._train_policy(target)
-            admissions = await self._admission_times(target, members, requests, now)
+            admissions = await self._admission_times(target, members, requests, now,
+                                                    evaluated_ids=evaluated_ids)
             first, latest = min(admissions), max(admissions)
             seal_at = min(latest + policy.cadence_seconds, first + policy.settling_cap_seconds)
             if not seal_now and now < seal_at:
@@ -849,6 +914,44 @@ class DatabaseBatches:
     async def current(self, target: TrainTarget) -> Batch | None:
         return next((batch for batch, refreshed in await self._open_batches(target)
                      if refreshed is None), None)
+
+    async def _supersede_removed_checks(self, target, snapshot, service, batch, members):
+        """Release obsolete check pins without rewriting frozen policy or sources."""
+        from src.operator_decisions import OperatorDecisions
+
+        boundary = "parent" if target.kind == "epic" else "root"
+        removed = await service.store.removed_required_checks(batch, boundary)
+        if not removed:
+            return None
+        detail = f"frozen {boundary} checks removed from project policy: {', '.join(removed)}"
+        blocker = {"code": "batch_required_checks_removed", "ref": batch.id,
+                   "batch_id": batch.id, "boundary": boundary,
+                   "removed_checks": list(removed), "released": False, "detail": detail}
+        if batch.intent != "open" or await OperatorDecisions(self.db).holds("batch", batch.id):
+            return {**blocker, "detail": detail + "; explicit hold retains the batch; "
+                    "resume it through the supervisor control to allow replacement"}
+        if snapshot.error or not snapshot.target_oid or not members:
+            return {**blocker, "detail": detail + "; Git evidence is unavailable"}
+        proofs = [await snapshot.contains_source(m.task_id, m.source_sha, m.base_sha)
+                  for m in members]
+        if any(proof is None for proof in proofs):
+            return {**blocker, "detail": detail + "; batch delivery cannot be observed"}
+        if all(proofs) and not (batch.epic_sync or batch.epic_refresh):
+            # Git inclusion remains authoritative even if the policy changed
+            # between publication and the visit which records its settlement.
+            return None
+        try:
+            released = await service.store.supersede(
+                batch, members[0].task_id, reason=detail + "; a new batch replaces it",
+                boundary=boundary, removed_checks=removed, authorize=snapshot.is_fresh,
+            )
+        except SupersedeMemberUnavailable as exc:
+            return {**blocker, "code": exc.code, "task_id": exc.task_id,
+                    "detail": f"{detail}; {exc}; restore the member identity or have a "
+                              f"supervisor preview aq integration abort-batch {batch.id}"}
+        return {**blocker, "released": released, "detail": detail + (
+            "; inputs return to admission for a new batch" if released else
+            "; policy, batch or target changed; recheck on the next visit")}
 
     async def _release_undeliverable_batch(
         self, service: BatchService, batch: Batch, undeliverable: dict[str, dict],
@@ -948,6 +1051,7 @@ class DatabaseBatches:
     async def _admission_times(
         self, target: TrainTarget, members: tuple[BatchMember, ...],
         requests: dict[str, DeliveryRequest], now: float,
+        *, evaluated_ids: set[str] | None = None,
     ) -> tuple[float, ...]:
         """Durable timing hints for currently PR-admitted exact completions.
 
@@ -958,10 +1062,13 @@ class DatabaseBatches:
         key = self._admission_key(target)
         times = []
         async with self.db.immediate() as conn:
-            await conn.execute(delete(task_metadata).where(
+            removal = delete(task_metadata).where(
                 task_metadata.c.key == key,
                 task_metadata.c.task_id.not_in([member.task_id for member in members]),
-            ))
+            )
+            if evaluated_ids is not None:
+                removal = removal.where(task_metadata.c.task_id.in_(evaluated_ids))
+            await conn.execute(removal)
             for member in members:
                 request = requests[member.task_id]
                 identity = [request.completion_id or request.legacy_generation,
@@ -987,11 +1094,14 @@ class DatabaseBatches:
                 times.append(admitted)
         return tuple(times)
 
-    async def _clear_admissions(self, target: TrainTarget) -> None:
+    async def _clear_admissions(self, target: TrainTarget, *, evaluated_ids=None) -> None:
         async with self.db.immediate() as conn:
-            await conn.execute(delete(task_metadata).where(
+            removal = delete(task_metadata).where(
                 task_metadata.c.key == self._admission_key(target),
-            ))
+            )
+            if evaluated_ids is not None:
+                removal = removal.where(task_metadata.c.task_id.in_(evaluated_ids))
+            await conn.execute(removal)
 
     async def _train_policy(self, target: TrainTarget) -> IntegrationTrainPolicy:
         async with self.db._engine.connect() as conn:
@@ -1003,7 +1113,7 @@ class DatabaseBatches:
 
     async def _candidate_ids(self, target: TrainTarget, snapshot: GitTruthSnapshot, *,
                              include_ids: set[str] | None = None, blockers=None,
-                             delivered_ids: set[str] | None = None):
+                             delivered_ids: set[str] | None = None, continuation=False):
         """Only undelivered completions routed to this target's member window."""
         if target.kind == "promotion":
             # A promotion freezes its request, never a frontier of completions.
@@ -1032,6 +1142,20 @@ class DatabaseBatches:
         if delivered_ids is not None:
             delivered_ids.update(delivered_to_project)
         ids = [task_id for task_id in ids if task_id not in delivered_to_project]
+        if continuation:
+            # Rotate the full owed frontier before the member cap; otherwise
+            # older work outside the newest window could never be attempted.
+            after = self._selection_after.get(target.key, "")
+            ids = [tid for tid in ids if tid > after] + [tid for tid in ids if tid <= after]
+            selection_count("candidate_window_deferred", max(0, len(ids) - self.limit))
+            if blockers is not None and len(ids) > self.limit:
+                blockers.append({
+                    "code": "selection_deferred", "ref": target.target_ref,
+                    "detail": "Candidate window capped; remaining sources need a fresh visit",
+                    "remaining": len(ids) - self.limit,
+                    "after_task_id": after or None,
+                })
+            return list(dict.fromkeys([*ids[:self.limit], *sorted(include_ids or ())]))
         async with self.db._engine.connect() as conn:
             if len(ids) > self.limit:
                 frozen_ids = [task_id for task_id in ids if task_id in (include_ids or ())]
@@ -1048,6 +1172,8 @@ class DatabaseBatches:
         include_ids: set[str] | None = None,
         candidate_ids: list[str] | None = None,
         delivered_ids: set[str] | None = None,
+        selection_deadline: float | None = None,
+        evaluated_ids: set[str] | None = None,
     ):
         """Exact pending inputs; report unknown delivery that prevents batching."""
         if target.kind == "promotion":
@@ -1147,7 +1273,22 @@ class DatabaseBatches:
         from src.integration.stacked_branches import StackedBranches
 
         stacks = StackedBranches(self.db)
-        for task_id in ids:
+        for index, task_id in enumerate(ids):
+            if (index and selection_deadline is not None
+                    and self._selection_clock() >= selection_deadline):
+                selection_count("candidate_work_deferred", len(ids) - index)
+                if blockers is not None:
+                    blockers.append({
+                        "code": "selection_deferred", "ref": target.target_ref,
+                        "detail": "Selection work quantum spent; remaining sources need a fresh visit",
+                        "remaining": len(ids) - index,
+                        "after_task_id": self._selection_after.get(target.key),
+                    })
+                break
+            if selection_deadline is not None:
+                self._selection_after[target.key] = task_id
+            if evaluated_ids is not None:
+                evaluated_ids.add(task_id)
             request, base = requests.get(task_id), bases.get(task_id)
             if task_id in repairs:
                 continue
@@ -1554,8 +1695,9 @@ class DatabaseBatches:
                 source_base_on=epic_source_base_on).read_on(conn, ids[0])
         if (not graph.node(graph.epic_id).container
                 or graph.repository_id != target.repository_id or graph.project_holds
-                or any(node.holds or node.task_id != graph.node(graph.epic_id).parent_id
-                       and node.required and node.request.task_status != "COMPLETED"
+                or any(node.required and (node.holds
+                       or node.task_id != graph.node(graph.epic_id).parent_id
+                       and node.request.task_status != "COMPLETED")
                        for node in graph.nodes)):
             return None
         return graph
@@ -1650,7 +1792,7 @@ class DatabaseBatches:
                 from src.integration.promotion_steps import settle_promotion
 
                 await settle_promotion(self.db, batch, observation, clock=self.clock, conn=conn)
-            await conn.execute(
+            await execute_batch_mutation(conn,
                 update(integration_batches)
                 .where(integration_batches.c.id == batch.id,
                        integration_batches.c.target_ref.is_not(None),
@@ -2255,7 +2397,7 @@ class DaemonLanes:
             refused: list[dict] = []
             for node in graph.nodes:
                 head = snapshot.for_target(node.branch_ref).target_oid if node.branch_ref else None
-                if not node.container or not head:
+                if not node.required or not node.container or not head:
                     continue
                 if not node.policy.check_names:
                     resolved[(head, node.policy)] = None

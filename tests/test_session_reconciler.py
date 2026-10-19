@@ -364,6 +364,224 @@ async def _claimed_pool_session(
 
 
 class TestWorkerContextRecovery:
+    async def test_retained_first_failure_would_reach_generic_orphan_attention(
+        self, db, provider, config, registry, bus, tmp_path
+    ):
+        """Replay the old seam explicitly, without the new disposition step."""
+        from src.sessions.worker_recovery import record_failure
+
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        await db.update_task("t1", branch_name="aq/t1")
+        target = BranchKey(repository_id="repo", branch="aq/t1")
+        ownership = BranchOwnership(db)
+        fence = await ownership.acquire(target, "t1", "worker")
+        await ownership.attach(fence, row.id, "ws1", agent_id="a1")
+        failure = await record_failure(db, row, await db.get_task("t1"), "context_thrash", now=NOW)
+        assert failure["count"] == 1
+        await provider.stop(SessionHandle(row.name, row.provider, row.instance_token))
+        release = await db.terminate_pool_session(row.id, reason="context_thrash")
+        assert not release.released
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        await db.update_session_instance(
+            row.id, row.instance_token, state="stopped", desired_state="stopped",
+            end_reason="context_thrash",
+        )
+        rec = SessionReconciler(db, config, registry, bus=bus)
+        await rec._step_orphans([], NOW + 1)
+        assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
+        assert await db.get_task_meta("t1", "needs_attention") == "session_not_live"
+        assert (await ownership.get_owner(target))["handoff_state"] == "attached"
+
+    @pytest.mark.parametrize("changed", ["epoch", "instance", "manual_pause", "manual_block", "route"])
+    async def test_late_recovery_cannot_reset_controls_or_record_a_successor_disposition(
+        self, db, provider, tmp_path, changed
+    ):
+        from src.sessions.worker_recovery import (
+            DISPOSITION_KEY,
+            pool_recovery_disposition,
+            prepare_guarded_recovery,
+            record_failure,
+        )
+
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        task = await db.get_task("t1")
+        failure = await record_failure(db, row, task, "context_thrash", now=NOW)
+        await db.set_task_meta("t1", "session_resume_key", "successor-context")
+        await db.set_task_meta("t1", META_STALL_NUDGES, "2")
+        if changed == "epoch":
+            await db.update_task("t1", claim_epoch=task.claim_epoch + 1)
+        elif changed == "instance":
+            await db.update_session(row.id, instance_token="successor-instance")
+        elif changed == "manual_pause":
+            await db.transition_task("t1", TaskStatus.PAUSED, context="pause_task", resume_after=None)
+        elif changed == "manual_block":
+            await db.transition_task("t1", TaskStatus.BLOCKED, context="stop_task")
+        else:
+            await db.update_task("t1", intelligence_class="deep-high")
+        assert not await prepare_guarded_recovery(db, row, task, failure)
+        await db.update_session(row.id, state="stopped", desired_state="stopped", end_reason="context_thrash")
+        assert await pool_recovery_disposition(db, row, task, failure) is None
+        assert await db.get_task_meta("t1", DISPOSITION_KEY) is None
+        assert await db.get_task_meta("t1", "session_resume_key") == "successor-context"
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "2"
+
+    @pytest.mark.parametrize("handoff_state", ["attached", "handoff_pending", "released", "unconfirmed"])
+    @pytest.mark.parametrize("count", [1, 2])
+    async def test_production_teardown_reports_deferred_first_retry(
+        self, db, provider, config, registry, bus, tmp_path, monkeypatch, handoff_state, count
+    ):
+        from src.database.tables import integration_branch_owners
+        from src.orchestrator.pools import PoolsMixin
+        from src.sessions.worker_recovery import DISPOSITION_KEY, STREAK_KEY
+
+        row = await _claimed_pool_session(db, provider, tmp_path)
+        await db.create_repo(
+            RepoConfig(id="repo", project_id="p1", source_type=RepoSourceType.LINK)
+        )
+        await db.update_task("t1", repo_id="repo", branch_name="aq/t1", created_at=NOW - 6000)
+        target = BranchKey(repository_id="repo", branch="aq/t1")
+        ownership = BranchOwnership(db)
+        fence = await ownership.acquire(target, "t1", "worker")
+        await ownership.attach(fence, row.id, "ws1", agent_id="a1")
+        async with db.immediate() as conn:
+            values = {"handoff_state": "attached" if handoff_state == "unconfirmed" else handoff_state}
+            if handoff_state == "released":
+                values.update(session_id=None, workspace_id=None)
+            await conn.execute(update(integration_branch_owners).values(**values))
+            await conn.execute(task_branch_origins.insert().values(
+                id="origin-t1", task_id="t1", repository_id="repo", branch_name="aq/t1",
+                parent_ref="main", base_sha="a" * 40, creation_generation=0,
+                reserved=True, materialized=True, created_at=NOW - 6000,
+            ))
+        if count == 2:
+            await db.set_task_meta("t1", STREAK_KEY, {
+                "cause": "context_thrash", "count": 1, "session_id": "previous",
+                "instance_token": "previous-instance", "claim_epoch": row.last_claim_epoch - 1,
+            })
+
+        class Orch(PoolsMixin):
+            def __init__(self):
+                self.db, self.config, self.bus = db, config, bus
+                self.session_providers = registry
+                self._running_tasks = {}
+
+        rec = SessionReconciler(db, config, registry, bus=bus, orchestrator=Orch())
+        if handoff_state == "unconfirmed":
+            monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("no stop proof")))
+        provider.feed_output(row.name, "Autocompact is thrashing: context refilled", activity=False)
+        provider.script_death(row.name)
+        await rec._step_exits([row], NOW)
+        current = await db.get_task("t1")
+        if handoff_state == "unconfirmed":
+            assert current.status is (TaskStatus.IN_PROGRESS if count == 1 else TaskStatus.BLOCKED)
+            assert (await db.get_task_meta("t1", DISPOSITION_KEY))["disposition"] == "stop_unconfirmed"
+            assert (await db.get_session(row.id)).state == "running"
+            assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+            assert "task.restarted" not in bus.types()
+            assert "termination is unconfirmed" in (await db.list_task_comments("t1"))["comments"][0]["body"]
+            return
+        if handoff_state == "released":
+            assert current.status is (TaskStatus.READY if count == 1 else TaskStatus.BLOCKED)
+            assert current.assigned_agent_id is None
+            receipt = await db.get_task_meta("t1", DISPOSITION_KEY)
+            assert receipt["disposition"] == ("retry_ready" if count == 1 else "attention_required")
+            assert ("task.restarted" in bus.types()) == (count == 1)
+            assert (await db.get_workspace("ws1")).locked_by_task_id is None
+            assert (await db.get_task_meta("t1", STREAK_KEY))["count"] == count
+            return
+        assert current.status is TaskStatus.BLOCKED
+        reason = "session_context_thrash_handoff_deferred" if count == 1 else "session_context_thrash"
+        assert await db.get_task_meta("t1", "needs_attention") == reason
+        assert current.retry_count == 0
+        stopped = await db.get_session(row.id)
+        assert (stopped.state, stopped.task_id, stopped.claim_phase) == ("stopped", "t1", "active")
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        assert (await ownership.get_owner(target))["fence_token"] == fence.token
+        assert (await db.get_task_meta("t1", STREAK_KEY))["count"] == count
+        receipt = await db.get_task_meta("t1", DISPOSITION_KEY)
+        assert receipt["failure"]["instance_token"] == row.instance_token
+        assert receipt["branch"] == "aq/t1"
+        assert "task.restarted" not in bus.types()
+        comments = await db.list_task_comments("t1")
+        assert "deferred" in comments["comments"][0]["body"]
+        assert "Retrying" not in comments["comments"][0]["body"]
+        # The orphan sweep must not erase the diagnosed cause, and a duplicate
+        # dead-row observation must not count, comment or notify a second time.
+        await rec._step_orphans([], NOW + 1)
+        await rec._step_exits([stopped], NOW + 2)
+        assert await db.get_task_meta("t1", "needs_attention") == reason
+        assert (await db.list_task_comments("t1"))["total"] == comments["total"]
+    @pytest.mark.parametrize("outcome", ["released", "owner_retained", "stop_unconfirmed", "paused"])
+    async def test_first_pool_stall_reports_observed_teardown_without_promising_retry(
+        self, db, provider, installed_wait_reconciler, bus, tmp_path, monkeypatch, outcome
+    ):
+        from src.sessions.worker_recovery import DISPOSITION_KEY
+
+        rec = installed_wait_reconciler
+        rec.bus = bus
+        row = await _claimed_pool_session(db, provider, tmp_path, last_activity=NOW - 1000)
+        task = await db.get_task("t1")
+        if outcome == "owner_retained":
+            ownership = BranchOwnership(db, clock=lambda: NOW)
+            fence = await ownership.acquire(
+                BranchKey(repository_id="repo", branch="aq/test"), "t1", "producer"
+            )
+            await ownership.attach(fence, row.id, "ws1")
+        elif outcome == "stop_unconfirmed":
+            monkeypatch.setattr(provider, "stop", AsyncMock(side_effect=RuntimeError("no proof")))
+        elif outcome == "paused":
+            stop = provider.stop
+
+            async def pause_during_stop(*args, **kwargs):
+                await stop(*args, **kwargs)
+                await db.transition_task("t1", TaskStatus.PAUSED, context="test_pause",
+                                         force=True, resume_after=None)
+
+            monkeypatch.setattr(provider, "stop", pause_during_stop)
+
+        record = await rec._record_worker_failure(row, task, "stalled", NOW)
+        await rec._recover_guarded_failure(provider, row, task, record, NOW)
+
+        current = await db.get_task("t1")
+        stopped = await db.get_session(row.id)
+        comments = (await db.list_task_comments("t1", limit=5))["comments"]
+        assert (await db.get_task_meta("t1", "worker_recovery_note"))["count"] == 1
+        if outcome == "paused":
+            # A newer manual decision supersedes the historical failure report.
+            assert current.status is TaskStatus.PAUSED
+            assert stopped.task_id == task.id
+            assert await db.get_task_meta("t1", DISPOSITION_KEY) is None
+            assert not any(c["author_id"] == "session-reconciler" for c in comments)
+            assert "task.restarted" not in bus.types()
+            return
+        body = next(c["body"] for c in comments if c["author_id"] == "session-reconciler")
+        assert "Retrying" not in body
+        receipt = await db.get_task_meta("t1", DISPOSITION_KEY)
+        if outcome == "released":
+            assert current.status is TaskStatus.READY and current.assigned_agent_id is None
+            assert stopped.state == "stopped" and stopped.task_id is None
+            assert "Task returned to READY" in body
+            assert "subject to recovery controls" in body
+            assert receipt["disposition"] == "retry_ready"
+            assert "task.restarted" in bus.types()
+        else:
+            assert "Continuation deferred" in body
+            assert "task.restarted" not in bus.types()
+            assert stopped.task_id == task.id
+            workspace = (await db.list_workspaces("p1"))[0]
+            assert workspace.locked_by_task_id == task.id
+            if outcome == "owner_retained":
+                assert current.status is TaskStatus.BLOCKED
+                assert stopped.state == "stopped"
+                assert receipt["disposition"] == "handoff_deferred"
+                assert bus.payload("task.needs_attention")["reason"] == "session_stalled_handoff_deferred"
+                assert await db.get_task_meta("t1", "needs_attention") == "session_stalled_handoff_deferred"
+            else:
+                assert current.status is TaskStatus.IN_PROGRESS
+                assert "termination is unconfirmed" in body
+                assert receipt["disposition"] == "stop_unconfirmed"
+                assert await provider.is_running(rec._handle(row))
+
     @pytest.mark.parametrize("cause", ["context_thrash", "stalled", "stuck_timeout"])
     async def test_two_distinct_pool_claims_block_and_notify_across_reconciler_restart(
         self, db, provider, pool_reconciler, config, registry, bus, tmp_path, cause
@@ -4443,6 +4661,113 @@ async def test_long_wait_preserves_claim_workspace_and_silent_activity(
         assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
     assert provider.sent_nudges == []
     assert rec.test_orch.terminations == []
+
+
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_verified_wait_keeps_lease_without_activity_until_ack(
+    db, provider, pool_reconciler, config, tmp_path, lifecycle, monkeypatch,
+):
+    from sqlalchemy import update
+
+    from src.database.queries.wait_queries import register_wait
+    from src.database.tables import wait_records
+    from src.waits.conditions import Scope, SleepDecision
+    from src.waits.mail import acknowledge_in_place
+    from src.waits.registry import build_registry
+
+    config.agents_config.stuck_timeout_seconds = 60
+    rec = pool_reconciler
+    await _task(db)
+    await _busy_agent_and_workspace(db, tmp_path)
+    task = await db.get_task("t1")
+    row = await _session(
+        db, provider, agent_id="a1", lifecycle=lifecycle,
+        claim_phase="active" if lifecycle == "pool" else None,
+        last_claim_epoch=task.claim_epoch if lifecycle == "pool" else None,
+        started_at=NOW - 10000, last_activity=NOW - 10000,
+    )
+    provider.sessions[row.name].activity = NOW - 10000
+    await db.create_task(Task(id="producer", project_id="p1", title="Producer", description=""))
+    scope = Scope("p1", "task", "t1", row.id, row.instance_token, task.claim_epoch)
+    async with db._engine.begin() as conn:
+        receipt = await register_wait(
+            conn, scope=scope, condition={"kind": "task", "task_id": "producer"},
+            idempotency_key="canonical", registry=build_registry(clock=lambda: NOW),
+            policy=SimpleNamespace(in_place_ceiling_seconds=1800,
+                                   escalation_seconds=lambda _: 7200),
+            decide_sleep=lambda *_: SleepDecision("in_place", "test"),
+            now=NOW, source_watermark=0,
+        )
+    await db.transition_task("t1", TaskStatus.WAITING)
+    clock = SimpleNamespace(now=NOW)
+    lock = BranchLock(db, clock=lambda: clock.now)
+    monkeypatch.setattr("src.integration.lock.BranchLock", lambda db, **kw: lock)
+    target = BranchKey(repository_id="repo", branch="aq/test")
+    fence = await lock.acquire(target, "t1")
+    await BranchOwnership(db, clock=lambda: clock.now).attach(fence, row.id, "ws1")
+    await db.set_task_meta("t1", META_STALL_NUDGES, "3")
+    monkeypatch.setattr("src.sessions.reconciler.time.time", lambda: clock.now)
+    for tick in (NOW, NOW + 1800, NOW + 7200, NOW + 10000):
+        clock.now = tick
+        await rec.tick(now=tick)
+        current = await db.get_session(row.id)
+        assert current.state == "running"
+        assert current.task_id == "t1" and current.last_activity == NOW - 10000
+        assert (await db.get_task("t1")).status == TaskStatus.WAITING
+        assert (await db.get_agent("a1")).state == AgentState.BUSY
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        lease = await lock.get(target)
+        assert lease.holder == "t1" and lease.fence == fence.token
+        assert lease.expires_at > tick
+    async with db._engine.begin() as conn:
+        await conn.execute(update(wait_records).where(
+            wait_records.c.id == receipt["wait_id"],
+        ).values(outcome="satisfied", resolved_at=NOW + 10000, blocking=False))
+    clock.now = NOW + 11000
+    await rec.tick(now=clock.now)
+    assert (await db.get_session(row.id)).last_activity == NOW - 10000
+    assert provider.sent_nudges == [] and rec.test_orch.terminations == []
+    async with db._engine.begin() as conn:
+        await acknowledge_in_place(conn, wait_id=receipt["wait_id"], scope=scope, now=NOW + 11001)
+    clock.now = NOW + 11002
+    await rec.tick(now=clock.now)
+    assert (await db.get_session(row.id)).state == "running"
+    assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+    assert provider.sent_nudges == []
+
+
+async def test_verified_named_wait_skips_idle_stop_and_pending_resubmit(
+    db, provider, reconciler, monkeypatch,
+):
+    from src.database.queries.wait_queries import register_wait
+    from src.waits.conditions import Scope, SleepDecision
+    from src.waits.registry import build_registry
+
+    await db.update_project("p1", supervisor_enabled=True)
+    row = await _session(
+        db, provider, task_id=None, lifecycle="named", profile_id="supervisor",
+        name="n-supervisor--p1", started_at=NOW - 10000, last_activity=NOW - 10000,
+    )
+    await db.create_task(Task(id="producer", project_id="p1", title="Producer", description=""))
+    scope = Scope("p1", "session", row.id, row.id, row.instance_token, 0, elevated=True)
+    async with db._engine.begin() as conn:
+        await register_wait(
+            conn, scope=scope, condition={"kind": "task", "task_id": "producer"},
+            idempotency_key="canonical", registry=build_registry(clock=lambda: NOW),
+            policy=SimpleNamespace(in_place_ceiling_seconds=1800,
+                                   escalation_seconds=lambda _: 7200),
+            decide_sleep=lambda *_: SleepDecision("in_place", "test"),
+            now=NOW, source_watermark=0,
+        )
+    resubmit = AsyncMock(return_value=False)
+    monkeypatch.setattr(provider, "resubmit_pending", resubmit)
+    monkeypatch.setattr(reconciler, "_profile_for", AsyncMock(
+        return_value=SimpleNamespace(idle_timeout=1),
+    ))
+    await reconciler._step_named([row], NOW + 10000)
+    assert (await db.get_session(row.id)).state == "running"
+    resubmit.assert_not_awaited()
+    assert provider.sent_nudges == []
 
 
 @pytest.mark.parametrize("resolution", ["completed", "expired", "missing", "cancelled"])

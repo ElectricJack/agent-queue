@@ -1031,6 +1031,25 @@ def test_reviewed_report_playbooks_remain_disabled_for_explicit_import():
         assert playbook_id not in DEFAULT_SYSTEM_PLAYBOOK_IDS
 
 
+def test_legacy_seed_uses_reviewed_source_when_packaged_markdown_is_stale(tmp_path, monkeypatch):
+    package = tmp_path / "package"
+    defaults = package / "prompts/default_playbooks"
+    reviewed = package / "prompts/reviewed_playbooks/default-assignment-routing"
+    defaults.mkdir(parents=True)
+    reviewed.mkdir(parents=True)
+    (defaults / "default-assignment-routing.md").write_text("obsolete packaged policy")
+    (reviewed / "source.md").write_text("reviewed current policy")
+    monkeypatch.setattr(vault_module, "__file__", str(package / "vault.py"))
+    data = tmp_path / "data"
+
+    result = ensure_default_playbooks(str(data))
+
+    assert result["created"] == ["default-assignment-routing.md"]
+    assert (data / "vault/system/playbooks/default-assignment-routing.md").read_text() == (
+        "reviewed current policy"
+    )
+
+
 def test_ensure_default_playbooks_idempotent(tmp_path):
     """Calling ensure_default_playbooks twice does not overwrite existing files."""
     ensure_default_playbooks(str(tmp_path))
