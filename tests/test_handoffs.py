@@ -57,6 +57,9 @@ def test_unicode_optional_prose_is_trimmed_and_critical_fields_survive():
     assert len((handoff + facts).encode("utf-8")) <= WAKE_BYTES
     assert "Run focused tests" in handoff and "Race still open" in handoff
     assert "trimmed; see full note" in handoff
+    assert "context row h1" in handoff
+    assert "aq task show task-1 --field context --offset 0 --limit 4096" in handoff
+    assert "follow next_offset until null" in handoff
     assert "claim_epoch: 9" in facts and "current" in facts
     assert "\ufffd" not in handoff + facts
 

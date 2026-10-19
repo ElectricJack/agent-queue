@@ -1265,6 +1265,15 @@ _CANONICAL_PAYLOADS.update(
     }
 )
 
+# Batch payloads mirror the transactional outbox envelope, including a missing
+# reviewer before dispatch has assigned the initial review task.
+_CANONICAL_PAYLOADS.update({
+    event: {"project_id": "my-app", "batch_id": "batch-1", "structure_revision": 1,
+            "structure_digest": "a" * 64,
+            "reviewer_task_id": None if event == "batch.held" else "reviewer-1"}
+    for event in ("batch.held", "batch.receipt_recorded", "batch.needs_scope", "batch.released")
+})
+
 # -- test-selection lifecycle events ---------------------------------------
 # Payloads mirror the literal dicts passed to ``bus.emit`` in
 # ``test_selection_commands._cmd_test_select``, ``_cmd_test_selection_promote``

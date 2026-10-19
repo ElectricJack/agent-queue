@@ -14,6 +14,7 @@ import subprocess
 import pytest
 
 from src.git.manager import GitManager
+from tests.git_seed_helpers import clone_seed, init_bare_seed
 
 
 # ---------------------------------------------------------------------------
@@ -61,19 +62,11 @@ def two_agent_clones(tmp_path):
     Returns a dict with keys: remote, agent1, agent2.
     """
     remote = tmp_path / "remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "--initial-branch=main", str(remote)],
-        check=True,
-        capture_output=True,
-    )
+    init_bare_seed(remote)
 
     # Create agent1 clone with initial commit
     agent1 = str(tmp_path / "agent1")
-    subprocess.run(
-        ["git", "clone", str(remote), agent1],
-        check=True,
-        capture_output=True,
-    )
+    clone_seed(remote, agent1)
     (pathlib.Path(agent1) / "README.md").write_text("init")
     _git(["add", "."], cwd=agent1)
     _git(
@@ -92,11 +85,7 @@ def two_agent_clones(tmp_path):
 
     # Create agent2 clone
     agent2 = str(tmp_path / "agent2")
-    subprocess.run(
-        ["git", "clone", str(remote), agent2],
-        check=True,
-        capture_output=True,
-    )
+    clone_seed(remote, agent2)
 
     return {"remote": str(remote), "agent1": agent1, "agent2": agent2}
 
@@ -147,11 +136,7 @@ class TestConcurrentMergeAndPush:
 
         # Verify both agents' work is on the remote
         verify_clone = str(pathlib.Path(two_agent_clones["remote"]).parent / "verify")
-        subprocess.run(
-            ["git", "clone", two_agent_clones["remote"], verify_clone],
-            check=True,
-            capture_output=True,
-        )
+        clone_seed(two_agent_clones["remote"], verify_clone)
         log = _git(["log", "--oneline"], cwd=verify_clone)
         assert "agent1 feature" in log
         assert "agent2 feature" in log
@@ -200,11 +185,7 @@ class TestConcurrentMergeAndPush:
 
         # Create a third agent clone
         agent3 = str(tmp_path / "agent3")
-        subprocess.run(
-            ["git", "clone", two_agent_clones["remote"], agent3],
-            check=True,
-            capture_output=True,
-        )
+        clone_seed(two_agent_clones["remote"], agent3)
 
         # Each agent does work on a different file
         for i, agent in enumerate([agent1, agent2, agent3], 1):
@@ -220,11 +201,7 @@ class TestConcurrentMergeAndPush:
 
         # Verify all three commits are on remote
         verify = str(tmp_path / "verify-seq")
-        subprocess.run(
-            ["git", "clone", two_agent_clones["remote"], verify],
-            check=True,
-            capture_output=True,
-        )
+        clone_seed(two_agent_clones["remote"], verify)
         log = _git(["log", "--oneline"], cwd=verify)
         for i in range(1, 4):
             assert f"agent{i} sequential" in log
@@ -363,11 +340,7 @@ class TestWorkspaceRecoveryIntegration:
 
         # Verify both agents' work is on remote
         verify = str(pathlib.Path(two_agent_clones["remote"]).parent / "verify-prep")
-        subprocess.run(
-            ["git", "clone", two_agent_clones["remote"], verify],
-            check=True,
-            capture_output=True,
-        )
+        clone_seed(two_agent_clones["remote"], verify)
         log = _git(["log", "--oneline"], cwd=verify)
         assert "agent1 changes README" in log
         assert "clean task commit" in log
@@ -404,11 +377,7 @@ class TestWorkspaceRecoveryIntegration:
 
         # Verify all four tasks are on remote
         verify = str(pathlib.Path(two_agent_clones["remote"]).parent / "verify-interleave")
-        subprocess.run(
-            ["git", "clone", two_agent_clones["remote"], verify],
-            check=True,
-            capture_output=True,
-        )
+        clone_seed(two_agent_clones["remote"], verify)
         log = _git(["log", "--oneline"], cwd=verify)
         for _, _, _, message in tasks:
             assert message in log, f"Missing: {message}"

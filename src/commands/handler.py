@@ -113,6 +113,7 @@ from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 from src.commands.proposal_commands import TaskProposalCommandsMixin
 from src.commands.spec_commands import SpecCommandsMixin
 from src.commands.spec_ingest_commands import SpecIngestCommandsMixin
+from src.commands.batch_check_commands import BatchCheckCommandsMixin
 from src.routing.filing import GUARDED_COMMANDS, routing_choice_refusal, without_inert_choices
 
 if TYPE_CHECKING:
@@ -419,6 +420,7 @@ class CommandHandler(
     TaskProposalCommandsMixin,
     SpecCommandsMixin,
     SpecIngestCommandsMixin,
+    BatchCheckCommandsMixin,
 ):
     """Unified command execution layer for AgentQueue (Command Pattern).
 
