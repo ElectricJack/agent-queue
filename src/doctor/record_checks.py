@@ -19,6 +19,7 @@ from src.database.tables import (
     record_link_versions,
     record_outbox,
     records,
+    sessions,
     tasks,
 )
 from src.doctor.models import CheckResult, DoctorCheck, Severity
@@ -359,6 +360,69 @@ async def _deprecation(ctx):
     )
 
 
+async def _pool_access(ctx):
+    if result := _no_db(ctx, "pool_access"):
+        return result
+    config = ctx.config.knowledge
+    if not config.enabled or not config.enabled_projects:
+        return CheckResult(
+            id="records.pool_access", severity=Severity.INFO, detail="project knowledge disabled"
+        )
+    if not callable(getattr(ctx.handler, "_principal_from_scope", None)):
+        return CheckResult(
+            id="records.pool_access", severity=Severity.INFO, detail="command handler unavailable"
+        )
+    from src.knowledge.service import KnowledgeService
+
+    async with ctx.db.immediate() as conn:
+        rows = (await conn.execute(
+            select(sessions).where(
+                sessions.c.lifecycle == "pool",
+                sessions.c.state.in_(("running", "draining")),
+                sessions.c.ended_at.is_(None),
+                sessions.c.task_id.is_not(None),
+                sessions.c.claim_phase == "active",
+                sessions.c.project_id.in_(config.enabled_projects),
+            ).order_by(sessions.c.id).limit(SAMPLE_LIMIT + 1)
+        )).mappings().all()
+    if not rows:
+        return CheckResult(
+            id="records.pool_access", severity=Severity.INFO, detail="no active pool claims to probe"
+        )
+    failures = []
+    service = KnowledgeService(ctx.db, config)
+    for row in rows[:SAMPLE_LIMIT]:
+        # Rebuild the pool bearer scope, which intentionally has no fixed task.
+        principal = await ctx.handler._principal_from_scope({
+            "kind": "session", "session_id": row["id"],
+            "session_instance_token": row["instance_token"],
+            "project_id": row["project_id"], "task_id": None, "elevated": False,
+        })
+        missing = [name for name in (
+            "knowledge_list", "knowledge_show", "knowledge_create", "knowledge_cite",
+        ) if not principal.policy.allows_aq_command(name)]
+        try:
+            # The ordinary service path proves actual read access without
+            # returning knowledge content or writing records/citations.
+            await service.search(
+                principal=principal, project_id=row["project_id"],
+                operation="knowledge_list", limit=1,
+            )
+        except RecordError as exc:
+            code = exc.code
+        else:
+            code = None
+        if missing or code:
+            failures.append({
+                "session_id": row["id"], "profile_id": row["profile_id"],
+                "project_id": row["project_id"], "error_code": code, "missing_grants": missing,
+            })
+    return _result("pool_access", len(failures), data={
+        "sampled": min(len(rows), SAMPLE_LIMIT), "truncated": len(rows) > SAMPLE_LIMIT,
+        "failures": failures,
+    })
+
+
 def record_checks():
     slots = asyncio.Semaphore(2)
 
@@ -381,5 +445,6 @@ def record_checks():
             ("redaction_cleanup", _redaction),
             ("outbox", _outbox),
             ("deprecation", _deprecation),
+            ("pool_access", _pool_access),
         )
     ]
