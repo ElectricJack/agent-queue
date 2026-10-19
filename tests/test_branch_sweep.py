@@ -16,7 +16,7 @@ from src.git.manager import GitManager
 from src.integration.branch_sweep import SweepSafety, sweep_checkout
 from src.integration.lock import BranchLock
 from src.integration.models import BranchKey
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from src.orchestrator import Orchestrator
 
 
@@ -393,6 +393,71 @@ async def test_daily_backstop_resolves_linked_source_and_shared_origin(
     assert await git.arev_parse(str(origin), "refs/heads/aq/missed-landing") is None
     assert await git.arev_parse(str(checkout), "aq/candidate")
     assert await git.arev_parse(str(origin), "refs/heads/aq/candidate")
+
+
+@pytest.mark.parametrize("has_workspace", [False, True])
+async def test_missing_link_notice_survives_restart_and_does_not_fail_sweep(
+    guarded_repo, tmp_path, has_workspace,
+):
+    db, git, checkout, origin = guarded_repo
+    missing = tmp_path / "gone"
+    await db.create_repo(RepoConfig(
+        id="missing", project_id="p", url="", source_type=RepoSourceType.LINK,
+        source_path=str(missing),
+    ))
+    if has_workspace:
+        await db.create_workspace(Workspace(
+            id="missing-ws", project_id="p", workspace_path=str(missing),
+            source_type=RepoSourceType.LINK,
+        ))
+
+    async def run(date):
+        orch = _reporting_orchestrator(tmp_path / "state", {"success": True})
+        orch.db, orch.git = db, git
+        await orch._run_daily_git_branch_sweep(date)
+        return orch._command_handler.execute.call_args.args[1]["body"]
+
+    first = await run("2026-10-17")
+    assert "Checkouts: 1;" in first
+    assert "Failures" not in first
+    assert str(missing) in first
+    assert "restore the directory" in first
+    if has_workspace:
+        assert "aq project remove-workspace --workspace-id missing-ws" in first
+    second = await run("2026-10-18")
+    assert "Failures" not in second
+    assert str(missing) not in second
+    assert await db.get_repo("missing") is not None
+    if has_workspace:
+        assert await db.get_workspace("missing-ws") is not None
+
+    # Restoring/retiring a registration clears its notice state. A new
+    # disappearance must be actionable again, even after a daemon restart.
+    await db.delete_repo("missing")
+    if has_workspace:
+        await db.delete_workspace("missing-ws")
+    await run("2026-10-19")
+    await db.create_repo(RepoConfig(
+        id="missing", project_id="p", url="", source_type=RepoSourceType.LINK,
+        source_path=str(missing),
+    ))
+    assert str(missing) in await run("2026-10-20")
+
+
+async def test_missing_path_notice_retries_after_delivery_refusal(tmp_path):
+    orch = _reporting_orchestrator(tmp_path, {"success": False, "error": "offline"})
+    orch.db.list_repos.return_value = [RepoConfig(
+        id="missing", project_id="p", url="", source_type=RepoSourceType.LINK,
+        source_path=str(tmp_path / "gone"),
+    )]
+    await orch._run_daily_git_branch_sweep("2026-10-17")
+    marker = tmp_path / "maintenance/git-branch-sweeps/p.missing-paths"
+    assert not marker.exists()
+    orch._command_handler.execute.return_value = {"success": True}
+    await orch._run_daily_git_branch_sweep("2026-10-17")
+    body = orch._command_handler.execute.call_args.args[1]["body"]
+    assert "restore the directory" in body
+    assert marker.exists()
 
 
 @pytest.mark.parametrize("binding", ["bound-repo", None, "mismatched-repo"])
