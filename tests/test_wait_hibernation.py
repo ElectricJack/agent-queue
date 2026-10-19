@@ -841,6 +841,10 @@ async def test_failed_resume_retries_once_then_holds_without_frontier_requeue(en
     assert (await env.db.get_task('owner')).status.value == 'RESUME_PENDING'
     handler.wait_escalation_create.assert_awaited_once()
 
+    metrics = await env.db.metrics_waits_snapshot(NOW + 600)
+    assert metrics['wakes_1h']['launch_failed'] == 2
+    assert metrics['wakes_1h']['other'] == 0
+
 
 async def test_fresh_resume_builds_new_git_folder_without_ignored_transcript(env, tmp_path):
     from pathlib import Path

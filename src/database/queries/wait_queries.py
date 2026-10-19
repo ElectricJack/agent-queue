@@ -902,10 +902,13 @@ async def wait_graph(
         cost_projection = {}
         if costs:
             from src.database.queries.continuation_queries import measurement_medians
+            from src.database.queries.wait_metrics import wait_metrics_snapshot
 
             medians = await measurement_medians(conn, pid, now=now)
             cost_projection = {'costs': {'durations': list(medians['durations'].values()),
-                                         'resume': medians['cost']}}
+                                         'resume': medians['cost'],
+                                         'metrics': await wait_metrics_snapshot(
+                                             conn, now=now, project_id=pid)}}
         summaries.append(
             {
                 "project_id": pid,

@@ -47,6 +47,7 @@
         "tests/test_wait_graph.py",
         "tests/test_wait_hibernation.py",
         "tests/test_wait_holding.py",
+        "tests/test_wait_metrics.py",
         "tests/test_wait_migration.py",
         "tests/test_wait_outcomes.py",
         "tests/test_wait_queries.py",
@@ -18563,6 +18564,28 @@
         "parametrize"
       ],
       "summary": "Verified waits suppress routine delivery until the holder acknowledges."
+    },
+    "tests/test_wait_metrics.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:7a6462a5adcf7ec9ec15f527e264dba939a51e32fd09538484f4206a9a8fb085",
+      "imports": [
+        "src.api.models.metrics",
+        "src.config_wait_policy",
+        "src.database",
+        "src.database.queries.wait_metrics",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.metrics.sampler",
+        "src.metrics.waits",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Wait accounting reproduces from persisted timestamps, including window edges."
     },
     "tests/test_wait_migration.py": {
       "areas": [

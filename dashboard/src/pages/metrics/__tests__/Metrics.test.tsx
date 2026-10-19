@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Metrics from "../Metrics";
 import { toAlignedData, type Series } from "../chartData";
@@ -152,6 +152,34 @@ describe("pure sample readers", () => {
 });
 
 describe("Metrics page", () => {
+  it("keeps pre-migration wait readings as gaps and tiles as dashes", async () => {
+    api.response = { ...api.response!, samples: [sample(1000, { waits: null })] };
+    render(page());
+    await screen.findByTestId("chart-Pending waits");
+    const tile = screen.getByText("Waiting: in place / hibernated").closest("div.rounded-xl")!;
+    expect(within(tile as HTMLElement).getByText("— / —")).toBeInTheDocument();
+    const released = screen.getByText("Slot-hours released (24h)").closest("div.rounded-xl")!;
+    expect(within(released as HTMLElement).getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("Tokens saved (counterfactual)")).not.toBeInTheDocument();
+    const chart = plots.calls.find((call) => call.title === "Pending waits")!;
+    for (const series of chart.series) expect(series.value({ waits: null })).toBeNull();
+  });
+
+  it("shows observed wait totals and labels a configured counterfactual cohort", async () => {
+    api.response = { ...api.response!, samples: [sample(1000, { waits: {
+      pending_in_place: 2, pending_hibernated: 3, human_pending: 1,
+      released_slot_seconds_24h: { condition: 7200, capacity: 3600 },
+      tokens_saved_counterfactual: { tokens: 1200, cohort: "before-rollout", window: "October 1–7" },
+    } })] };
+    render(page());
+    await screen.findByTestId("chart-Pending waits");
+    expect(screen.getByText("2 / 3")).toBeInTheDocument();
+    expect(screen.getByText("3.00")).toBeInTheDocument();
+    expect(screen.getByText("2.00 condition · 1.00 capacity")).toBeInTheDocument();
+    expect(screen.getByText("Tokens saved (counterfactual)")).toBeInTheDocument();
+    expect(screen.getByText("Cohort: before-rollout · baseline window: October 1–7")).toBeInTheDocument();
+  });
+
   it("renders every series from the fetched history", async () => {
     render(page());
     await screen.findByTestId("chart-Running agents");

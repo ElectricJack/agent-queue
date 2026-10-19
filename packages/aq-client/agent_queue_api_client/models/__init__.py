@@ -2023,10 +2023,12 @@ from .wait_cancel_response_422 import WaitCancelResponse422
 from .wait_checkpoint_args import WaitCheckpointArgs
 from .wait_checkpoint_response import WaitCheckpointResponse
 from .wait_checkpoint_response_422 import WaitCheckpointResponse422
+from .wait_counterfactual import WaitCounterfactual
 from .wait_decide_args import WaitDecideArgs
 from .wait_decide_args_decision import WaitDecideArgsDecision
 from .wait_decide_response import WaitDecideResponse
 from .wait_decide_response_422 import WaitDecideResponse422
+from .wait_duration_metrics import WaitDurationMetrics
 from .wait_explain_args import WaitExplainArgs
 from .wait_explain_response import WaitExplainResponse
 from .wait_explain_response_422 import WaitExplainResponse422
@@ -2051,8 +2053,13 @@ from .wait_list_args_schema_version import WaitListArgsSchemaVersion
 from .wait_list_response import WaitListResponse
 from .wait_list_response_422 import WaitListResponse422
 from .wait_list_response_waits_item_type_1 import WaitListResponseWaitsItemType1
+from .wait_metrics import WaitMetrics
+from .wait_metrics_by_project import WaitMetricsByProject
+from .wait_metrics_scheduler_by_reason import WaitMetricsSchedulerByReason
 from .wait_node_detail_dto import WaitNodeDetailDTO
 from .wait_node_detail_dto_wait_kind import WaitNodeDetailDTOWaitKind
+from .wait_priority_metrics import WaitPriorityMetrics
+from .wait_project_metrics import WaitProjectMetrics
 from .wait_register_args import WaitRegisterArgs
 from .wait_register_args_condition_type_0 import WaitRegisterArgsConditionType0
 from .wait_register_args_kind_type_0 import WaitRegisterArgsKindType0
@@ -2064,6 +2071,8 @@ from .wait_response_condition_type_0 import WaitResponseConditionType0
 from .wait_response_decision_type_0 import WaitResponseDecisionType0
 from .wait_response_evidence_type_0 import WaitResponseEvidenceType0
 from .wait_response_wait_type_1 import WaitResponseWaitType1
+from .wait_slot_seconds import WaitSlotSeconds
+from .wait_wakes import WaitWakes
 from .withheld_task import WithheldTask
 from .workspace_doctor_request import WorkspaceDoctorRequest
 from .workspace_doctor_response_422 import WorkspaceDoctorResponse422
@@ -4093,10 +4102,12 @@ __all__ = (
     "WaitCheckpointArgs",
     "WaitCheckpointResponse",
     "WaitCheckpointResponse422",
+    "WaitCounterfactual",
     "WaitDecideArgs",
     "WaitDecideArgsDecision",
     "WaitDecideResponse",
     "WaitDecideResponse422",
+    "WaitDurationMetrics",
     "WaitExplainArgs",
     "WaitExplainResponse",
     "WaitExplainResponse422",
@@ -4121,8 +4132,13 @@ __all__ = (
     "WaitListResponse",
     "WaitListResponse422",
     "WaitListResponseWaitsItemType1",
+    "WaitMetrics",
+    "WaitMetricsByProject",
+    "WaitMetricsSchedulerByReason",
     "WaitNodeDetailDTO",
     "WaitNodeDetailDTOWaitKind",
+    "WaitPriorityMetrics",
+    "WaitProjectMetrics",
     "WaitRegisterArgs",
     "WaitRegisterArgsConditionType0",
     "WaitRegisterArgsKindType0",
@@ -4134,6 +4150,8 @@ __all__ = (
     "WaitResponseDecisionType0",
     "WaitResponseEvidenceType0",
     "WaitResponseWaitType1",
+    "WaitSlotSeconds",
+    "WaitWakes",
     "WithheldTask",
     "WorkspaceDoctorRequest",
     "WorkspaceDoctorResponse422",

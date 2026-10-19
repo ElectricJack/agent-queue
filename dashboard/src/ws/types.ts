@@ -455,6 +455,8 @@ export interface ReviewCommentedEvent extends BaseEvent {
  */
 export interface MetricsTickEvent extends BaseEvent, MetricsSample {
   event_type: "metrics.tick";
+  /** Null before wait schema migration; shares the generated history shape. */
+  waits?: MetricsSample["waits"];
 }
 
 // --- Durable dashboard state ---
