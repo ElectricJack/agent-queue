@@ -20035,6 +20035,47 @@
       }
     },
     {
+      "path": "aq task split",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_split",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--retained-acceptance",
+          "--moved",
+          "--reason",
+          "--expected-generation"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--retained-acceptance",
+          "--moved"
+        ],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq task stop",
       "registration": "handwritten",
       "owner_kind": "core",

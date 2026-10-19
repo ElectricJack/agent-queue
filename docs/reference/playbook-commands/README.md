@@ -248,6 +248,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
 | [`task_failure_triage_notify`](task_failure_triage_notify.md) | Wake supervisor failure triage | Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident. |
 | [`task_handoff`](task_handoff.md) | Record a task handoff | Store bounded agent assertions with current daemon facts. Auto is note-only; non-auto records a restart request, without performing a restart. |
+| [`task_split`](task_split.md) | Split task acceptance | Keep code on its existing delivery path and relocate explicit remaining acceptance. |
 | [`test_select`](test_select.md) | Test Select | Record a scoped smart test selection proposal. |
 | [`test_selection_list`](test_selection_list.md) | Test Selection List | List recorded selections in one project. |
 | [`test_selection_observe`](test_selection_observe.md) | Test Selection Observe | Append execution evidence to a visible selection. |
