@@ -245,6 +245,23 @@ def integration_refresh_epic(ctx, task_id, apply):
     _execute(ctx, "integration_refresh_epic", {"task_id": task_id, "dry_run": not apply})
 
 
+@integration.command("reverify-epic")
+@click.argument("task_id")
+@click.option("--head", "expected_head_sha", default=None, help="Exact head returned by preview.")
+@click.option("--reason", default="", help="Reason for requesting aggregate verification.")
+@click.option("--apply", is_flag=True, help="Request a bounded train visit; default is preview.")
+@click.pass_context
+@_handle_errors
+def integration_reverify_epic(ctx, task_id, expected_head_sha, reason, apply):
+    """Preview or re-trigger a completed epic's guarded aggregate verification."""
+    if apply and (not expected_head_sha or not reason.strip()):
+        raise click.UsageError("--apply requires --head and --reason")
+    _execute(ctx, "integration_reverify_epic", {
+        "task_id": task_id, "expected_head_sha": expected_head_sha,
+        "reason": reason, "dry_run": not apply,
+    })
+
+
 @integration.command("retire-origin")
 @click.argument("task_id")
 @click.option("--origin-id", default=None, help="Exact origin id returned by the preview.")

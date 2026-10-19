@@ -205,6 +205,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_seal_now",
         "integration_eject",
         "integration_refresh_epic",
+        "integration_reverify_epic",
         "integration_retire_origin",
         "integration_reevaluate_repair",
         "integration_release_owner",

@@ -17,6 +17,7 @@ def test_integration_group_exposes_train_controls():
         "resume-batch",
         "abort-batch",
         "refresh-epic",
+        "reverify-epic",
         "record-root-noop",
         "supersede-completion",
     } <= integration.commands.keys()

@@ -226,6 +226,29 @@ async def test_no_open_batch_is_idle_and_reports_the_fetched_target():
     assert (visit.state, visit.batch_id, visit.target_sha) == ("idle", None, TARGET_SHA)
 
 
+@pytest.mark.parametrize("blockers,observes", [
+    (("selection_deferred",), True),
+    (("repository_recovery",), False),
+    (("selection_deferred", "repository_recovery"), False),
+])
+async def test_epic_selection_deferral_observes_aggregate_without_bypassing_refusals(
+    blockers, observes,
+):
+    epic = TrainTarget("p", "r", "refs/heads/epic", kind="epic")
+    selected = BatchSelection(blockers=tuple({"code": code} for code in blockers))
+    batches = Batches()
+    batches.open_batch = AsyncMock(return_value=selected)
+    complete = AsyncMock(return_value=())
+    service = Service()
+    epic_lane = replace(lane(service), complete_epic=complete)
+    t = train(Targets(epic), batches, {epic.key: epic_lane})
+    visit = await t.visit(epic)
+    assert visit.state == "blocked"
+    assert visit.detail["blockers"] == list(selected.blockers)
+    assert complete.await_count == int(observes)
+    assert service.calls == 0
+
+
 async def test_contained_candidate_settles_without_checks_or_repair():
     checks, repair = Checks(), Repair()
     batches = Batches({ROOT.key: (batch(), MEMBERS)})

@@ -352,6 +352,26 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_reverify_epic(self, args: dict) -> dict:
+        """Request ordinary aggregate verification without reopening a completed epic."""
+        from src.commands.contracts.integration import IntegrationReverifyEpicArgs
+        from src.integration.train_controls import TrainControls
+
+        request = IntegrationReverifyEpicArgs.model_validate(args)
+        task = await self.db.get_task(request.task_id)
+        operator, refusal = await integration_operator(self.db, task.project_id if task else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None)).reverify_epic(
+                    request.task_id, dry_run=request.dry_run, operator_id=operator,
+                    expected_head_sha=request.expected_head_sha, reason=request.reason,
+                    expected_project_id=task.project_id if task else None)
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": result["outcome"] != "changed", **result}
+
     async def _cmd_integration_promotion_publish(self, args: dict) -> dict:
         """Mechanism entry for one admitted promotion; no worker can publish a target."""
         from sqlalchemy import select
