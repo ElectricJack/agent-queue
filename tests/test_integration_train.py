@@ -728,6 +728,9 @@ async def conflicting_batch_env(setup):
     db, ops, _subject, _fence, repo, base, _head, _green = setup
     await db.create_project(Project(id="p", name="Project"))
     await db.create_repo(RepoConfig(id="r", project_id="p", source_type=RepoSourceType.LINK))
+    await db.update_project(
+        "p", integration_repository_id="r", hierarchical_integration_mode="train",
+    )
     left = commit(repo.store, {"new.txt": "left\n"}, base=base)
     right = commit(repo.store, {"new.txt": "right\n"}, base=base)
     store = BatchStore(db)
@@ -859,7 +862,7 @@ async def test_conflict_after_target_move_publishes_and_briefs_the_real_partial_
     }, repairs)
     visit = await t.visit(ROOT)
     partial = visit.detail["head"]
-    assert visit.state == "repair" and visit.repair["outcome"] == "filed"
+    assert visit.state == "repair" and visit.repair["outcome"] == "filed", visit
     assert visit.repair["attempt_count"] == 2 and visit.repair["task_id"] != previous_task
     assert visit.candidate_sha == partial != repaired
     assert visit.detail["replaced_candidate_sha"] == repaired
