@@ -85,6 +85,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_checkpoint_parent`](integration_checkpoint_parent.md) | Checkpoint integration parent | Pin the parent head and generation before waiting for child deliveries. |
 | [`integration_ci_evidence`](integration_ci_evidence.md) | Observe exact root candidate CI | Observe exact root candidate CI |
 | [`integration_cleanup`](integration_cleanup.md) | Advance integration cleanup | Materialize and advance bounded cleanup for one terminal root batch. |
+| [`integration_clear_retained_recovery`](integration_clear_retained_recovery.md) | Integration Clear Retained Recovery | Authenticated hierarchical integration operational control. |
 | [`integration_close_delivered_pr`](integration_close_delivered_pr.md) | Integration Close Delivered Pr | Authenticated hierarchical integration operational control. |
 | [`integration_complete_parent`](integration_complete_parent.md) | Integration Complete Parent | Complete a verified parent task at its exact verified generation and head. |
 | [`integration_cutover`](integration_cutover.md) | Integration Cutover | Authenticated hierarchical integration operational control. |
@@ -106,6 +107,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
 | [`integration_record_root_noop`](integration_record_root_noop.md) | Record verified no-code root completion | Preview or complete an unheld root with exact no-artifact Git provenance. |
+| [`integration_recover_completed_container`](integration_recover_completed_container.md) | Recover a completed container checkpoint | Prove accepted published pass provenance and CAS only its checkpoint; delivery gates remain. |
 | [`integration_redrive_child`](integration_redrive_child.md) | Integration Redrive Child | Authenticated hierarchical integration operational control. |
 | [`integration_redrive_root`](integration_redrive_root.md) | Integration Redrive Root | Authenticated hierarchical integration operational control. |
 | [`integration_reevaluate_repair`](integration_reevaluate_repair.md) | Integration Reevaluate Repair | Authenticated hierarchical integration operational control. |
@@ -125,6 +127,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
+| [`integration_supersede_completion`](integration_supersede_completion.md) | Supersede one retained completion | Operator or owning supervisor retires an exact stopped Subject with original verified human evidence. |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
 | [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from a full or hosted-check policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
 
@@ -133,6 +136,21 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | Command | Title | Summary |
 |---|---|---|
 | [`artifact_verify`](artifact_verify.md) | Artifact Verify | Resolve a durable artifact URI and re-hash the bytes it names. |
+| [`ask_apply_input`](ask_apply_input.md) | Ask Apply Input | Scoped human request communication and decision evidence. |
+| [`ask_button`](ask_button.md) | Ask Button | Scoped human request communication and decision evidence. |
+| [`ask_cutover`](ask_cutover.md) | Ask Cutover | Scoped human request communication and decision evidence. |
+| [`ask_decide`](ask_decide.md) | Ask Decide | Scoped human request communication and decision evidence. |
+| [`ask_discussion_reply`](ask_discussion_reply.md) | Ask Discussion Reply | Scoped human request communication and decision evidence. |
+| [`ask_history`](ask_history.md) | Ask History | Scoped human request communication and decision evidence. |
+| [`ask_intake`](ask_intake.md) | Ask Intake | Scoped human request communication and decision evidence. |
+| [`ask_list`](ask_list.md) | Ask List | Scoped human request communication and decision evidence. |
+| [`ask_prepare_decision`](ask_prepare_decision.md) | Ask Prepare Decision | Scoped human request communication and decision evidence. |
+| [`ask_reconcile`](ask_reconcile.md) | Ask Reconcile | Scoped human request communication and decision evidence. |
+| [`ask_repair_delivery`](ask_repair_delivery.md) | Ask Repair Delivery | Scoped human request communication and decision evidence. |
+| [`ask_reply`](ask_reply.md) | Ask Reply | Scoped human request communication and decision evidence. |
+| [`ask_retry_operation`](ask_retry_operation.md) | Ask Retry Operation | Scoped human request communication and decision evidence. |
+| [`ask_show`](ask_show.md) | Ask Show | Scoped human request communication and decision evidence. |
+| [`ask_update_context`](ask_update_context.md) | Ask Update Context | Scoped human request communication and decision evidence. |
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
 | [`ci_completed_status`](ci_completed_status.md) | Audit completed task CI | List completed sources with failing required checks and unresolved CI evidence. |
 | [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
@@ -148,6 +166,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`decision_list`](decision_list.md) | Decision List | Record or read durable operator instructions on a task or integration. |
 | [`decision_record`](decision_record.md) | Decision Record | Record or read durable operator instructions on a task or integration. |
 | [`digest_request`](digest_request.md) | Digest Request | Queue one supervisor author turn per reserved digest window, releasing held windows when supervisor authoring is off. |
+| [`ensure_spec_ingest`](ensure_spec_ingest.md) | Ensure approved spec ingestion | Create or recover the role task receipt for an immutable approved decision. |
 | [`get_stuck_tasks`](get_stuck_tasks.md) | Read stuck tasks | Read aged active tasks, orphaned workers and failed routes in active projects. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
 | [`github_issue_fix_approved`](github_issue_fix_approved.md) | File an approved issue fix | Create or reuse the fix task for an approved investigation. |

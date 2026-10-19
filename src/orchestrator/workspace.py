@@ -764,18 +764,22 @@ class WorkspaceMixin:
                 # proof first.  An unproven row stays fenced and the caller
                 # backs off to the owner-recovery sweep instead of acquiring a
                 # branch a live writer may still hold.
-                prior = (
-                    await self.db.get_session(owner["session_id"])
-                    if owner.get("session_id")
-                    else None
+                if preparing_session_id and owner.get("session_id") == preparing_session_id:
+                    raise BranchBusy("current preparation has a pending branch handoff")
+                # Consume this exact snapshot. Re-reading inside the retry
+                # release helper could transfer a successor's attachment.
+                # Reclaim is external to the old worker's close, so it needs
+                # provider-backed proof, including for unbound pool attempts.
+                reclamation = BranchOwnership(
+                    self.db, confirm_handoff=self.aconfirm_integration_owner_handoff,
                 )
-                reclaimed = await self.arelease_integration_writer_for_retry(
-                    task,
-                    reason="hierarchy_reclaim_handoff_pending",
-                    pool=prior is not None and prior.lifecycle == "pool",
-                )
-                if reclaimed is not True:
-                    raise BranchBusy("own branch handoff is unproven")
+                try:
+                    await reclamation.transfer(
+                        Fence(target=target, owner_id=task.id, token=int(owner["fence_token"])),
+                        task.id, "worker",
+                    )
+                except BranchOwnershipError as exc:
+                    raise BranchBusy("own branch handoff is unproven") from exc
             owner = await ownership.get_owner(target)
         role = str(owner["owner_role"]) if owner is not None else ""
         expected_role = "verifier" if operation is not None or subject_id == task.id and role == "verifier" else "worker"
@@ -2052,6 +2056,12 @@ class WorkspaceMixin:
         if not session_id or not workspace_id:
             return False
         session = await self.db.get_session(session_id)
+        if (session is not None and session.lifecycle == "pool"
+                and session.task_id is None
+                and session.state == "stopped" and session.desired_state == "stopped"):
+            # Teardown cleared the claim proof. Recover the exact ended
+            # attempt with provider confirmation and workspace exclusion.
+            return await self.aconfirm_integration_owner_handoff(owner)
         workspace = await self.db.get_workspace(workspace_id)
         repository = await self.db.get_repo(str(owner.get("repository_id") or ""))
         task = await self.db.get_task(session.task_id) if session and session.task_id else None

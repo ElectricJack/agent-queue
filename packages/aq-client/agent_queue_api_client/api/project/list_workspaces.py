@@ -65,11 +65,15 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ListWorkspacesRequest,
 ) -> Response[ListWorkspacesResponse | ListWorkspacesResponse422]:
-    """List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each
-    workspace).
+    """List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task,
+    claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within
+    deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial
+    or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.
 
-     List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each
-    workspace).
+     List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task,
+    claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within
+    deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial
+    or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.
 
     Args:
         body (ListWorkspacesRequest):
@@ -98,11 +102,15 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ListWorkspacesRequest,
 ) -> ListWorkspacesResponse | ListWorkspacesResponse422 | None:
-    """List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each
-    workspace).
+    """List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task,
+    claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within
+    deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial
+    or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.
 
-     List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each
-    workspace).
+     List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task,
+    claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within
+    deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial
+    or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.
 
     Args:
         body (ListWorkspacesRequest):
@@ -126,11 +134,15 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ListWorkspacesRequest,
 ) -> Response[ListWorkspacesResponse | ListWorkspacesResponse422]:
-    """List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each
-    workspace).
+    """List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task,
+    claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within
+    deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial
+    or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.
 
-     List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each
-    workspace).
+     List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task,
+    claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within
+    deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial
+    or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.
 
     Args:
         body (ListWorkspacesRequest):
@@ -157,11 +169,15 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ListWorkspacesRequest,
 ) -> ListWorkspacesResponse | ListWorkspacesResponse422 | None:
-    """List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each
-    workspace).
+    """List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task,
+    claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within
+    deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial
+    or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.
 
-     List workspaces, optionally filtered by project. Shows lock status (which agent/task holds each
-    workspace).
+     List workspaces, optionally filtered by project. Shows lock status and owner identity (lock task,
+    claim fence, live session) per workspace, with bounded checkout diagnostics. Answers within
+    deadline_seconds; `diagnostics.complete` is false when any part is unknown or timed out. A partial
+    or failed diagnostic is not evidence that a lock is stale or a workspace is free. Read-only.
 
     Args:
         body (ListWorkspacesRequest):

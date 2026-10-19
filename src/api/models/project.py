@@ -61,15 +61,84 @@ class GetProjectResponse(BaseModel):
     git_identity: EffectiveGitIdentity | None = None
 
 
+class WorkspaceOwnerTask(BaseModel):
+    id: str
+    found: bool
+    status: str | None = None
+    claim_epoch: int | None = None
+    claimed_by_session: str | None = None
+
+
+class WorkspaceOwnerSession(BaseModel):
+    id: str | None = None
+    agent_id: str | None = None
+    task_id: str | None = None
+    lifecycle: str | None = None
+    state: str | None = None
+    claim_phase: str | None = None
+    last_claim_epoch: int | None = None
+    last_activity: float | None = None
+    work_dir: str | None = None
+
+
+class WorkspaceOwner(BaseModel):
+    """Owner identity as the database proves it (``src/workspace_listing.py``)."""
+
+    lock_state: str
+    agent_id: str | None = None
+    task_id: str | None = None
+    locked_at: float | None = None
+    #: ``complete`` | ``timeout`` | ``unavailable``.
+    facts: str
+    task: WorkspaceOwnerTask | None = None
+    session: WorkspaceOwnerSession | None = None
+    sessions_matched: int | None = None
+    #: ``consistent`` | ``mismatch`` | ``unknown``; ``None`` when not applicable.
+    fence: str | None = None
+    session_matches_claim: bool | None = None
+    #: ``unlocked`` | ``unlocked_session_present`` | ``held`` | ``agent_held``
+    #: | ``preparing`` | ``unverified`` | ``unknown``.
+    classification: str
+
+
 class WorkspaceSummary(BaseModel):
     id: str
     project_id: str
     workspace_path: str
     source_type: str = ""
     name: str | None = None
+    kind_id: str | None = None
     locked_by_agent_id: str | None = None
     locked_by_task_id: str | None = None
+    lock_mode: str | None = None
     enabled: bool = True
+    role: str | None = None
+    slot_index: int | None = None
+    mode: str | None = None
+    #: ``None`` whenever the checkout could not be read; never a guessed value.
+    branch: str | None = None
+    dirty: bool | None = None
+    #: ``present`` | ``missing`` | ``unknown``.
+    presence: str | None = None
+    #: ``ok`` | ``missing`` | ``not_a_checkout`` | ``error`` | ``timeout`` |
+    #: ``not_started`` | ``skipped`` | ``skipped_active_writer``.
+    git_status: str | None = None
+    git_error: str | None = None
+    beyond_cap: bool | None = None
+    owner: WorkspaceOwner | None = None
+
+
+class WorkspaceListDiagnostics(BaseModel):
+    complete: bool
+    deadline_seconds: float
+    elapsed_seconds: float
+    owner_facts: str
+    owner_facts_error: str | None = None
+    git_requested: bool
+    git_status_counts: dict[str, int] = {}
+    presence_counts: dict[str, int] = {}
+    incomplete_rows: int = 0
+    authority: str
 
 
 class ListProjectsResponse(BaseModel):
@@ -138,6 +207,7 @@ class AddWorkspaceResponse(BaseModel):
 
 class ListWorkspacesResponse(BaseModel):
     workspaces: list[WorkspaceSummary] = []
+    diagnostics: WorkspaceListDiagnostics | None = None
 
 
 class RemoveWorkspaceResponse(BaseModel):

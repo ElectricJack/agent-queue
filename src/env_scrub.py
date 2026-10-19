@@ -181,9 +181,10 @@ def is_harness_session_marker(key: str) -> bool:
     credential allowlist.
     """
     upper = _normalize(key)
-    if upper in {"CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT"}:
-        return True
-    if upper.startswith("CLAUDE_CODE_"):
+    # Claude adds controls outside CLAUDE_CODE_* (notably
+    # CLAUDE_AUTOCOMPACT_PCT_OVERRIDE). Never inherit an enclosing CLI's
+    # policy; launch settings such as the compact window are explicit.
+    if upper.startswith("CLAUDE"):
         return True
     if upper.startswith("ANTHROPIC_"):
         return upper != "ANTHROPIC_API_KEY"

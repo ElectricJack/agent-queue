@@ -270,6 +270,18 @@ disable that session's workspace. Empty-frontier polls and admission waits neith
 spend nor clear this budget; a different failure starts a new streak, and successful
 activation clears it. The count survives daemon restarts. The write is fenced by
 the session instance and preparation epoch, and cannot affect an active claim.
+Before permanent preparation cleanup, the same session row retains one bounded,
+scrubbed `failed_preparation` snapshot: selected task and creation time, designated
+repository/ref, origin identity and creation generation, checkpoint version and
+generation, session instance, preparation start and claim epoch, failure stage/reason,
+and observation time. Origin/checkpoint fields describe the persisted evidence at
+observation; missing evidence stays null. No exception locals, credentials, repository
+URLs or arbitrary metadata are copied. This is a last observation, not a journal.
+It survives binding release, cooldown, drain and daemon restart and appears in existing
+session diagnostics and failed claim responses. Successful activation clears it.
+Its write requires the exact still-preparing session/task/instance/epoch binding;
+stale, active or successor preparations cannot write it. The snapshot never supplies
+claim authority, creates a claim file, enables task mutations or authorizes recovery.
 The response is `drain_requested` and instructs the worker to run `aq session
 drain-ack` and exit. Reconciliation stops the exact session through normal guarded
 pool teardown even if the worker ignores the response. Attached branch ownership
@@ -304,9 +316,53 @@ Repeated sweeps cannot recover the same task revision twice. The supervisor's
 assigned tasks absent from a successful, complete live-session listing; a failed
 listing is an incomplete check, never evidence that sessions are absent.
 
+For an `IN_PROGRESS` train/hierarchy task whose exact pool writer has stopped,
+the orphan sweep runs the existing fenced owner recovery through `CommandHandler`
+before the ordinary `session_not_live` fallback. It verifies the task, session
+instance, claim epoch and workspace binding under the task control lock. Recovery
+requires fresh provider confirmation of the stopped instance, preserves unpublished
+and dirty work, then releases the owner and retained claim to READY. A refusal
+keeps the task and its resources for retry; live writers, reused bindings, operator
+holds, pinned jobs and integration-owned delegates are not automatically requeued.
+`integration.owner_recovery_sweep: false` disables this automatic owner recovery.
+
+`aq integration release-owner` previews by default; `--apply` explicitly requests
+the same preservation and release. Command callers must pass `dry_run: false` to
+apply. Preview performs no publication, detach, release or audit writes.
+
+Claim release also clears the exact old assignment when the task has already
+returned to READY: it matches the releasing session's agent and claim epoch,
+leaving a successor's assignment untouched. An attached integration owner still
+vetoes release. For an assignment stranded after its sessions stopped, the existing
+`aq task recover --decision release --operator-release --expected-hold-at …`
+control clears it while releasing the exact recovery hold, provided the incident's
+worker is confirmed stopped by its provider, its instance and claim generation
+still match, all sessions for that task and agent are stopped, and no integration
+owner remains. It preserves task status, retry budgets, workspaces and other
+frontier guards; releasing an integration-owned hold never clears its assignment.
+
 `agents.last_heartbeat` is fed from two sources: transcript `in-turn` activity (§4.5) and
 explicit `aq task heartbeat` calls (the prompt instructs agents to call it before long
 commands). A lease TTL of ~8 minutes without either marks the task **stalled** — not dead.
+
+An active pool holder whose native transcript explicitly ends its current turn
+(`end_turn` for Claude, `task_complete` for Codex) uses that transcript's quiet
+clock instead of tmux repaints for the stall ladder and the
+`sessions.idle_claim_timeout_seconds` backstop (15 minutes by default, 0 disables).
+The independent `agents.stuck_timeout_seconds` bound remains honored when enabled.
+New input, tool
+activity, a new turn, partial/unreadable evidence or a pre-claim completion
+invalidates the observation. Recent task heartbeats and wait-result consumption
+give fresh grace; live questions and bounded durable waits retain their existing
+exemptions. Recovery still stops the exact process before releasing resources,
+preserves integration ownership and uses the task's bounded failure streak.
+An unregistered instruction to wait for integration paperwork grants no exemption.
+
+Supervisors keep workers executing or closing their work while the integration
+owner handles delivery controls. With the train off, train controls are not a
+worker publication/close prerequisite. Actual command refusals and explicit
+human holds remain binding; a necessary execution question gets concrete
+guidance or one bounded durable wait, never an indefinite idle hold.
 
 Stalled tasks climb a ladder, each rung a typed event:
 

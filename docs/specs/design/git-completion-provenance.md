@@ -100,6 +100,15 @@ without requiring a published task branch. Missing base, changed source or faile
 provenance publication refuses close with the claim and workspace retained.
 Branchless and non-Git outcomes keep their existing completion behavior.
 
+Single and batched writes retain each ref's immutable publication result until a
+final authorized readback proves the exact deterministic metadata OID. An uncertain
+transfer followed by that exact OID succeeds. Otherwise the refusal names the ref,
+expected OID, final observation and publication observation, including a bounded,
+credential-scrubbed transfer error even when the transfer's readback itself failed
+or reported another OID. A publication result alone cannot override the final
+readback. Batched failures remain scoped to their own completion identity; no
+generation/source/claim binding or create-only lease changes for diagnostics.
+
 For an unheld Git root, `aq integration record-root-noop TASK_ID` previews an
 explicit no-artifact completion. A local operator or a live named supervisor of
 the owning project can apply it with the exact previewed `--head` and a nonblank
