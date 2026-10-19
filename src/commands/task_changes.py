@@ -14,8 +14,8 @@ from contextlib import asynccontextmanager
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.database.queries import ingest_batch_queries as batches
+from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.database.queries.proposal_queries import detect_cycles
 from src.database.tables import (
     gates,
@@ -43,8 +43,12 @@ EDIT_FIELDS = frozenset(
         "action",
         "reason",
         "status",
+        # L4.3 retirement evidence; archive edits only (``_archive_task_on``).
+        "replacement_task_id",
+        "satisfied_by",
     }
 )
+RETIREMENT_FIELDS = ("replacement_task_id", "satisfied_by")
 CREATE_FIELDS = frozenset(
     {
         "tempId",
@@ -146,6 +150,15 @@ def normalize(args: dict) -> dict:
             raise ChangeSetError("description must be a string")
         if "reason" in edit and not isinstance(edit["reason"], str):
             raise ChangeSetError("reason must be a string")
+        if any(key in edit for key in RETIREMENT_FIELDS):
+            if edit.get("action") != "archive" or not (edit.get("reason") or "").strip():
+                raise ChangeSetError(
+                    "replacement_task_id and satisfied_by need an archive edit with a reason",
+                    "obsolete.invalid_disposition",
+                )
+            if any(key in edit and (not isinstance(edit[key], str) or not edit[key].strip())
+                   for key in RETIREMENT_FIELDS):
+                raise ChangeSetError("replacement_task_id and satisfied_by must be non-empty")
     for spec in specs:
         if "priority" in spec and (
             isinstance(spec["priority"], bool) or not isinstance(spec["priority"], int)
@@ -214,6 +227,7 @@ def references(payload):
     refs = {edit["task_id"] for edit in payload["edits"]}
     refs.update(c["task_id"] for c in payload["comments"])
     refs.update(s["parent_id"] for s in payload["tasks"] + payload["edits"] if s.get("parent_id"))
+    refs.update(e["replacement_task_id"] for e in payload["edits"] if e.get("replacement_task_id"))
     refs.update(target for spec in payload["tasks"] for target in spec.get("delivery_targets", []))
     for edge in payload["edges"] + payload["remove_edges"]:
         refs.update((edge["from"], edge["to"]))
@@ -251,7 +265,8 @@ def surviving_operations(payload, rows):
             elif operation in ("edges", "remove_edges"):
                 targets = [item["from"], item["to"]]
             else:
-                targets = [item["task_id"], item.get("parent_id")]
+                targets = [item["task_id"], item.get("parent_id"),
+                           item.get("replacement_task_id")]
             absent = set().union(*(unavailable.get(tid, set()) for tid in targets))
             if absent:
                 omissions.append({
@@ -696,12 +711,22 @@ async def apply(handler, conn, project_id, payload, expected, rows, project, sou
             if parent := real(parents[edit["task_id"]]):
                 archive_parents.add(parent)
                 affected.add(parent)
+            # Retirement evidence makes this an L4.3 obsolete retirement: a
+            # replacement inherits every dependent edge; evidence alone needs
+            # them removed in this same set (``prepare_retirement_on``).
+            evidence = {
+                "disposition": "obsolete",
+                "abandon_reason": edit["reason"],
+                "replacement_task_id": real(edit.get("replacement_task_id")),
+                "satisfied_by": edit.get("satisfied_by"),
+            } if any(key in edit for key in RETIREMENT_FIELDS) else {}
             result = await db._archive_task_on(
                 edit["task_id"],
                 conn=conn,
                 archive_reason=edit.get("reason"),
                 abandoned_by=author_id,
                 defer_projection=True,
+                **evidence,
             )
             if result is None:
                 raise ChangeSetError("archive task not found")

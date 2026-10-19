@@ -1803,3 +1803,275 @@ async def test_ingest_dispatch_failure_rolls_back_batch_graph_and_hold(handler, 
         assert not (await conn.execute(select(ingest_batch_members))).all()
     monkeypatch.setattr(proposal_commands, "enqueue_integration_event", original)
     assert (await _ingest_propose(handler, path, scope, decision))["status"] == "held"
+
+
+# ---------------------------------------------------------------------------
+# Supervisor in-scope repairs of a released batch (spec P4 L4.4)
+# ---------------------------------------------------------------------------
+
+
+_REPAIR_COMMANDS = ["task_batch_propose", "task_batch_commit", "task_batch_update"]
+
+
+async def _repair_supervisor(handler, *, sid="sup-p1", project_id="p1", **overrides):
+    """A live named supervisor session and its elevated request scope."""
+    if await handler._db.get_profile("supervisor") is None:
+        await handler._db.create_profile(AgentProfile(
+            id="supervisor", name="Supervisor", harness_tools=[], plugin_tools=[],
+            aq_commands=_REPAIR_COMMANDS,
+        ))
+    await handler._db.create_session(SessionRecord(**{
+        "id": sid, "project_id": project_id, "profile_id": "supervisor", "harness": "codex",
+        "provider": "fake", "name": f"n-supervisor--{sid}", "lifecycle": "named",
+        "work_dir": "/tmp/sup", "epoch": "boot", "instance_token": f"{sid}-token",
+        "started_at": time.time(), "state": "running", **overrides,
+    }))
+    return {"kind": "session", "session_id": sid, "session_instance_token": f"{sid}-token",
+            "project_id": project_id, "elevated": True}
+
+
+async def _released_batch(handler, *, state="released"):
+    """Batch ``core`` > ``api``, ``ui`` (+ root ``docs``) and a non-member ``outside``."""
+    from src.database.queries import ingest_batch_queries as q
+    from src.database.queries.proposal_queries import insert_proposal
+    db = handler._db
+    for tid in ("core", "api", "ui", "docs", "outside"):
+        await _existing(handler, tid)
+    async with db.immediate() as conn:
+        for child in ("api", "ui"):
+            await db.set_parent(child, "core", conn=conn)
+    batch_id = await insert_proposal(db, project_id="p1", source="spec", payload={},
+                                     status="committed")
+    async with db.immediate() as conn:
+        created = await q.create_batch(
+            conn, batch_id=batch_id, project_id="p1", source_review_id="rev-1",
+            source_revision=1, source_content_sha256="sha-1", decision_id="dec-1",
+            lineage=q._no_lineage("no_spec_ingest"), idempotency_key="ingest:rev-1:1",
+            **({"state": "released", "release_actor": "human:test",
+                "release_receipt": {"checks": "pass"}} if state == "released" else {}),
+        )
+        assert created["success"]
+        for tid, role in (("core", "container"), ("api", "leaf"), ("ui", "leaf"),
+                          ("docs", "leaf")):
+            joined = await q.add_member(
+                conn, batch_id, task_id=tid, member_key=tid, role=role,
+                section_anchor=f"#{tid}", primary_outcome=f"outcome {tid}", created_revision=1,
+            )
+            assert joined["success"]
+    return batch_id
+
+
+async def _repair(handler, batch_id, scope, **operations):
+    return await handler.execute("task_batch_propose", {
+        "project_id": "p1", "source": f"batch-repair:{batch_id}", **operations,
+        "_scope": scope,
+    })
+
+
+async def _members(handler, batch_id):
+    from src.database.queries import ingest_batch_queries as q
+    async with handler._db.immediate() as conn:
+        return {row["task_id"]: row for row in await q.members(conn, batch_id)}
+
+
+async def test_supervisor_reparent_of_released_member_commits_without_gate(handler):
+    batch_id = await _released_batch(handler)
+    scope = await _repair_supervisor(handler)
+    handler.orchestrator.bus.emit.reset_mock()
+    proposed = await _repair(handler, batch_id, scope, edits=[
+        {"task_id": "ui", "parent_id": "docs", "reason": "UI belongs with the docs track"},
+    ])
+    assert proposed["success"], proposed
+    impact = proposed["diff"]["impact"]
+    assert impact["bypass"] == {"eligible": True, "refusal": None}
+    assert impact["moved"] == [{"task_id": "ui", "old_parent": "core", "new_parent": "docs",
+                                "delivery_target": "docs"}]
+    assert impact["remaining_source_coverage"] == {
+        "covered": ["#api", "#core", "#docs", "#ui"], "uncovered": []}
+    assert impact["active_owner"] == {"tasks": [], "integration_batch": None}
+    assert "proposal.ready" not in [event for event, _ in _emitted(handler)]
+
+    committed = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope})
+    assert committed["success"], committed
+    assert (await handler._db.get_task("ui")).parent_task_id == "docs"
+    assert not await handler._db.list_gates(project_id="p1", gate_type="human")
+
+
+async def test_supervisor_retirement_with_replacement_rewires_and_retires_member(handler):
+    batch_id = await _released_batch(handler)
+    await handler._db.add_dependency("docs", "ui")
+    scope = await _repair_supervisor(handler)
+    proposed = await _repair(handler, batch_id, scope, edits=[
+        {"task_id": "ui", "action": "archive", "reason": "API now serves the UI contract",
+         "replacement_task_id": "api"},
+    ])
+    assert proposed["success"], proposed
+    impact = proposed["diff"]["impact"]
+    assert impact["retired"] == [{"task_id": "ui", "reason": "API now serves the UI contract",
+                                  "replacement_task_id": "api", "satisfied_by": None}]
+    assert impact["prerequisites"] == {}
+    assert impact["remaining_source_coverage"]["uncovered"] == ["#ui"]
+
+    committed = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope})
+    assert committed["success"], committed
+    assert await handler._db.get_task("ui") is None
+    assert await handler._db.get_dependencies("docs") == {"api"}
+    members = await _members(handler, batch_id)
+    assert members["ui"]["state"] == "retired"
+    assert members["ui"]["retired_reason"] == "API now serves the UI contract"
+
+
+async def test_supervisor_split_remainder_joins_released_batch(handler):
+    batch_id = await _released_batch(handler)
+    scope = await _repair_supervisor(handler)
+    proposed = await _repair(handler, batch_id, scope,
+        tasks=[{"tempId": "ui-rest", "title": "UI remainder", "description": "Rest of #ui",
+                "parent_id": "core", "acceptance": ["Remaining UI states render"]}],
+        edges=[{"from": "ui-rest", "to": "ui"}],
+    )
+    assert proposed["success"], proposed
+    impact = proposed["diff"]["impact"]
+    assert impact["bypass"]["eligible"] is True
+    assert impact["created"] == [{"temp_id": "ui-rest", "parent_id": "core",
+                                  "placement": "child", "delivery_targets": [],
+                                  "delivery_target": "core"}]
+    assert impact["prerequisites"] == {"ui-rest": [{"task_id": "ui", "dep_type": "blocks"}]}
+    committed = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope})
+    assert committed["success"], committed
+    (new_id,) = committed["task_ids"]
+    joined = (await _members(handler, batch_id))[new_id]
+    assert (joined["state"], joined["role"], joined["section_anchor"]) == (
+        "active", "leaf", "#core")
+
+
+@pytest.mark.parametrize("operations, refusal", [
+    ({"edits": [{"task_id": "outside", "parent_id": "core", "reason": "adopt"}]},
+     "not an active member"),
+    ({"edits": [{"task_id": "ui", "parent_id": "outside", "reason": "move"}]},
+     "new parent outside is outside"),
+    ({"edits": [{"task_id": "ui", "title": "Renamed", "reason": "rename"}]},
+     "not a move (L4.1) or retirement (L4.3)"),
+    ({"edits": [{"task_id": "ui", "action": "pause", "reason": "stop"}]},
+     "not a move (L4.1) or retirement (L4.3)"),
+    ({"edits": [{"task_id": "ui", "parent_id": "docs"}]}, "needs a reason"),
+    ({"edits": [{"task_id": "ui", "action": "archive", "reason": "gone",
+                 "replacement_task_id": "outside"}]}, "replacement outside is outside"),
+    ({"tasks": [{"tempId": "root", "title": "Root", "description": ""}]},
+     "needs a member parent or target"),
+    ({"edges": [{"from": "docs", "to": "api"}]}, "must belong to a split remainder"),
+    ({"edges": [{"from": "outside", "to": "api"}]}, "added edge endpoint outside"),
+    ({"comments": [{"task_id": "outside", "body": "note"}]}, "comment target outside"),
+])
+async def test_out_of_scope_repair_keeps_the_human_gate(handler, operations, refusal):
+    batch_id = await _released_batch(handler)
+    scope = await _repair_supervisor(handler)
+    handler.orchestrator.bus.emit.reset_mock()
+    proposed = await _repair(handler, batch_id, scope, **operations)
+    assert proposed["success"], proposed
+    bypass = proposed["diff"]["impact"]["bypass"]
+    assert bypass["eligible"] is False and refusal in bypass["refusal"]
+    assert "proposal.ready" in [event for event, _ in _emitted(handler)]
+    refused = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope})
+    assert refused["success"] is False and refused["not_approved"], refused
+    assert "has no human approval gate" in refused["error"]
+
+
+async def _local(handler, batch_id, **operations):
+    return await handler.execute("task_batch_propose", {
+        "project_id": "p1", "source": f"batch-repair:{batch_id}", **operations})
+
+
+@pytest.mark.parametrize("caller", ["local", "global", "worker", "other_project", "stopped"])
+async def test_only_this_projects_live_supervisor_bypasses_the_gate(handler, caller):
+    batch_id = await _released_batch(handler)
+    move = {"edits": [{"task_id": "ui", "parent_id": "docs", "reason": "regroup"}]}
+    if caller == "local":
+        proposed = await _local(handler, batch_id, **move)
+        commit_scope = None
+    else:
+        await handler.execute("create_project", {"id": "p2", "name": "p2"})
+        scope = await _repair_supervisor(
+            handler, project_id={"global": None, "other_project": "p2"}.get(caller, "p1"),
+            **({"desired_state": "stopped"} if caller == "stopped" else {}),
+        )
+        if caller == "global":
+            scope["project_id"] = None
+        if caller == "worker":
+            scope["elevated"] = False
+        proposed = await _repair(handler, batch_id, scope, **move)
+        commit_scope = scope
+    assert proposed["success"], proposed
+    assert proposed["diff"]["impact"]["bypass"] == {
+        "eligible": False,
+        "refusal": "only this project's live supervisor may repair a released batch"}
+    refused = await handler.execute("task_batch_commit", {
+        "proposal_id": proposed["proposal_id"],
+        **({"_scope": commit_scope} if commit_scope else {})})
+    assert refused["not_approved"], refused
+
+
+async def test_held_or_foreign_batch_keeps_the_gate(handler):
+    held = await _released_batch(handler, state="held")
+    scope = await _repair_supervisor(handler)
+    proposed = await _repair(handler, held, scope, edits=[
+        {"task_id": "outside", "parent_id": "docs", "reason": "regroup"}])
+    assert proposed["success"], proposed
+    assert "is held, not released" in proposed["diff"]["impact"]["bypass"]["refusal"]
+    missing = await _repair(handler, "no-such-batch", scope, edits=[
+        {"task_id": "outside", "parent_id": "docs", "reason": "regroup"}])
+    assert "is not an ingest batch of project" in missing["diff"]["impact"]["bypass"]["refusal"]
+
+
+async def test_stamp_is_server_owned_and_rechecked_at_commit(handler):
+    batch_id = await _released_batch(handler)
+    scope = await _repair_supervisor(handler)
+    # A caller-supplied stamp on an ordinary source never bypasses the gate.
+    forged = await handler.execute("task_batch_propose", {
+        "project_id": "p1", "source": "change-set:test", "_scope": scope,
+        "edits": [{"task_id": "ui", "title": "Forged"}],
+        "batch_repair": {"batch_id": batch_id, "actor": "supervisor session:sup-p1"}})
+    assert forged["success"], forged
+    refused = await handler.execute("task_batch_commit", {
+        "proposal_id": forged["proposal_id"], "_scope": scope})
+    assert refused["not_approved"], refused
+    # A stamped repair re-checks the committing principal: the operator needs a gate.
+    proposed = await _repair(handler, batch_id, scope, edits=[
+        {"task_id": "ui", "parent_id": "docs", "reason": "regroup"}])
+    refused = await handler.execute("task_batch_commit", {"proposal_id": proposed["proposal_id"]})
+    assert refused["not_approved"] and "out of scope" in refused["error"], refused
+    # Updating a stamped repair outside its scope is refused, not silently gated.
+    widened = await handler.execute("task_batch_update", {
+        "proposal_id": proposed["proposal_id"], "_scope": scope,
+        "payload": {"edits": [{"task_id": "ui", "title": "Renamed"}]}})
+    assert widened["success"] is False and "leave its scope" in widened["error"], widened
+
+
+async def test_retirement_evidence_needs_an_archive_edit_with_reason(handler):
+    await _existing(handler, "a")
+    await _existing(handler, "b")
+    for edit in ({"task_id": "a", "replacement_task_id": "b", "reason": "x"},
+                 {"task_id": "a", "action": "archive", "satisfied_by": "b"},
+                 {"task_id": "a", "action": "archive", "reason": "x", "satisfied_by": " "}):
+        refused = await handler.execute("task_batch_propose", {
+            "project_id": "p1", "source": "change-set:test", "edits": [edit]})
+        assert refused["success"] is False, refused
+
+
+async def test_repair_preview_names_the_active_owner(handler):
+    batch_id = await _released_batch(handler)
+    await handler._db.update_task("api", branch_name="aq/api")
+    await handler._db.add_dependency("api", "outside")
+    scope = await _repair_supervisor(handler)
+    preview = await _repair(handler, batch_id, scope, dry_run=True, edits=[
+        {"task_id": "api", "parent_id": "docs", "reason": "API docs first"}])
+    assert preview["success"] and preview["dry_run"], preview
+    impact = preview["diff"]["impact"]
+    assert impact["active_owner"]["tasks"] == [
+        {"task_id": "api", "assigned_agent_id": None, "branch_name": "aq/api"}]
+    assert impact["prerequisites"] == {"api": [{"task_id": "outside", "dep_type": "blocks"}]}
+    assert impact["bypass"]["eligible"] is True
+    assert (await handler._db.get_task("api")).parent_task_id == "core"

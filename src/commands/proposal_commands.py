@@ -5,6 +5,8 @@ assignment materializes implementation work atomically under a durable batch
 hold; fidelity review and authorized release expose it to execution. Design
 approval creates a released server-authored implementation-spec task. Commit
 replays released batches and refuses held ones; discard cannot retire a hold.
+A project supervisor's in-scope repair of a released batch (spec P4 L4.4)
+commits without the human gate; every other change keeps it.
 """
 
 from __future__ import annotations
@@ -22,19 +24,22 @@ from src.asks.ingestion import approved_packet, stamp_for, task_stamp
 from src.asks.operations import get_operation, operation, succeed
 from src.commands import task_changes
 from src.commands.principal import PrincipalKind, current_principal
+from src.commands.supervisor_authority import operator_or_supervisor
 from src.database.queries import ingest_batch_queries as batches
 from src.database.queries import proposal_queries
 from src.database.tables import (
     approved_document_snapshots,
     events,
     gates,
+    ingest_batch_members,
     ingest_batches,
+    task_dependencies,
     task_metadata,
     task_proposals,
     tasks,
 )
-from src.models import Task, TaskStatus
 from src.integration.outbox import enqueue_integration_event
+from src.models import Task, TaskStatus
 from src.routing.filing import choice_forbidden
 from src.task_graph import batch_checks
 
@@ -53,6 +58,20 @@ PROPOSAL_ID_META = "proposal_id"
 #: Server-owned payload stamp carrying a live spec-ingest assignment's
 #: approved-document authority.  ``normalize`` drops it from caller payloads.
 SPEC_INGEST_META = "spec_ingest"
+
+#: Proposal source naming the released batch a supervisor repair targets.
+BATCH_REPAIR_PREFIX = "batch-repair:"
+
+#: Server-owned payload stamp: the project supervisor proposed an in-scope
+#: repair of a released batch.  ``normalize`` drops it from caller payloads.
+BATCH_REPAIR_META = "batch_repair"
+
+#: Edit shapes of an in-scope repair: an L4.1 move and an L4.3 retirement.
+#: An L4.2 split remainder is a created task under or delivering to a member.
+_REPAIR_MOVE_FIELDS = frozenset({"task_id", "parent_id", "reason"})
+_REPAIR_RETIRE_FIELDS = frozenset(
+    {"task_id", "action", "reason", *task_changes.RETIREMENT_FIELDS}
+)
 
 
 class TaskProposalCommandsMixin:
@@ -316,6 +335,10 @@ class TaskProposalCommandsMixin:
                 "remove_edges": payload["remove_edges"],
                 "comments": payload["comments"],
             }
+            if source.startswith(BATCH_REPAIR_PREFIX):
+                payload["diff"]["impact"] = await self._batch_repair_impact(
+                    conn, project, source, payload, rows, receipt, aliases
+                )
         finally:
             await savepoint.rollback()
         return payload
@@ -325,10 +348,184 @@ class TaskProposalCommandsMixin:
         if getattr(exc, "refused", None):
             return choice_forbidden(command, exc.refused)
         return {
+            # A hierarchy refusal (``needs_quiescence``) names its owner and
+            # safe continuation; keep them beside the code.
+            **(getattr(exc, "context", None) or {}),
             "success": False,
             "code": getattr(exc, "code", "change_set.invalid"),
             "error": str(exc),
         }
+
+    async def _batch_repair_scope(self, conn, project_id, source, payload):
+        """``(batch, None)`` for an in-scope supervisor repair, else ``(None, why)``.
+
+        Narrow by construction (spec P4 L4.4): the caller is this project's
+        live named supervisor; ``source`` names a released batch of the same
+        project; every edit and removed edge touches only its active members;
+        and each operation is an L4.1 move, an L4.2 split remainder (a created
+        task under, or delivering to, a member) or an L4.3 retirement, each
+        with a reason.  Added edges, created tasks and comments stay inside the
+        members and the tasks this set creates.  Anything else keeps the gate.
+        """
+        principal = current_principal()
+        actor, refusal = await operator_or_supervisor(
+            self.db, project_id, subject="batch repair"
+        )
+        if (refusal or not actor.startswith("supervisor session:")
+                or principal is None or principal.project_id != project_id):
+            return None, "only this project's live supervisor may repair a released batch"
+        batch_id = source.removeprefix(BATCH_REPAIR_PREFIX)
+        batch = await batches.get_batch(conn, batch_id, lock=True)
+        if batch is None or batch["project_id"] != project_id:
+            return None, f"'{batch_id}' is not an ingest batch of project '{project_id}'"
+        if batch["state"] != "released":
+            return None, f"batch '{batch_id}' is {batch['state']}, not released"
+        members = {
+            row["task_id"] for row in await batches.members(conn, batch_id, state="active")
+        }
+        created = {spec["tempId"] for spec in payload["tasks"]}
+
+        def outside(*task_ids, allowed=members | created):
+            return sorted({tid for tid in task_ids if tid} - allowed)
+
+        for edit in payload["edits"]:
+            tid = edit["task_id"]
+            if outside(tid, allowed=members):
+                return None, f"{tid} is not an active member of batch '{batch_id}'"
+            if not (edit.get("reason") or "").strip():
+                return None, f"the repair of {tid} needs a reason"
+            if edit.get("action") == "archive" and set(edit) <= _REPAIR_RETIRE_FIELDS:
+                if stray := outside(edit.get("replacement_task_id")):
+                    return None, f"replacement {stray[0]} is outside batch '{batch_id}'"
+            elif "parent_id" in edit and set(edit) <= _REPAIR_MOVE_FIELDS:
+                if stray := outside(edit["parent_id"]):
+                    return None, f"new parent {stray[0]} is outside batch '{batch_id}'"
+            else:
+                return None, f"the edit of {tid} is not a move (L4.1) or retirement (L4.3)"
+        for edge in payload["remove_edges"]:
+            if stray := outside(edge["from"], edge["to"], allowed=members):
+                return None, f"removed edge endpoint {stray[0]} is not an active member"
+        for edge in payload["edges"]:
+            if stray := outside(edge["from"], edge["to"]):
+                return None, f"added edge endpoint {stray[0]} is outside batch '{batch_id}'"
+            if edge.get("dep_type", "blocks") != "parent-child" and edge["from"] not in created:
+                return None, "an added prerequisite must belong to a split remainder"
+        for spec in payload["tasks"]:
+            anchor = [spec.get("parent_id"), *spec.get("delivery_targets", [])]
+            if not any(anchor):
+                return None, f"split remainder {spec['tempId']} needs a member parent or target"
+            if stray := outside(*anchor):
+                return None, f"split remainder anchor {stray[0]} is outside batch '{batch_id}'"
+        for comment in payload["comments"]:
+            if stray := outside(comment["task_id"]):
+                return None, f"comment target {stray[0]} is outside batch '{batch_id}'"
+        return {**batch, "actor": actor}, None
+
+    async def _batch_repair_impact(self, conn, project, source, payload, rows, receipt, aliases):
+        """The impact set of a ``batch-repair:`` change set (spec P4 L4.4).
+
+        Read inside the validation savepoint after the set applied, so moves,
+        retirements, prerequisites and coverage describe the final graph.
+        ``delivery_target`` is the structural root the moved work delivers
+        into; ``active_owner`` names claims and an active integration batch
+        that would make a move wait for quiescence.
+        """
+        batch_id = source.removeprefix(BATCH_REPAIR_PREFIX)
+        temp = receipt["temp_ids"]
+
+        def shown(tid):
+            return aliases.get(tid, tid)
+
+        parents = {
+            row["id"]: row["parent_task_id"]
+            for row in (await conn.execute(
+                select(tasks.c.id, tasks.c.parent_task_id)
+                .where(tasks.c.project_id == project["id"])
+            )).mappings()
+        }
+
+        def root(tid):
+            while parents.get(tid):
+                tid = parents[tid]
+            return tid
+
+        moved = [
+            {"task_id": tid, "old_parent": rows[tid]["parent_task_id"],
+             "new_parent": shown(parents.get(tid)), "delivery_target": shown(root(tid))}
+            for tid in sorted(rows)
+            if tid in parents and parents[tid] != rows[tid]["parent_task_id"]
+        ]
+        retired = [
+            {"task_id": edit["task_id"], "reason": edit.get("reason"),
+             **{key: edit.get(key) for key in task_changes.RETIREMENT_FIELDS}}
+            for edit in payload["edits"] if edit.get("action") == "archive"
+        ]
+        created = [
+            {"temp_id": spec["tempId"], "parent_id": spec.get("parent_id"),
+             "placement": spec.get("placement", "child"),
+             "delivery_targets": spec.get("delivery_targets", []),
+             "delivery_target": shown(root(temp[spec["tempId"]]))}
+            for spec in payload["tasks"]
+        ]
+        touched = {entry["task_id"] for entry in moved} | set(temp.values()) | {
+            temp.get(tid, tid) for tid in (e.get("replacement_task_id") for e in retired) if tid
+        }
+        prerequisites = {}
+        for row in (await conn.execute(
+            select(task_dependencies).where(
+                task_dependencies.c.task_id.in_(touched),
+                task_dependencies.c.dep_type != "parent-child",
+            ).order_by(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id)
+        )).mappings():
+            prerequisites.setdefault(shown(row["task_id"]), []).append(
+                {"task_id": shown(row["depends_on_task_id"]), "dep_type": row["dep_type"]}
+            )
+        member_rows = (await conn.execute(
+            select(ingest_batch_members).where(
+                ingest_batch_members.c.batch_id == batch_id,
+                ingest_batch_members.c.state == "active",
+            )
+        )).mappings().all()
+        gone = {entry["task_id"] for entry in retired}
+        anchors = {row["section_anchor"] for row in member_rows}
+        covered = {row["section_anchor"] for row in member_rows if row["task_id"] not in gone}
+        existing = {entry["task_id"] for entry in moved + retired}
+        old_parents = {rows[tid]["parent_task_id"] for tid in existing if tid in rows}
+        owners = [
+            {"task_id": tid, "assigned_agent_id": rows[tid]["assigned_agent_id"],
+             "branch_name": rows[tid]["branch_name"]}
+            for tid in sorted(existing)
+            if tid in rows and (rows[tid]["assigned_agent_id"] or rows[tid]["branch_name"])
+        ]
+        integration = None
+        if project["hierarchical_integration_mode"] in {"hierarchy", "train"} and existing:
+            integration = await self._hierarchy_integration_service()._active_batch_owner(
+                conn, sorted((existing | old_parents | {parents.get(t) for t in existing}) - {None})
+            )
+        return {
+            "batch_id": batch_id,
+            "moved": moved,
+            "retired": retired,
+            "created": created,
+            "prerequisites": prerequisites,
+            "remaining_source_coverage": {
+                "covered": sorted(covered),
+                # A section left without an active member after this repair;
+                # a split remainder must carry it forward.
+                "uncovered": sorted(anchors - covered),
+            },
+            "active_owner": {"tasks": owners, "integration_batch": integration},
+        }
+
+    async def _stamp_batch_repair(self, conn, project_id, source, payload) -> bool:
+        """Stamp an in-scope supervisor repair, recording the verdict in its impact."""
+        if not source.startswith(BATCH_REPAIR_PREFIX):
+            return False
+        batch, refusal = await self._batch_repair_scope(conn, project_id, source, payload)
+        payload["diff"]["impact"]["bypass"] = {"eligible": batch is not None, "refusal": refusal}
+        if batch is not None:
+            payload[BATCH_REPAIR_META] = {"batch_id": batch["batch_id"], "actor": batch["actor"]}
+        return batch is not None
 
     async def _cmd_task_batch_propose(self, args: dict) -> dict:
         project_id = args.get("project_id") or self._active_project_id
@@ -341,6 +538,7 @@ class TaskProposalCommandsMixin:
             return {"success": False, "error": str(exc)}
         change_set = args
         committed = notifications = None
+        repair = False
         try:
             async with task_changes.boundary(
                 self.db, project_id,
@@ -382,6 +580,7 @@ class TaskProposalCommandsMixin:
                     change_set, packet = await self._ingest_change_set(conn, change_set, ingest)
                     report = await self._validate_ingest_graph(conn, change_set, project_id, source)
                 payload = await self._prepare_change_set(conn, project_id, change_set, source)
+                repair = await self._stamp_batch_repair(conn, project_id, source, payload)
                 if args.get("dry_run"):
                     return {"success": True, "dry_run": True, "diff": payload["diff"]}
                 if ingest:
@@ -406,9 +605,12 @@ class TaskProposalCommandsMixin:
                 status="held" if committed["state"] in batches.HELD_STATES else "committed",
             )
             return {**committed, "diff": payload["diff"]}
-        await self._emit_proposal_event(
-            "proposal.ready", {"project_id": project_id, "proposal_id": proposal_id}
-        )
+        if not repair:
+            # An in-scope supervisor repair needs no human gate; the
+            # supervisor reviews the impact preview and commits it.
+            await self._emit_proposal_event(
+                "proposal.ready", {"project_id": project_id, "proposal_id": proposal_id}
+            )
         return {"success": True, "proposal_id": proposal_id, "diff": payload["diff"]}
 
     async def _cmd_task_batch_update(self, args: dict) -> dict:
@@ -441,6 +643,17 @@ class TaskProposalCommandsMixin:
                 payload = await self._prepare_change_set(
                     conn, row["project_id"], args.get("payload") or {}, row["source"]
                 )
+                # A gate-free repair stays gate-free only while it stays in scope:
+                # no proposal.ready gate was ever opened for it.
+                stamped = json.loads(current["payload"]).get(BATCH_REPAIR_META)
+                if stamped and not await self._stamp_batch_repair(
+                    conn, row["project_id"], row["source"], payload
+                ):
+                    raise task_changes.ChangeSetError(
+                        "this batch repair would leave its scope "
+                        f"({payload['diff']['impact']['bypass']['refusal']}); "
+                        "propose the change as a new batch for human approval"
+                    )
                 if not await proposal_queries.update_ungated_payload(
                     self.db, proposal_id, project_id=row["project_id"], payload=payload, conn=conn
                 ):
@@ -512,12 +725,31 @@ class TaskProposalCommandsMixin:
         gate approves exactly the revision being committed.  Spec-ingest
         authority is stamped only by ``_spec_ingest_context``, never parsed
         from caller payloads; those immutable batches need no second decision.
+        A ``batch-repair:`` proposal stamped at propose time is the second
+        bypass: :meth:`_batch_repair_scope` re-runs against the committing
+        principal and live membership, and any refusal falls back to the gate.
         """
         proposal_id, owner = row["id"], row["project_id"]
         if project_id and project_id != owner:
             return f"proposal '{proposal_id}' belongs to project '{owner}', not '{project_id}'"
         if row["payload"].get(SPEC_INGEST_META):
             return None
+        repair = row["payload"].get(BATCH_REPAIR_META)
+        if repair and conn is not None and row["source"] == BATCH_REPAIR_PREFIX + repair["batch_id"]:
+            # Re-checked at commit, as the committing principal: the batch,
+            # membership and caller must still be in scope (spec P4 L4.4).
+            batch, refusal = await self._batch_repair_scope(
+                conn, owner, row["source"], task_changes.normalize(row["payload"])
+            )
+            if batch is not None:
+                return None
+            error = await self._gate_approval_error(row, gate_id=gate_id, conn=conn)
+            return error and f"{error}; the batch repair is out of scope: {refusal}"
+        return await self._gate_approval_error(row, gate_id=gate_id, conn=conn)
+
+    async def _gate_approval_error(self, row: dict, *, gate_id: str | None, conn) -> str | None:
+        """Why no resolved human gate approves this proposal, or ``None``."""
+        proposal_id, owner = row["id"], row["project_id"]
         if gate_id:
             gate = await self.db.get_gate(str(gate_id), conn=conn, lock=conn is not None)
             if gate is None:
@@ -542,6 +774,52 @@ class TaskProposalCommandsMixin:
         if gate["resolution"] not in APPROVAL_RESOLUTIONS:
             return f"{label} was resolved {gate['resolution']!r}, which is not an approval"
         return None
+
+    async def _repair_batch_membership(self, conn, batch_id, payload, receipt) -> None:
+        """Keep a released batch's membership the record of its repaired structure.
+
+        Retired tasks leave the batch audit-intact; split remainders join it,
+        carrying their own section anchor or their parent's (or delivery
+        target's), so source coverage stays answerable.  A released batch has
+        no revision fence (``bump_revision`` is for held batches), so rows are
+        stamped with its current ``structure_revision``.
+        """
+        batch = await batches.get_batch(conn, batch_id, lock=True)
+        revision = batch["structure_revision"]
+        reasons = {e["task_id"]: e["reason"] for e in payload["edits"]
+                   if e.get("action") == "archive"}
+        active = {row["task_id"]: row for row in await batches.members(
+            conn, batch_id, state="active", lock=True)}
+        for task_id in receipt["archived_task_ids"]:
+            if task_id in active:
+                await batches.retire_member(
+                    conn, batch_id, task_id,
+                    reason=reasons.get(task_id, "retired with its archived ancestor"),
+                    retired_revision=revision,
+                )
+        temp = receipt["temp_ids"]
+        specs = {spec["tempId"]: spec for spec in payload["tasks"]}
+        parents = {tid: spec.get("parent_id") for tid, spec in specs.items()}
+
+        def anchor(tid):
+            if tid not in specs:
+                return active[tid]["section_anchor"]
+            spec = specs[tid]
+            return spec.get("section_anchor") or anchor(
+                spec.get("parent_id") or spec["delivery_targets"][0]
+            )
+
+        for tid, spec in specs.items():
+            role = ("operational_root" if spec.get("placement") == "operational_root"
+                    else "container" if tid in parents.values() else "leaf")
+            joined = await batches.add_member(
+                conn, batch_id, task_id=temp[tid], member_key=f"repair:{temp[tid]}", role=role,
+                section_anchor=anchor(tid), primary_outcome=spec.get("primary_outcome", ""),
+                created_revision=revision, acceptance=spec.get("acceptance"),
+                constraints=spec.get("constraints"), size=spec.get("size"),
+            )
+            if not joined["success"]:
+                raise task_changes.ChangeSetError(joined["error"])
 
     async def _proposal_task_ids(self, proposal_id: str) -> list[str]:
         """The tasks a committed proposal materialised, oldest first."""
@@ -667,6 +945,9 @@ class TaskProposalCommandsMixin:
             approved=True,
         )
         receipt.update(omissions)
+        if stored.get(BATCH_REPAIR_META):
+            await self._repair_batch_membership(conn, stored[BATCH_REPAIR_META]["batch_id"],
+                                                payload, receipt)
         for task_id in receipt["task_ids"]:
             await self.db._upsert_meta(task_id, PROPOSAL_ID_META, proposal_id, conn=conn)
         stored["receipt"] = receipt
