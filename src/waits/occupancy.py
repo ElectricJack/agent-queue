@@ -42,14 +42,14 @@ async def continuation_occupancy(db, config):
                admission_reservations.c.continuation_id == continuations.c.id).outerjoin(
             sessions, sessions.c.id == continuations.c.new_session_id,
         )).where(
-            continuations.c.resume_state.in_(("reserved", "launching", "delivered")),
+            continuations.c.resume_state.in_(("reserved", "launching", "delivered", "acknowledged")),
             admission_reservations.c.state.in_(("pending", "overdue", "granted", "consumed")),
         ))).mappings().all()
     resuming, pending = set(), {}
     for row in rows:
         if row["new_session_id"] and row["state"] in {"starting", "running", "draining"}:
             resuming.add(row["new_session_id"])
-        else:
+        elif row["state"] not in {"stopped", "failed"}:
             key = (row["project_id"], row["scope"]["profile_id"])
             pending[key] = pending.get(key, 0) + 1
     return frozenset(resuming), pending

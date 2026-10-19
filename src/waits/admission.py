@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 
 from src.database.tables import (
-    integration_batch_members, integration_batches, integration_branch_owners,
+    continuations, integration_batch_members, integration_batches, integration_branch_owners,
     integration_repair_stages, projects, sessions, tasks, token_ledger,
 )
 from src.waits.conditions import Condition, NodeKey, Observation, Snapshot
@@ -87,7 +87,7 @@ class AdmissionReader:
         self.orchestrator = orchestrator
         self.clock = clock
 
-    async def observe_task(self, conn, task_id):
+    async def observe_task(self, conn, task_id, *, continuation_id=None):
         from src.database.queries.claim_queries import (
             _pool_profiles_predicate, claim_frontier_predicates, route_claimable,
         )
@@ -98,7 +98,14 @@ class AdmissionReader:
         config = o.config
         config_revision = digest(asdict(config))
         task = (await conn.execute(select(tasks).where(tasks.c.id == task_id))).mappings().first()
-        if not task or task["status"] != "READY" or task["assigned_agent_id"] is not None:
+        expected_status = "RESUME_PENDING" if continuation_id else "READY"
+        if not task or task["status"] != expected_status or task["assigned_agent_id"] is not None:
+            return None
+        if continuation_id and not await conn.scalar(select(continuations.c.id).where(
+            continuations.c.id == continuation_id, continuations.c.task_id == task_id,
+            continuations.c.resume_state == "queued", continuations.c.stopped_at.is_not(None),
+            continuations.c.hold_reason.is_(None),
+        )):
             return None
         task = dict(task)
         project = (await conn.execute(select(projects).where(
@@ -120,8 +127,10 @@ class AdmissionReader:
         from src.pool_claims import idle_pool_claim_loop_stalled, pool_claim_loop_stall_seconds
         from src.waits.occupancy import continuation_occupancy
 
+        resuming, reserved = await continuation_occupancy(o.db, config)
         live = [dict(row) for row in (await conn.execute(select(sessions).where(
-            sessions.c.lifecycle == "pool", sessions.c.state.in_(("starting", "running")),
+            (sessions.c.lifecycle == "pool") | sessions.c.id.in_(resuming),
+            sessions.c.state.in_(("starting", "running")),
             sessions.c.desired_state == "running",
         ))).mappings()]
         current = [s for s in live if s["project_id"] == task["project_id"]]
@@ -129,10 +138,13 @@ class AdmissionReader:
                 and s["state"] == "running" and not s["task_id"] and not s["claim_phase"]
                 and not idle_pool_claim_loop_stalled(SimpleNamespace(**s), now=self.clock(),
                     stall_seconds=pool_claim_loop_stall_seconds(config.swarm))]
+        # Resumes start a new task session; an idle pool process cannot be
+        # reused as that fresh process and still occupies its configured seat.
+        if continuation_id:
+            idle = []
         compatible = [s for s in live if s["profile_id"] == task["profile_id"]]
         pending = [launch for launch in getattr(o, "_pool_launches", {}).values()
                    if launch.session_id not in {s["id"] for s in live}]
-        _, reserved = await continuation_occupancy(o.db, config)
         fleet_count = len(live) + len(pending) + sum(reserved.values())
         project_count = len(current) + sum(launch.project_id == task["project_id"] for launch in pending)
         project_count += sum(n for (pid, _), n in reserved.items() if pid == task["project_id"])
@@ -193,7 +205,8 @@ class AdmissionReader:
         if not profile or not profile.enabled or project["status"] != "ACTIVE":
             policy_reasons.append("disabled_project_or_profile")
         constraints = {
-            "slot": {"blocked": bool(slot or owns), "awaiting_branch_admission": owns,
+            "slot": {"blocked": bool(slot or owns and not continuation_id),
+                     "awaiting_branch_admission": owns and not continuation_id,
                      "fleet": fleet_count, "project": project_count, "idle": len(idle)},
             "workspace": {"blocked": not idle and capacity <= 0
                           or not checks.get("workspace_requirement", True), "capacity": capacity},

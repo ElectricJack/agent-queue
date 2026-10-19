@@ -98,6 +98,8 @@ class AssignAction:
     agent_id: str
     task_id: str
     project_id: str
+    continuation_id: str | None = None
+    generation: int | None = None
 
 
 @dataclass

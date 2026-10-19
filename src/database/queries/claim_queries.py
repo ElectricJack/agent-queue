@@ -1099,7 +1099,7 @@ class ClaimQueryMixin:
             tasks.c.id == task_id, tasks.c.claim_epoch == claim_epoch,
         ).values(status="PAUSED" if paused else "RESUME_PENDING" if resolved else "HIBERNATED",
                  assigned_agent_id=None, claim_epoch=claim_epoch + 1,
-                 lease_expires_at=None, updated_at=now))
+                 updated_at=now))
         await conn.execute(update(continuations).where(
             continuations.c.id == continuation_id,
         ).values(saved_head=saved_head, stopped_at=now,

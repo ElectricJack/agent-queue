@@ -107,7 +107,9 @@ class HibernationTransaction:
             raise WaitError("wait.unavailable", "operational escalation could not be recorded")
         await conn.execute(update(continuations).where(
             continuations.c.id == intent["id"], continuations.c.version == intent["version"],
-        ).values(resume_state="held", hold_reason=reason, version=intent["version"] + 1))
+        ).values(resume_state="held", hold_reason=reason, version=intent["version"] + 1,
+                 facts={**intent["facts"], "hold_escalation_id":
+                        result.get("escalation", {}).get("id")}))
         return {"success": True, "held": True, "hold_reason": reason}
 
     async def advance(self, wait_id, *, handler):
@@ -117,6 +119,8 @@ class HibernationTransaction:
         requires that proof. This also captures shell edits after checkpoint. The
         claim/epoch/token/folder remain owned until both stop AND push succeed.
         """
+        if not self.orch.config.wait_policy.hibernation_enabled:
+            raise WaitError("wait.disabled", "hibernation is disabled")
         async with self.db._engine.connect() as conn:
             task_id = await conn.scalar(select(wait_records.c.owner_id).where(
                 wait_records.c.id == wait_id,
@@ -257,7 +261,8 @@ class HibernationTransaction:
                 await conn.execute(update(continuations).where(
                     continuations.c.id == intent["id"],
                 ).values(facts=facts))
-                return await self.hold(conn, task, wait, intent, "push_failed", handler,
+                return await self.hold(conn, task, wait, {**intent, "facts": facts},
+                                       "push_failed", handler,
                                        detail=saved.error or "No published head proof")
             if not detached:
                 return await self.hold(conn, task, wait, intent, "detach_uncertain", handler)

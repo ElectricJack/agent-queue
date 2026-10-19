@@ -38,6 +38,29 @@ def refusal(code, message, **details):
 
 
 class WaitV2CommandsMixin:
+    async def _record_continuation_prime_delivery(self, session_id):
+        if not self._wait_v2_enabled() or not session_id:
+            return
+        import time
+        from src.database.tables import continuations
+        from src.waits.resume_ack import mark_delivered
+
+        session = await self.db.get_session(session_id)
+        principal = current_principal()
+        if (not session or not principal or principal.kind != PrincipalKind.SESSION
+                or principal.session_id != session_id
+                or principal.session_instance_token != session.instance_token):
+            return
+        async with self.db._engine.begin() as conn:
+            intent_id = await conn.scalar(select(continuations.c.id).where(
+                continuations.c.new_session_id == session_id,
+                continuations.c.resume_state == "launching",
+            ))
+            if intent_id:
+                await mark_delivered(conn, continuation_id=intent_id, session_id=session_id,
+                                     instance_token=session.instance_token,
+                                     claim_epoch=session.last_claim_epoch, now=time.time())
+
     async def _wait_mutation_fence(self, name, principal, *, mutating):
         if (not mutating or not self._wait_v2_enabled() or principal is None
                 or principal.kind != PrincipalKind.SESSION):
@@ -316,7 +339,17 @@ class WaitV2CommandsMixin:
                 record["session_id"] != scope.session_id
                 or (scope.claim_epoch is not None and record["claim_epoch"] != scope.claim_epoch)
             ):
-                raise WaitError("continuation.stale_generation", "wait holder changed")
+                from src.database.tables import continuations
+
+                async with self.db._engine.connect() as conn:
+                    resumed = await conn.scalar(select(continuations.c.id).where(
+                        continuations.c.wait_id == record["id"],
+                        continuations.c.new_session_id == scope.session_id,
+                        continuations.c.task_id == scope.owner_id,
+                        continuations.c.resume_state.in_(("launching", "delivered", "acknowledged")),
+                    ))
+                if not resumed:
+                    raise WaitError("continuation.stale_generation", "wait holder changed")
             return scope
         return filters
 

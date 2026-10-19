@@ -110,6 +110,9 @@ class WaitSourceListener:
 
     async def _dispatch(self, conn, event):
         dispatcher = self.service.dispatcher
+        lifecycle = getattr(self.service, "lifecycle", None)
+        if lifecycle is not None and self.service.orch.config.wait_policy.hibernation_enabled:
+            await lifecycle.resume.recovery_event(conn, event)
         if event["source_key"].startswith("resource_invalidation:"):
             after = ""
             while candidates := await resource_invalidation_candidates(

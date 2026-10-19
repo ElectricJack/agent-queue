@@ -1437,6 +1437,11 @@ class WorkspaceMixin:
         if base is not None:
             self._register_slot_bases([ws], base.workspace_path)
 
+        if task.status == TaskStatus.RESUME_PENDING:
+            from src.waits.resume import verify_saved_branch
+
+            await verify_saved_branch(self, task, slot_dir)
+
         resume_branch = None if integration_origin is not None else await self._resume_branch_for(task)
 
         try:

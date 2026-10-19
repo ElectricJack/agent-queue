@@ -34,7 +34,7 @@ class WaitService:
             recompute_priority=getattr(orch, "wait_recompute_priority", recompute_from),
             resolve_escalation=getattr(orch, "wait_resolve_escalation",
                                        self.decisions.resolve_escalation),
-            lock_source=getattr(orch, "wait_lock_source", lock_database_source),
+            lock_source=getattr(orch, "wait_lock_source", self.lock_source),
         )
         handlers = getattr(orch, "wait_v2_handlers", None)
         if handlers is None:
@@ -43,6 +43,8 @@ class WaitService:
                                ("wait_source_commit", self.source_commit),
                                ("wait_decide", self.decisions.decide),
                                ("wait_register", self.lifecycle.register),
+                               ("wait_ack", self.lifecycle.acknowledge),
+                               ("wait_resume_dispatch", self.lifecycle.resume.dispatch),
                                ("wait_sleep_decide", self.lifecycle.sleep_decide)):
             if name in handlers:
                 raise ValueError(f"duplicate wait lifecycle owner: {name}")
@@ -55,6 +57,13 @@ class WaitService:
         deadlines["escalation"] = self.escalation_deadline
         deadlines["reservation"] = self.scheduler.deadline_locked
         deadlines["transition"] = self.lifecycle.hibernate.transition
+
+    async def lock_source(self, conn, condition):
+        if condition.kind == "resource":
+            # AdmissionReader observes current typed constraints under the
+            # dispatcher's graph/owner lock. Events never supply its verdict.
+            return
+        await lock_database_source(conn, condition)
 
     async def escalation_deadline(self, conn, deadline, wait, *, now, handler):
         callback = (self.scheduler.deadline_locked if wait["origin"] == "scheduler"

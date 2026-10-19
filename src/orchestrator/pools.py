@@ -290,12 +290,17 @@ class PoolsMixin:
             if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
         }
         measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
-        task_statuses = await self.db.get_task_statuses([
-            s.task_id for s in measurement.pool_sessions if s.task_id
-        ])
         from src.waits.occupancy import continuation_occupancy, evictable_sessions
         evictable = await evictable_sessions(self.db, self.config)
         resuming, reserved = await continuation_occupancy(self.db, self.config)
+        known = {session.id for session in measurement.pool_sessions}
+        for session_id in resuming - known:
+            session = await self.db.get_session(session_id)
+            if session is not None:
+                measurement.pool_sessions.append(session)
+        task_statuses = await self.db.get_task_statuses([
+            s.task_id for s in measurement.pool_sessions if s.task_id
+        ])
         from src.routing.readiness import orchestrator_ready_projects
 
         ready_projects = await orchestrator_ready_projects(self)

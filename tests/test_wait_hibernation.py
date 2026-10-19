@@ -545,7 +545,8 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
     monkeypatch.setattr('src.waits.hibernate.remove_claim_file_if_matches', lambda *a: True)
     orch = SimpleNamespace(
         db=env.db, config=SimpleNamespace(wait_policy=SimpleNamespace(
-            transition_budget_seconds=0.02)), _task_control_lock=lambda _: asyncio.Lock(),
+            transition_budget_seconds=0.02, hibernation_enabled=True)),
+        _task_control_lock=lambda _: asyncio.Lock(),
         session_providers=SimpleNamespace(create=lambda *a: provider),
         session_reconciler=SimpleNamespace(_process_names=lambda _: ('codex',)),
         git=SimpleNamespace(resolve_commit_identity=lambda _: None), bus=None, _git_mutex=None,
@@ -567,3 +568,101 @@ async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, m
         orch._release_workspace_and_cleanup.assert_awaited_once_with(workspace)
         orch.token_store.revoke_session.assert_awaited_once_with('s')
         assert (await intent(env))['facts']['workspace_released_at'] == NOW + 1
+
+
+async def bound_resume(env):
+    """Park a real claim, reserve a seat, bind an entirely new process."""
+    from dataclasses import replace
+    from src.database.tables import admission_reservations, agents
+    from src.scheduler import AssignAction
+    from src.waits.resume import ResumeTransaction
+
+    await capture(env)
+    await mail(env, 'held-task', to_kind='task', to_id='owner')
+    await mail(env, 'held-old', to_id='s')
+    await mail(env, 'foreign', to_id='someone-else')
+    await mail(env, 'control', to_kind='task', to_id='owner', body_kind='wait_suspend')
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).values(outcome='satisfied', resolved_at=NOW + 10))
+    await park(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(assigned_agent_id='a'))
+        await conn.execute(update(agents).where(agents.c.id == 'a').values(
+            state='BUSY', current_task_id='owner'))
+        await conn.execute(update(continuations).values(
+            resume_state='reserved', facts={'workspace_released_at': NOW + 20}, launch_attempts=1))
+        await conn.execute(insert(admission_reservations).values(
+            id='reservation', project_id='p', continuation_id='c', scope={},
+            effective_priority=100, provenance='resume', deadline_at=NOW + 300,
+            state='granted', created_at=NOW + 30))
+    record = SessionRecord(
+        id='fresh', task_id='owner', agent_id='a', project_id='p', profile_id='worker-codex',
+        harness='codex', provider='fake', name='fresh', lifecycle='task', state='running',
+        desired_state='running', work_dir='/tmp/fresh', epoch='boot', instance_token='fresh-token',
+        last_claim_epoch=2, started_at=NOW + 30,
+    )
+    service = SimpleNamespace(orch=SimpleNamespace(db=env.db))
+    driver = ResumeTransaction(service, clock=lambda: NOW + 30)
+    action = AssignAction('a', 'owner', 'p', 'c', 1)
+    await driver.bind_launch(action, record)
+    await env.db.create_session(record)
+    scope = replace(env.scope, session_id='fresh', instance_token='fresh-token', claim_epoch=2)
+    return driver, action, scope
+
+
+async def test_resume_ack_requires_exact_delivered_outcome_and_consumes_snapshot(env):
+    from src.waits.resume_ack import acknowledge, mark_delivered
+    from src.waits.holding import active_wait_for
+    from src.waits.fencing import mutation_fence
+
+    _, _, scope = await bound_resume(env)
+    args = dict(wait_id=env.wait_id, continuation_id='c', generation=1)
+    async with env.db._engine.begin() as conn:
+        with pytest.raises(WaitError, match='delivered'):
+            await acknowledge(conn, args, scope=scope, now=NOW + 40)
+    assert (await env.db.get_task('owner')).status.value == 'RESUME_PENDING'
+    assert await active_wait_for(env.db, await env.db.get_session('fresh'))
+    principal = SimpleNamespace(session_id='fresh', session_instance_token='fresh-token')
+    async with env.db._engine.connect() as conn:
+        assert (await mutation_fence(conn, 'task_close', principal))['error_code'] == 'wait.ack_required'
+        assert await mutation_fence(conn, 'wait_ack', principal) is None
+    await mail(env, 'late', to_kind='task', to_id='owner')
+    async with env.db._engine.begin() as conn:
+        await mark_delivered(conn, continuation_id='c', session_id='fresh',
+                             instance_token='fresh-token', claim_epoch=2, now=NOW + 40)
+        first = await acknowledge(conn, args, scope=scope, now=NOW + 41)
+    assert {m['id'] for m in first['held_messages']} == {'held-task', 'held-old'}
+    assert (await env.db.get_task('owner')).status.value == 'IN_PROGRESS'
+    assert await active_wait_for(env.db, await env.db.get_session('fresh')) is None
+    async with env.db._engine.begin() as conn:
+        assert await acknowledge(conn, args, scope=scope, now=NOW + 50) == first
+        remaining = set((await conn.execute(select(messages.c.id).where(
+            messages.c.delivered_at.is_(None)))).scalars())
+        assert remaining == {'late', 'foreign', 'control'}
+        assert await mutation_fence(conn, 'task_close', principal) is None
+
+
+@pytest.mark.parametrize('change', ['generation', 'session', 'token', 'epoch', 'pause'])
+async def test_resume_ack_rejects_stale_or_paused_holder(env, change):
+    from dataclasses import replace
+    from src.waits.resume_ack import acknowledge, mark_delivered
+
+    _, _, scope = await bound_resume(env)
+    args = dict(wait_id=env.wait_id, continuation_id='c', generation=1)
+    async with env.db._engine.begin() as conn:
+        await mark_delivered(conn, continuation_id='c', session_id='fresh',
+                             instance_token='fresh-token', claim_epoch=2, now=NOW + 40)
+        if change == 'pause':
+            await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(status='PAUSED'))
+    if change == 'generation':
+        args['generation'] = 2
+    elif change == 'session':
+        scope = replace(scope, session_id='s')
+    elif change == 'token':
+        scope = replace(scope, instance_token='other')
+    elif change == 'epoch':
+        scope = replace(scope, claim_epoch=3)
+    async with env.db._engine.begin() as conn:
+        with pytest.raises(WaitError):
+            await acknowledge(conn, args, scope=scope, now=NOW + 45)
+    assert (await intent(env))['resume_state'] == 'delivered'

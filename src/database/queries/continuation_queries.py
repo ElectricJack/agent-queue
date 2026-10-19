@@ -271,6 +271,7 @@ async def continuation_prime_context(conn, *, task_id, project_id, session_id):
                 and_(messages.c.to_kind == "profile", messages.c.to_id == old["profile_id"]),
             ]
         )
+    published_ids = intent["facts"].get("resume_delivery", {}).get("held_message_ids")
     held = (
         (
             await conn.execute(
@@ -287,6 +288,7 @@ async def continuation_prime_context(conn, *, task_id, project_id, session_id):
                         ),
                     ),
                     or_(*recipients),
+                    messages.c.id.in_(published_ids) if published_ids is not None else True,
                 )
                 .order_by(messages.c.created_seq)
             )

@@ -5,9 +5,9 @@ These queries are read-only. A terminal outcome is not an acknowledgement:
 Registration-race audit rows already have ``cleared_at`` and grant no exemption.
 """
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Integer, and_, cast, func, or_, select
 
-from src.database.tables import agents, messages, sessions, tasks, wait_records
+from src.database.tables import agents, continuations, messages, sessions, tasks, wait_records
 
 
 WAKE_BODY_KINDS = ("wait_outcome", "wait_suspend", "wait_decision")
@@ -21,8 +21,17 @@ replacement process, a released claim and a manual pause all break the proof.
 The registration receipt is immutable; delivery metadata is stored beside it.
 """
     delivery = wait_records.c.decision_inputs["delivery"]
+    resume = continuations.c.facts["resume_delivery"]
+    resumed = and_(
+        continuations.c.new_session_id == sessions.c.id,
+        continuations.c.resume_state.in_(("launching", "delivered", "acknowledged")),
+        resume["instance_token"].astext == sessions.c.instance_token,
+        cast(resume["claim_epoch"].astext, Integer) == tasks.c.claim_epoch,
+    )
     return select(wait_records).select_from(
-        wait_records.join(sessions, sessions.c.id == wait_records.c.session_id)
+        wait_records.outerjoin(continuations, continuations.c.wait_id == wait_records.c.id)
+        .join(sessions, or_(sessions.c.id == wait_records.c.session_id,
+                            sessions.c.id == continuations.c.new_session_id))
         .outerjoin(tasks, and_(wait_records.c.owner_kind == "task",
                               tasks.c.id == wait_records.c.owner_id))
         .outerjoin(agents, agents.c.id == sessions.c.agent_id)
@@ -33,7 +42,7 @@ The registration receipt is immutable; delivery metadata is stored beside it.
          if include_acknowledged else wait_records.c.cleared_at.is_(None)),
         or_(wait_records.c.verification_state == "verified",
             wait_records.c.outcome == "source_unavailable"),
-        delivery["instance_token"].astext == sessions.c.instance_token,
+        or_(delivery["instance_token"].astext == sessions.c.instance_token, resumed),
         sessions.c.state.in_(("starting", "running")),
         sessions.c.desired_state == "running",
         or_(
@@ -45,8 +54,8 @@ The registration receipt is immutable; delivery metadata is stored beside it.
             and_(wait_records.c.owner_kind == "task",
                  tasks.c.project_id == wait_records.c.project_id,
                  sessions.c.project_id == wait_records.c.project_id,
-                 tasks.c.status.in_(("IN_PROGRESS", "WAITING")),
-                 tasks.c.claim_epoch == wait_records.c.claim_epoch,
+                 tasks.c.status.in_(("IN_PROGRESS", "WAITING", "RESUME_PENDING")),
+                 or_(tasks.c.claim_epoch == wait_records.c.claim_epoch, resumed),
                  sessions.c.task_id == tasks.c.id,
                  tasks.c.assigned_agent_id == sessions.c.agent_id,
                  agents.c.current_task_id == tasks.c.id, agents.c.state == "BUSY",

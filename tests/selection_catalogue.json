@@ -18449,7 +18449,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:f0b3e15dd288ae0be09b8a3d0ecdb420f68849a263ee7e6245932918ded7d2df",
+      "digest": "sha256:2a28c07b6e2cfff29cfa0e6db41f865be841f8d3088c76779a066ce8b5a30376",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -18464,10 +18464,14 @@
         "src.prime.budgets",
         "src.prime.hook_envelopes",
         "src.profiles.capabilities",
+        "src.scheduler",
         "src.waits.conditions",
         "src.waits.fencing",
         "src.waits.hibernate",
-        "src.waits.registry"
+        "src.waits.holding",
+        "src.waits.registry",
+        "src.waits.resume",
+        "src.waits.resume_ack"
       ],
       "markers": [
         "parametrize"
