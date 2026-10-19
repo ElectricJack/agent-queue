@@ -52,6 +52,27 @@ def test_task_help_does_not_advertise_retired_ask_human(runner):
     assert "No such command 'ask-human'" in call_result.output
 
 
+def test_ask_cutover_status_forwards_project_and_json(runner):
+    import json
+    from src.cli.app import cli
+
+    receipt = {
+        "success": True,
+        "result": {
+            "project_id": "p",
+            "configured_destination": "discord:1:2",
+            "destinations": [],
+        },
+    }
+    with patch.object(
+        CLIClient, "execute", new_callable=AsyncMock, return_value=receipt
+    ) as execute:
+        result = runner.invoke(cli, ["ask", "cutover-status", "--project-id", "p", "--json"])
+    assert result.exit_code == 0, result.output
+    execute.assert_awaited_once_with("ask_cutover_status", {"project_id": "p"})
+    assert json.loads(result.output)["data"] == receipt
+
+
 # Mock response helpers
 
 

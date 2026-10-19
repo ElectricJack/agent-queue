@@ -60,8 +60,12 @@ reviews, change their bytes, invent new obligations, or infer success from age.
    Preserve old correspondence/action IDs, verified actors, archived title snapshots,
    original results and unknown status.
 6. Advance `legacy -> shadow -> dashboard` with `aq ask cutover --project-id PROJECT
-   --mode MODE --expected-generation N`. A missing row has generation 0. Read each
-   returned generation; never guess or retry a stale CAS blindly.
+   --mode MODE --expected-generation N`. Read the current generation with
+   `aq ask cutover-status --project-id PROJECT --json`: it lists each recorded
+   destination and includes the configured destination as legacy/generation 0
+   when absent. It also reports the migrated flag, first channel switch UTC and
+   immutable compatibility deadline. This read changes no state. Use the configured
+   destination's generation for the CAS; never guess or retry a stale CAS blindly.
 
 Review each historical repair case. Record the operator's decision using
 `aq ask reconcile --project-id PROJECT --apply --case-id CASE --disposition

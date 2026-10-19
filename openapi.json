@@ -14445,6 +14445,48 @@
         }
       }
     },
+    "/api/review/ask-cutover-status": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Scoped human request communication and decision evidence.",
+        "description": "Scoped human request communication and decision evidence.",
+        "operationId": "ask_cutover_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskCutoverStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskCutoverStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/ask-decide": {
       "post": {
         "tags": [
@@ -24372,6 +24414,70 @@
         ],
         "title": "AskControlResponse"
       },
+      "AskCutoverDestination": {
+        "properties": {
+          "destination": {
+            "type": "string",
+            "title": "Destination"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation"
+          },
+          "migrated": {
+            "type": "boolean",
+            "title": "Migrated"
+          },
+          "first_switch_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Switch Utc"
+          },
+          "compatibility_deadline": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compatibility Deadline"
+          },
+          "compatibility_deadline_utc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compatibility Deadline Utc"
+          }
+        },
+        "type": "object",
+        "required": [
+          "destination",
+          "mode",
+          "generation",
+          "migrated",
+          "first_switch_utc",
+          "compatibility_deadline",
+          "compatibility_deadline_utc"
+        ],
+        "title": "AskCutoverDestination"
+      },
       "AskCutoverRequest": {
         "properties": {
           "project_id": {
@@ -24433,6 +24539,63 @@
           "expected_generation"
         ],
         "title": "AskCutoverRequest"
+      },
+      "AskCutoverStatusRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "AskCutoverStatusRequest"
+      },
+      "AskCutoverStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "result": {
+            "$ref": "#/components/schemas/AskCutoverStatusResult"
+          }
+        },
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "title": "AskCutoverStatusResponse"
+      },
+      "AskCutoverStatusResult": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "configured_destination": {
+            "type": "string",
+            "title": "Configured Destination"
+          },
+          "destinations": {
+            "items": {
+              "$ref": "#/components/schemas/AskCutoverDestination"
+            },
+            "type": "array",
+            "title": "Destinations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "configured_destination",
+          "destinations"
+        ],
+        "title": "AskCutoverStatusResult"
       },
       "AskDecideRequest": {
         "properties": {

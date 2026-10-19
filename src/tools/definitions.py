@@ -442,7 +442,7 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
     **{name: "ask" for name in (
         "ask_list", "ask_show", "ask_reply", "ask_prepare_decision", "ask_decide", "ask_history",
         "ask_apply_input", "ask_discussion_reply", "ask_update_context", "ask_reconcile",
-        "ask_cutover", "ask_retry_operation", "ask_repair_delivery",
+        "ask_cutover", "ask_cutover_status", "ask_retry_operation", "ask_repair_delivery",
     )},
     "create_task": "task",
     "list_tasks": "task",

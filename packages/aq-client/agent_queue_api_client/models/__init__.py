@@ -70,7 +70,11 @@ from .ask_apply_input_request import AskApplyInputRequest
 from .ask_apply_input_request_expected import AskApplyInputRequestExpected
 from .ask_control_response import AskControlResponse
 from .ask_control_response_result import AskControlResponseResult
+from .ask_cutover_destination import AskCutoverDestination
 from .ask_cutover_request import AskCutoverRequest
+from .ask_cutover_status_request import AskCutoverStatusRequest
+from .ask_cutover_status_response import AskCutoverStatusResponse
+from .ask_cutover_status_result import AskCutoverStatusResult
 from .ask_decide_request import AskDecideRequest
 from .ask_decide_request_expected import AskDecideRequestExpected
 from .ask_decision_response import AskDecisionResponse
@@ -2105,7 +2109,11 @@ __all__ = (
     "AskApplyInputRequestExpected",
     "AskControlResponse",
     "AskControlResponseResult",
+    "AskCutoverDestination",
     "AskCutoverRequest",
+    "AskCutoverStatusRequest",
+    "AskCutoverStatusResponse",
+    "AskCutoverStatusResult",
     "AskDecideRequest",
     "AskDecideRequestExpected",
     "AskDecisionResponse",
