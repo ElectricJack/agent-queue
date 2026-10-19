@@ -2041,6 +2041,33 @@ async def test_retained_recovery_cancellation_reaps_before_next_writer(
             await asyncio.gather(next_attempt, return_exceptions=True)
 
 
+@pytest.mark.parametrize("origin_state", ["missing", "empty", "conflicting"])
+async def test_retained_bare_read_repairs_only_missing_origin(setup, tmp_path, origin_state):
+    from src.integration.repository_git import RepositoryGit
+    from src.integration.promotion_contracts import PromotionInvariantError
+
+    db, service, _source, remote, repo = setup
+    reader = RepositoryGit(db, data_dir=tmp_path / 'data', git_manager=service.git)
+    resolved = await reader._resolve_repository(repo.id)
+    store = resolved.retained_git_dir
+    store.parent.mkdir(parents=True, exist_ok=True)
+    git(tmp_path, 'init', '--bare', '--initial-branch=main', str(store))
+    other = str(tmp_path / 'other.git')
+    if origin_state != 'missing':
+        git(store, 'config', 'remote.origin.url', other if origin_state == 'conflicting' else '')
+
+    if origin_state == 'conflicting':
+        with pytest.raises(PromotionInvariantError, match='identity changed'):
+            await reader._ensure_retained_repository(resolved)
+        assert git(store, 'remote', 'get-url', 'origin') == other
+    else:
+        await reader._ensure_retained_repository(resolved)
+        assert git(store, 'remote', 'get-url', 'origin') == str(remote)
+        async with service.git.arepository_transaction(str(store)):
+            await reader._fetch_all_heads(store, resolved.origin_url)
+        assert git(store, 'show', 'refs/remotes/origin/main:base.txt') == 'base'
+
+
 async def test_retained_bare_read_uses_bounded_recovery_and_identity(setup, tmp_path):
     from src.integration.repository_git import RepositoryGit
     from src.integration.repository_incidents import admission_holds

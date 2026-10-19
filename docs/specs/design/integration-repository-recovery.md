@@ -1,5 +1,12 @@
 # Retained integration repository recovery
 
+Retained integration stores always bind `origin` to the configured repository URL,
+including stores initialized for branch-discard backups. Acquisition and the daily
+branch backstop restore a missing or empty origin on a known retained-store path
+from that repository's configuration. A conflicting nonempty origin is never
+replaced; acquisition refuses it and the backstop reports it without sweeping it.
+Unregistered checkouts do not acquire a remote from a guessed project identity.
+
 The retained development checkout, delivery observer and repository reader enable
 `core.fsync=committed` and `core.fsyncMethod=fsync`. Local Git cancellation kills
 and reaps the subprocess before the repository transaction releases. These are
