@@ -633,6 +633,7 @@
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py",
+        "tests/test_integration_superseded_completion.py",
         "tests/test_integration_train.py",
         "tests/test_integration_train_sources.py"
       ]
@@ -8333,11 +8334,13 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:023248fa74e33353ecae752495f06a241ca179f745b3542369db2849f28ddab7",
+      "digest": "sha256:7cc1f95fe58255f68161210d3b7029185004680be3c30f5ed731b84c36b8fc65",
       "imports": [
         "src.cli.app"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Ensure the operator integration controls are registered in the CLI."
     },
     "tests/test_integration_completed_container_recovery.py": {
@@ -9436,6 +9439,35 @@
         "parametrize"
       ],
       "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
+    },
+    "tests/test_integration_superseded_completion.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:576f5d5fb102c49241b309256fb3c923773dd117c203dfba8e472c61addba7e4",
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.engine",
+        "src.integration.git_truth",
+        "src.integration.provenance",
+        "src.integration.runtime_contracts",
+        "src.integration.superseded_completion",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.sessions.obsolete"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Supersession proves one incident against disposable PostgreSQL and Git."
     },
     "tests/test_integration_train.py": {
       "areas": [
