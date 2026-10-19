@@ -3144,12 +3144,14 @@
         "work-graph"
       ],
       "default_arm": true,
-      "digest": "sha256:011e39e49be06c9e43b0dda1e25faa7f73a1fc86d028285d567f5f03db40de35",
+      "digest": "sha256:8a6fbfd5148e701479f02ddbf31f81093f2b50da8c0427577fa6f0ea83439d10",
       "imports": [
         "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
         "src.models",
         "src.state_machine"
       ],
