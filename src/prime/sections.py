@@ -32,7 +32,7 @@ from src.deliverables import review_revision_guidance, review_submit_guidance
 from src.profiles.capabilities import capability_policy_for
 from src.prompt_builder import extract_section
 
-from .models import SECTION_TITLES, PrimeSection
+from .models import SECTION_TITLES, PrimePreview, PrimeSection
 
 logger = logging.getLogger(__name__)
 
@@ -165,13 +165,17 @@ def build_task_section(
     ]
     if getattr(task, "claim_epoch", 0):
         lines.append(f"Claim epoch: {task.claim_epoch}")
+    prefix = "\n".join(lines)
+    preview = None
     if task.description:
         lines.append("")
-        from src.prime.budgets import DESCRIPTION_BYTES, text_preview
+        from src.prime.budgets import DESCRIPTION_BYTES
 
         description = task.description.strip()
-        lines.append(text_preview(description, DESCRIPTION_BYTES, task.id, "description")
-                     if bounded_worker else description)
+        lines.append(description)
+        if bounded_worker:
+            preview = PrimePreview(prefix + "\n\n", description, "", "description", DESCRIPTION_BYTES)
+    suffix_start = len(lines)
     if deliverables is None:
         deliverables = getattr(task, "deliverables", None) or []
     if deliverables:
@@ -189,7 +193,14 @@ def build_task_section(
         lines.extend(["", integration_delivery])
     if subtasks_block:
         lines.extend(["", subtasks_block])
-    return PrimeSection(key="task", title=SECTION_TITLES["task"], body="\n".join(lines).strip())
+    body = "\n".join(lines).strip()
+    if preview:
+        from dataclasses import replace
+
+        suffix = "\n" + "\n".join(lines[suffix_start:]) if lines[suffix_start:] else ""
+        preview = replace(preview, suffix=suffix)
+        body = preview.render(task.id, preview.max_bytes)
+    return PrimeSection(key="task", title=SECTION_TITLES["task"], body=body, preview=preview)
 
 
 #: Checklist glyph per subtask status (C3: workers see their subtasks).
@@ -361,10 +372,8 @@ def _render_spec_ref(config: Any, row: dict) -> str:
     return f"**{ref_path} § {ref_section}:**\n\n{body}"
 
 
-async def _build_task_context_body(
-    db: Any, config: Any, task: Any, *, bounded_worker: bool = False,
-) -> str:
-    """Render previewable task context and attachments, then complete comment history.
+async def _build_task_context_preview(db: Any, config: Any, task: Any) -> PrimePreview:
+    """Keep pageable context separate from complete inline comment history.
 
     Handoff context rows render separately in the messages section.
     """
@@ -452,13 +461,6 @@ async def _build_task_context_body(
         blocks.append("**attachments:**\n" + "\n".join(f"- {p}" for p in attachments))
 
     body = "\n\n".join(b for b in blocks if b).strip()
-    if bounded_worker:
-        from src.prime.budgets import CONTEXT_BYTES, text_preview
-
-        # Recovery notes and resolved spec text remain available through paging.
-        # Comment history below is required in full, outside this preview budget.
-        body = text_preview(body, CONTEXT_BYTES, task.id, "prime_context")
-
     history: list[str] = []
     list_comments = getattr(db, "list_task_comments", None)
     if callable(list_comments):
@@ -482,7 +484,12 @@ async def _build_task_context_body(
             offset += len(comments)
             if offset >= page["total"]:
                 break
-    return "\n\n".join(part for part in (body, "\n\n".join(history)) if part)
+    from src.prime.budgets import CONTEXT_BYTES
+
+    # Comments are required in full, outside both the section preview and the
+    # aggregate fitting pass. Only the ordinary context body can be paged.
+    return PrimePreview("", body, "\n\n" + "\n\n".join(history) if history else "",
+                        "prime_context", CONTEXT_BYTES)
 
 
 async def build_task_context_section(
@@ -508,9 +515,17 @@ async def build_task_context_section(
                 "this snapshot does not bypass stale-fence checks.\n\n"
                 "```json\n" + json.dumps(repair, indent=2, sort_keys=True) + "\n```"
             )
-    body = await _build_task_context_body(db, config, task, bounded_worker=bounded_worker)
-    body = "\n\n".join([*required_blocks, body]).strip()
-    return PrimeSection(key="task_context", title=SECTION_TITLES["task_context"], body=body)
+    from dataclasses import replace
+
+    preview = await _build_task_context_preview(db, config, task)
+    prefix = "\n\n".join(required_blocks)
+    preview = replace(preview, prefix=prefix + "\n\n" if prefix else "")
+    limit = preview.max_bytes if bounded_worker else len(preview.text.encode("utf-8"))
+    body = preview.render(task.id, limit).strip()
+    return PrimeSection(
+        key="task_context", title=SECTION_TITLES["task_context"], body=body,
+        preview=preview if bounded_worker and preview.text else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -720,6 +735,7 @@ async def build_messages_section(
     from src.handoffs import collect_facts, latest_note, render_facts, render_note
 
     selected = latest_note(rows)
+    preview = None
     if selected:
         task = task or await db.get_task(task_id)
         current = await collect_facts(db, task, session, work_dir)
@@ -727,11 +743,25 @@ async def build_messages_section(
         # The additional wake block has an 8 KiB assertion budget + 2 KiB
         # current-fact/pointer budget. 6 KiB remains reserved for JOB/OUTPUT
         # summaries; those stores are outside this independent release slice.
-        parts.append(render_note(row, payload, current))
-        parts.append(render_facts(current, saved=payload.get("facts")))
+        from src.handoffs import HANDOFF_BYTES, display_data
+
+        # Pending messages, result IDs and current facts stay inline. Only
+        # historical assertions can give way to a lossless stored-note read.
+        prefix = "\n\n".join(parts)
+        prefix += ("\n\n" if prefix else "") + (
+            f"**Historical handoff (stored context row {display_data(row['id'])}):**\n"
+        )
+        preview = PrimePreview(
+            prefix, render_note(row, payload, current),
+            "\n\n" + render_facts(current, saved=payload.get("facts")),
+            "context", HANDOFF_BYTES,
+        )
+        body = preview.render(task_id, preview.max_bytes)
+    else:
+        body = "\n\n".join(parts).strip()
 
     return PrimeSection(
-        key="messages", title=SECTION_TITLES["messages"], body="\n\n".join(parts).strip()
+        key="messages", title=SECTION_TITLES["messages"], body=body, preview=preview,
     )
 
 
