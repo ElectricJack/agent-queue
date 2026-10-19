@@ -640,6 +640,17 @@ class IntegrationStatusService:
 
     # -- git_first: active ---------------------------------------------------
 
+    async def _paused_project_candidates_on(self, conn, project) -> list[str]:
+        from src.integration.train_sources import TRAIN_MODES, _pending_tasks
+
+        if (project is None or project["status"] != "PAUSED"
+                or project["hierarchical_integration_mode"] not in TRAIN_MODES
+                or not project["integration_repository_id"]):
+            return []
+        return await _pending_tasks(
+            conn, project["id"], project["integration_repository_id"], limit=None,
+        )
+
     async def train_status(
         self, project_id: str, *, observe: bool = True
     ) -> dict[str, Any] | None:
@@ -649,6 +660,17 @@ class IntegrationStatusService:
         visits and their cached evidence, with no default-branch fetch and no epic
         distance, so ``epics`` is omitted rather than reported empty.
         """
+        # Gather Git evidence outside the consistent database snapshot. Control
+        # reads use only cached evidence and never fetch a paused project's refs.
+        async with self.db._engine.connect() as conn:
+            inputs = await self._one(conn, select(projects).where(projects.c.id == project_id))
+            candidates = await self._paused_project_candidates_on(conn, inputs)
+        delivery = None
+        if candidates and self.delivery is not None:
+            delivery = await self.delivery.observe(
+                candidates, max_age=getattr(self.delivery, "READ_MAX_AGE", 0.0),
+                cached_only=self.cached_only or not observe,
+            )
         async with self._consistent_snapshot() as conn:
             project = await self._one(
                 conn, select(projects).where(projects.c.id == project_id)
@@ -664,7 +686,26 @@ class IntegrationStatusService:
 
             decisions = await history_on(conn, project_id)
             promotion_flow = await self._promotion_flow_on(conn, project)
+            candidates = await self._paused_project_candidates_on(conn, project)
+            verified = await delivery.verified_on(conn, candidates) if delivery else {}
+            pending, unknown = [], []
+            for task_id in candidates:
+                proof = verified.get(task_id)
+                if proof is not None and proof.satisfied:
+                    continue
+                if proof is not None and proof.state is DeliveryState.PENDING:
+                    pending.append(task_id)
+                else:
+                    unknown.append(task_id)
         blockers: list[dict[str, Any]] = []
+        if pending or unknown:
+            blockers.append(_blocker(
+                "project_paused",
+                "project paused; the integration train skips this project; "
+                f"{len(pending)} completed sources await delivery and "
+                f"{len(unknown)} await delivery proof; inspect the pause before resuming",
+                project_id, pending=pending, unknown=unknown,
+            ))
         for batch in batches:
             blockers.extend(self._train_batch_blockers(batch, visits))
         blockers.extend(self._train_source_blockers(visits))

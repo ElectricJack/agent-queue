@@ -76,6 +76,12 @@ def _run(tmp_path, responses, *args, missing_commands=(), session_id=None, extra
         shim = bin_dir / name
         shim.write_text(f"#!/bin/sh\nexec {sys.executable} -I {fake} \"$0\" \"$@\"\n")
         shim.chmod(0o755)
+    if "--project" in args:
+        pid = args[args.index("--project") + 1]
+        responses.setdefault("aq", {}).setdefault(
+            f"integration status {pid} --control-only",
+            {"outcome": "status", "project_id": pid, "blockers": []},
+        )
     (tmp_path / "responses.json").write_text(json.dumps(responses))
     log = tmp_path / "calls.jsonl"
     log.touch()
@@ -472,6 +478,7 @@ def test_successful_task_reads_are_healthy(tmp_path, tasks):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert proc.stdout.strip() == "OK: nothing stalled"
     assert calls == [
+        ["aq", "integration", "status", "rom", "--control-only"],
         ["aq", "task", "list", "-p", "rom"],
         ["aq", "pool", "status", "--project-id", "rom"],
         ["aq", "session", "list"],
@@ -560,7 +567,10 @@ def test_out_of_scope_read_preserves_auth_exit(tmp_path):
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert "SWEEP-AUTH aq task list -p rom: task_list denied" in proc.stdout
     assert "OK: nothing stalled" not in proc.stdout
-    assert calls == [["aq", "task", "list", "-p", "rom"]]
+    assert calls == [
+        ["aq", "integration", "status", "rom", "--control-only"],
+        ["aq", "task", "list", "-p", "rom"],
+    ]
 
 
 @pytest.mark.parametrize("scoped", [False, True])
@@ -569,7 +579,7 @@ def test_expired_token_reports_one_recovery_command(tmp_path, scoped):
         "schema_version": 1, "data": None,
         "error": {"code": "out_of_scope", "message": "invalid or expired token"},
     }, exit_code=4)
-    command = "task list -p rom" if scoped else "project list"
+    command = "integration status rom --control-only" if scoped else "project list"
     proc, calls = _run(
         tmp_path, {"aq": {command: response}},
         *(("--project", "rom") if scoped else ()), session_id="supervisor-id",
@@ -707,6 +717,9 @@ def test_global_sweep_runs_development_checks_only_for_active_agent_queue(
                 {"id": "rom", "status": "ACTIVE"},
             ],
             "task list -p agent-queue": [_task("aq-new", "DEFINED", age_s=60)],
+            "integration status agent-queue --control-only": {
+                "outcome": "status", "project_id": "agent-queue", "blockers": [],
+            },
             "task list -p rom": [_task("rom-new", "DEFINED", age_s=60)],
             "pool status": [],
             "session list": [],
@@ -726,6 +739,54 @@ def test_global_sweep_runs_development_checks_only_for_active_agent_queue(
         assert dev_reads == []
         assert "agent-queue" not in _project_args(calls)
         assert "DELIVERY" not in proc.stdout
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_paused_project_with_finished_work_is_reported(tmp_path, scoped):
+    responses = _scoped_responses([])
+    responses["aq"].update({
+        "project list": [{"id": "rom", "status": "PAUSED"}],
+        "pool status": [],
+        "integration status rom --control-only": {
+            "outcome": "status", "project_id": "rom", "blockers": [{
+                "code": "project_paused", "detail": "project paused; 44 completed sources await delivery",
+            }],
+        },
+    })
+    proc, calls = _run(tmp_path, responses, *(["--project", "rom"] if scoped else []))
+    assert proc.returncode == 0, proc.stderr
+    assert "PAUSED-PROJECT rom: project paused; 44 completed sources" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+    assert ["aq", "integration", "status", "rom", "--control-only"] in calls
+    if not scoped:
+        assert ["aq", "task", "list", "-p", "rom"] not in calls
+
+
+@pytest.mark.parametrize("status", [
+    {"outcome": "not_found", "project_id": "rom"},
+    {"outcome": "status", "project_id": "other", "blockers": []},
+    {"outcome": "status", "project_id": "rom", "blockers": {}},
+    {"outcome": "status", "project_id": "rom", "blockers": [{}]},
+    _reply({"schema_version": 1, "data": None,
+            "error": {"code": "daemon_unreachable", "message": "restarting"}}, exit_code=3),
+])
+def test_unreadable_paused_project_status_never_proves_health(tmp_path, status):
+    responses = _scoped_responses([])
+    responses["aq"]["integration status rom --control-only"] = status
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert "SWEEP-ERROR aq integration status rom --control-only" in proc.stdout
+    assert "OK: nothing stalled" not in proc.stdout
+
+
+def test_subject_control_status_without_readiness_blockers_is_valid(tmp_path):
+    responses = _scoped_responses([])
+    responses["aq"]["integration status rom --control-only"] = {
+        "outcome": "status", "project_id": "rom", "projection_kind": "subjects",
+    }
+    proc, _ = _run(tmp_path, responses, "--project", "rom")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "OK: nothing stalled"
 
 
 def test_script_is_executable_and_parses():
