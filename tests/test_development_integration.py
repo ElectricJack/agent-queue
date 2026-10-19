@@ -1752,6 +1752,10 @@ async def test_retained_recovery_project_hold_caps_restart_and_notice(setup, tmp
     assert first['moves'][0]['oid'] == oid
     assert 'secret-token' not in json.dumps(first)
     assert await admission_holds(db, 'p') and not await admission_holds(db, 'other')
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(escalations))).all() == []
+        assert (await conn.execute(select(messages).where(
+            messages.c.body_kind == 'retained_repository_recovery'))).all() == []
     with pytest.raises(ValueError, match='admission held'):
         await batches.freeze(Batch('new', 'p', 'r', 'refs/heads/other'), members,
                              trees={'frozen': tree})
@@ -1779,16 +1783,20 @@ async def test_retained_recovery_project_hold_caps_restart_and_notice(setup, tmp
     assert last['moves'] == first['moves']
     assert (await db.get_project('p')).status.value == 'PAUSED'
     async with db._engine.connect() as conn:
-        assert len((await conn.execute(select(escalations))).all()) == 1
+        [incident] = (await conn.execute(select(escalations))).mappings().all()
+        assert incident['state'] == 'needs_human' and incident['severity'] == 'high'
+        assert 'attempt 2/2' in incident['summary']
         notices = (await conn.execute(select(messages).where(
             messages.c.body_kind == 'retained_repository_recovery'))).mappings().all()
         assert len(notices) == 1 and 'secret-token' not in notices[0]['body']
         assert len((await conn.execute(select(integration_batches))).all()) == 2
 
 
+@pytest.mark.parametrize('failure', ['refetch', 'fsck_timeout'])
 async def test_retained_recovery_success_preserves_operator_project_and_batch_pause(
-    setup, tmp_path, monkeypatch,
+    setup, tmp_path, monkeypatch, failure,
 ):
+    from src.database.tables import escalations, messages
     from src.git.manager import GitError
     from src.integration.repository_incidents import admission_holds
 
@@ -1804,7 +1812,20 @@ async def test_retained_recovery_success_preserves_operator_project_and_batch_pa
             raise GitError('first unavailable')
         return await original(*args, **kwargs)
 
-    with patch.object(service.git, 'afetch_origin', fail):
+    normal_run = service.git.arun_git_result
+    fscks = 0
+
+    async def fail_fsck(args, **kwargs):
+        nonlocal fscks
+        if 'fsck' in args:
+            fscks += 1
+            if fscks == 2:  # diagnosis passed; the first attempt's check times out
+                raise TimeoutError
+        return await normal_run(args, **kwargs)
+
+    target, replacement = ('afetch_origin', fail) if failure == 'refetch' else (
+        'arun_git_result', fail_fsck)
+    with patch.object(service.git, target, replacement):
         with pytest.raises(GitError):
             await service.store(repo)
     assert await admission_holds(db, 'p')
@@ -1813,6 +1834,40 @@ async def test_retained_recovery_success_preserves_operator_project_and_batch_pa
     assert state['attempts'] == 2 and state['status'] == 'recovered'
     assert not await admission_holds(db, 'p')
     assert (await db.get_project('p')).status.value == 'PAUSED'
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(escalations))).all() == []
+        assert (await conn.execute(select(messages).where(
+            messages.c.body_kind == 'retained_repository_recovery'))).all() == []
+
+
+@pytest.mark.parametrize('damaged', [False, True])
+async def test_retained_fsck_outlasts_ordinary_git_budget(setup, monkeypatch, damaged):
+    _db, service, source, _remote, repo = setup
+    store = await service.store(repo)
+    if damaged:
+        damage_origin_object(store, source)
+    # Force a fresh check even on a healthy cache.
+    monkeypatch.setattr('src.git.manager._RETAINED_VERIFY_TTL_SECONDS', 0.0)
+    normal_run = service.git.arun_git_result
+    fscks = 0
+
+    async def slow_fsck(args, **kwargs):
+        nonlocal fscks
+        if 'fsck' in args:
+            fscks += 1
+            if fscks == 1:
+                # A real subprocess exceeds the ordinary budget. Both the
+                # command timeout and the shared acquisition must allow it.
+                await normal_run(['-c', 'alias.wait=!sleep 1.1', 'wait'], **kwargs)
+        return await normal_run(args, **kwargs)
+
+    monkeypatch.setattr(service.git, 'arun_git_result', slow_fsck)
+    with service.git.command_timeout(1):
+        assert await service.store(repo) == store
+    assert fscks == (4 if damaged else 1)
+    if damaged:
+        state = json.loads(recovery_journal(store).read_text())
+        assert state['status'] == 'recovered' and state['attempts'] == 1
 
 
 async def test_retained_recovery_cancelled_fetch_preserves_moves_and_remaining_budget(
@@ -1896,6 +1951,7 @@ async def test_retained_recovery_failure_boundaries(setup, tmp_path, monkeypatch
     elif failure == 'timeout':
         import asyncio
         service.git._GIT_TIMEOUT = 0.2
+        monkeypatch.setattr('src.integration.repository_recovery.FSCK_TIMEOUT_SECONDS', 0.2)
         async def stuck(*args, **kwargs):
             if kwargs.get('refetch'):
                 await asyncio.Event().wait()
@@ -2104,8 +2160,7 @@ async def test_retained_recovery_clean_fsck_closes_failed_incident_without_attem
     assert not await admission_holds(db, 'p')
     assert not (recovery_journal(store).parent / 'pending').exists()
     async with db._engine.connect() as conn:
-        [incident] = (await conn.execute(select(escalations))).mappings().all()
-    assert incident['state'] == 'resolved'
+        assert (await conn.execute(select(escalations))).all() == []
 
 
 async def test_retained_fetch_failure_on_a_clean_store_never_opens_an_incident(
@@ -2191,7 +2246,16 @@ async def test_supervisor_clears_exhausted_retained_incident_after_clean_fsck(
     await normal_fetch(str(store), repository_url=repo.url, all_heads=True, refetch=True)
     with pytest.raises(GitError, match='exhausted'):
         await service.store(repo)
-    cleared = await clear({'project_id': 'p', 'incident_id': held['id']})
+    normal_run = service.git.arun_git_result
+
+    async def slow_clear_check(args, **kwargs):
+        if 'fsck' in args:
+            await normal_run(['-c', 'alias.wait=!sleep 1.1', 'wait'], **kwargs)
+        return await normal_run(args, **kwargs)
+
+    with patch.object(service.git, 'arun_git_result', slow_clear_check):
+        with service.git.command_timeout(1):
+            cleared = await clear({'project_id': 'p', 'incident_id': held['id']})
     assert cleared['success'] is True and cleared['outcome'] == 'cleared'
     assert not await admission_holds(db, 'p')
     state = json.loads(recovery_journal(store).read_text())
