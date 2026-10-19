@@ -132,6 +132,12 @@ class EnsureSpecIngestArgs(CommandArgs):
     packet_sha256: str
 
 
+class EnsureFidelityReviewArgs(CommandArgs):
+    project_id: str
+    batch_id: str
+    structure_revision: int
+
+
 class EnsureTaskValue(CommandValue):
     task_id: str
     created: bool
@@ -893,7 +899,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "ci_repair_adopt":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
-    if name in {"ensure_task", "ensure_spec_ingest"}:
+    if name in {"ensure_task", "ensure_spec_ingest", "ensure_fidelity_review"}:
         return "created" if raw.get("created") else "reused"
     if name == "github_issue_triage":
         return "swept"
@@ -1193,6 +1199,15 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
         result_labels={"task_id": "Task", "created": "Was created"},
         subject_labels={"task": "an approved spec ingestion task"},
+    ),
+    "ensure_fidelity_review": CommandPresentation(
+        title="Ensure fidelity review",
+        summary="Create or recover the one fidelity-reviewer role task for a held batch.",
+        arg_labels={"project_id": "Project", "batch_id": "Batch",
+                    "structure_revision": "Structure revision"},
+        outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
+        result_labels={"task_id": "Task", "created": "Was created"},
+        subject_labels={"task": "a fidelity review task"},
     ),
     "github_issue_triage": CommandPresentation(
         title="Triage GitHub issues",
@@ -1806,6 +1821,12 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             _outcomes("created", "reused"), SideEffectClass.CREATE,
             (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="decision_id"),),
             IdempotencySpec(mode="keyed", key_field="decision_id"), True,
+        ),
+        (
+            "ensure_fidelity_review", EnsureFidelityReviewArgs, EnsureTaskValue,
+            _outcomes("created", "reused"), SideEffectClass.CREATE,
+            (CreateOrReuseClause(subject=EffectSubject.TASK, key_arg="batch_id"),),
+            IdempotencySpec(mode="keyed", key_field="batch_id"), True,
         ),
         (
             "github_issue_triage", GitHubIssueTriageArgs, GitHubIssueTriageValue,

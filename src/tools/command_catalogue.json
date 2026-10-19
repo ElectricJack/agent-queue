@@ -11161,6 +11161,34 @@
       }
     },
     {
+      "name": "ensure_fidelity_review",
+      "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "structure_revision": {
+            "title": "Structure Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "batch_id",
+          "structure_revision"
+        ],
+        "title": "EnsureFidelityReviewArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "approved_spec_packet",
       "description": "Read the immutable document and feedback of the live held ingestion role.",
       "input_schema": {
@@ -17993,6 +18021,7 @@
     "spec_ingest_reconcile": "task",
     "spec_ingest_legacy_inventory": "task",
     "batch_reconcile": "task",
+    "ensure_fidelity_review": "task",
     "ask_list": "review",
     "ask_show": "review",
     "ask_history": "review",

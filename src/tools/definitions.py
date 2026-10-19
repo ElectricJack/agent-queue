@@ -9163,17 +9163,23 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 
+from src.commands.contracts.builtin import (
+    EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
+)
 from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
 
 _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
-    "batch_reconcile": "task",
+    "batch_reconcile": "task", "ensure_fidelity_review": "task",
 })
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": "ensure_spec_ingest",
      "description": "Ensure one role task per applied approval decision, including archived receipts.",
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
+    {"name": "ensure_fidelity_review",
+     "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+     "input_schema": _EnsureFidelityReviewArgs.model_json_schema()},
     {"name": "approved_spec_packet",
      "description": "Read the immutable document and feedback of the live held ingestion role.",
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},

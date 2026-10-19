@@ -1219,10 +1219,11 @@
       ]
     },
     "task-dependencies": {
-      "description": "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts and release.",
+      "description": "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts, fidelity reviewer dispatch and release.",
       "modules": [
         "tests/test_cli_task_change_sets.py",
         "tests/test_dependency_queries.py",
+        "tests/test_fidelity_review.py",
         "tests/test_get_downstream_tasks.py",
         "tests/test_get_stuck_tasks_command.py",
         "tests/test_ingest_batch_queries.py",
@@ -4107,7 +4108,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:b54d04066700bbaa35c7c7644c86597a874293b1fb16ef1e4f49ed54c0e615e2",
+      "digest": "sha256:ccd58175c7e95bd53b6e7228e10d82404ec557fcb836914ad4d69add469d1819",
       "imports": [
         "src.cli.app"
       ],
@@ -5556,7 +5557,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:32d75c4b890d18a18dece3d59783d6e19fb67b949aabf784a8ad1ccd3f81c7da",
+      "digest": "sha256:316f9ce1eb49b440f7b7151a4b7560daba09b7f4b7bfe94e5fcb69941dfaf347",
       "imports": [
         "src.database.queries.hierarchy_queries",
         "src.models"
@@ -6856,6 +6857,29 @@
       ],
       "summary": "The fake session provider's file-driven script (provider-failover D23)."
     },
+    "tests/test_fidelity_review.py": {
+      "areas": [
+        "task-dependencies"
+      ],
+      "default_arm": true,
+      "digest": "sha256:aacdecce893d2558866f0785b8361e91ddba91b15bf98e44aa8a97f220646a5f",
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.asks.operations",
+        "src.commands.fidelity_review_commands",
+        "src.commands.principal",
+        "src.database.queries",
+        "src.database.queries.ingest_batch_queries",
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.review_keys"
+      ],
+      "markers": [],
+      "summary": "``ensure_fidelity_review``: one role reviewer per held batch, bounded, never a release."
+    },
     "tests/test_file_command_handlers.py": {
       "areas": [
         "file-access"
@@ -7036,7 +7060,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:11bed20456d63211baaca6972f448b19fb310b2f603a55ff7c848fb2a5d5df93",
+      "digest": "sha256:57475de4cd38858f5261598ac2220323264c829551a99fb90819b37f95ffe8db",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -7052,7 +7076,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:8a635c8bd571ef93f686871ff4d5b8e3438300510a1a2c5b7b5fda6d276f1b7a",
+      "digest": "sha256:76541d29834617b25ead4fc62ce4c991abeef7ec348f8d357c83fb9098fc4f7b",
       "imports": [
         "src.commands.handler",
         "src.config",
@@ -7723,7 +7747,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:066346e097c017eb3acb10ba9f6905e5c6cf86aba6df70fa86ff75aa4d8e9230",
+      "digest": "sha256:353691bbbd11cc3267fd96d7f95927f07b574074ab0bd7a856472049cca9cba5",
       "imports": [
         "src.database.queries",
         "src.database.queries.ingest_batch_queries",
@@ -16841,7 +16865,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:194fe7c2cfbe44838b9bac84c4ae8ed917e97592aadd4161a6fdebbc78af6fc7",
+      "digest": "sha256:db1caf6cdf76b687cc0649cb33c6458545758315ede11f65c5fc890b2c4d6730",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -17113,7 +17137,7 @@
         "task-dependencies"
       ],
       "default_arm": true,
-      "digest": "sha256:3e3abfb880d6a971f1f80956c98b1191c46b0fb70c9123ad9bbae6f84bb8a908",
+      "digest": "sha256:c54b5a0781ab5ed4e47b6aecceef903b2a08d760e3621de356ebd8b209252dd3",
       "imports": [
         "src.commands.handler",
         "src.config",

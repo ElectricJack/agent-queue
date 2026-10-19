@@ -49,10 +49,15 @@ REVIEW_TASK_DEDUP_PREFIX = "review:task:"
 #: ``ensure_task`` dedup key prefix for one final-reviewer task per branch.
 BRANCH_REVIEW_DEDUP_PREFIX = "branch-review:"
 
+#: ``ensure_fidelity_review`` dedup key prefix for one reviewer per held
+#: ingestion batch.  The server stamps it; no caller can choose it.
+FIDELITY_REVIEW_DEDUP_PREFIX = "fidelity-review:batch:"
+
 #: Every prefix that marks a row the pipeline created as a review.
 PIPELINE_REVIEW_DEDUP_PREFIXES: tuple[str, ...] = (
     REVIEW_TASK_DEDUP_PREFIX,
     BRANCH_REVIEW_DEDUP_PREFIX,
+    FIDELITY_REVIEW_DEDUP_PREFIX,
 )
 
 
@@ -66,11 +71,22 @@ def branch_review_dedup_key(branch_name: str) -> str:
     return f"{BRANCH_REVIEW_DEDUP_PREFIX}{branch_name}"
 
 
+def fidelity_review_dedup_key(batch_id: str) -> str:
+    """The dedup key ``ensure_fidelity_review`` uses for the reviewer of *batch_id*."""
+    return f"{FIDELITY_REVIEW_DEDUP_PREFIX}{batch_id}"
+
+
+#: The role that reviews a held ingestion batch's structure (spec-ingestion
+#: held batches, L2.1).  Its verdict is a batch receipt, never a diff.
+FIDELITY_REVIEWER_PROFILE_ID = "fidelity-reviewer"
+
 #: Profile ids whose whole job is to produce a review verdict.  These profiles
 #: ship with ``read_only: true`` (``src/profiles/defaults/{reviewer,
 #: final-reviewer}/profile.md``), but the id is the signal here, not the flag —
 #: that is the point of keeping it separate from ``no_code``.
-REVIEW_PROFILE_IDS: frozenset[str] = frozenset({"reviewer", "final-reviewer"})
+REVIEW_PROFILE_IDS: frozenset[str] = frozenset(
+    {"reviewer", "final-reviewer", FIDELITY_REVIEWER_PROFILE_ID}
+)
 
 
 def reviewed_task_id(dedup_key: str | None) -> str | None:
