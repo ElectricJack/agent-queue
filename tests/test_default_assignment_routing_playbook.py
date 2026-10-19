@@ -10,6 +10,7 @@ the invocation ``task_route_apply`` checks is the artifact's own.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -279,6 +280,15 @@ async def test_reviewed_router_routes_launches_and_claims_operator_work(
         "kind": "session", "session_id": session.id, "project_id": "p",
         "task_id": None, "elevated": False,
     }
+    # Preparation may outlive the first response on a loaded machine. Exercise
+    # that response explicitly, then await this generation before checking ownership.
+    monkeypatch.setattr("src.commands.claim_commands._PREPARATION_RESPONSE_SECONDS", 0)
+    preparing = await handler._cmd_task_claim({"next": True})
+    assert preparing["result"] == "claim_in_progress", preparing
+    preparation = orch.claim_preparations[(
+        session.id, preparing["task_id"], preparing["claim_epoch"],
+    )]
+    await asyncio.wait_for(asyncio.shield(preparation), timeout=10)
     claimed = await handler._cmd_task_claim({"next": True})
     assert claimed["result"] == "claimed", claimed
     assert claimed["task"]["id"] == task.id
