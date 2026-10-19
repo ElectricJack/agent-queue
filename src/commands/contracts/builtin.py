@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from src.commands.contracts.models import (
     ClausePredicate,
@@ -421,6 +421,42 @@ class GetDownstreamTasksArgs(CommandArgs):
 
 class GetDownstreamTasksValue(CommandValue):
     tasks: list[dict[str, str]]
+
+
+class HeldBatchOperation(CommandArgs):
+    """Scoped operation. The command checks kind-specific fields and live membership."""
+
+    kind: Literal["rewrite", "split", "combine", "reparent", "rewire", "add_leaf",
+                  "move_to_root", "retire"]
+    task_id: str | None = None
+    task_ids: list[str] | None = None
+    changes: dict[str, Any] | None = None
+    task: dict[str, Any] | None = None
+    tasks: list[dict[str, Any]] | None = None
+    parent_id: str | None = None
+    delivery_targets: list[str] | None = None
+    edges: list[dict[str, Any]] | None = None
+    remove_edges: list[dict[str, Any]] | None = None
+    reason: str | None = None
+    replacement_task_id: str | None = None
+    satisfied_by: str | None = None
+    rewire: dict[str, list[dict[str, Any]]] | None = None
+
+
+class TaskBatchUpdateArgs(CommandArgs):
+    proposal_id: str
+    project_id: str | None = None
+    payload: dict[str, Any] | None = None
+    expected_revision: int | None = Field(default=None, ge=1, strict=True)
+    operations: list[HeldBatchOperation] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def update_shape(self):
+        if (self.payload is None) == (self.operations is None):
+            raise ValueError("Supply payload or operations")
+        if self.operations is not None and self.expected_revision is None:
+            raise ValueError("Held operations require expected_revision")
+        return self
 
 
 class TaskBatchCommitArgs(CommandArgs):

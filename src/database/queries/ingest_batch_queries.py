@@ -443,9 +443,19 @@ async def hydrate_structure(
             task_metadata.c.task_id.in_(ids), task_metadata.c.key == MEMBER_FIDELITY_META,
         ))).all()
     }
+    ownership = {
+        task_id: json.loads(value)
+        for task_id, value in (await conn.execute(select(
+            task_metadata.c.task_id, task_metadata.c.value,
+        ).where(
+            task_metadata.c.task_id.in_(ids), task_metadata.c.key == "owned_modules",
+        ))).all()
+    }
     for row in rows:
         stored = fidelity.get(row["task_id"], {})
         row.update({field: stored.get(field) for field in FIDELITY_FIELDS})
+        if row["task_id"] in ownership:
+            row["owned_modules"] = ownership[row["task_id"]]
     edges = [dict(row) for row in (await conn.execute(
         select(
             task_dependencies.c.task_id,

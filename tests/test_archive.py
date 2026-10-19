@@ -2588,3 +2588,43 @@ class TestBulkArchiveCommandReportsDeliveryPending:
         assert [(s["task_id"], s["code"]) for s in result["skipped"]] == [
             ("t-undelivered", "hierarchy.integration_undelivered")
         ]
+
+
+@pytest.mark.parametrize("refusal", ["replacement", "after_rewire", None])
+async def test_recovery_preparation_and_replacement_retirement_share_transaction(db, monkeypatch, refusal):
+    """Both merge parents' behavior survives, including rollback after rewiring."""
+    from src.sessions.obsolete import ObsoleteClose, ObsoleteCloseRefused
+
+    await _retirement_graph(db)
+    closer = ObsoleteClose(db, release_owner=None)
+    prepared = []
+
+    async def prepare(conn):
+        prepared.append(conn)
+        await db._upsert_meta("duplicate", "recovery-transaction-proof", "prepared", conn=conn)
+        return None
+
+    if refusal == "after_rewire":
+        async def refuse(*args, **kwargs):
+            assert (await prepared[0].execute(text(
+                "SELECT depends_on_task_id FROM task_dependencies "
+                "WHERE task_id='dependent' AND dep_type='blocks'"
+            ))).scalars().all() == ["replacement"]
+            raise ObsoleteCloseRefused("obsolete.test_refusal", "late refusal")
+        monkeypatch.setattr(closer, "_refuse_unsafe", refuse)
+    kwargs = dict(reason="duplicate", principal="supervisor:test", _prepare_on=prepare,
+                  replacement_task_id="missing" if refusal == "replacement" else "replacement")
+    if refusal:
+        with pytest.raises(ObsoleteCloseRefused):
+            await closer.close("duplicate", **kwargs)
+        assert await db.get_task_meta("duplicate", "recovery-transaction-proof") is None
+        assert await db.get_task_meta("duplicate", "obsolete") is None
+        assert await db.get_dependencies("dependent") == {"duplicate"}
+        assert (await db.get_task("duplicate")).status == TaskStatus.READY
+    else:
+        result = await closer.close("duplicate", **kwargs)
+        assert result["outcome"] == "closed"
+        assert await db.get_task_meta("duplicate", "recovery-transaction-proof") == "prepared"
+        assert await db.get_dependencies("dependent") == {"replacement"}
+    assert len(prepared) == 1
+    assert await db.get_task_completions("duplicate") == []

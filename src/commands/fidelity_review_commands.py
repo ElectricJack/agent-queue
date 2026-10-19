@@ -31,6 +31,8 @@ from src.commands.principal import (
 from src.database.queries.ingest_batch_queries import (
     assign_reviewer,
     get_batch,
+    live_digest,
+    store_live_digest,
     members,
     passing_receipt,
 )
@@ -126,6 +128,9 @@ class FidelityReviewCommandsMixin:
             return batch
 
         async def record(conn, task_id, parent_id):
+            batch = await get_batch(conn, batch_id)
+            if await live_digest(conn, batch_id) != batch["structure_digest"]:
+                raise AskError("batch.stale_revision", "Live batch changed before reviewer dispatch")
             await self.db._upsert_meta(task_id, FIDELITY_REVIEW_META, {
                 "batch_id": batch_id, "structure_revision": revision,
             }, conn=conn)
@@ -142,6 +147,10 @@ class FidelityReviewCommandsMixin:
                     task_id, member["task_id"], DepType.RELATED.value,
                     description="fidelity review of this batch", conn=conn,
                 )
+            # The canonical snapshot includes these server-owned provenance
+            # links. Establish the review snapshot atomically with dispatch,
+            # so its first edit does not see its own assignment as drift.
+            await store_live_digest(conn, batch_id)
             batch = await get_batch(conn, batch_id)
             op = await get_operation(conn, batch["decision_id"], FIDELITY_REVIEW_DISPATCH,
                                      lock=True)

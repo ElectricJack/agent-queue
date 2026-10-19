@@ -346,7 +346,10 @@ class BatchGraph:
         """Existing tasks this batch changes: they must have no live holder."""
         ids = {node.id for node in self.nodes.values() if node.existing} | set(members)
         ids.update(tid for tid, _, _ in self.edits)
-        ids.update(edge.frm for edge in self.edges if edge.frm not in self.nodes)
+        # Stored snapshots include incoming informational links (including
+        # the active reviewer). Reading them does not acquire write authority.
+        if not self.stored:
+            ids.update(edge.frm for edge in self.edges if edge.frm not in self.nodes)
         ids.update(frm for frm, _, _ in self.remove_edges if frm not in self.nodes)
         return {tid for tid in ids if isinstance(tid, str)}
 
@@ -590,7 +593,7 @@ def check(
                 add("membership", f"{node.id}'s parent {parent} is outside the batch; parents "
                     "and children are created together", [node.id, parent])
     for edge in graph.edges:
-        if edge.frm not in allowed:
+        if edge.frm not in allowed and not (graph.stored and edge.kind not in BLOCKING_DEP_TYPES):
             add("membership", f"edge from {edge.frm} changes a task outside the batch",
                 [edge.frm], [edge.key])
     for tid, _, _ in graph.edits:

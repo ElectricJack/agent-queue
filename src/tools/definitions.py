@@ -6896,26 +6896,12 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_batch_update",
         "description": (
-            "Replace a pending change set, re-running final graph and state "
-            "checks as task_batch_propose. Only "
-            "proposals still in ``draft`` or ``ready`` can be updated — a "
-            "committed or discarded one is history."
+            "Update an ungated pending proposal with payload, or edit a held ingestion batch "
+            "with expected_revision and scoped operations. Only the live assigned fidelity "
+            "reviewer or project supervisor may edit held members. Atomic hard checks roll "
+            "back invalid edits; structural changes supersede old receipts. No edit releases work."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "proposal_id": {"type": "string", "description": "Proposal to replace."},
-                "payload": {
-                    "type": "object",
-                    "description": (
-                        "The complete replacement change set (tasks, edits, edges, "
-                        "remove_edges, comments), in the same shape "
-                        "task_batch_propose takes."
-                    ),
-                },
-            },
-            "required": ["proposal_id", "payload"],
-        },
+        "input_schema": {},  # Replaced below by TaskBatchUpdateArgs' canonical schema.
     },
     {
         "name": "task_batch_commit",
@@ -9186,10 +9172,15 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 
-from src.commands.contracts.builtin import (
+from src.commands.contracts.builtin import (  # noqa: E402
+    TaskBatchUpdateArgs as _TaskBatchUpdateArgs,
     EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
 )
 from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] == "task_batch_update":
+        _definition["input_schema"] = _TaskBatchUpdateArgs.model_json_schema()
 
 _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",

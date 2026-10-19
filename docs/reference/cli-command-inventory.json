@@ -17728,19 +17728,26 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--proposal-id",
-          "--payload"
+          "--proposal-id"
         ],
         "optional": [
+          "--project-id",
+          "--payload",
+          "--expected-revision",
+          "--operations",
           "--json",
           "--brief",
           "--save-output",
           "--api-url"
         ],
         "structured": [
-          "--payload"
+          "--payload",
+          "--operations"
         ],
-        "nullable": []
+        "nullable": [
+          "--project-id",
+          "--expected-revision"
+        ]
       }
     },
     {
