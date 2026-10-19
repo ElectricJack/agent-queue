@@ -22,7 +22,6 @@ from src.integration.train_sources import (
 )
 from tests.test_delivery_consumers import git
 from tests.test_integration_train_sources import MAIN, completed
-from tests.test_integration_train_sources import origin_template as origin_template
 from tests.test_integration_train_sources import world as world
 
 
