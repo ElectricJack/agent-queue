@@ -11198,6 +11198,15 @@
       }
     },
     {
+      "name": "batch_reconcile",
+      "description": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "spec_ingest_legacy_inventory",
       "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",
       "input_schema": {
@@ -17898,6 +17907,7 @@
     "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task",
     "spec_ingest_legacy_inventory": "task",
+    "batch_reconcile": "task",
     "ask_list": "review",
     "ask_show": "review",
     "ask_history": "review",

@@ -1022,6 +1022,12 @@ class SpecIngestReconcileResponse(BaseModel):
     errors: list[dict[str, str]]
 
 
+class BatchReconcileResponse(BaseModel):
+    success: bool = True
+    recovered: list[dict[str, str]]
+    errors: list[dict[str, str]]
+
+
 class SpecIngestLegacyInventoryResponse(BaseModel):
     success: bool = True
     assignments: list[dict[str, Any]]
@@ -1423,6 +1429,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "ensure_spec_ingest": EnsureTaskResponse,
     "approved_spec_packet": ApprovedSpecPacketResponse,
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
+    "batch_reconcile": BatchReconcileResponse,
     "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,

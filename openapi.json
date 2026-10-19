@@ -18148,6 +18148,53 @@
         }
       }
     },
+    "/api/task/batch-reconcile": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
+        "description": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
+        "operationId": "batch_reconcile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchReconcileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/benchmark-stage-record": {
       "post": {
         "tags": [
@@ -25495,6 +25542,46 @@
         ],
         "title": "AssignmentRouteDetail",
         "description": "A routed task's route, as ``aq task explain`` prints it (mandatory routing \u00a710)."
+      },
+      "BatchReconcileRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "BatchReconcileRequest"
+      },
+      "BatchReconcileResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "recovered": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Recovered"
+          },
+          "errors": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "recovered",
+          "errors"
+        ],
+        "title": "BatchReconcileResponse"
       },
       "BenchmarkStageRecordRequest": {
         "properties": {

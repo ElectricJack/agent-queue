@@ -16417,6 +16417,8 @@
     "src/database/tables.py::ask_reconciliation_cases": "Generic source/transport evidence conflicts and explicit repair receipts for every ask source; no integration subject journal or ref replay authority.",
     "src/database/tables.py::ask_source_aliases": "Generic human request source identity and alias reconciliation shared by every source kind; integration source interpretation remains independently charged.",
     "src/database/tables.py::review_feedback_obligations": "Generic accepted review feedback, ownership and completion evidence; no integration branch, publication state or ref replay authority.",
+    "src/database/tables.py::ingest_batches": "Generic specification-ingestion approval state and held task structure. Reconciliation uses shared outbox transport, but this table stores no integration branch, code publication or ref replay authority; the outbox adapter remains independently charged.",
+    "src/database/tables.py::ingest_batch_receipts": "Generic specification-to-task fidelity review evidence, fenced by batch structure revision, digest and assigned reviewer. It grants ingestion admission only, not integration delivery, code publication or ref replay authority; shared outbox transport remains independently charged.",
     "src/doctor/ask_checks.py::ask_checks": "Generic registration of a report-only human request cleanup diagnostic; integration checks and source-specific authority remain independently charged."
   },
   "exclusion_policy": {
