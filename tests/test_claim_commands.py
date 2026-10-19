@@ -1397,7 +1397,7 @@ class TestClaim:
         before = await db.get_workspace("ws-agent-1")
         (wd / "progress").write_bytes(b"keep exact bytes")
 
-        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        result = await settled_claim(scoped(handler, sid), {"next": True})
 
         assert result["result"] == ("drain_requested" if disagreement == "disabled" else "prepare_failed")
         assert (await db.get_session(sid)).claim_phase != "active"
@@ -1461,7 +1461,7 @@ class TestClaim:
 
         await mktask(db, "t1", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
-        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        result = await settled_claim(scoped(handler, sid), {"next": True})
         assert result["result"] == "claimed"
         before = await db.get_task("t1")
         await db.update_session(sid, claim_phase="preparing")
