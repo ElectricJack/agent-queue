@@ -88,7 +88,7 @@ async def _comments(db, task_id: str) -> list[dict]:
 
 
 async def test_route_clears_the_route_and_the_router_routes_the_task_again(handler, orch):
-    """Acceptance 1: cleared on an unclaimed task, re-routed on the next cascade."""
+    """Cleared on an unclaimed task, with an immediate router request."""
     db = orch.db
     await _create(db, "t", task_type=TaskType.RESEARCH,
                   route={"constraints": {"exclude_providers": ["claude"]}})
@@ -115,17 +115,17 @@ async def test_route_clears_the_route_and_the_router_routes_the_task_again(handl
     assert task.provider_intent == "class_only"
     # The route record goes; the task's own constraints stay for the re-plan.
     assert task.route == {"constraints": {"exclude_providers": ["claude"]}}
-    assert "t" not in orch._route_needed_emitted
+    assert "t" in orch._route_needed_emitted
     [comment] = await _comments(db, "t")
     assert "the fix is harder than the filer thought" in comment["body"]
 
-    # The next cascade asks the router at once, despite the recent emission.
-    orch.bus.emit.reset_mock()
-    await orch._emit_route_needed_events()
+    # The command asks the router at once, despite the recent emission.
     [needed] = _events(orch, "task.route_needed")
     assert (needed["task_id"], needed["router"], needed["class_hint"]) == (
         "t", ROUTER_ID, "deep-high",
     )
+    orch.bus.emit.reset_mock()
+    assert await orch._emit_route_needed_events() == 0
     # ... and the router routes it with the new hints: deep-high, never on the
     # Claude cell the policy reserves for design, and not on excluded Claude.
     assert (await _route(handler, "t"))["outcome"] == "routed"
@@ -147,6 +147,62 @@ async def test_route_keeps_hints_it_is_not_given_and_clears_an_empty_one(handler
     ))["success"]
     task = await db.get_task("t")
     assert (task.class_hint, task.task_type) == (None, None)
+
+
+@pytest.mark.parametrize("is_blocked", [False, True])
+async def test_reroute_emits_even_when_already_unrouted_or_outside_cascade(
+    handler, orch, is_blocked,
+):
+    """A successful explicit re-run must reach the router without a cascade scan."""
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    if is_blocked:
+        await orch.db.create_gate("p", "human", "hold execution", waiter_task_ids=["t"])
+        assert (await orch.db.get_task("t")).is_blocked
+    _ready(orch, "p")
+    orch._route_needed_emitted = {"t": time.time()}
+    assert [t.id for t in await orch._route_needed_candidates()] == (
+        [] if is_blocked else ["t"]
+    )
+
+    for hint in ("standard-high", "deep-high"):
+        orch.bus.emit.reset_mock()
+        result = await handler.execute("task_route", {
+            "task_id": "t", "intelligence_class": hint,
+        })
+        assert result["success"] is True, result
+        [needed] = _events(orch, "task.route_needed")
+        assert (needed["task_id"], needed["router"], needed["class_hint"]) == (
+            "t", ROUTER_ID, hint,
+        )
+        # Periodic retries stay throttled after a successful explicit emission.
+        orch.bus.emit.reset_mock()
+        assert await orch._emit_route_needed_events() == 0
+        assert not _events(orch, "task.route_needed")
+
+    assert (await _route(handler, "t"))["outcome"] == "routed"
+    assert (await orch.db.get_task("t")).route_source == ROUTER
+
+
+async def test_failed_reroute_emission_does_not_throttle_the_periodic_retry(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    orch._route_needed_emitted = {"t": time.time()}
+
+    def fail_route_event(event_type, payload):
+        if event_type == "task.route_needed":
+            raise RuntimeError("routing dispatch unavailable")
+
+    orch.bus.emit.side_effect = fail_route_event
+    result = await handler.execute("task_route", {"task_id": "t"})
+    assert result["error"] == "routing dispatch unavailable"
+    assert not result.get("success")
+    assert "t" not in orch._route_needed_emitted
+    assert (await orch.db.get_task("t")).route_source == UNROUTED
+
+    orch.bus.emit.side_effect = None
+    orch.bus.emit.reset_mock()
+    assert await orch._emit_route_needed_events() == 1
+    [needed] = _events(orch, "task.route_needed")
+    assert needed["task_id"] == "t"
 
 
 async def test_route_validates_its_hints(handler, orch):
