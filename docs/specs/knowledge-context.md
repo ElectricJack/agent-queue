@@ -18,6 +18,16 @@ session instance and explicit scopes. Acknowledgement requires the persisted
 live session. Global supervisors default to no private corpus; an operator
 can select at most eight project IDs or explicitly enable global summaries.
 
+Core knowledge operations use the same pool task binding: a pool bearer with
+no fixed task resolves its held task from the authenticated live session.
+The resolved task also governs task-record visibility and authorship. An idle
+pool session, a mismatched fixed task, a foreign project, or a stale write claim
+remains refused. Profile grants are still required for each operation.
+The read-only `records.pool_access` doctor check samples active pool claims,
+checks their list/show/create/cite grants, and probes ordinary knowledge listing
+with a task-less pool scope. It reports no knowledge bodies or instance tokens;
+disabled knowledge or no active claims is informational, not proof of access.
+
 Pins are exact revisions and precede lexical discovery. No query produces no
 discovery. Discovery excludes stale, future, retired and disputed evidence;
 explicit pins retain their labels. Each read uses core scope, source, revision,

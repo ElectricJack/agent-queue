@@ -10151,9 +10151,14 @@
         "knowledge-records"
       ],
       "default_arm": true,
-      "digest": "sha256:63eb5e7478d7074a9851ca21a9e82e461d98029206717a117149db5df80aea24",
+      "digest": "sha256:8ad30659e5226c80e160e5cbf83658a382b73d1a72ecd68a061d5d6eaa25014c",
       "imports": [
-        "src.config"
+        "src.config",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.catalog",
+        "src.profiles.inheritance",
+        "src.profiles.parser"
       ],
       "markers": [
         "usefixtures"
