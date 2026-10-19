@@ -662,7 +662,12 @@ async def test_ordinary_reparent_refuses_sealed_source_or_destination(
 
     result = await handler.execute("reparent_task", {"task_id": child_id, "parent_id": "new"})
 
-    assert result["code"] == "hierarchy.sealed", result
+    assert result["code"] == "needs_quiescence", result
+    assert result["owner"] == {
+        "kind": "integration_batch", "batch_id": "batch", "lifecycle": "sealed",
+        "member_task_id": sealed_parent,
+    }
+    assert "integration-owned exclusion" in result["safe_continuation"]
     assert (await db.get_task(child_id)).parent_task_id == "old"
     assert (await db.get_integration_checkpoint("old"))["generation"] == 1
     assert len([row for row in await _origins(db) if row["task_id"] == child_id]) == 1
@@ -713,10 +718,136 @@ async def test_ordinary_train_reparent_refuses_existing_work_atomically(
 
     result = await handler.execute("reparent_task", {"task_id": child_id, "root": True})
 
-    assert result["code"] == "hierarchy.delivery_target_fixed", result
+    assert result["code"] == "needs_quiescence", result
+    assert result["owner"]["kind"] == {
+        "commits": "branch", "attached_owner": "branch_owner",
+        "locked_workspace": "workspace", "delivered": "delivery", "completed": "delivery",
+        "holder": "claim",
+    }[blocker]
+    assert result["safe_continuation"]
     assert (await db.get_task(child_id)).parent_task_id == "parent"
     assert (await db.get_integration_checkpoint("parent"))["generation"] == 1
     assert len([row for row in await _origins(db) if row["task_id"] == child_id]) == 1
+
+
+async def test_reparent_to_root_unclaimed(db, hierarchy, internal_plugins_handler):
+    """Design §7 row 1: released, unclaimed, no materialized branch moves to root.
+
+    One transaction updates both structural representations, releases the
+    origin reservation and re-reserves it at the root, recomputes readiness
+    and writes the relocation audit.
+    """
+    from src.database.tables import events, task_dependencies
+
+    await _create(db, "epic")
+    filed = await hierarchy.file_children("epic", [{"title": "ops"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    old_origin = filed["origins"][0]
+    branch = (await db.get_task(child_id)).branch_name
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+
+    result = await handler.execute(
+        "reparent_task",
+        {"task_id": child_id, "root": True, "expected_old_generation": 1},
+    )
+
+    assert result["success"] is True, result
+    assert (result["old_parent"], result["new_parent"]) == ("epic", None)
+    moved = await db.get_task(child_id)
+    assert moved.parent_task_id is None
+    assert moved.is_blocked is False
+    async with db._engine.connect() as conn:
+        edges = (await conn.execute(select(task_dependencies).where(
+            task_dependencies.c.task_id == child_id,
+            task_dependencies.c.dep_type == "parent-child",
+        ))).all()
+        owner = (await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.ref == branch,
+        ))).mappings().one()
+        audit = (await conn.execute(select(events).where(
+            events.c.event_type == "integration.task_relocated",
+        ))).mappings().one()
+    assert edges == []
+    origins = [row for row in await _origins(db) if row["task_id"] == child_id]
+    assert [row["id"] == old_origin["id"] for row in origins] == [True, False]
+    assert origins[0]["retired_at"] is not None
+    assert origins[1]["retired_at"] is None
+    assert (origins[1]["parent_task_id"], origins[1]["parent_ref"]) == (None, "main")
+    assert origins[1]["materialized"] is False
+    assert (owner["owner_id"], owner["handoff_state"]) == (child_id, "reserved")
+    assert (await db.get_integration_checkpoint("epic"))["generation"] == 2
+    payload = json.loads(audit["payload"])
+    assert audit["task_id"] == child_id
+    assert payload["old_parent_id"] == "epic" and payload["new_parent_id"] is None
+    assert payload["retired_origin_id"] == old_origin["id"]
+    assert payload["parent_ref"] == "main"
+
+
+@pytest.mark.parametrize("owned_by", ["claim", "integration_batch"])
+async def test_reparent_needs_quiescence_when_owned(
+    db, hierarchy, internal_plugins_handler, owned_by,
+):
+    """Design §7 row 2: running or batch-owned work is never rewritten."""
+    await _create(db, "old")
+    await _create(db, "new")
+    filed = await hierarchy.file_children("old", [{"title": "child"}], 0)
+    child_id = filed["children"][0]["task_id"]
+    if owned_by == "claim":
+        await db.create_agent(Agent(id="writer", name="writer", profile_id="worker"))
+    async with db.immediate() as conn:
+        if owned_by == "claim":
+            await conn.execute(update(tasks).where(tasks.c.id == child_id).values(
+                assigned_agent_id="writer", status="IN_PROGRESS",
+            ))
+        else:
+            await conn.execute(insert(integration_batches).values(
+                id="batch", project_id="p", repository_id="repo", request_id="request",
+                source_manifest_digest="digest", base_sha=BASE, lifecycle="sealing",
+                integration_branch="aq/integration/batch", policy_snapshot={},
+                artifact_snapshot={}, cleanup_state="pending", created_at=1.0, updated_at=1.0,
+            ))
+            await conn.execute(insert(integration_batch_members).values(
+                batch_id="batch", ordinal=0, task_id=child_id, repository_id="repo",
+                source_sha=BASE, source_base_sha=BASE, reviewed_head_sha=BASE,
+                reviewed_tree_sha=BASE, review_evidence={},
+            ))
+            await conn.execute(update(integration_batches).where(
+                integration_batches.c.id == "batch",
+            ).values(lifecycle="building"))
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+    origins_before = await _origins(db)
+    new_checkpoint_before = await db.get_integration_checkpoint("new")
+
+    result = await handler.execute("reparent_task", {"task_id": child_id, "parent_id": "new"})
+
+    assert result["success"] is False
+    assert result["code"] == result["outcome"] == "needs_quiescence", result
+    if owned_by == "claim":
+        assert result["owner"] == {
+            "kind": "claim", "task_id": child_id, "status": "IN_PROGRESS", "agent_id": "writer",
+        }
+        assert "drain or pause" in result["safe_continuation"]
+    else:
+        assert result["owner"]["kind"] == "integration_batch"
+        assert result["owner"]["batch_id"] == "batch"
+        assert result["owner"]["lifecycle"] == "building"
+    assert (await db.get_task(child_id)).parent_task_id == "old"
+    assert await _origins(db) == origins_before
+    assert (await db.get_integration_checkpoint("old"))["generation"] == 1
+    assert await db.get_integration_checkpoint("new") == new_checkpoint_before
+
+    # The integration contract reports the same owner and continuation.
+    contract = await handler.execute("integration_mutate_hierarchy", {
+        "task_id": child_id, "mutation": "reparent",
+        "arguments": {
+            "parent_id": "new", "expected_old_generation": 1, "expected_new_generation": 1,
+        },
+    })
+    assert contract["outcome"] == "needs_quiescence", contract
+    assert contract["owner"] == result["owner"]
+    assert contract["safe_continuation"] == result["safe_continuation"]
 
 
 async def test_delete_unmaterialized_child_retires_origin_and_invalidates_parent(db, hierarchy):

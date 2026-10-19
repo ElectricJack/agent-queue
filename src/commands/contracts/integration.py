@@ -1033,6 +1033,9 @@ class IntegrationMutateHierarchyValue(CommandValue):
     new_parent_id: str | None = None
     old_parent_generation: int | None = None
     new_parent_generation: int | None = None
+    #: ``needs_quiescence``: the live owner and the safe continuation (design §7).
+    owner: dict[str, Any] | None = None
+    safe_continuation: str | None = None
 
 
 class IntegrationRepairStartArgs(CommandArgs):
@@ -1832,7 +1835,10 @@ INTEGRATION_MUTATE_HIERARCHY = CommandContract(
         args_model=IntegrationMutateHierarchyArgs,
         result_model=IntegrationMutateHierarchyValue,
         outcomes=_outcomes(
-            ("updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid"),
+            (
+                "updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid",
+                "needs_quiescence", "stale_parent", "dependency_on_ancestor",
+            ),
             {"updated"},
         ),
         side_effect=SideEffectClass.COMPOSITE,
@@ -2005,7 +2011,10 @@ async def _mutate_hierarchy_adapter(
         args,
         ctx,
         IntegrationMutateHierarchyValue,
-        {"updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid"},
+        {
+            "updated", "sealed", "delivery_target_fixed", "reopen_required", "invalid",
+            "needs_quiescence", "stale_parent", "dependency_on_ancestor",
+        },
     )
 
 
