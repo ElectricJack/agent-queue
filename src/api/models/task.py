@@ -1427,6 +1427,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "project_ready": ProjectReadyResponse,
     "ensure_task": EnsureTaskResponse,
     "ensure_spec_ingest": EnsureTaskResponse,
+    "ensure_fidelity_review": EnsureTaskResponse,
     "approved_spec_packet": ApprovedSpecPacketResponse,
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
     "batch_reconcile": BatchReconcileResponse,

@@ -404,6 +404,8 @@ from .effect_clause_dto import EffectClauseDTO
 from .effect_clause_dto_kind import EffectClauseDTOKind
 from .effective_git_identity import EffectiveGitIdentity
 from .effective_git_identity_source import EffectiveGitIdentitySource
+from .ensure_fidelity_review_request import EnsureFidelityReviewRequest
+from .ensure_fidelity_review_response_422 import EnsureFidelityReviewResponse422
 from .ensure_spec_ingest_request import EnsureSpecIngestRequest
 from .ensure_spec_ingest_response_422 import EnsureSpecIngestResponse422
 from .ensure_task_request import EnsureTaskRequest
@@ -2437,6 +2439,8 @@ __all__ = (
     "EffectClauseDTOKind",
     "EffectiveGitIdentity",
     "EffectiveGitIdentitySource",
+    "EnsureFidelityReviewRequest",
+    "EnsureFidelityReviewResponse422",
     "EnsureSpecIngestRequest",
     "EnsureSpecIngestResponse422",
     "EnsureTaskRequest",

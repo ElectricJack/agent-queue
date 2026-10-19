@@ -18423,6 +18423,53 @@
         }
       }
     },
+    "/api/task/ensure-fidelity-review": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+        "description": "Ensure one fidelity-reviewer role task per held batch; service/operator only.",
+        "operationId": "ensure_fidelity_review",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnsureFidelityReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnsureTaskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/ensure-spec-ingest": {
       "post": {
         "tags": [
@@ -34593,6 +34640,32 @@
         ],
         "title": "EffectiveGitIdentity",
         "description": "The identity a project's AQ-authored commits use, and where it came from.\n\n``source`` is ``project`` (its override), ``installation`` (the\n``git_identity`` default) or ``fallback`` (no default chosen yet;\n``configured`` is then false)."
+      },
+      "EnsureFidelityReviewRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id",
+            "description": ""
+          },
+          "structure_revision": {
+            "type": "integer",
+            "title": "Structure Revision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "batch_id",
+          "structure_revision"
+        ],
+        "title": "EnsureFidelityReviewRequest"
       },
       "EnsureSpecIngestRequest": {
         "properties": {

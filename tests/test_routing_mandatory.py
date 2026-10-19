@@ -318,6 +318,11 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
         "creates the server-owned spec-ingest role after validating the immutable "
         "approval application receipt; callers cannot choose a profile"
     ),
+    ("src/commands/fidelity_review_commands.py",
+     "FidelityReviewCommandsMixin._cmd_ensure_fidelity_review"): (
+        "creates the server-owned fidelity-reviewer role for a held batch after "
+        "checking the batch and its dispatch receipt; callers cannot choose a profile"
+    ),
     ("src/commands/task_commands.py", "TaskCommandsMixin._create_task"): (
         "writes route_source/route for every task; a profile only for a role creator's "
         "role profile (_filing_refusal refuses every other)"

@@ -597,6 +597,66 @@ async def spec_ingest_task_for_session(db, scope: RequestScope, *, legacy_receip
             return None
     return task
 
+#: A fidelity reviewer's batch capabilities (held batches §5.2).  Each names
+#: a batch (``batch_id``; ``task_batch_update`` calls it ``proposal_id``) and
+#: reaches only the batch the reviewer was dispatched for.
+_BATCH_REVIEW_COMMANDS = frozenset({
+    "task_batch_validate", "task_batch_update", "task_batch_review_record",
+})
+_REVIEWABLE_BATCH_STATES = frozenset({"held", "reviewing", "needs_scope"})
+
+
+async def fidelity_review_task_for_session(db, scope: RequestScope, batch_id):
+    """The live reviewer task this session holds for *batch_id*, else ``None``.
+
+    Authority is the batch's own assignment, not a hint: the held role task
+    must carry the batch's dedup key and metadata, and the batch must name it
+    as ``reviewer_task_id``.  The first use under a claim binds the batch's
+    ``reviewer_claim_epoch``/``reviewer_session_id`` to that claim; the epoch
+    only moves forward, so a retried or rerouted claim revokes the previous
+    holder, and ``ensure_fidelity_review`` clears both on reassignment.
+    """
+    if db is None or not batch_id or not scope.session_id or not scope.project_id:
+        return None
+    import json
+
+    from sqlalchemy import or_, select, update
+
+    from src.database.tables import ingest_batches, task_metadata
+    from src.review_keys import FIDELITY_REVIEWER_PROFILE_ID, fidelity_review_dedup_key
+
+    session = await db.get_session(scope.session_id)
+    if session is None or session.profile_id != FIDELITY_REVIEWER_PROFILE_ID:
+        return None
+    task = await held_task_for_session(db, scope)
+    if (task is None or task.profile_id != FIDELITY_REVIEWER_PROFILE_ID
+            or task.route_source != "role"
+            or task.dedup_key != fidelity_review_dedup_key(batch_id)):
+        return None
+    async with db.immediate() as conn:
+        meta = (await conn.execute(select(task_metadata.c.value).where(
+            task_metadata.c.task_id == task.id, task_metadata.c.key == "fidelity_review",
+        ))).scalar_one_or_none()
+        if not meta or (json.loads(meta) or {}).get("batch_id") != batch_id:
+            return None
+        batch = ingest_batches.c
+        await conn.execute(update(ingest_batches).where(
+            batch.batch_id == batch_id, batch.reviewer_task_id == task.id,
+            or_(batch.reviewer_claim_epoch.is_(None),
+                batch.reviewer_claim_epoch < task.claim_epoch),
+        ).values(reviewer_claim_epoch=task.claim_epoch, reviewer_session_id=session.id))
+        row = (await conn.execute(select(
+            batch.project_id, batch.state, batch.reviewer_task_id,
+            batch.reviewer_claim_epoch, batch.reviewer_session_id,
+        ).where(batch.batch_id == batch_id))).mappings().first()
+    if (row is None or row["project_id"] != scope.project_id
+            or row["state"] not in _REVIEWABLE_BATCH_STATES
+            or row["reviewer_task_id"] != task.id
+            or row["reviewer_claim_epoch"] != task.claim_epoch
+            or row["reviewer_session_id"] != session.id):
+        return None
+    return task
+
 # A reviewer task's whole job is a verdict on *another* task: read it, and
 # either approve (close its own review task) or reject.  Rejection is
 # ``reopen_with_feedback`` on the reviewed task, which is neither in
@@ -891,6 +951,17 @@ async def check_request_scope(
     """
     if (error := _canonicalise_reroute_args(command, args, scope)) is not None:
         return error
+    if scope.kind == "session" and not scope.elevated and command in _BATCH_REVIEW_COMMANDS:
+        batch_id = args.get("batch_id") or args.get("proposal_id")
+        if await fidelity_review_task_for_session(db, scope, batch_id) is not None:
+            if args.get("session_id") not in (None, scope.session_id):
+                return "out of scope: session_id mismatch"
+            if args.get("project_id") not in (None, scope.project_id):
+                return "out of scope: project_id mismatch"
+            args["project_id"] = scope.project_id
+            return None
+        # Not this batch's reviewer: a spec-ingest session or the ordinary
+        # scope may still answer for the command.
     if scope.kind == "session" and not scope.elevated and command in _SPEC_INGEST_COMMANDS:
         held = await spec_ingest_task_for_session(
             db, scope, legacy_receipt=command == "task_batch_commit",
