@@ -49,6 +49,9 @@ owner evidence. Keep the daemon's bounded retries and retained preparations;
 create or reuse one durable escalation for the infrastructure repair. Never
 mass-pause otherwise ready tasks to silence a system fault. Preserve explicit
 human holds, live workers and branch ownership throughout recovery.
+When preparation refuses a slot that `retains a foreign claim`, run `aq project
+workspace-retire-claim --workspace-id SLOT`: it removes the leftover claim file
+only when the holder provably let go, and otherwise names the holder to examine.
 
 A held train repair blocks every delivery through that train. Diagnose and
 escalate it promptly; do not park it on an indefinite recovery hold. Supervisor
@@ -340,7 +343,8 @@ start code work, tests or QA from a digest author turn.
     "task_subtask_add",
     "task_subtask_get",
     "task_subtask_update",
-    "task_subtasks"
+    "task_subtasks",
+    "workspace_retire_claim"
   ],
   "plugin_tools": [
     "write_note",

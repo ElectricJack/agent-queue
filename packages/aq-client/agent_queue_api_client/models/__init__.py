@@ -2028,6 +2028,9 @@ from .workspace_owner_session import WorkspaceOwnerSession
 from .workspace_owner_task import WorkspaceOwnerTask
 from .workspace_reap_request import WorkspaceReapRequest
 from .workspace_reap_response_422 import WorkspaceReapResponse422
+from .workspace_retire_claim_request import WorkspaceRetireClaimRequest
+from .workspace_retire_claim_response import WorkspaceRetireClaimResponse
+from .workspace_retire_claim_response_422 import WorkspaceRetireClaimResponse422
 from .workspace_summary import WorkspaceSummary
 from .write_file_request import WriteFileRequest
 from .write_file_response import WriteFileResponse
@@ -4051,6 +4054,9 @@ __all__ = (
     "WorkspaceOwnerTask",
     "WorkspaceReapRequest",
     "WorkspaceReapResponse422",
+    "WorkspaceRetireClaimRequest",
+    "WorkspaceRetireClaimResponse",
+    "WorkspaceRetireClaimResponse422",
     "WorkspaceSummary",
     "WriteFileRequest",
     "WriteFileResponse",

@@ -18577,8 +18577,9 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:aaacefcd8267b25580c3f069b65fb95b97a2e58d90692ff7987e515d55cf9a1b",
+      "digest": "sha256:59bb07da7f8fd8d27c5363cdf2f57c6decd7db825da1f5c8a6c9e055b476365f",
       "imports": [
+        "src.claim_file",
         "src.commands.handler",
         "src.config",
         "src.database.queries.claim_queries",

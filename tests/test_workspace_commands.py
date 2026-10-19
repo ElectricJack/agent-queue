@@ -545,6 +545,78 @@ class TestWorkspaceDoctor:
         assert len(redundant_ids) == 1
 
 
+class TestWorkspaceRetireClaim:
+    """wise-quest-93: the supervisor's control for a slot refused as holding a
+    foreign claim after its holder completed or paused."""
+
+    async def _leftover(self, orch, status):
+        from src.claim_file import write_claim_file
+
+        slot_ws, slot_dir = await _make_slot_for(orch)
+        marker = {"task_id": "tsk-1", "claim_epoch": 1, "session_id": "gone"}
+        write_claim_file(slot_dir, marker)
+        await orch.db.update_task("tsk-1", status=status, claim_epoch=1)
+        await orch.db.release_workspace(slot_ws.id)
+        return slot_ws, slot_dir, marker
+
+    @pytest.mark.parametrize("status", ["COMPLETED", "PAUSED"])
+    async def test_retires_a_released_holders_marker(self, worktree_handler, status):
+        from src.claim_file import read_claim_file
+
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir, _ = await self._leftover(orch, status)
+        doctor = await handler._cmd_workspace_doctor({"project_id": "p1"})
+        assert ("unlocked_slot_claim", slot_ws.id) in {
+            (f["kind"], f["workspace_id"]) for f in doctor["findings"]}
+        events = []
+        real = orch.bus.emit
+
+        async def emit(kind, data=None):
+            if kind == "worktree.stale_claim_retired":
+                events.append(data)
+            return await real(kind, data)
+
+        orch.bus.emit = emit
+
+        result = await handler._cmd_workspace_retire_claim({"workspace_id": slot_ws.id})
+
+        assert result == {
+            "success": True, "workspace_id": slot_ws.id, "retired": True,
+            "holder_task_id": "tsk-1", "holder_claim_epoch": 1,
+            "holder_session_id": "gone", "reason": f"holder task is {status}",
+        }
+        assert read_claim_file(slot_dir) is None
+        assert [(e["holder_task_id"], e["actor"]) for e in events] == [
+            ("tsk-1", "workspace_retire_claim")]
+        again = await handler._cmd_workspace_retire_claim({"workspace_id": slot_ws.id})
+        assert (again["success"], again["retired"], again["detail"]) == (
+            True, False, "no claim file")
+        doctor = await handler._cmd_workspace_doctor({"project_id": "p1"})
+        assert "unlocked_slot_claim" not in {f["kind"] for f in doctor["findings"]}
+
+    @pytest.mark.parametrize("obstacle", ["active", "locked"])
+    async def test_refuses_a_claim_that_may_still_be_held(self, worktree_handler, obstacle):
+        from src.claim_file import read_claim_file
+
+        handler, orch, _ = worktree_handler
+        slot_ws, slot_dir, marker = await self._leftover(
+            orch, "IN_PROGRESS" if obstacle == "active" else "COMPLETED")
+        if obstacle == "locked":
+            await orch.db.update_workspace(slot_ws.id, locked_by_agent_id="tsk-1-a")
+
+        result = await handler._cmd_workspace_retire_claim({"workspace_id": slot_ws.id})
+
+        assert result["success"] is False
+        assert result["holder_task_id"] == "tsk-1"
+        assert "not provably stale" in result["error"]
+        assert read_claim_file(slot_dir) == marker
+
+    async def test_refuses_a_non_slot_workspace(self, worktree_handler):
+        handler, _, _ = worktree_handler
+        result = await handler._cmd_workspace_retire_claim({"workspace_id": "ws-base"})
+        assert result == {"success": False, "error": "ws-base is not a worktree slot"}
+
+
 class TestWorkspaceReap:
     async def test_reap_refused_when_slot_is_live(
         self, worktree_handler, monkeypatch,

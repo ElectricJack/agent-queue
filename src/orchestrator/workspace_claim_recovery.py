@@ -120,3 +120,80 @@ async def retire_paused_slot_claim(
         if live is not None:
             return False
         return remove_claim_file_if_identical(path, claim, identity)
+
+
+#: Task states whose claim is released: a marker naming one is a leftover.
+_RELEASED_STATUSES = ('COMPLETED', 'FAILED', 'PAUSED', 'BLOCKED', 'READY', 'DEFINED')
+
+
+async def retire_stale_slot_claim(
+    db, workspace_id: str, path: str, *,
+    claimant_task_id: str | None = None, claimant_session_id: str | None = None,
+) -> dict | None:
+    """Retire a slot's claim marker whose holder provably no longer holds it.
+
+    A completed, paused or released task can leave ``.aq/claim.json`` behind
+    after its workspace lock is gone, and every later claim of the slot was
+    refused as a foreign claim (matter-engine-cpp slot-4/slot-5, 2026-10-14).
+    The marker is stale when, re-read under row locks:
+
+    * the slot is unlocked, or locked only by *claimant_task_id*;
+    * the holder task is gone, its claim epoch has moved past the marker's,
+      or its status is one with no active claim (``_RELEASED_STATUSES``);
+    * the marker's session no longer holds that task at that epoch; and
+    * no live session other than *claimant_session_id* works in the slot.
+
+    Dirty or unpushed work is not this function's concern: the slot reset
+    that follows salvages it.  Returns the retired marker plus the reason,
+    or ``None`` when the claim may still be live (the caller keeps refusing).
+    """
+    identity = claim_file_identity(path)
+    claim = read_claim_file(path)
+    if identity is None or claim is None or claim_file_identity(path) != identity:
+        return None
+    holder = claim.get('task_id')
+    epoch = claim.get('claim_epoch')
+    if not isinstance(holder, str) or not holder:
+        return None
+    async with db.immediate() as conn:
+        slot = (await conn.execute(select(workspaces).where(
+            workspaces.c.id == workspace_id,
+        ).with_for_update())).mappings().one_or_none()
+        if (slot is None or slot['base_workspace_id'] is None
+                or os.path.realpath(slot['workspace_path']) != os.path.realpath(path)
+                or slot['locked_by_task_id'] not in (None, claimant_task_id)
+                or (claimant_task_id is None and slot['locked_by_agent_id'] is not None)):
+            return None
+        task = (await conn.execute(select(
+            tasks.c.status, tasks.c.claim_epoch,
+        ).where(tasks.c.id == holder).with_for_update())).mappings().one_or_none()
+        if task is None:
+            reason = 'holder task no longer exists'
+        elif isinstance(epoch, int) and (task['claim_epoch'] or 0) > epoch:
+            reason = f"claim epoch {epoch} superseded by {task['claim_epoch']}"
+        elif holder == claimant_task_id:
+            return None
+        elif task['status'] in _RELEASED_STATUSES:
+            reason = f"holder task is {task['status']}"
+        else:
+            return None
+        session_id = claim.get('session_id')
+        if session_id is not None and session_id != claimant_session_id:
+            session = (await conn.execute(select(
+                sessions.c.state, sessions.c.task_id, sessions.c.last_claim_epoch,
+            ).where(sessions.c.id == session_id).with_for_update())).mappings().one_or_none()
+            if (session is not None and session['state'] in _LIVE_STATES
+                    and session['task_id'] == holder
+                    and session['last_claim_epoch'] == epoch):
+                return None
+        live = select(sessions.c.id).where(
+            sessions.c.work_dir.in_(sorted({path, os.path.realpath(path)})),
+            sessions.c.state.in_(_LIVE_STATES),
+        )
+        if claimant_session_id is not None:
+            live = live.where(sessions.c.id != claimant_session_id)
+        if (await conn.execute(live.limit(1))).first() is not None:
+            return None
+        if not remove_claim_file_if_identical(path, claim, identity):
+            return None
+    return {**claim, 'workspace_id': workspace_id, 'path': path, 'reason': reason}
