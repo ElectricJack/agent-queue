@@ -139,6 +139,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`ask_apply_input`](ask_apply_input.md) | Ask Apply Input | Scoped human request communication and decision evidence. |
 | [`ask_button`](ask_button.md) | Ask Button | Scoped human request communication and decision evidence. |
 | [`ask_cutover`](ask_cutover.md) | Ask Cutover | Scoped human request communication and decision evidence. |
+| [`ask_cutover_status`](ask_cutover_status.md) | Ask Cutover Status | Scoped human request communication and decision evidence. |
 | [`ask_decide`](ask_decide.md) | Ask Decide | Scoped human request communication and decision evidence. |
 | [`ask_discussion_reply`](ask_discussion_reply.md) | Ask Discussion Reply | Scoped human request communication and decision evidence. |
 | [`ask_history`](ask_history.md) | Ask History | Scoped human request communication and decision evidence. |
