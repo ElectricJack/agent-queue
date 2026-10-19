@@ -816,14 +816,23 @@ class WorktreeSlotManager:
                 raise GitError("Operator handoff destination is dirty or unproved; "
                                "workspace was left unchanged")
         from src.orchestrator.task_checkpoint import prepare_checkpoint, restore_checkpoint
+        if preserve_branch:
+            # A paused child may have only a published owned ref. Refresh it
+            # before planning restoration, while the checkout is still intact.
+            await self.git.afetch_origin(
+                str(slot_dir), repository_url=await self._repository_url(slot_ws.project_id),
+                all_heads=True,
+            )
         checkpoint = await prepare_checkpoint(
             self.db, self.git, task.id, str(slot_dir),
             handoff_sha=base_branch if operator_handoff else None,
+            owned_branch=target_branch,
+            # A child's base is its prerequisite, which may diverge from its
+            # own branch. Reconcile snapshots on the child before merging it.
+            owned_head=base_branch if not preserve_branch else None,
         )
         if checkpoint:
-            if target_branch is not None and checkpoint["branch"] != target_branch:
-                raise GitError("saved checkpoint is not on the exact owned branch")
-            if operator_handoff:
+            if target_branch is not None:
                 base_ws = await self._base_of(slot_ws)
                 async with self._git_mutex(base_ws.workspace_path if base_ws else str(slot_dir)):
                     await self._detach_stale_branch_holders(
@@ -837,9 +846,6 @@ class WorktreeSlotManager:
             await self.git._arun(["clean", "-fd", "-e", WORKTREE_SENTINEL_NAME], cwd=str(slot_dir))
             branch = await restore_checkpoint(self.db, self.git, task.id, str(slot_dir), saved=checkpoint)
             if preserve_branch:
-                await self.git.afetch_origin(
-                    str(slot_dir), repository_url=await self._repository_url(slot_ws.project_id),
-                )
                 await self.git.aprepare_child_branch(str(slot_dir), branch, base_branch)
             self.write_sentinel(slot_dir, WorktreeSentinel(
                 slot=slot_name(slot_ws.slot_index or 0), slot_index=slot_ws.slot_index or 0,

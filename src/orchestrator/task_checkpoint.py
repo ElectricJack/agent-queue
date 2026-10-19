@@ -66,7 +66,8 @@ async def capture_checkpoint(db, git, task_id: str, workspace: str) -> None:
 
 
 async def prepare_checkpoint(
-    db, git, task_id: str, workspace: str, *, handoff_sha: str | None = None
+    db, git, task_id: str, workspace: str, *, handoff_sha: str | None = None,
+    owned_branch: str | None = None, owned_head: str | None = None,
 ) -> dict | None:
     """Validate source and destination before any reset or clean can run."""
     saved = await db.get_task_meta(task_id, CHECKPOINT_META)
@@ -74,10 +75,12 @@ async def prepare_checkpoint(
         return None
     if not Path(saved["source"]).is_dir():
         raise GitError("Paused task checkpoint repository is missing; workspace was left unchanged")
-    target_roots = set((await git._arun(
-        ["rev-list", "--max-parents=0", "HEAD"], cwd=workspace
-    )).splitlines())
-    if handoff_sha is None:
+    target_roots = set()
+    if owned_branch is None:
+        target_roots = set((await git._arun(
+            ["rev-list", "--max-parents=0", "HEAD"], cwd=workspace
+        )).splitlines())
+    if handoff_sha is None and owned_branch is None:
         await git._arun(["fetch", "--no-tags", "--", saved["source"], saved["ref"]], cwd=workspace)
     else:
         # FETCH_HEAD is shared by sibling slots. Bind the fetched snapshot to
@@ -93,6 +96,10 @@ async def prepare_checkpoint(
                 raise GitError("Paused checkpoint ref changed; workspace was left unchanged")
         finally:
             await git._arun(["update-ref", "-d", fetched_ref], cwd=workspace)
+    if owned_branch is not None:
+        # The fenced owned continuation proves repository ancestry too; a
+        # previous slot user's orphan branch is not the destination identity.
+        return await _prepare_owned_checkpoint(git, workspace, saved, owned_branch, owned_head)
     source_roots = set((await git._arun(
         ["rev-list", "--max-parents=0", saved["head"]], cwd=workspace
     )).splitlines())
@@ -118,6 +125,55 @@ async def prepare_checkpoint(
     if tip is not None and tip != saved["head"]:
         raise GitError("Paused task branch changed since its checkpoint; workspace was left unchanged")
     return saved
+
+
+async def _prepare_owned_checkpoint(git, workspace, saved, branch, proved_head):
+    """Restore reachable snapshots on the fenced branch, independently of slot HEAD."""
+    slot_head = await git._arun(["rev-parse", "HEAD"], cwd=workspace)
+    slot_branch = await git._arun(["rev-parse", "--abbrev-ref", "HEAD"], cwd=workspace)
+    branch_tip = None
+    try:
+        ref = f"refs/heads/{branch}"
+        refs = await git._arun(
+            ["for-each-ref", "--format=%(refname) %(objectname)", "--", ref], cwd=workspace,
+        )
+        tips = [line.partition(" ")[2] for line in refs.splitlines()
+                if line.partition(" ")[0] == ref]
+        if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
+            raise GitError("Owned branch tip is ambiguous")
+        branch_tip = tips[0] if tips else None
+        if branch_tip is None and proved_head is None:
+            # The caller refreshed authorized origin refs under the owned
+            # preparation fence. Never use the foreign slot's current HEAD.
+            remote = f"refs/remotes/origin/{branch}"
+            refs = await git._arun(
+                ["for-each-ref", "--format=%(refname) %(objectname)", "--", remote], cwd=workspace,
+            )
+            tips = [line.partition(" ")[2] for line in refs.splitlines()
+                    if line.partition(" ")[0] == remote]
+            if len(tips) > 1 or tips and not is_valid_git_oid(tips[0]):
+                raise GitError("Owned origin branch tip is ambiguous")
+            branch_tip = tips[0] if tips else None
+        head = proved_head or branch_tip
+        if not is_valid_git_oid(head):
+            raise GitError("Owned branch has no proved continuation commit")
+        if branch_tip is not None and branch_tip != head:
+            if await git.ais_ancestor(workspace, head, branch_tip, strict=True) is True:
+                head = branch_tip
+            elif await git.ais_ancestor(workspace, branch_tip, head, strict=True) is not True:
+                raise GitError("Owned branch and continuation diverged or are unproved")
+        if await git.ais_ancestor(workspace, saved["head"], head, strict=True) is not True:
+            raise GitError("Saved checkpoint is not reachable from the owned branch or is unproved")
+        return await _reconcile_handoff_checkpoint(
+            git, workspace, saved | {"branch": branch}, head, None,
+        )
+    except GitError as exc:
+        raise GitError(
+            f"checkpoint HEAD {saved['head']} commit {saved['commit']}, "
+            f"owned branch {branch} tip {branch_tip}, slot HEAD {slot_head} "
+            f"branch {slot_branch}: {exc}; "
+            f"saved branch {saved['branch']}, proved HEAD {proved_head}; workspace was left unchanged"
+        ) from exc
 
 
 async def _reconcile_handoff_checkpoint(git, workspace, saved, handoff_sha, branch_tip):
