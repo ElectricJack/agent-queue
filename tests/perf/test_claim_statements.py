@@ -401,21 +401,29 @@ class TestClaimStatementBudgets:
         (ANALYZE, BUFFERS)`` on the way past -- so a rewrite that keeps the
         budget by moving work into a sub-plan is still caught.
         """
+        # Reproduce statistics collected before the recovery history exists,
+        # rather than relying on when autovacuum happens to analyze this lease.
+        async with any_db._engine.begin() as conn:
+            await conn.execute(text("ANALYZE task_session_attempts"))
         await _seed_worker_scale(any_db)
+        # Every arm gets real history, including the arm without a hold.
+        # An empty attempt table can legitimately use a cheap scan/sort in
+        # an unexecuted subplan; history exercises the ordered index lookup.
+        started = time.time() + 1
+        async with any_db._engine.begin() as conn:
+            await conn.execute(task_session_attempts.insert(), [{
+                "id": f"attempt-{i:03}", "session_id": f"session-{i}",
+                "task_id": "seed-1", "project_id": PROJECT_ID,
+                "profile_id": "worker", "name": "worker", "lifecycle": "task",
+                "harness": "codex", "provider": "fake", "state": "stopped",
+                "work_dir": "/unused", "started_at": started,
+                "session_started_at": started, "ended_at": started + 1,
+            } for i in range(128)])
         if recovery_hold != "none":
             # Exercise the recovery subplan, including its deterministic ID
             # tie-break, instead of only explaining an empty attempt table.
-            started = time.time() + 1
             async with any_db._engine.begin() as conn:
                 await conn.execute(tasks.update().where(tasks.c.id == "seed-1").values(priority=-1))
-                await conn.execute(task_session_attempts.insert(), [{
-                    "id": f"attempt-{i:03}", "session_id": f"session-{i}",
-                    "task_id": "seed-1", "project_id": PROJECT_ID,
-                    "profile_id": "worker", "name": "worker", "lifecycle": "task",
-                    "harness": "codex", "provider": "fake", "state": "stopped",
-                    "work_dir": "/unused", "started_at": started,
-                    "session_started_at": started, "ended_at": started + 1,
-                } for i in range(128)])
             await any_db.set_task_meta("seed-1", "supervisor_recovery_incident", {
                 "decision": "hold", "claim_epoch": 0,
                 "attempt_id": "attempt-000" if recovery_hold == "stale" else "attempt-127",
@@ -424,7 +432,9 @@ class TestClaimStatementBudgets:
         # which earlier fixture occupied this leased database. Statistics
         # collection is fixture setup, outside the explained claim queries.
         async with any_db._engine.begin() as conn:
-            await conn.execute(text("ANALYZE tasks, task_dependencies"))
+            await conn.execute(text(
+                "ANALYZE tasks, task_dependencies, task_session_attempts, task_metadata"
+            ))
         # The route filter differs with the project's router readiness
         # (mandatory routing §9.1): ``route_source IN (router, override,
         # role)``, widened by ``legacy`` while the router is not ready.
