@@ -1054,10 +1054,22 @@ class TaskBatchProposeResponse(BaseModel):
 
 
 class TaskBatchAckResponse(BaseModel):
-    """``task_batch_update`` / ``task_batch_discard`` — bare acknowledgement."""
+    """Acknowledgement, including the current held graph after a scoped update."""
 
     success: bool = True
     diff: dict[str, Any] | None = None
+    proposal_id: str | None = None
+    batch_id: str | None = None
+    state: str | None = None
+    status: str | None = None
+    structure_revision: int | None = None
+    structure_digest: str | None = None
+    members: dict[str, str] | None = None
+    task_ids: list[str] | None = None
+    replayed: bool | None = None
+    lineage: dict[str, Any] | None = None
+    release_receipt: dict[str, Any] | None = None
+    reviewer_task_id: str | None = None
 
 
 class TaskBatchValidateResponse(BaseModel):

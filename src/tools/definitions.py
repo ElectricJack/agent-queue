@@ -2778,6 +2778,29 @@ _ALL_TOOL_DEFINITIONS = [
                         "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
                     ),
                 },
+                "replacement": {
+                    "type": "string",
+                    "description": "Obsolete only: replacement leaf; atomically redirects dependents.",
+                },
+                "satisfied_by": {
+                    "type": "string",
+                    "description": (
+                        "Obsolete only: evidence the requirement is met; dependent edges must "
+                        "be explicitly removed or replaced through rewire. Never records a pass."
+                    ),
+                },
+                "rewire": {
+                    "type": "object",
+                    "description": (
+                        "Obsolete edge plan, validated and committed with retirement. "
+                        "Uses task change-set edges/remove_edges objects (from, to, dep_type)."
+                    ),
+                    "properties": {
+                        "edges": {"type": "array", "items": {"type": "object"}},
+                        "remove_edges": {"type": "array", "items": {"type": "object"}},
+                    },
+                    "additionalProperties": False,
+                },
             },
         },
     },
@@ -6873,26 +6896,12 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_batch_update",
         "description": (
-            "Replace a pending change set, re-running final graph and state "
-            "checks as task_batch_propose. Only "
-            "proposals still in ``draft`` or ``ready`` can be updated — a "
-            "committed or discarded one is history."
+            "Update an ungated pending proposal with payload, or edit a held ingestion batch "
+            "with expected_revision and scoped operations. Only the live assigned fidelity "
+            "reviewer or project supervisor may edit held members. Atomic hard checks roll "
+            "back invalid edits; structural changes supersede old receipts. No edit releases work."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "proposal_id": {"type": "string", "description": "Proposal to replace."},
-                "payload": {
-                    "type": "object",
-                    "description": (
-                        "The complete replacement change set (tasks, edits, edges, "
-                        "remove_edges, comments), in the same shape "
-                        "task_batch_propose takes."
-                    ),
-                },
-            },
-            "required": ["proposal_id", "payload"],
-        },
+        "input_schema": {},  # Replaced below by TaskBatchUpdateArgs' canonical schema.
     },
     {
         "name": "task_batch_commit",
@@ -9163,10 +9172,15 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 
-from src.commands.contracts.builtin import (
+from src.commands.contracts.builtin import (  # noqa: E402
+    TaskBatchUpdateArgs as _TaskBatchUpdateArgs,
     EnsureFidelityReviewArgs as _EnsureFidelityReviewArgs,
 )
 from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIngestArgs  # noqa: E402
+
+for _definition in _ALL_TOOL_DEFINITIONS:
+    if _definition["name"] == "task_batch_update":
+        _definition["input_schema"] = _TaskBatchUpdateArgs.model_json_schema()
 
 _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",

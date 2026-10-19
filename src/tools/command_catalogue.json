@@ -2070,6 +2070,33 @@
           "reason": {
             "type": "string",
             "description": "Required to archive PAUSED/DEFINED/READY or abandon undelivered work."
+          },
+          "replacement": {
+            "type": "string",
+            "description": "Obsolete only: replacement leaf; atomically redirects dependents."
+          },
+          "satisfied_by": {
+            "type": "string",
+            "description": "Obsolete only: evidence the requirement is met; dependent edges must be explicitly removed or replaced through rewire. Never records a pass."
+          },
+          "rewire": {
+            "type": "object",
+            "description": "Obsolete edge plan, validated and committed with retirement. Uses task change-set edges/remove_edges objects (from, to, dep_type).",
+            "properties": {
+              "edges": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "remove_edges": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            },
+            "additionalProperties": false
           }
         }
       }
@@ -6077,23 +6104,284 @@
     },
     {
       "name": "task_batch_update",
-      "description": "Replace a pending change set, re-running final graph and state checks as task_batch_propose. Only proposals still in ``draft`` or ``ready`` can be updated \u2014 a committed or discarded one is history.",
+      "description": "Update an ungated pending proposal with payload, or edit a held ingestion batch with expected_revision and scoped operations. Only the live assigned fidelity reviewer or project supervisor may edit held members. Atomic hard checks roll back invalid edits; structural changes supersede old receipts. No edit releases work.",
       "input_schema": {
-        "type": "object",
+        "$defs": {
+          "HeldBatchOperation": {
+            "additionalProperties": false,
+            "description": "Scoped operation. The command checks kind-specific fields and live membership.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "rewrite",
+                  "split",
+                  "combine",
+                  "reparent",
+                  "rewire",
+                  "add_leaf",
+                  "move_to_root",
+                  "retire"
+                ],
+                "title": "Kind",
+                "type": "string"
+              },
+              "task_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Task Id"
+              },
+              "task_ids": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Task Ids"
+              },
+              "changes": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Changes"
+              },
+              "task": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Task"
+              },
+              "tasks": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Tasks"
+              },
+              "parent_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Parent Id"
+              },
+              "delivery_targets": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Delivery Targets"
+              },
+              "edges": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Edges"
+              },
+              "remove_edges": {
+                "anyOf": [
+                  {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Remove Edges"
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Reason"
+              },
+              "replacement_task_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Replacement Task Id"
+              },
+              "satisfied_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Satisfied By"
+              },
+              "rewire": {
+                "anyOf": [
+                  {
+                    "additionalProperties": {
+                      "items": {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Rewire"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "title": "HeldBatchOperation",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
         "properties": {
           "proposal_id": {
-            "type": "string",
-            "description": "Proposal to replace."
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
           },
           "payload": {
-            "type": "object",
-            "description": "The complete replacement change set (tasks, edits, edges, remove_edges, comments), in the same shape task_batch_propose takes."
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Payload"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Revision"
+          },
+          "operations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/HeldBatchOperation"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operations"
           }
         },
         "required": [
-          "proposal_id",
-          "payload"
-        ]
+          "proposal_id"
+        ],
+        "title": "TaskBatchUpdateArgs",
+        "type": "object"
       }
     },
     {
