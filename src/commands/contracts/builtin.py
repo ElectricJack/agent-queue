@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, ValidationError
 
@@ -463,6 +463,29 @@ class TaskBatchValidateValue(CommandValue):
     gaps: list[dict[str, Any]] = Field(default_factory=list)
 
 
+FidelityVerdict = Literal["faithful", "fixed", "scope_question"]
+
+
+class TaskBatchReviewRecordArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_digest: str = Field(min_length=1)
+    section_verdicts: dict[str, FidelityVerdict]
+    reverse_coverage_verdict: FidelityVerdict
+    walkthrough_verdict: FidelityVerdict
+    structural_findings: list[dict[str, Any]]
+    project_id: str | None = None
+
+
+class TaskBatchReviewRecordValue(CommandValue):
+    batch_id: str
+    state: str
+    passing: bool
+    receipt: dict[str, Any]
+    replayed: bool
+    ask_id: str | None = None
+
+
 class TaskRoutePlanArgs(CommandArgs):
     task_id: str
     #: The routing playbook's policy block, verbatim (mandatory-routing §6.3).
@@ -913,6 +936,8 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if not raw.get("passed"):
             return "retryable" if raw.get("retryable") else "failed"
         return "passed"
+    if name == "task_batch_review_record":
+        return "recorded" if raw.get("passing") else "needs_scope"
     if name == "task_route_plan":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
@@ -1357,6 +1382,21 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
+    ),
+    "task_batch_review_record": CommandPresentation(
+        title="Record a batch fidelity review",
+        summary="Attest every mapped section and whole-batch intent on the exact held graph.",
+        arg_labels={
+            "batch_id": "Held batch", "expected_revision": "Expected structure revision",
+            "expected_digest": "Expected structure digest", "section_verdicts": "Section verdicts",
+            "reverse_coverage_verdict": "Reverse coverage", "walkthrough_verdict": "Walkthrough",
+            "structural_findings": "Findings and dispositions", "project_id": "Project",
+        },
+        outcome_labels={"recorded": "Recorded", "needs_scope": "Needs scope answer",
+                        "rejected": "Rejected"},
+        result_labels={"batch_id": "Batch", "state": "State", "passing": "Passing",
+                       "receipt": "Receipt", "replayed": "Replayed", "ask_id": "Scope ask"},
+        subject_labels={"task_graph": "the held task graph"},
     ),
     "task_batch_validate": CommandPresentation(
         title="Check a task batch",
@@ -1931,6 +1971,12 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (),
             IdempotencySpec(mode="natural"),
             True,
+        ),
+        (
+            "task_batch_review_record", TaskBatchReviewRecordArgs, TaskBatchReviewRecordValue,
+            _outcomes("recorded", "needs_scope"), SideEffectClass.COMPOSITE,
+            (UpdateClause(subject=EffectSubject.TASK_GRAPH),),
+            IdempotencySpec(mode="natural"), True,
         ),
         (
             "task_route_plan",

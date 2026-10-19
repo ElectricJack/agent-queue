@@ -17438,6 +17438,91 @@
         }
       }
     },
+    "task_batch_review_record": {
+      "name": "task_batch_review_record",
+      "description": "Attest every mapped section and whole-batch intent on the exact held graph.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "minLength": 1,
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_digest": {
+            "minLength": 1,
+            "title": "Expected Digest",
+            "type": "string"
+          },
+          "section_verdicts": {
+            "additionalProperties": {
+              "enum": [
+                "faithful",
+                "fixed",
+                "scope_question"
+              ],
+              "type": "string"
+            },
+            "title": "Section Verdicts",
+            "type": "object"
+          },
+          "reverse_coverage_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Reverse Coverage Verdict",
+            "type": "string"
+          },
+          "walkthrough_verdict": {
+            "enum": [
+              "faithful",
+              "fixed",
+              "scope_question"
+            ],
+            "title": "Walkthrough Verdict",
+            "type": "string"
+          },
+          "structural_findings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Structural Findings",
+            "type": "array"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected_revision",
+          "expected_digest",
+          "section_verdicts",
+          "reverse_coverage_verdict",
+          "walkthrough_verdict",
+          "structural_findings"
+        ],
+        "title": "TaskBatchReviewRecordArgs",
+        "type": "object"
+      }
+    },
     "task_failure_triage_notify": {
       "name": "task_failure_triage_notify",
       "description": "Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident.",

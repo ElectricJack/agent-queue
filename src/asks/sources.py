@@ -880,7 +880,10 @@ class FreeTextAdapter(SourceAdapter):
 
 def source_adapters(handler):
     """Constructed only by CommandHandler, with no caller-configurable action table."""
+    from src.asks.batch_scope import BatchScopeAdapter
+
     return [
+        BatchScopeAdapter(handler),
         HumanGateAdapter(handler),
         ProposalAdapter(handler),
         IntegrationAdapter(handler),
