@@ -41,6 +41,7 @@ from src.database.queries.task_queries import (
     STALE_OPEN_ATTENTION,
     TransitionResult,
 )
+from src.database.queries.ingest_hold import not_ingest_held
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -225,13 +226,16 @@ def childless_held_open_container():
 def _settlement_clauses() -> list:
     """The §7 conditions both settlement legs share, correlated to ``tasks``.
 
-    Container flag ∧ no live session holds it ∧ no non-COMPLETED child ∧ not
-    a childless held-open container ∧ no hierarchy/train collection episode
-    owns its completion.  The caller joins ``projects`` and adds the status.
+    Container flag ∧ not an ingestion batch member awaiting fidelity review
+    (design §4: a held container never auto-settles) ∧ no live session holds
+    it ∧ no non-COMPLETED child ∧ not a childless held-open container ∧ no
+    hierarchy/train collection episode owns its completion.  The caller
+    joins ``projects`` and adds the status.
     """
     child = tasks.alias("child")
     return [
         container_flag_exists(),
+        not_ingest_held(),
         ~exists(
             select(literal(1)).where(
                 and_(
@@ -716,10 +720,18 @@ def delivered_prerequisites_for_projects(modes=None, *, cross_parent=True):
     )
 
 
+# Built once: the claim frontier evaluates these predicates on every claim, and
+# a fresh alias copies every column of its table (see claim_queries).
+_CROSS_PREREQUISITE_EDGE = task_dependencies.alias("cross_prerequisite_edge")
+_CROSS_PREREQUISITE_SOURCE = tasks.alias("cross_prerequisite_source")
+_REFRESH_PENDING_PARENT = tasks.alias("refresh_pending_parent")
+_CONTAINMENT_PARENT = tasks.alias("containment_parent")
+
+
 def _cross_parent_prerequisites():
     """Completed cross-parent blocks edges, correlated to the dependent task."""
-    edge = task_dependencies.alias("cross_prerequisite_edge")
-    source = tasks.alias("cross_prerequisite_source")
+    edge = _CROSS_PREREQUISITE_EDGE
+    source = _CROSS_PREREQUISITE_SOURCE
     return source, select(literal_column("1")).select_from(
         edge.join(source, source.c.id == edge.c.depends_on_task_id),
     ).correlate(tasks).where(
@@ -756,7 +768,7 @@ def cross_parent_prerequisites_on_default(mode: ProjectIntegrationMode | None = 
 
 def open_epic_refresh_batches():
     """Open refresh batch ids for this task's epic; ordinary collections are unrelated."""
-    parent = tasks.alias("refresh_pending_parent")
+    parent = _REFRESH_PENDING_PARENT
     return select(integration_batches.c.id).select_from(
         integration_batches.join(parent, parent.c.repo_id == integration_batches.c.repository_id),
     ).correlate(tasks).where(
@@ -777,7 +789,7 @@ def epic_refresh_ready(mode: ProjectIntegrationMode | None = None):
     withhold a child whose epic already contains every proven source.
     """
     _, cross_edge = _cross_parent_prerequisites()
-    parent = tasks.alias("containment_parent")
+    parent = _CONTAINMENT_PARENT
     has_epic = exists(select(literal_column("1")).where(
         parent.c.id == tasks.c.parent_task_id, parent.c.branch_name.is_not(None),
     ))
@@ -872,6 +884,7 @@ class HierarchyQueryMixin:
                             # One array bind avoids expanding the whole READY frontier
                             # into thousands of parameters on each scheduler tick.
                             tasks.c.id == any_(bindparam("task_ids", task_ids, type_=ARRAY(Text))),
+                            not_ingest_held(),
                             materialized_origin_when_hierarchical(),
                             delivered_prerequisites_for_projects(hierarchy_modes),
                         )

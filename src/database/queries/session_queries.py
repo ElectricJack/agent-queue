@@ -429,6 +429,7 @@ class SessionQueryMixin:
 
     async def record_claim_refusal(
         self, session_id: str, *, result: str, reason: str, now: float,
+        expected_preparation: SessionRecord | None = None,
     ) -> SessionRecord | None:
         """Count actual identical failures, never cooldown replays or an active claim.
 
@@ -441,6 +442,28 @@ class SessionQueryMixin:
             ).with_for_update())).mappings().one_or_none()
             if row is None:
                 return None
+            if expected_preparation is not None:
+                from src.claim_preparation import same_session_launch
+
+                observed = _row_to_session(row)
+                diagnostic = observed.failed_preparation
+                if (not same_session_launch(expected_preparation, observed)
+                        or observed.last_claim_epoch != expected_preparation.last_claim_epoch
+                        or observed.task_id not in (None, expected_preparation.task_id)
+                        or (observed.claim_phase is not None and (
+                            observed.claim_phase != "preparing"
+                            or observed.claim_phase_at != expected_preparation.claim_phase_at
+                        ))
+                        # A previous failure's unchanged diagnostic may survive
+                        # into a new attempt (e.g. activation returns no row).
+                        # Only a newly published diagnostic can supersede it.
+                        or (diagnostic is not None
+                            and diagnostic != expected_preparation.failed_preparation and (
+                            diagnostic.get("task_id") != expected_preparation.task_id
+                            or diagnostic.get("preparation_started_at")
+                            != expected_preparation.claim_phase_at
+                        ))):
+                    return None
             if row["claim_phase"] == "active" or row["desired_state"] != "running":
                 return _row_to_session(row)
             prior = row["claim_refusal"] or {}
@@ -542,6 +565,48 @@ class SessionQueryMixin:
             ):
                 return 0
             return await self._update_session_on(conn, session_id, fields)
+
+    async def request_session_sleep(
+        self, observed: SessionRecord, *, stopped_confirmed: bool = False,
+    ) -> SessionRecord:
+        """Record sleep intent without reattaching terminal pool history.
+
+        Provider proof is obtained outside the transaction. Lock and compare
+        its instance/claim identity before normalizing a legacy stopped pool;
+        this operation never releases claims, owners or workspace locks.
+        """
+        async with self.immediate() as conn:
+            row = (await conn.execute(select(sessions).where(
+                sessions.c.id == observed.id,
+            ).with_for_update())).mappings().one_or_none()
+            identity = (
+                "instance_token", "provider", "name", "lifecycle", "work_dir",
+                "started_at", "last_claim_epoch",
+            )
+            if (row is None or any(row[key] != getattr(observed, key) for key in identity)
+                    or (observed.lifecycle == "pool" and observed.state == "stopped"
+                        and row["state"] != "stopped")):
+                raise ValueError("Session changed before sleep; refresh the session")
+            desired = "sleeping"
+            if row["lifecycle"] == "pool" and row["state"] == "stopped":
+                # A late sleep must never turn stopped/stopped history back
+                # into an attached writer. A concurrent teardown may already
+                # have completed since the command resolved the live row.
+                desired = "stopped"
+                if row["desired_state"] != "stopped" and not (
+                    stopped_confirmed
+                    and observed.state == "stopped"
+                    and observed.desired_state == row["desired_state"] == "sleeping"
+                    and row["task_id"] is None
+                    and row["claim_phase"] is None
+                    and row["failed_preparation"] is None
+                ):
+                    raise ValueError(
+                        "Stopped pool session retains work or lacks inactive-instance proof"
+                    )
+            if desired == "sleeping" or row["desired_state"] != desired:
+                await self._update_session_on(conn, observed.id, {"desired_state": desired})
+            return _row_to_session({**row, "desired_state": desired})
 
     async def _update_session_on(self, conn, session_id: str, fields: dict) -> int:
         row = (await conn.execute(select(sessions).where(

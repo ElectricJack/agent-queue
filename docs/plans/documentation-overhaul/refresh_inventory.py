@@ -497,6 +497,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Terminal pane registry."),
     ("src/claim_file.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "`.aq/claim.json` read/write helpers."),
+    ("src/claim_preparation.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
+     "Session-launch and claim identity for deferred preparation responses."),
     ("src/claim_timing.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "Monotonic claim preparation phase timing and scrubbed diagnostics."),
     ("src/preparation_failure.py", "sessions", "docs/guides/session-troubleshooting.md",

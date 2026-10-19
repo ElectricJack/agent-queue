@@ -244,6 +244,9 @@ def _recovery_incident_reason(incident: dict):
 
     owner = incident.get("owner") or {}
     parts = [f"open recovery incident for {incident.get('reason')}"]
+    identity = incident.get("identity_reason")
+    if identity and identity != incident.get("reason"):
+        parts[0] += f" (first diagnosed as {identity})"
     if owner.get("kind") == "integration_operation":
         parts.append(
             f"owned by integration operation {owner.get('operation_id')} "
@@ -5676,8 +5679,13 @@ class TaskCommandsMixin:
         ))
 
         from src.integration.admission import observe_admission
+
         admission = await observe_admission(
-            self.db, [str(task_id)], self._development_integration(), cached_only=True,
+            self.db,
+            [str(task_id)],
+            self._development_integration(),
+            cached_only=True,
+            default_mode=self.config.integration.default_mode,
         )
         from src.integration.delivery_engine import project_delivery_issue
 
@@ -6228,6 +6236,14 @@ class TaskCommandsMixin:
         profile_id = args.get("profile_id")
         brief = bool(args.get("brief"))
 
+        from src.integration.admission import observe_admission, structural_candidates
+
+        admission = await observe_admission(
+            self.db,
+            await structural_candidates(self.db, str(project_id)),
+            self._development_integration(),
+            default_mode=self.config.integration.default_mode,
+        )
         try:
             frontier = await self.db.get_ready_frontier(
                 str(project_id), labels=labels, any_label=any_label
@@ -6235,10 +6251,6 @@ class TaskCommandsMixin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-        from src.integration.admission import observe_admission
-        admission = await observe_admission(
-            self.db, [task.id for task in frontier], self._development_integration()
-        )
         delivery_withheld = {task.id for task in frontier if task.id not in admission.allowed}
         frontier = [task for task in frontier if task.id in admission.allowed]
 

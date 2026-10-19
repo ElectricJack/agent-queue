@@ -36,9 +36,13 @@ from src.database.tables import (
 from src.agents.liveness import LIVE_SESSION_STATES
 from src.models import DAEMON_AUTHORED_TASK_TYPES, AgentState, TaskStatus
 
-def recovery_ask_meaning(task, incident, attempt, owner):
-    """Authority and attempt identity that a human recovery packet must pin."""
-    return {
+def recovery_ask_meaning(task, incident, attempt, owner, meta=None):
+    """Authority and attempt identity that a human recovery packet must pin.
+
+    A diagnosis the recovery scan has not yet recorded is pinned too, so an
+    approval never transfers across a reclassification of the same failure.
+    """
+    meaning = {
         "incident": {k: v for k, v in incident.items() if k not in {
             "decision", "decision_reason", "decided_at", "decided_by", "ask_decision_id",
             "ask_evidence_entry_id", "retry_allowed", "next_action", "decision_history",
@@ -46,6 +50,11 @@ def recovery_ask_meaning(task, incident, attempt, owner):
         "attempt": dict(attempt) if attempt else None,
         "owner": owner, "claim_epoch": task["claim_epoch"],
     }
+    # Omitted while it matches, so packets prepared before this field stay valid.
+    diagnosis = incident_reason(meta, task) if meta is not None else incident.get("reason")
+    if diagnosis != incident.get("reason"):
+        meaning["diagnosis"] = diagnosis
+    return meaning
 
 
 logger = logging.getLogger(__name__)
@@ -109,8 +118,42 @@ def _incident_id(task, attempt, reason, meta):
     return "recovery-" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
 
 
-def _incident_is_current(task, meta, attempt, incident_id, *, allow_ready_hold=False):
-    """Fence one failure; held READY projections must still match its stopped attempt."""
+def _identity_reason(incident):
+    """The diagnosis an incident id was minted with; older records were never reclassified."""
+    return incident.get("identity_reason") or incident.get("reason")
+
+
+def _incident_reasons(incident):
+    """Every diagnosis recorded for one failure generation, oldest first."""
+    reasons = [_identity_reason(incident)]
+    for entry in incident.get("reason_history") or ():
+        if isinstance(entry, dict):
+            reasons += [entry.get("from"), entry.get("to")]
+    reasons.append(incident.get("reason"))
+    return [reason for reason in dict.fromkeys(reasons) if reason]
+
+
+def _retryable(reasons):
+    """A reclassification never turns a non-automatic diagnosis into an automatic one."""
+    reasons = list(reasons)
+    return bool(reasons) and all(reason in RETRYABLE_REASONS for reason in reasons)
+
+
+def _reason_at(incident, at):
+    """The diagnosis an incident carried at *at*, so later reclassification is not retroactive."""
+    for entry in incident.get("reason_history") or ():
+        if isinstance(entry, dict) and (entry.get("at") or 0) > at:
+            return entry.get("from")
+    return incident.get("reason")
+
+
+def _incident_is_current(task, meta, attempt, incident, *, allow_ready_hold=False):
+    """Fence one failure generation; held READY projections must still match its attempt.
+
+    The generation is the stopped attempt (or the no-attempt failure transition) and
+    claim epoch the id was minted for. A new diagnosis of that same generation is a
+    reclassification of this incident, not a new failure.
+    """
     reason = incident_reason(meta, task)
     return (
         (
@@ -122,7 +165,7 @@ def _incident_is_current(task, meta, attempt, incident_id, *, allow_ready_hold=F
             (attempt is not None and attempt["state"] in ("stopped", "quarantined"))
             or (attempt is None and task["status"] == TaskStatus.FAILED.value)
         )
-        and incident_id == _incident_id(task, attempt, reason, meta)
+        and incident.get("id") == _incident_id(task, attempt, _identity_reason(incident), meta)
     )
 
 
@@ -163,7 +206,7 @@ def _budget(task, meta):
     }
 
 
-def _next_action(owner, reason, budget, retry_blocker=None):
+def _next_action(owner, reasons, budget, retry_blocker=None):
     if owner["kind"] == "integration_operation":
         return (
             f"Integration operation {owner['operation_id']} ({owner['operation_state']}) owns "
@@ -171,7 +214,7 @@ def _next_action(owner, reason, budget, retry_blocker=None):
             "resetting attempts or deadlines; if it needs a human decision, escalate with the "
             "operation id."
         )
-    if reason not in RETRYABLE_REASONS:
+    if not _retryable(reasons):
         return (
             "Not an automatically retryable failure: hold, reopen with concrete feedback, or "
             "escalate a genuine human decision."
@@ -571,8 +614,11 @@ class TaskRecoveryQueryMixin:
                 return
             deadline = incident.get("hold_deadline_at")
             if deadline is None:
+                # Bound the hold by the diagnosis it was decided on: a later
+                # reclassification of the same failure cannot backdate a deadline.
                 deadline = await self._recovery_hold_deadline(
-                    conn, task, incident, decided_at=incident["decided_at"],
+                    conn, task, {**incident, "reason": _reason_at(incident, incident["decided_at"])},
+                    decided_at=incident["decided_at"],
                 )
             if deadline is None:
                 return
@@ -732,7 +778,7 @@ class TaskRecoveryQueryMixin:
             if held and "manual_pause" in meta:
                 return
             current = _incident_is_current(
-                task, meta, attempt, expected_id, allow_ready_hold=held,
+                task, meta, attempt, incident, allow_ready_hold=held,
             )
             owner = await self._recovery_owner(conn, task) if current else None
             if current and owner["kind"] != "retired":
@@ -875,6 +921,19 @@ class TaskRecoveryQueryMixin:
                 }
             incident_id = _incident_id(task, attempt, reason, meta)
             previous = meta.get(INCIDENT_KEY) or {}
+            if (
+                previous.get("id")
+                and previous.get("decision") in (None, "hold")
+                and _incident_is_current(task, meta, attempt, previous)
+            ):
+                # The same stopped attempt or failure transition keeps its one
+                # identity, decision, provenance and budget; a new diagnosis of
+                # it is recorded once, as a reclassification.
+                incident_id = previous["id"]
+                if previous.get("reason") != reason:
+                    previous = await self._reclassify_task_recovery_incident(
+                        conn, task, previous, reason,
+                    )
             notify_supervisor = not (
                 owner["kind"] == "integration_operation" and owner["role"] == "delegate"
             )
@@ -945,7 +1004,7 @@ class TaskRecoveryQueryMixin:
                 "owner": owner,
                 "budget": budget,
                 "retry_allowed": retry_allowed,
-                "next_action": _next_action(owner, reason, budget),
+                "next_action": _next_action(owner, [reason], budget),
                 "decision": None,
             }
             await self._refresh_retry_projection(conn, task, meta, attempt, facts, owner)
@@ -976,6 +1035,40 @@ class TaskRecoveryQueryMixin:
                 )
             )
             return {"outcome": "queued", "task_id": task_id, "incident_id": incident_id}
+
+    async def _reclassify_task_recovery_incident(self, conn, task, incident, reason):
+        """Record a new diagnosis of the same failure generation on its one incident.
+
+        The id, decision and its provenance, hold deadline, redelivery count and
+        budgets are kept, so no consent is manufactured and no count is reset. The
+        reason history keeps retry eligibility bound to every diagnosis, and changes
+        the meaning a human packet pinned. The caller refreshes the projection;
+        an audit comment replaces a second new-failure notification.
+        """
+        now = time.time()
+        history = [
+            *(incident.get("reason_history") or []),
+            {"from": incident.get("reason"), "to": reason, "at": now},
+        ]
+        incident = {
+            **incident,
+            "identity_reason": _identity_reason(incident),
+            "reason": reason,
+            "reason_history": history,
+        }
+        incident["retry_reason_allowed"] = _retryable(_incident_reasons(incident))
+        await conn.execute(insert(task_comments).values(
+            id=f"comment-{incident['id']}-reclassified-{len(history)}",
+            task_id=task["id"], project_id=task["project_id"], author_kind="supervisor",
+            author_id="task-recovery", created_at=now,
+            body=(
+                f"Recovery incident {incident['id']} reclassified from {history[-1]['from']} "
+                f"to {reason} for the same failure. Its decision "
+                f"({incident.get('decision') or 'pending'}), provenance and budget are "
+                "unchanged; automatic retry requires every recorded diagnosis to be retryable."
+            ),
+        ))
+        return incident
 
     async def _redeliver_task_recovery(self, conn, task_id, incident):
         """Re-arm the same receipt after an interrupted supervisor, never a busy turn.
@@ -1048,7 +1141,7 @@ class TaskRecoveryQueryMixin:
             and attempt
             and not incident.get("decision")
             and owner["kind"] == "supervisor"
-            and incident_reason(meta) in RETRYABLE_REASONS
+            and _retryable({incident_reason(meta), *_incident_reasons(incident)})
             and all(item["remaining"] for item in budget.values())
         )
         if allowed:
@@ -1076,7 +1169,7 @@ class TaskRecoveryQueryMixin:
                 "retry_blocker": blocker,
                 "next_action": (
                     incident["next_action"] if incident.get("hold_escalated_at") is not None
-                    else _next_action(owner, incident["reason"], budget, blocker)
+                    else _next_action(owner, _incident_reasons(incident), budget, blocker)
                 ),
             }
         )
@@ -1123,7 +1216,7 @@ class TaskRecoveryQueryMixin:
             if ask_decision_id:
                 from src.asks.models import digest
                 owner = await self._recovery_owner(conn, task)
-                if digest(recovery_ask_meaning(task, incident, attempt, owner)) != ask_expected_meaning:
+                if digest(recovery_ask_meaning(task, incident, attempt, owner, meta)) != ask_expected_meaning:
                     raise ValueError("Recovery source meaning or owner changed since the human decision")
                 if owner["kind"] in {"integration_operation", "retired"}:
                     raise ValueError("Recovery is no longer owned by this supervisor")
@@ -1150,8 +1243,14 @@ class TaskRecoveryQueryMixin:
                     await self._clear_stopped_recovery_assignment_on(
                         conn, task, meta, attempt, incident, stopped_session,
                     )
-            elif not _incident_is_current(task, meta, attempt, incident_id):
+            elif not _incident_is_current(task, meta, attempt, incident):
                 raise ValueError("Task or execution attempt changed; incident is stale")
+            elif incident.get("reason") != incident_reason(meta, task):
+                # A decision, or a human packet, binds the recorded diagnosis.
+                raise ValueError(
+                    "Failure diagnosis changed; incident is stale until the recovery scan "
+                    "records the reclassification"
+                )
             if decision == "retry":
                 if task["status"] != TaskStatus.BLOCKED.value or attempt is None:
                     raise ValueError("Retry requires a BLOCKED task with a stopped execution attempt")
@@ -1312,7 +1411,7 @@ class TaskRecoveryQueryMixin:
             or attempt["agent_id"] != row["agent_id"]
             or attempt["id"] != incident.get("attempt_id")
             or attempt["session_started_at"] != row["started_at"]
-            or _incident_id(task, attempt, incident["reason"], meta) != incident["id"]
+            or _incident_id(task, attempt, _identity_reason(incident), meta) != incident["id"]
             or (row["lifecycle"] == "pool" and row["last_claim_epoch"] != task["claim_epoch"]
                 # The old release bug also erased last_claim_epoch. The task's
                 # own holder record plus the fenced incident can prove that case.
@@ -1490,6 +1589,13 @@ class TaskRecoveryQueryMixin:
         if not operator_release and incident_reason(meta) not in RETRYABLE_REASONS:
             raise ValueError(
                 "This failure requires operator review; automatic recovery is not allowed"
+            )
+        if not (operator_release or operator_handoff) and not _retryable(
+            _incident_reasons(incident)
+        ):
+            raise ValueError(
+                "This failure was diagnosed as not automatically retryable; "
+                "automatic recovery is not allowed"
             )
         held_pool_drain = (
             releasing_hold

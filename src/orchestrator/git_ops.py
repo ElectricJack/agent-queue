@@ -828,6 +828,35 @@ class GitOpsMixin:
                 )
         return ctx.repo is not None
 
+    async def _preserve_non_source_drafts(self, ctx: PipelineContext) -> bool:
+        """Refuse dirty document/no-code closes before automatic Git writes.
+
+        Review submission copies the draft to the vault but leaves the local
+        file intact. Publishing that duplicate as source would manufacture
+        delivery work and a PR requirement for a document-only task.
+        """
+        from src.deliverables import resolve_task_deliverables
+
+        if not ctx.workspace_path or not await self._task_uses_git(ctx):
+            return False
+        items = await resolve_task_deliverables(self.db, ctx.task)
+        review_only = bool(items) and all(item["kind"] == "review" for item in items)
+        if not review_only and not await self._task_produces_no_code(ctx):
+            return False
+        if await self.git.ahas_uncommitted_changes(ctx.workspace_path, strict=True) is not True:
+            return False
+        message = (
+            "Document-only/no-code task has uncommitted source-checkout files. "
+            "Drafts were preserved without committing or publishing them. "
+            "Submit the review to the vault, then move any local draft outside the "
+            "source checkout and retry close. A clean unchanged source branch needs "
+            "no source PR or CI; actual source changes require normal delivery."
+        )
+        ctx.verification_issues = [message]
+        ctx.verification_feedback = message
+        ctx.verification_retry_in_session = True
+        return True
+
     async def _vault_only_delivery(self, ctx: PipelineContext) -> bool:
         """Recognize an explicit vault-only task with a usable vault attachment.
 
@@ -1224,6 +1253,9 @@ class GitOpsMixin:
         """
         workspace = ctx.workspace_path
         task = ctx.task
+
+        if await self._preserve_non_source_drafts(ctx):
+            return PhaseResult.STOP
 
         # Skip verification if the agent exited with an error — bad git state
         # is a symptom, not the root cause.  Let normal error handling deal

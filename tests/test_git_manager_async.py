@@ -1065,7 +1065,9 @@ class TestBranchSourceIsNotShadowedByASameNamedTag:
 
         ops = GitOpsMixin()
         ops.git = mgr
+        ops.db = AsyncMock()
         ops._task_uses_git = AsyncMock(return_value=True)
+        ops._task_produces_no_code = AsyncMock(return_value=False)
         inspect = AsyncMock(wraps=mgr.areserved_paths_in_diff)
         mgr.areserved_paths_in_diff = inspect
         ctx = SimpleNamespace(

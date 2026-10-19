@@ -12524,6 +12524,38 @@
         "type": "object"
       }
     },
+    "integration_clear_retained_recovery": {
+      "name": "integration_clear_retained_recovery",
+      "description": "Authenticated hierarchical integration operational control.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "incident_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Incident Id"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "IntegrationClearRetainedRecoveryArgs",
+        "type": "object"
+      }
+    },
     "integration_close_delivered_pr": {
       "name": "integration_close_delivered_pr",
       "description": "Authenticated hierarchical integration operational control.",

@@ -3156,3 +3156,106 @@ def test_trust_manifest_path_is_deliverable_repository_content():
         ".github/agent-queue-integration.json\0.github/agent-queue-integration.example.json\0"
         ".aq/claim.json\0.codex/settings.json\0"
     ) == [".aq/claim.json", ".codex/settings.json"]
+
+
+async def test_clean_integrity_check_is_reused_only_while_store_is_unchanged(tmp_path, monkeypatch):
+    store = tmp_path / "store.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(store)], check=True)
+    loose = store / "objects" / "ab"
+    loose.mkdir(parents=True)
+    (loose / ("c" * 38)).write_bytes(b"x")
+    manager = GitManager()
+    runs = AsyncMock(return_value=b"")
+    monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
+
+    async def verify():
+        await manager._averify_retained_objects(
+            str(store), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+        )
+
+    await verify()
+    await verify()
+    assert runs.await_count == 1
+    os.utime(loose / ("c" * 38))  # Git freshening an existing object is not a write
+    await verify()
+    assert runs.await_count == 1
+    (loose / ("c" * 38)).write_bytes(b"")  # damage changes the store
+    await verify()
+    assert runs.await_count == 2
+    (loose / ("d" * 38)).write_bytes(b"y")  # a new object changes the store
+    await verify()
+    assert runs.await_count == 3
+    monkeypatch.setattr("src.git.manager._RETAINED_VERIFY_TTL_SECONDS", 0.0)
+    await verify()
+    assert runs.await_count == 4
+
+
+async def test_failed_integrity_check_is_never_reused(tmp_path, monkeypatch):
+    store = tmp_path / "store.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(store)], check=True)
+    manager = GitManager()
+    runs = AsyncMock(side_effect=GitError("retained Git integrity is unavailable"))
+    monkeypatch.setattr(manager, "_run_isolated_import_git", runs)
+    for _ in range(2):
+        with pytest.raises(GitError, match="integrity is unavailable"):
+            await manager._averify_retained_objects(
+                str(store), home=tmp_path, deadline=asyncio.get_running_loop().time() + 30,
+            )
+    assert runs.await_count == 2
+
+
+_STALE_GC_LOG = (
+    "fatal: Unable to read current working directory: No such file or directory\n"
+    "fatal: failed to run repack\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_isolated_origin_fetch_survives_stale_gc_log_and_never_runs_auto_gc(tmp_path):
+    work, source, destination = _origin_fetch_case(tmp_path)
+    manager = GitManager()
+    await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token"
+    )
+    # Every import crosses the auto-gc threshold, and a gc would run in the
+    # foreground, so one spawned by the import would consolidate the packs.
+    _git(["config", "gc.auto", "1"], destination)
+    _git(["config", "gc.autoPackLimit", "1"], destination)
+    _git(["config", "gc.autoDetach", "false"], destination)
+    _git(["config", "fetch.unpackLimit", "1"], destination)
+    packs = destination / ".git" / "objects" / "pack"
+
+    async def import_one(number):
+        tip = _commit_and_publish(work, source, f"after gc.log {number}\n")
+        before = sorted(packs.glob("*.pack"))
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination), source_url=source.as_uri(), token="local-test-token"
+        )
+        assert _git(["rev-parse", "refs/remotes/origin/main"], destination) == tip
+        # No gc consolidated the packs: the import only ever adds one.
+        assert set(before) < set(packs.glob("*.pack"))
+
+    for number in range(2):
+        await import_one(number)
+    # A detached gc that died in a deleted temporary HOME left its gc.log
+    # behind (git 2.43); every later `gc --auto` reports its fatal lines.
+    report = destination / ".git" / "gc.log"
+    report.write_text(_STALE_GC_LOG)
+    for number in range(2, 4):
+        await import_one(number)
+    assert report.read_text() == _STALE_GC_LOG
+
+
+def test_stale_gc_report_is_the_only_zero_exit_stderr_forgiven():
+    from src.git.manager import _without_stale_gc_report
+
+    report = (
+        b"warning: The last gc run reported the following. Please correct the root cause\n"
+        b"and remove .git/gc.log\n"
+        b"Automatic cleanup will not be performed until the file is removed.\n\n"
+        + _STALE_GC_LOG.encode()
+    )
+    assert _without_stale_gc_report(b"From source\n" + report) == b"From source\n"
+    genuine = b"fatal: bad object deadbeef\n"
+    assert _without_stale_gc_report(genuine + report) == genuine
+    assert _without_stale_gc_report(genuine) == genuine

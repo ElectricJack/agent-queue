@@ -152,6 +152,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_reevaluate_repair",
     "integration_release_owner",
     "integration_reserve_owner",
+    "integration_clear_retained_recovery",
     "integration_release_stale_owners",
     "integration_redrive_root",
     "integration_authorize_root",

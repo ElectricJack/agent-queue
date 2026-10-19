@@ -1025,6 +1025,15 @@ close uses the held claim and checkout proof; task-lifecycle close additionally
 requires the provider to confirm the writer stopped. Missing proof retains the
 attachment, regardless of harness or model.
 
+Retry preparation reclaims only the owner fence it observed. A newer attachment
+must remain untouched even when it belongs to the same task. An attachment already
+bound to the preparing session and workspace is reused; a pending handoff for that
+same preparation stays fenced and never initiates its own detach. A stopped pool
+session whose task binding was cleared can still prove its old handoff through its
+ended attempt and fresh provider confirmation. Recovery holds the owner, session,
+agent and workspace rows through checkout verification and detach, refuses reused
+identities, and accepts a fully unlocked slot and an idle or retired unbound agent.
+
 For a stranded `BLOCKED/session_close_hard_failure`, a project supervisor may
 preview `aq integration release-owner --task-id TASK_ID --dry-run`, then apply
 without `--dry-run`. The command requires a stopped session and fresh provider
@@ -1053,6 +1062,26 @@ No counter, gate or origin is reset.
 Incident `retry_allowed` and its next action reflect the execution-end and routing
 guards as well as the attention reason and remaining budgets. Provider liveness
 is always freshly confirmed when executing a recovery decision.
+
+A recovery incident identifies one failure generation: the stopped attempt (or,
+with no attempt, the durable failure transition) of one claim epoch. A later
+diagnosis of the **same** stopped attempt, such as a vetoed stale-binding unwind
+relabelling `context_thrash` as `claim_binding_stale`, is a *reclassification*,
+not a new failure. The scan keeps the incident id (hashed from the stored
+`identity_reason`), its pending or `hold` decision, `decided_at` and the
+provenance comment that proves it, and every budget and counter. It updates
+`reason`, appends one `{from, to, at}` entry to `reason_history`, writes one
+audit comment, and sends no new notification. Repeated scans of an unchanged
+diagnosis are idempotent. Automatic retry requires every diagnosis the incident
+ever recorded to be retryable, so a non-retryable failure is never relabelled as
+automatically recoverable. A recovery decision against a diagnosis the scan has
+not yet recorded is refused, and a prepared human packet pins the live diagnosis,
+so it goes stale (`ask.stale_source`) instead of transferring approval. An
+incident whose `retry` or `release` decision is already recorded is closed; a
+later diagnosis opens a new, undecided incident rather than inheriting it. A new
+attempt, a new claim epoch or a new no-attempt failure transition opens a new
+incident. Legacy incidents without `identity_reason` use their `reason`; no
+migration or hold clearing is needed.
 
 A recovery incident whose current decision is `hold` excludes its task from
 the pool claim frontier, named claims, and pool demand even if the task is

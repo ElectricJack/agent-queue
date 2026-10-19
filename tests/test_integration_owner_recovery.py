@@ -1222,6 +1222,62 @@ async def _pool_daemon(env, tmp_path, slot):
     return provider, registry, orchestrator, handler, cfg
 
 
+@pytest.mark.parametrize("legacy_intent", [False, True], ids=["canonical", "legacy-sleeping"])
+async def test_sleep_of_stopped_idle_pool_does_not_fence_owner_recovery(
+    env, tmp_path, monkeypatch, legacy_intent,
+):
+    """An unrelated stopped pool row used to fence this idle checkout forever."""
+    from src.sessions.provider import SessionHandle
+
+    tip = env.branch("aq/producer")
+    slot = await env.slot("slot", "aq/producer")
+    await env.task("producer", TaskStatus.READY)
+    await env.session("original", work_dir=slot)
+    await env.owner(
+        "owner", "aq/producer", "producer", session_id="original", workspace_id="ws-slot",
+    )
+    await env.session("writer", work_dir=slot, state="running", desired_state="running")
+    provider, _, orch, handler, _ = await _pool_daemon(env, tmp_path, slot)
+    await orch._terminate_pool_session(await env.db.get_session("writer"), reason="claim_loop_stalled")
+    stopped = await env.db.get_session("writer")
+    assert (stopped.state, stopped.desired_state) == ("stopped", "stopped")
+    if legacy_intent:
+        # The old public sleep control produced exactly this invalid pair.
+        await env.db.update_session("writer", desired_state="sleeping")
+        blocked = await handler.execute("integration_release_owner", {"task_id": "producer"})
+        assert blocked["outcomes"][0]["reason"] == "checkout_in_use", blocked
+        assert (await env.row("owner"))["fence_token"] == 3
+
+    task_before = await env.db.get_task("producer")
+    owner_before = await env.row("owner")
+    workspace_before = await env.db.get_workspace("ws-slot")
+    stop = AsyncMock(side_effect=AssertionError("sleep must never signal an ended instance"))
+    monkeypatch.setattr(provider, "stop", stop)
+    slept = await handler.execute("session_sleep", {"session_id": "writer"})
+    assert slept["success"] and slept["desired_state"] == "stopped", slept
+    current = await env.db.get_session("writer")
+    assert current == stopped
+    assert await env.db.get_task("producer") == task_before
+    assert await env.row("owner") == owner_before
+    assert await env.db.get_workspace("ws-slot") == workspace_before
+    stop.assert_not_awaited()
+    assert await provider.confirm_stopped(SessionHandle("n-writer", "fake", "tok-writer"))
+
+    # Normalizing intent grants no owner-release authority of its own.
+    assert (await env.row("owner"))["handoff_state"] == "attached"
+    preview = await handler.execute("integration_release_owner", {"task_id": "producer"})
+    assert preview["outcome"] == "released", preview
+    assert (await env.row("owner"))["fence_token"] == 3
+    released = await handler.execute(
+        "integration_release_owner", {"task_id": "producer", "dry_run": False},
+    )
+    assert released["outcome"] == "released", released
+    owner = await env.row("owner")
+    assert (owner["handoff_state"], owner["fence_token"]) == ("released", 4)
+    assert (await env.db.get_task("producer")).status is TaskStatus.READY
+    assert remote_sha(env.origin, "aq/producer") == tip
+
+
 async def _unprepared_writer(env, tmp_path, *, mode="train", phase="preparing"):
     """A retained failed preparation, still detached at the published default tip."""
     from src.database.tables import task_branch_origins, task_integration_checkpoints

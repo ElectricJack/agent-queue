@@ -44,6 +44,7 @@ from src.database.queries.hierarchy_queries import (
     open_epic_refresh_batches,
 )
 from src.database.queries.session_queries import _row_to_session
+from src.database.queries.ingest_hold import IngestHeld, not_ingest_held
 from src.database.queries.task_queries import (
     ManualPauseActive,
     TransitionResult,
@@ -75,6 +76,16 @@ from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, claimable_sources
 
 _frontier_child = tasks.alias("frontier_child")
 
+# Every claim builds the frontier predicates afresh. An alias proxies every
+# column (with its foreign keys) of its table, so creating these per call made
+# thousands of cyclic objects per claim and drove the gen2 collections that
+# formed the claim latency tail. Aliases are immutable; the builders share them.
+_URGENT_OPERATION = integration_repair_operations.alias("urgent_operation")
+_URGENT_STAGE = integration_repair_stages.alias("urgent_stage")
+_CLAIM_STACK_ORIGIN = task_branch_origins.alias("claim_stack_origin")
+_CLAIM_STACK_REPAIR = tasks.alias("claim_stack_repair")
+_CLAIM_STACK_COMPLETION = task_completion_records.alias("claim_stack_completion")
+
 #: Task statuses a pool claim can end in that no further close changes.
 SETTLED_POOL_CLAIM_STATUSES = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
 
@@ -88,8 +99,8 @@ ACCEPTED_CLOSE_KEY = "accepted_close"
 
 def active_train_repair_bindings():
     """Current active batch-repair delegate identities, independent of titles."""
-    operation = integration_repair_operations.alias("urgent_operation")
-    stage = integration_repair_stages.alias("urgent_stage")
+    operation = _URGENT_OPERATION
+    stage = _URGENT_STAGE
     return select(
         stage.c.repair_task_id, operation.c.id.label("operation_id"), operation.c.batch_id,
     ).select_from(stage.join(
@@ -128,6 +139,7 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         "dependency_blocked": tasks.c.is_blocked == 0,
         "already_assigned": tasks.c.assigned_agent_id.is_(None),
         "plan_subtask": tasks.c.is_plan_subtask == 0,
+        "ingest_held": not_ingest_held(),
         # Recovery decisions outlive status projection and daemon restarts.
         # retry_allowed is false for an accepted retry too; only hold blocks.
         "recovery_hold": ~exists(select(literal(1)).where(
@@ -489,9 +501,9 @@ def numeric_meta_value(column, *, default: str = "0"):
 
 
 def _claim_preparation_predicates():
-    origin = task_branch_origins.alias("claim_stack_origin")
-    repair = tasks.alias("claim_stack_repair")
-    completion = task_completion_records.alias("claim_stack_completion")
+    origin = _CLAIM_STACK_ORIGIN
+    repair = _CLAIM_STACK_REPAIR
+    completion = _CLAIM_STACK_COMPLETION
     latest_outcome = (
         select(completion.c.outcome).where(completion.c.task_id == repair.c.id)
         .order_by(completion.c.completed_at.desc()).limit(1).correlate(repair).scalar_subquery()
@@ -557,6 +569,7 @@ FRONTIER_PREDICATE_DETAILS = {
     "dependency_blocked": "is_blocked must be false",
     "already_assigned": "assigned_agent_id must be empty",
     "plan_subtask": "is_plan_subtask must be false",
+    "ingest_held": "member of ingestion batch {batch_id} awaiting fidelity review",
     "recovery_hold": "the supervisor recovery hold needs an explicit fenced release",
     "origin_not_materialized": (
         "materialized_origin_when_hierarchical(): requires a materialized origin in the "
@@ -633,6 +646,7 @@ class ClaimQueryMixin:
         async with self._engine.connect() as conn:
             row = (await conn.execute(
                 select(
+                    tasks.c.held_batch_id,
                     *(predicate.label(name) for name, predicate in predicates.items()),
                     *(predicate.label("display_" + name)
                       for name, predicate in display_predicates.items()),
@@ -651,7 +665,7 @@ class ClaimQueryMixin:
                     f"for {name} is unknown (snapshot_unavailable)"
                     if name in display_predicates and row["display_" + name]
                     else "Pool claim frontier excludes this READY task: "
-                    + FRONTIER_PREDICATE_DETAILS[name]
+                    + FRONTIER_PREDICATE_DETAILS[name].format(batch_id=row["held_batch_id"])
                 ),
                 "ref": task_id,
             }
@@ -756,6 +770,36 @@ class ClaimQueryMixin:
             return "active", record
         return "not_found", record
 
+    async def completed_claim_preparation_state(self, session_id: str, task_id: str):
+        """Read a deferred response's current session and task in one snapshot.
+
+        A refused preparation may have released its session's task binding, so
+        join the exact recorded task rather than ``sessions.task_id``.
+        """
+        stmt = (select(sessions, tasks)
+                .select_from(sessions.join(tasks, tasks.c.id == task_id))
+                .where(sessions.c.id == session_id))
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(stmt)).fetchone()
+        if row is None:
+            return None, None
+        mapping = row._mapping
+        return (_row_to_session({c.name: mapping[c] for c in sessions.c}),
+                self._row_to_task({c.name: mapping[c] for c in tasks.c}))
+
+    async def get_project_for_claim(self, project_id, *, conn):
+        """Read integration demand with the existing admission-loop project read."""
+        from src.integration.admission import project_admission_required
+
+        row = (await conn.execute(select(
+            projects, project_admission_required(projects).label("source_admission"),
+        ).where(projects.c.id == project_id))).mappings().one_or_none()
+        if row is None:
+            return None
+        project = self._row_to_project(row)
+        project._source_admission_required = row["source_admission"]
+        return project
+
     async def claim_preparation_state(
         self, session_id: str, task_id: str, claim_epoch: int, *, conn=None
     ):
@@ -767,8 +811,10 @@ class ClaimQueryMixin:
         another projects SELECT without reusing the admission loop's old row.
         An absent project is distinct from a stale preparation fence.
         """
+        from src.integration.admission import source_admission_required
+
         stmt = (
-            select(projects)
+            select(projects, source_admission_required(tasks).label("source_admission"))
             .select_from(tasks.join(sessions, sessions.c.task_id == tasks.c.id)
                          .outerjoin(projects, projects.c.id == tasks.c.project_id))
             .where(
@@ -785,7 +831,10 @@ class ClaimQueryMixin:
         else:
             async with self._engine.connect() as owned:
                 row = (await owned.execute(stmt)).mappings().fetchone()
-        return (row is not None, self._row_to_project(row) if row and row["id"] else None)
+        project = self._row_to_project(row) if row and row["id"] else None
+        if project is not None:
+            project._source_admission_required = row["source_admission"]
+        return row is not None, project
 
     async def release_claim_slot(self, conn, session_id: str) -> None:
         await conn.execute(
@@ -874,7 +923,7 @@ class ClaimQueryMixin:
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None:
         """Fence + epoch bump + status write in **one** statement (spec §15).
 
-        The fence (``READY``, unblocked, unassigned) rides the same UPDATE as
+        The fence (``READY``, unblocked, unassigned, no ingestion hold) rides the same UPDATE as
         the epoch bump and the ``IN_PROGRESS`` write, so exactly one racer
         can match it; a matched row proves the pre-state, which is what lets
         ``_apply_transition`` skip its pre-read (``assume_pre_state``).  The
@@ -921,6 +970,7 @@ class ClaimQueryMixin:
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.is_blocked == 0,
                 tasks.c.assigned_agent_id.is_(None),
+                not_ingest_held(),
                 ~container_flag_exists(),
                 ~exists(
                     select(literal(1)).where(
@@ -1124,6 +1174,7 @@ class ClaimQueryMixin:
         Task identity is immutable here, so FOR NO KEY UPDATE excludes status
         changes while permitting the slot reset's separate salvage transaction
         to take FK key-share locks when inserting task context or metadata.
+        The returned hold predicate observes the locked row without another query.
         """
         holder = (await conn.execute(
             select(sessions.c.id).where(
@@ -1137,7 +1188,8 @@ class ClaimQueryMixin:
         if holder is None:
             return None
         return (await conn.execute(
-            select(tasks.c.id, tasks.c.branch_name).where(
+            select(tasks.c.id, tasks.c.branch_name,
+                   not_ingest_held().label("not_ingest_held")).where(
                 tasks.c.id == task_id,
                 tasks.c.status == TaskStatus.IN_PROGRESS.value,
                 tasks.c.claim_epoch == epoch,
@@ -1149,12 +1201,15 @@ class ClaimQueryMixin:
         branch_name: str | None = None,
         clear_preparation_metadata: bool = False,
         admission=None,
+        ordinary_admission_guard: bool = False,
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
         PostgreSQL's ``RETURNING`` supplies the response row without a re-read.
         All writes follow the session/task locks and admission guards; a
         rejected activation changes neither the branch nor diagnostics.
+        An ingestion hold added during preparation raises ``IngestHeld`` under
+        the task lock, so the command can release preparation with that reason.
 
         *branch_name* records the slot reset's branch in ``tasks.branch_name``
         in the activation transaction. A failed preparation leaves no branch
@@ -1174,6 +1229,8 @@ class ClaimQueryMixin:
             claim = await self.lock_claim_for_activation(c, session_id, task_id, epoch=epoch)
             if claim is None:
                 return None
+            if not claim.not_ingest_held:
+                raise IngestHeld()
             if admission is not None and (
                 not await admission.matches(conn=c, lock=True, task_id=task_id)
                 or (await c.execute(select(blocked_predicate()).where(
@@ -1205,8 +1262,22 @@ class ClaimQueryMixin:
                     failed_preparation=None,
                 )
             )
+            if ordinary_admission_guard:
+                from src.integration.admission import (
+                    OrdinaryAdmissionChanged,
+                    ordinary_activation_guard,
+                )
+
+                stmt = stmt.where(
+                    ordinary_activation_guard(task_id),
+                    apply_label_filters(select(tasks.c.id).where(
+                        tasks.c.id == task_id, ~blocked_predicate(),
+                    ), exclude_hold=True).exists(),
+                )
             row = (await c.execute(stmt.returning(*sessions.c))).mappings().fetchone()
             if row is None:
+                if ordinary_admission_guard:
+                    raise OrdinaryAdmissionChanged()
                 return None
             # A claim only becomes usable after preparation has succeeded and
             # this session row has atomically moved to ``active``.  Clear an
@@ -1498,7 +1569,9 @@ class ClaimQueryMixin:
     async def _after_release(self, out: TransitionResult) -> None:
         await self.log_blocked_flips(out.flipped)
         await self._notify_settled(out.settled)
-        await self._notify_ready(out.ready)
+        # _apply_transition records these through _note_frontier_entry, whose
+        # INSERT SELECT already excludes ingestion-held tasks on the write connection.
+        await self._notify_ready(out.ready, frontier_checked=True)
 
     async def release_claim(
         self,
