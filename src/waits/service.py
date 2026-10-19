@@ -11,17 +11,23 @@ from src.waits.dispatcher import WakeDispatcher
 from src.waits.graph import recompute_from
 from src.waits.source_locking import lock_database_source
 from src.waits.decisions import WaitDecisions
+from src.waits.lifecycle import WaitLifecycle
+from src.waits.scheduler import SchedulerWaitService
 
 
 class WaitService:
     def __init__(self, orch, *, clock=time.time, owner=None, connect=None):
         self.orch = orch
+        self.scheduler = SchedulerWaitService(orch, clock=clock)
+        orch.wait_scheduler_service = self.scheduler
         self.registry = getattr(orch, "wait_registry", None) or build_registry(
-            clock=clock, resource_reader=getattr(orch, "wait_resource_reader", None),
+            clock=clock, resource_reader=getattr(orch, "wait_resource_reader", None)
+            or self.scheduler.reader,
         )
         self.listener = WaitSourceListener(self, clock=clock, owner=owner, connect=connect)
         self.timers = WaitTimerDriver(self, clock=clock)
         self.decisions = WaitDecisions(self, clock=clock)
+        self.lifecycle = WaitLifecycle(self, clock=clock)
         self.registry.loop_handler = self.loop_escalation
         self._dispatcher = WakeDispatcher(
             self.registry, clock=clock,
@@ -35,7 +41,9 @@ class WaitService:
             handlers = orch.wait_v2_handlers = {}
         for name, callback in (("wait_deadline_fire", self.timers.fire),
                                ("wait_source_commit", self.source_commit),
-                               ("wait_decide", self.decisions.decide)):
+                               ("wait_decide", self.decisions.decide),
+                               ("wait_register", self.lifecycle.register),
+                               ("wait_sleep_decide", self.lifecycle.sleep_decide)):
             if name in handlers:
                 raise ValueError(f"duplicate wait lifecycle owner: {name}")
             handlers[name] = callback
@@ -44,7 +52,14 @@ class WaitService:
             deadlines = orch.wait_deadline_handlers = {}
         if "escalation" in deadlines:
             raise ValueError("duplicate wait lifecycle owner: escalation deadline")
-        deadlines["escalation"] = self.decisions.raise_escalation
+        deadlines["escalation"] = self.escalation_deadline
+        deadlines["reservation"] = self.scheduler.deadline_locked
+        deadlines["transition"] = self.lifecycle.hibernate.transition
+
+    async def escalation_deadline(self, conn, deadline, wait, *, now, handler):
+        callback = (self.scheduler.deadline_locked if wait["origin"] == "scheduler"
+                    else self.decisions.raise_escalation)
+        return await callback(conn, deadline, wait, now=now, handler=handler)
 
     @property
     def enabled(self):
@@ -81,6 +96,7 @@ class WaitService:
 
     async def tick(self):
         if self.enabled:
+            await self.lifecycle.tick()
             return await self.listener.tick()
         return False
 

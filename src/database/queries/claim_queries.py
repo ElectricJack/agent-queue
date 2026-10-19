@@ -1041,6 +1041,84 @@ class ClaimQueryMixin:
             return None
         return self._row_to_task(out.row)
 
+    async def park_task_for_continuation(
+        self, conn, *, task_id, wait_id, continuation_id, generation, session_id,
+        instance_token, claim_epoch, saved_head, now, detached_workspace_id=None,
+    ):
+        """Retire the proven stopped writer without returning work to READY.
+
+        The service holds the task-control lock through stop/save and calls this
+        only after fresh process death and guarded publication proofs. Recheck
+        every persisted identity here. Pause wins; no route or profile changes.
+        """
+        from src.database.tables import continuations, integration_branch_owners, wait_records
+        from src.waits.conditions import WaitError
+        from src.waits.sources import execute_task_status_mutation
+
+        task = (await conn.execute(select(tasks).where(
+            tasks.c.id == task_id,
+        ).with_for_update())).mappings().first()
+        wait = (await conn.execute(select(wait_records).where(
+            wait_records.c.id == wait_id,
+        ).with_for_update())).mappings().first()
+        intent = (await conn.execute(select(continuations).where(
+            continuations.c.id == continuation_id,
+        ).with_for_update())).mappings().first()
+        session = (await conn.execute(select(sessions).where(
+            sessions.c.id == session_id,
+        ).with_for_update())).mappings().first()
+        if not all((task, wait, intent, session)) or (
+            task["claim_epoch"] != claim_epoch or wait["claim_epoch"] != claim_epoch
+            or task["status"] not in {"IN_PROGRESS", "WAITING", "PAUSED"}
+            or task["assigned_agent_id"] != session["agent_id"]
+            or session["instance_token"] != instance_token or session["task_id"] != task_id
+            or wait["owner_id"] != task_id or wait["session_id"] != session_id
+            or intent["task_id"] != task_id or intent["wait_id"] != wait_id
+            or intent["suspension_generation"] != generation or intent["stopped_at"] is not None
+            or task["branch_name"] != intent["branch"] or not saved_head
+        ):
+            raise WaitError("continuation.stale_generation", "park ownership changed")
+        paused = task["status"] == "PAUSED"
+        resolved = wait["outcome"] != "pending"
+        owners = (await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.owner_id == task_id,
+            integration_branch_owners.c.session_id == session_id,
+            integration_branch_owners.c.handoff_state != "released",
+        ).with_for_update())).mappings().all()
+        for owner in owners:
+            if (owner["handoff_state"] != "attached" or not detached_workspace_id
+                    or owner["workspace_id"] != detached_workspace_id):
+                raise WaitError("continuation.stop_uncertain", "branch detach proof changed")
+            # Retain the domain owner's fence and branch reservation. Only its
+            # stopped process attachment is retired; no transfer is authorized.
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == owner["id"],
+            ).values(handoff_state="reserved", session_id=None, workspace_id=None,
+                     confirmed_workspace_id=detached_workspace_id, updated_at=now))
+        await execute_task_status_mutation(conn, update(tasks).where(
+            tasks.c.id == task_id, tasks.c.claim_epoch == claim_epoch,
+        ).values(status="PAUSED" if paused else "RESUME_PENDING" if resolved else "HIBERNATED",
+                 assigned_agent_id=None, claim_epoch=claim_epoch + 1,
+                 lease_expires_at=None, updated_at=now))
+        await conn.execute(update(continuations).where(
+            continuations.c.id == continuation_id,
+        ).values(saved_head=saved_head, stopped_at=now,
+                 resume_state="held" if paused else "queued" if resolved else "sleeping",
+                 hold_reason="paused" if paused else None,
+                 version=intent["version"] + 1))
+        await conn.execute(update(sessions).where(
+            sessions.c.id == session_id, sessions.c.instance_token == instance_token,
+        ).values(state="stopped", desired_state="stopped", end_reason="hibernated",
+                 claim_phase=None, task_id=None, ended_at=now))
+        await conn.execute(update(agents).where(
+            agents.c.id == session["agent_id"], agents.c.current_task_id == task_id,
+        ).values(state="IDLE", current_task_id=None))
+        await self._upsert_meta_many(task_id, {CLAIMED_BY_SESSION_KEY: ""}, conn=conn)
+        await self.log_event("continuation.suspended", task["project_id"], task_id,
+                             payload=json.dumps({"continuation_id": continuation_id,
+                                                 "generation": generation}), conn=conn)
+        return claim_epoch + 1
+
     async def bump_claim_epoch(self, task_id: str, *, conn=None) -> int:
         async def _run(c):
             changed = await c.execute(

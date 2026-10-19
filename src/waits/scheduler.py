@@ -196,7 +196,6 @@ class SchedulerWaitService:
     async def deadline(self, args, *, principal, scope=None, handler=None):
         self.authorize(principal)
         now = self.clock() if args.get("now") is None else args["now"]
-        event_payload = None
         async with self.db._engine.begin() as conn:
             initial = (await conn.execute(select(wait_records).where(
                 wait_records.c.id == args["wait_id"], wait_records.c.origin == "scheduler",
@@ -204,13 +203,13 @@ class SchedulerWaitService:
             if not initial:
                 return {"success": False, "error_code": "wait.unavailable"}
             await lock_graph(conn)
-            task = (await conn.execute(select(tasks).where(
+            (await conn.execute(select(tasks).where(
                 tasks.c.id == initial["owner_id"],
             ).with_for_update())).mappings().first()
             row = (await conn.execute(select(wait_records).where(
                 wait_records.c.id == initial["id"],
             ).with_for_update())).mappings().one()
-            reservation = (await conn.execute(select(admission_reservations).where(
+            (await conn.execute(select(admission_reservations).where(
                 admission_reservations.c.task_id == row["owner_id"],
                 admission_reservations.c.state.in_(("pending", "overdue", "granted")),
             ).with_for_update())).mappings().first()
@@ -223,73 +222,82 @@ class SchedulerWaitService:
             ).with_for_update())).mappings().first()
             if not due:
                 return {"success": True, "fired": False}
-            owns = task and await conn.scalar(select(tasks.c.id).where(
-                tasks.c.id == task["id"], tasks.c.id.in_(select(branch_holders().subquery().c.task_id)),
-            ))
-            if (not owns or task["status"] != "READY" or task["assigned_agent_id"] is not None
-                    or task["claim_epoch"] != row["claim_epoch"] or row["outcome"] != "pending"
-                    or row["version"] != args["generation"]):
-                await conn.execute(update(wait_deadlines).where(
-                    wait_deadlines.c.id == due["id"],
-                ).values(cancelled_at=now))
-                return {"success": True, "fired": False}
-            observation = await self.reader.observe_task(conn, task["id"])
-            condition = Condition.from_record(row["condition"])
-            if (not observation or observation.identity(condition.parameters["blocker"])
-                    != condition.parameters["identity"]):
-                return {"success": False, "error_code": "wait.source_unresolved"}
-            seconds = self.orchestrator.config.wait_policy.branch_admission_deadline_seconds
-            if args["deadline_type"] == "reservation":
-                if reservation is None:
-                    await conn.execute(insert(admission_reservations).values(
-                        id=str(uuid.uuid4()), project_id=task["project_id"], task_id=task["id"],
-                        scope=observation.binding["scope"], effective_priority=task["effective_priority"],
-                        provenance="branch_blocker", deadline_at=now + seconds,
-                        state="pending", created_at=now,
-                    ))
-                    await conn.execute(pg_insert(wait_deadlines).values(
-                        id=str(uuid.uuid4()), wait_id=row["id"], deadline_type="escalation",
-                        generation=args["generation"], due_at=now + seconds,
-                    ).on_conflict_do_nothing(constraint="uq_wait_deadlines_wait_type_gen"))
-            elif args["deadline_type"] == "escalation" and reservation is not None:
-                incident = f"branch-admission:{reservation['id']}"
-                escalation, created = await self.db.create_escalation(
-                    conn=conn, id=str(uuid.uuid4()), project_id=task["project_id"],
-                    task_id=task["id"], task_title=task["title"], task_status=task["status"],
-                    source_kind="wait", source_identity=incident, incident_key=incident,
-                    supervisor_owner=f"supervisor-{task['project_id']}", severity="medium",
-                    summary="A branch holder has not received its reserved admission slot",
-                    investigation=f"Wait {row['id']}; reservation {reservation['id']}",
-                    decision_requested="Inspect admission constraints and unblock the branch holder",
-                    now=now,
-                )
-                if created:
-                    await conn.execute(insert(wait_escalations).values(
-                        id=str(uuid.uuid4()), wait_id=row["id"], generation=args["generation"],
-                        escalation_id=escalation["id"], raised_at=now,
-                        original_age_seconds=now - row["created_at"],
-                    ))
-                    event_payload = {
-                        "wait_id": row["id"], "project_id": task["project_id"],
-                        "task_id": task["id"], "generation": args["generation"],
-                        "escalation_id": escalation["id"],
-                    }
-                    await self.db.log_event("wait.escalated", task["project_id"], task["id"],
-                                            payload=canonical(event_payload), conn=conn)
-                await conn.execute(update(admission_reservations).where(
-                    admission_reservations.c.id == reservation["id"],
-                ).values(state="overdue"))
-            else:
-                return {"success": False, "error_code": "wait.unavailable"}
+            result = await self.deadline_locked(conn, due, row, now=now, handler=handler)
+        return result
+
+    async def deadline_locked(self, conn, due, row, *, now, handler):
+        """Compose with the listener's lease/task/wait/deadline transaction."""
+        if not enabled(self.orchestrator.config):
+            raise WaitError("wait.disabled", "scheduler waits are disabled")
+        task = (await conn.execute(select(tasks).where(
+            tasks.c.id == row["owner_id"],
+        ).with_for_update())).mappings().first()
+        reservation = (await conn.execute(select(admission_reservations).where(
+            admission_reservations.c.task_id == row["owner_id"],
+            admission_reservations.c.state.in_(("pending", "overdue", "granted")),
+        ).with_for_update())).mappings().first()
+        event_payload = None
+        owns = task and await conn.scalar(select(tasks.c.id).where(
+            tasks.c.id == task["id"], tasks.c.id.in_(select(branch_holders().subquery().c.task_id)),
+        ))
+        if (not owns or task["status"] != "READY" or task["assigned_agent_id"] is not None
+                or task["claim_epoch"] != row["claim_epoch"] or row["outcome"] != "pending"
+                or row["version"] != due["generation"]):
             await conn.execute(update(wait_deadlines).where(
                 wait_deadlines.c.id == due["id"],
-            ).values(fired_at=now))
-        if event_payload is not None:
-            try:
-                await self.orchestrator.bus.emit("wait.escalated", event_payload)
-            except Exception:
-                # The durable event and supervisor delivery are already committed.
-                logger.warning("wait escalation event delivery failed", exc_info=True)
+            ).values(cancelled_at=now))
+            return {"success": True, "fired": False}
+        observation = await self.reader.observe_task(conn, task["id"])
+        condition = Condition.from_record(row["condition"])
+        if (not observation or observation.identity(condition.parameters["blocker"])
+                != condition.parameters["identity"]):
+            return {"success": False, "error_code": "wait.source_unresolved"}
+        seconds = self.orchestrator.config.wait_policy.branch_admission_deadline_seconds
+        if due["deadline_type"] == "reservation":
+            if reservation is None:
+                await conn.execute(insert(admission_reservations).values(
+                    id=str(uuid.uuid4()), project_id=task["project_id"], task_id=task["id"],
+                    scope=observation.binding["scope"], effective_priority=task["effective_priority"],
+                    provenance="branch_blocker", deadline_at=now + seconds,
+                    state="pending", created_at=now,
+                ))
+                await conn.execute(pg_insert(wait_deadlines).values(
+                    id=str(uuid.uuid4()), wait_id=row["id"], deadline_type="escalation",
+                    generation=due["generation"], due_at=now + seconds,
+                ).on_conflict_do_nothing(constraint="uq_wait_deadlines_wait_type_gen"))
+        elif due["deadline_type"] == "escalation" and reservation is not None:
+            incident = f"branch-admission:{reservation['id']}"
+            escalation, created = await self.db.create_escalation(
+                conn=conn, id=str(uuid.uuid4()), project_id=task["project_id"],
+                task_id=task["id"], task_title=task["title"], task_status=task["status"],
+                source_kind="wait", source_identity=incident, incident_key=incident,
+                supervisor_owner=f"supervisor-{task['project_id']}", severity="medium",
+                summary="A branch holder has not received its reserved admission slot",
+                investigation=f"Wait {row['id']}; reservation {reservation['id']}",
+                decision_requested="Inspect admission constraints and unblock the branch holder",
+                now=now,
+            )
+            if created:
+                await conn.execute(insert(wait_escalations).values(
+                    id=str(uuid.uuid4()), wait_id=row["id"], generation=due["generation"],
+                    escalation_id=escalation["id"], raised_at=now,
+                    original_age_seconds=now - row["created_at"],
+                ))
+                event_payload = {
+                    "wait_id": row["id"], "project_id": task["project_id"],
+                    "task_id": task["id"], "generation": due["generation"],
+                    "escalation_id": escalation["id"],
+                }
+                await self.db.log_event("wait.escalated", task["project_id"], task["id"],
+                                        payload=canonical(event_payload), conn=conn)
+            await conn.execute(update(admission_reservations).where(
+                admission_reservations.c.id == reservation["id"],
+            ).values(state="overdue"))
+        else:
+            return {"success": False, "error_code": "wait.unavailable"}
+        await conn.execute(update(wait_deadlines).where(
+            wait_deadlines.c.id == due["id"],
+        ).values(fired_at=now))
         return {"success": True, "fired": True}
 
 
@@ -297,7 +305,7 @@ async def scheduler_tick(handler):
     o = getattr(handler, "orchestrator", None)
     if o is None or not enabled(getattr(o, "config", None)):
         return
-    service = SchedulerWaitService(o)
+    service = getattr(o, "wait_scheduler_service", None) or SchedulerWaitService(o)
     handlers = getattr(o, "wait_v2_handlers", None)
     if handlers is None:
         handlers = o.wait_v2_handlers = {}

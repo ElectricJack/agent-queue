@@ -34,5 +34,12 @@ async def fence_owner(conn, wait, task, *, parked_required=False):
     else:
         scope = await verify_owner(conn, scope)
         if parked_required and wait["sleep_decision"] == "hibernate":
-            raise WaitError("wait.unavailable", "hibernation transition is not parked")
+            continuation = (await conn.execute(select(continuations).where(
+                continuations.c.wait_id == wait["id"],
+                continuations.c.task_id == wait["owner_id"],
+                continuations.c.resume_state == "sleeping",
+                continuations.c.stopped_at.is_(None),
+            ).with_for_update())).mappings().first()
+            if continuation is None:
+                raise WaitError("wait.unavailable", "hibernation intent is not persisted")
     return scope, continuation

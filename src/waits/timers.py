@@ -95,7 +95,7 @@ class WaitTimerDriver:
             subject = (await conn.execute(select(wait_records).where(
                 wait_records.c.id == args["wait_id"],
             ))).mappings().first()
-            if subject and subject["owner_kind"] == "task":
+            if subject and subject["owner_kind"] in {"task", "scheduler"}:
                 await conn.execute(select(tasks.c.id).where(
                     tasks.c.id == subject["owner_id"],
                 ).with_for_update())

@@ -38,6 +38,15 @@ def refusal(code, message, **details):
 
 
 class WaitV2CommandsMixin:
+    async def _wait_mutation_fence(self, name, principal, *, mutating):
+        if (not mutating or not self._wait_v2_enabled() or principal is None
+                or principal.kind != PrincipalKind.SESSION):
+            return None
+        from src.waits.fencing import mutation_fence
+
+        async with self.db._engine.connect() as conn:
+            return await mutation_fence(conn, name, principal)
+
     async def wait_reroute_target(self, project_id, target):
         """Keep routing policy and command dependencies out of the waits package."""
         if not self._validate_routing_class(target):

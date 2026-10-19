@@ -190,6 +190,11 @@ class WakeDispatcher:
             await conn.execute(update(wait_records).where(wait_records.c.id == row["id"]).values(
                 cleared_at=now,
             ))
+        elif continuation and continuation["stopped_at"] is None:
+            # The outcome commits once while the retiring writer still owns the
+            # slot. Park observes it and queues exactly this generation. Never
+            # deliver into a process which the stop transaction may be killing.
+            pass
         elif continuation:
             await conn.execute(update(continuations).where(
                 continuations.c.id == continuation["id"],

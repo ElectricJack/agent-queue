@@ -18449,7 +18449,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:09cc0bea2e470709b3eafbbc7bf560a328745cf183adf6ecf71f7434076eaf08",
+      "digest": "sha256:f0b3e15dd288ae0be09b8a3d0ecdb420f68849a263ee7e6245932918ded7d2df",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -18465,6 +18465,8 @@
         "src.prime.hook_envelopes",
         "src.profiles.capabilities",
         "src.waits.conditions",
+        "src.waits.fencing",
+        "src.waits.hibernate",
         "src.waits.registry"
       ],
       "markers": [

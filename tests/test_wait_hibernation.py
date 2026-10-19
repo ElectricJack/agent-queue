@@ -434,3 +434,136 @@ def test_summary_file_preserves_exact_newlines(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert calls[0]["summary"] == "goal\r\nnext\r\n"
+
+
+async def park(env, **overrides):
+    values = dict(task_id='owner', wait_id=env.wait_id, continuation_id='c', generation=1,
+                  session_id='s', instance_token='token', claim_epoch=1,
+                  saved_head='a' * 40, now=NOW + 20)
+    values.update(overrides)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            branch_name='aq/owner'))
+        return await env.db.park_task_for_continuation(conn, **values)
+
+
+async def test_park_fences_old_writer_without_returning_to_frontier(env):
+    assert await park(env) == 2
+    task = await env.db.get_task('owner')
+    session = await env.db.get_session('s')
+    assert task.status.value == 'HIBERNATED'
+    assert task.assigned_agent_id is None and task.claim_epoch == 2
+    assert task.branch_name == 'aq/owner'
+    assert session.state == session.desired_state == 'stopped'
+    assert session.end_reason == 'hibernated' and session.task_id is None
+    row = await intent(env)
+    assert row['resume_state'] == 'sleeping' and row['saved_head'] == 'a' * 40
+    with pytest.raises(WaitError):
+        await park(env)
+
+
+@pytest.mark.parametrize('change', [dict(generation=2), dict(instance_token='new'),
+                                    dict(claim_epoch=2), dict(saved_head=None)])
+async def test_park_refuses_changed_identity_and_missing_publication(env, change):
+    with pytest.raises(WaitError):
+        await park(env, **change)
+    assert (await env.db.get_task('owner')).claim_epoch == 1
+    assert (await env.db.get_session('s')).task_id == 'owner'
+    assert (await intent(env))['stopped_at'] is None
+
+
+async def test_pause_wins_when_park_commits(env):
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(status='PAUSED'))
+    await park(env)
+    assert (await env.db.get_task('owner')).status.value == 'PAUSED'
+    row = await intent(env)
+    assert row['resume_state'] == 'held' and row['hold_reason'] == 'paused'
+
+
+async def test_outcome_during_stop_queues_only_after_park(env):
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(wait_records).where(wait_records.c.id == env.wait_id).values(
+            outcome='satisfied', resolved_at=NOW + 10, result_ref='task:source'))
+    await park(env)
+    assert (await env.db.get_task('owner')).status.value == 'RESUME_PENDING'
+    assert (await intent(env))['resume_state'] == 'queued'
+
+
+async def test_suspension_fence_is_exact_session_bound(env):
+    from src.waits.fencing import mutation_fence
+
+    principal = SimpleNamespace(session_id='s', session_instance_token='token')
+    async with env.db._engine.connect() as conn:
+        assert (await mutation_fence(conn, 'task_close', principal))['error_code'] == 'wait.suspending'
+        assert await mutation_fence(conn, 'wait_checkpoint', principal) is None
+        foreign = SimpleNamespace(session_id='other', session_instance_token='other')
+        assert await mutation_fence(conn, 'task_close', foreign) is None
+
+
+async def test_begin_suspension_is_idempotent_and_binds_registration_cursor(env):
+    from sqlalchemy import delete
+    from src.waits.hibernate import begin_suspension, locked_suspension
+
+    async with env.db._engine.begin() as conn:
+        await conn.execute(delete(continuations))
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(branch_name='aq/owner'))
+        task = (await conn.execute(select(tasks).where(tasks.c.id == 'owner'))).mappings().one()
+        wait = (await conn.execute(select(wait_records))).mappings().one()
+        first = await begin_suspension(conn, wait, task, now=NOW, budget=120)
+        second = await begin_suspension(conn, wait, task, now=NOW + 10, budget=120)
+        assert first == second
+        assert first['held_cursor_seq'] == wait['decision_inputs']['delivery']['held_cursor_seq']
+        _, _, current = await locked_suspension(conn, env.wait_id)
+        assert current['suspension_generation'] == 1
+
+
+@pytest.mark.parametrize('failure', [None, 'push', 'stop', 'detach'])
+async def test_suspend_retains_checkout_until_stop_push_and_detach_proven(env, monkeypatch, failure):
+    from src.waits.hibernate import HibernationTransaction
+
+    await capture(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == 'owner').values(
+            branch_name='aq/owner', status='WAITING'))
+    session = await env.db.get_session('s')
+    workspace = SimpleNamespace(id='ws', workspace_path=session.work_dir, is_slot=False)
+    monkeypatch.setattr(env.db, 'get_workspace_for_task', AsyncMock(return_value=workspace))
+    monkeypatch.setattr(env.db, 'get_project', AsyncMock(return_value=SimpleNamespace(
+        integration_repository_id='repo')))
+    monkeypatch.setattr(env.db, 'get_repo', AsyncMock(return_value=SimpleNamespace(
+        url='remote', default_branch='main')))
+    provider = SimpleNamespace(stop=AsyncMock(), confirm_instance_stopped=AsyncMock(
+        return_value=failure != 'stop'), process_alive=AsyncMock(return_value=False))
+    saved = SimpleNamespace(status='failed' if failure == 'push' else 'pushed',
+                            commit='a' * 40, error='push failed')
+    save = AsyncMock(return_value=saved)
+    detach = AsyncMock(return_value=failure != 'detach')
+    monkeypatch.setattr('src.orchestrator.stranded_work.save_wip_to_task_branch', save)
+    monkeypatch.setattr(
+        'src.orchestrator.workspace_attachments.detach_workspace_for_integration_handoff', detach)
+    monkeypatch.setattr('src.waits.hibernate.remove_claim_file_if_matches', lambda *a: True)
+    orch = SimpleNamespace(
+        db=env.db, config=SimpleNamespace(wait_policy=SimpleNamespace(
+            transition_budget_seconds=0.02)), _task_control_lock=lambda _: asyncio.Lock(),
+        session_providers=SimpleNamespace(create=lambda *a: provider),
+        session_reconciler=SimpleNamespace(_process_names=lambda _: ('codex',)),
+        git=SimpleNamespace(resolve_commit_identity=lambda _: None), bus=None, _git_mutex=None,
+        token_store=SimpleNamespace(revoke_session=AsyncMock()),
+        _release_workspace_and_cleanup=AsyncMock(),
+    )
+    handler = SimpleNamespace(wait_escalation_create=AsyncMock(return_value={'success': True}))
+    driver = HibernationTransaction(SimpleNamespace(orch=orch), clock=lambda: NOW + 1)
+    result = await driver.advance(env.wait_id, handler=handler)
+    if failure:
+        assert result['held']
+        assert (await env.db.get_task('owner')).claim_epoch == 1
+        orch._release_workspace_and_cleanup.assert_not_awaited()
+        orch.token_store.revoke_session.assert_not_awaited()
+        assert (await intent(env))['stopped_at'] is None
+    else:
+        assert result['parked']
+        assert (await env.db.get_task('owner')).status.value == 'HIBERNATED'
+        orch._release_workspace_and_cleanup.assert_awaited_once_with(workspace)
+        orch.token_store.revoke_session.assert_awaited_once_with('s')
+        assert (await intent(env))['facts']['workspace_released_at'] == NOW + 1
