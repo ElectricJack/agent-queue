@@ -2892,7 +2892,7 @@
         "document-reviews"
       ],
       "default_arm": true,
-      "digest": "sha256:4d1e9756224c3f9652bdd90a3a71ceb86b3f1c2bdbd144fca45aec0a350db65f",
+      "digest": "sha256:1a40aa4ee0d3e9df661517f6d6cb5111fb8331103d39dc650f71d7ed20b3160b",
       "imports": [
         "src.api",
         "src.api.auth",
@@ -2903,8 +2903,10 @@
         "src.api.models.ask",
         "src.api.scope",
         "src.api.websocket",
+        "src.asks.delivery",
         "src.commands.contracts",
         "src.commands.contracts.ask",
+        "src.commands.contracts.models",
         "src.mcp_registration",
         "src.tools.definitions"
       ],

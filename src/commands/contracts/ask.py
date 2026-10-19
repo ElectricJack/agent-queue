@@ -28,10 +28,16 @@ from src.commands.principal import principal_context
 
 GATEWAY_COMMANDS = frozenset({"ask_intake", "ask_button"})
 OPERATOR_COMMANDS = frozenset(
-    {"ask_reconcile", "ask_cutover", "ask_retry_operation", "ask_repair_delivery"}
+    {
+        "ask_reconcile",
+        "ask_cutover",
+        "ask_cutover_status",
+        "ask_retry_operation",
+        "ask_repair_delivery",
+    }
 )
 SUPERVISOR_COMMANDS = frozenset({"ask_apply_input", "ask_discussion_reply", "ask_update_context"})
-READ_COMMANDS = frozenset({"ask_list", "ask_show", "ask_history"})
+READ_COMMANDS = frozenset({"ask_list", "ask_show", "ask_history", "ask_cutover_status"})
 
 
 class AskValue(CommandValue):

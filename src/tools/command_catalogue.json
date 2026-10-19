@@ -11763,6 +11763,25 @@
       }
     },
     {
+      "name": "ask_cutover_status",
+      "description": "Scoped human request communication and decision evidence.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "AskCutoverStatusArgs",
+        "type": "object"
+      }
+    },
+    {
       "name": "ask_repair_delivery",
       "description": "Scoped human request communication and decision evidence.",
       "input_schema": {
@@ -18002,6 +18021,7 @@
     "ask_update_context": "review",
     "ask_reconcile": "review",
     "ask_cutover": "review",
+    "ask_cutover_status": "review",
     "ask_repair_delivery": "review",
     "ask_intake": "review",
     "ask_button": "review"
@@ -18018,6 +18038,7 @@
     "ask_update_context": "ask",
     "ask_reconcile": "ask",
     "ask_cutover": "ask",
+    "ask_cutover_status": "ask",
     "ask_retry_operation": "ask",
     "ask_repair_delivery": "ask",
     "create_task": "task",

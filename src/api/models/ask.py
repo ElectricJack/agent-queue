@@ -151,6 +151,31 @@ class AskCutoverArgs(CommandArgs):
     aliases_redirected: bool = False
 
 
+class AskCutoverStatusArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+
+
+class AskCutoverDestination(BaseModel):
+    destination: str
+    mode: str
+    generation: int
+    migrated: bool
+    first_switch_utc: str | None
+    compatibility_deadline: float | None
+    compatibility_deadline_utc: str | None
+
+
+class AskCutoverStatusResult(BaseModel):
+    project_id: str
+    configured_destination: str
+    destinations: list[AskCutoverDestination]
+
+
+class AskCutoverStatusResponse(BaseModel):
+    success: bool = True
+    result: AskCutoverStatusResult
+
+
 class AskRepairDeliveryArgs(CommandArgs):
     delivery_id: str
     expected_generation: int = Field(ge=0)
@@ -254,6 +279,7 @@ ASK_ARGS = {
     "ask_update_context": AskUpdateContextArgs,
     "ask_reconcile": AskReconcileArgs,
     "ask_cutover": AskCutoverArgs,
+    "ask_cutover_status": AskCutoverStatusArgs,
     "ask_retry_operation": AskRetryOperationArgs,
     "ask_repair_delivery": AskRepairDeliveryArgs,
     "ask_intake": AskIntakeArgs,
@@ -271,6 +297,7 @@ RESPONSE_MODELS.update(
         "ask_update_context": AskControlResponse,
         "ask_reconcile": AskControlResponse,
         "ask_cutover": AskControlResponse,
+        "ask_cutover_status": AskCutoverStatusResponse,
         "ask_repair_delivery": AskControlResponse,
         "ask_button": AskInputResponse,
     }
