@@ -92,8 +92,8 @@ overwriting customized or historical `source-ci-repair` delegate instructions.
 The supervisor closes obsolete historical repair PRs after their source lands.
 Cancellation-only observations keep their bounded infrastructure rerun policy.
 
-Ownership and storage-sink inventory drift is advisory in ordinary CI. The
-source inventory still discovers and charges all owned code, including relocated
-code and unreviewed sinks. Fixed size/table ceilings and the prohibition on new
+Ownership and storage-sink inventory drift has no dedicated CI guard (Jack
+2026-10-19 decision). The source inventory still discovers and charges all owned
+code, including relocated code and unreviewed sinks. Fixed size/table ceilings and the prohibition on new
 integration storage categories remain enforced. Factory-policy page length is
 advisory; its normative content and role references remain required.

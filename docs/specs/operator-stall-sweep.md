@@ -6,6 +6,14 @@ project. Every daemon read uses the same envelope, authorization and completenes
 checks. An authorization denial stops the sweep; failed or partial evidence never
 proves either an orphan or a healthy queue.
 
+Paused train-mode projects are also checked through control-only integration
+status. A `project_paused` blocker produces a `PAUSED-PROJECT` line, including in
+scoped patrols where project enumeration is unavailable. The blocker names
+completed live-origin sources still awaiting delivery or delivery proof. Cached
+Git evidence suppresses sources already proven satisfied; unavailable evidence is
+reported as unknown, never as a confirmed delivery backlog. The diagnostic does
+not resume projects or change target discovery, which visits ACTIVE projects only.
+
 For stale IN_PROGRESS worker tasks, read fresh `task show` claim identity and
 match its session, agent, task and project together. Containers do not require
 workers. A complete inventory with no holder or a stopped holder can report an

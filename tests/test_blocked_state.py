@@ -20,14 +20,25 @@ import time
 import uuid
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 from src.database.queries.blocked_state import blocked_predicate
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.database.tables import gates, task_dependencies, task_gates, tasks as tasks_t
-from src.models import DepType, Project, Task, TaskStatus
+from src.database.tables import (
+    gates,
+    task_completion_records,
+    task_delivery_receipts,
+    task_dependencies,
+    task_gates,
+)
+from src.database.tables import (
+    projects as projects_t,
+)
+from src.database.tables import (
+    tasks as tasks_t,
+)
+from src.models import DepType, Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.state_machine import CyclicDependencyError, validate_dag_with_new_edge, validate_waits_for
-
 
 PROJECT = "p-wg"
 
@@ -506,7 +517,8 @@ class TestConditionalDisposal:
     def test_the_shared_clauses_are_aliased_independently(self):
         """Two calls of the same clause factory inside one statement compile to
         distinct anonymous aliases, so no ``EXISTS`` term is dropped."""
-        from sqlalchemy import or_, select as sa_select
+        from sqlalchemy import or_
+        from sqlalchemy import select as sa_select
 
         from src.database.queries.blocked_state import _blocks_unsat
 
@@ -519,13 +531,15 @@ class TestConditionalDisposal:
         assert "development_deliveries" not in sql
         from src.database.queries.blocked_state import _blocked_ignoring_conditional
 
+        # ``delivery-of`` adds two: the dependency EXISTS and the nested
+        # landed-receipt EXISTS it negates.
         assert (
-            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 7
+            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 9
         )
         assert (
             str(sa_select(tasks_t.c.id).where(_blocked_ignoring_conditional()).compile()).count(
                 "EXISTS"
-            ) == 6
+            ) == 8
         )
 
 
@@ -772,3 +786,131 @@ class TestTerminalBlockedMark:
             "hard"
         }
         assert await db.task_ids_with_meta([], "blocked_terminal") == set()
+
+
+# ── delivery-of: an operational root waits for a landed code leaf ────────
+
+
+class TestDeliveryOf:
+    """``delivery-of`` is met only by a landed root receipt (held ingestion L1.5)."""
+
+    REPO = "repo-wg"
+
+    @pytest.fixture
+    async def graph(self, db):
+        await db.create_repo(
+            RepoConfig(id=self.REPO, project_id=PROJECT, source_type=RepoSourceType.LINK)
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(projects_t)
+                .where(projects_t.c.id == PROJECT)
+                .values(integration_repository_id=self.REPO)
+            )
+        await mktask(db, "epic", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "leaf", status=TaskStatus.COMPLETED, parent_task_id="epic")
+        await mktask(db, "root", status=TaskStatus.READY)
+        await db.add_dependency("root", "leaf", DepType.DELIVERY_OF.value)
+        return db
+
+    async def receipt(self, db, source, *, disposition="code", created_at=10.0, **kw):
+        values = {
+            "id": f"receipt-{uuid.uuid4().hex[:8]}",
+            "domain_key": f"domain-{uuid.uuid4().hex[:8]}",
+            "source_task_id": source,
+            "target_task_id": None,
+            "repository_id": self.REPO,
+            "target_branch": "refs/heads/main",
+            "disposition": disposition,
+            "created_at": created_at,
+            **kw,
+        }
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(task_delivery_receipts).values(**values))
+
+    async def completed(self, db, task_id, at):
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(task_completion_records).values(
+                    id=f"completion-{uuid.uuid4().hex[:8]}",
+                    task_id=task_id,
+                    outcome="pass",
+                    completed_at=at,
+                )
+            )
+
+    async def test_delivery_of_unmet_without_receipt(self, graph):
+        db = graph
+        # Completion alone is not delivery: the root stays blocked, and
+        # explain names what it waits for.
+        assert await blocked(db, "root")
+        blockers = await db.get_blocking_dependencies("root")
+        assert [(b[0], b[3]) for b in blockers] == [("leaf", DepType.DELIVERY_OF.value)]
+        assert await db.recompute_delivery_dependents(["leaf"]) == set()
+        assert await blocked(db, "root")
+        assert await db.delivery_failures(["leaf"]) == {}
+
+    async def test_delivery_of_met_after_landed(self, graph):
+        db = graph
+        await self.completed(db, "leaf", at=5.0)
+        # A receipt into the epic's branch, or another branch, is no landing.
+        await self.receipt(db, "leaf", target_task_id="epic")
+        await self.receipt(db, "leaf", target_branch="refs/heads/release")
+        assert await db.recompute_delivery_dependents(["leaf"]) == set()
+        assert await blocked(db, "root")
+
+        # The nested leaf lands when its epic does.
+        await self.receipt(db, "epic", created_at=10.0)
+        assert await db.recompute_delivery_dependents(["leaf"]) == {"root"}
+        assert not await blocked(db, "root")
+        assert await db.get_blocking_dependencies("root") == []
+
+        # A later generation of the leaf was not carried by that landing.
+        await self.completed(db, "leaf", at=20.0)
+        await db.recompute_all_blocked()
+        assert await blocked(db, "root")
+        await self.receipt(db, "leaf", disposition="noop", created_at=21.0,
+                           resolution_evidence={"reason": "no change"})
+        await db.recompute_all_blocked()
+        assert not await blocked(db, "root")
+
+    async def test_delivery_of_failed_stays_blocked(self, graph):
+        db = graph
+        await self.completed(db, "leaf", at=5.0)
+        await self.receipt(
+            db, "leaf", disposition="failed",
+            resolution_evidence={"reason": "squash conflict on main"},
+        )
+        assert await db.recompute_delivery_dependents(["leaf"]) == set()
+        assert await blocked(db, "root")
+        assert await db.delivery_failures(["leaf"]) == {"leaf": "squash conflict on main"}
+        # Ready status is untouched: blocked work never reaches the frontier.
+        assert "root" not in {t.id for t in await db.get_ready_frontier(PROJECT)}
+
+    async def test_observer_recomputes_delivered_dependents(self, graph):
+        from src.integration.delivery_observer import DeliveryObserver, DeliveryView
+        from src.integration.delivery_truth import DeliveryEvidence, DeliveryState
+
+        db = graph
+        await self.receipt(db, "leaf")
+        assert await blocked(db, "root")
+
+        class Observer(DeliveryObserver):
+            def __init__(self):
+                self.db = db
+
+        def evidence(state):
+            return DeliveryEvidence(
+                request=None, state=state, target_oid=None, source_oid=None, reason=""
+            )
+
+        observer = Observer()
+        await observer._admit_delivery_dependents(
+            DeliveryView(db, {"leaf": evidence(DeliveryState.UNKNOWN)})
+        )
+        assert await blocked(db, "root")
+        await observer._admit_delivery_dependents(
+            DeliveryView(db, {"leaf": evidence(DeliveryState.CONTAINED)})
+        )
+        assert not await blocked(db, "root")
+

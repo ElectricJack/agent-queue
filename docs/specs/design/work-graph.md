@@ -262,6 +262,55 @@ branch, the gate stays open until `origin/<base>` is an ancestor of
 network, no checkout — resolves the gate as before: unknowable must not wedge
 every dependent shut forever.
 
+The gate is attached automatically when a task completes in `pull_request`
+integration mode. Session close completes such a task with its PR still open.
+A `blocks` edge is satisfied by `COMPLETED` alone, so the dependents would be
+dispatched onto a default branch that has none of the prerequisite's work.
+This is what happened to sound-journey-29: PR #56 was still open when
+calm-summit-59.1 started without it.
+
+To prevent this, the `COMPLETED` transition takes a `pr_merge_gate=<PR URL>`
+argument (`_apply_transition` → `gate_dependents_on_pr_on`). In the same
+transaction, and before the projection recomputes, it adds the task's
+unstarted `blocks` dependents as waiters on the PR's open `pr-merged` gate.
+The dependents it gates are those in `DEFINED`, `READY`, `BLOCKED` or `PAUSED`.
+If an open gate for that PR already exists it is reused; otherwise a new one is
+created. Completion-created gate associations are recorded separately from explicit
+waiters. Shared admission for readiness, pool demand, scheduling and claims is
+the authority for **every** `blocks` edge, including edges and graphs created
+after completion. For a completed `pull_request` source it authenticates the
+current PR against the configured repository, branch and latest completion
+head. A closed unmerged PR, unknown current source or unavailable observation
+withholds the dependent even if an older gate was resolved.
+
+Admission requires the current source (or its authenticated squash merge
+object) to be an ancestor of the repository default branch. Alternatively, a
+same-repository dependent's published branch may qualify as a stack when its
+observed tip contains the exact PR head. Claim preparation pins that tip and
+verifies ancestry in the actual checkout before activation; a branch name or
+old checkpoint alone grants nothing. Source, graph, configuration and remote
+observations are rechecked across preparation.
+
+When this proof holds, admission removes only completion-owned gate links,
+including obsolete links from a replaced PR. It never resolves the shared gate
+or removes explicit human waiter links. Explicit attachment takes ownership of
+an existing generated link. Completion and graph notifications do not publish
+an intermediate ready event for a PR source awaiting admission.
+
+Ordinary claims whose `blocks` sources have no branch, PR, completion commits or
+legacy artifact may bypass remote admission. The existing project and preparation
+reads carry this request hint; it is never a stored delivery fact. Activation locks
+the candidate, its sources and project policy and rechecks artifact absence and
+graph blockedness in the activation transaction. A source/configuration writer,
+new edge or newly recorded artifact invalidates the hint and retries admission.
+Development claims always retain their delivery observation. Pool measurement
+carries the same hint on its existing project-list query; skipped remote reads
+never authorize activation, which still revalidates the task's current inputs.
+
+Managed projects (`development`, `hierarchy`, `train`) retain their own source
+delivery policies. Organizational sources with no branch, PR or completion
+artifact retain ordinary graph semantics.
+
 Before it merges anything, `pr_merge` asks what CI said. `integration.merge_ci_policy`
 (`off` / `warn` / `required`, shipped as `warn`) decides what a non-green
 status-check rollup does — nothing, a logged verdict in the result's `ci`

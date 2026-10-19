@@ -84,21 +84,24 @@ class RepositoryGit:
                 env={"LC_ALL": "C"},
                 lock_held=True,
             )
-            configured = await self.git.arun_git_result(
-                ["remote", "get-url", "origin"],
-                cwd=str(store),
-                env={"LC_ALL": "C"},
-                lock_held=True,
-            )
-            if (
-                bare.returncode != 0
-                or bare.stdout.strip() != "true"
-                or configured.returncode != 0
-                or configured.stdout.strip() != repository.origin_url
-            ):
+            if bare.returncode != 0 or bare.stdout.strip() != "true":
                 raise PromotionInvariantError("retained repository identity changed")
-            from src.integration.repository_recovery import harden_retained_repository
+            from src.integration.repository_recovery import (
+                ensure_retained_origin, harden_retained_repository,
+            )
 
+            try:
+                await ensure_retained_origin(
+                    self.git, store, repository.origin_url, lock_held=True,
+                )
+            except GitError as exc:
+                raise PromotionInvariantError("retained repository identity changed") from exc
+            configured = await self.git.arun_git_result(
+                ["remote", "get-url", "origin"], cwd=str(store),
+                env={"LC_ALL": "C"}, lock_held=True,
+            )
+            if configured.returncode != 0 or configured.stdout.strip() != repository.origin_url:
+                raise PromotionInvariantError("retained repository identity changed")
             await harden_retained_repository(self.git, store, lock_held=True)
 
 

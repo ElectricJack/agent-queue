@@ -422,6 +422,10 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
     async def _cmd_remove_workspace(self, args: dict) -> dict:
         """Delete a workspace by ID or name."""
+        from sqlalchemy.exc import IntegrityError
+
+        from src.workspace_registration import path_is_missing
+
         workspace_ref = args.get("workspace_id") or args.get("workspace")
         if not workspace_ref:
             return {"error": "workspace_id or workspace is required"}
@@ -437,12 +441,23 @@ class AgentCommandsMixin(FlockCommandsMixin):
 
         if not ws:
             return {"error": f"Workspace '{workspace_ref}' not found"}
-        if ws.locked_by_agent_id:
+        if ws.locked_by_agent_id or ws.locked_by_task_id:
             return {
-                "error": f"Workspace '{ws.id}' is locked by agent "
-                f"'{ws.locked_by_agent_id}'. Release it first."
+                "error": f"Workspace '{ws.id}' is locked by "
+                f"'{ws.locked_by_agent_id or ws.locked_by_task_id}'. Release it first."
             }
-        await self.db.delete_workspace(ws.id)
+        if not ws.is_slot and path_is_missing(ws.workspace_path):
+            try:
+                await self.db.remove_missing_workspace_registration(
+                    ws.id, expected_path=ws.workspace_path,
+                )
+            except ValueError as exc:
+                return {"error": f"Workspace '{ws.id}' cleanup refused: {exc}"}
+            except IntegrityError:
+                return {"error": f"Workspace '{ws.id}' cleanup refused: matching repository "
+                        "is still referenced; reconcile its references before removal"}
+        else:
+            await self.db.delete_workspace(ws.id)
         return {
             "deleted": ws.id,
             "name": ws.name,

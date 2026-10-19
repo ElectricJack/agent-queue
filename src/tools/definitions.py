@@ -393,6 +393,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_batch_update": "task",
     "task_batch_commit": "task",
     "task_batch_discard": "task",
+    "task_batch_validate": "task",
     # playbook authoring — an agent writes the markdown, validates it, then
     # installs the compiled artifact (src/playbooks/validator_command.py).
     # control plane — dv2 phase 1
@@ -6715,17 +6716,18 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "task_batch_propose",
         "description": (
             "Propose a transactional change set of creates, edits, edge changes and comments as one "
-            "reviewable graph, without creating anything live. Tasks are "
+            "reviewable graph. Ordinary proposals stage changes for human approval. Tasks are "
             "identified by caller-chosen ``tempId``s that edges reference; "
             "edges may also point at existing task ids. The proposal is "
             "rejected up front if the shape is wrong, if it references tasks "
             "that do not exist, or if it would introduce a dependency cycle "
             "against the project's current graph. Returns a proposal_id for "
             "task_batch_update / _commit / _discard. A live spec-ingest role "
-            "holding the matching approved vault path needs no approval step: "
-            "that batch is applied live in the same call and returns its "
-            "task_ids, and a later task_batch_commit is an idempotent replay. "
-            "Those batches require epics with children and leaf dependency edges."
+            "holding the matching approved document materializes the implementation graph held "
+            "for fidelity review and returns batch_id, revision, digest and members. "
+            "task_batch_commit refuses held batches; authorized release is separate. "
+            "Design approval creates an already released epic and authoring leaf. "
+            "Ingest tasks require section_anchor; leaves also require primary_outcome and acceptance."
         ),
         "input_schema": {
             "type": "object",
@@ -6755,6 +6757,17 @@ _ALL_TOOL_DEFINITIONS = [
                             "task_id": {"type": "string"},
                             "title": {"type": "string"},
                             "description": {"type": "string"},
+                            "section_anchor": {"type": "string"},
+                            "primary_outcome": {"type": "string"},
+                            "acceptance": {
+                                "description": "Required leaf acceptance criteria or validation commands.",
+                                "anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],
+                            },
+                            "constraints": {"type": "array", "items": {"type": "string"}},
+                            "owned_modules": {"type": "array", "items": {"type": "string"}},
+                            "size": {"type": "string", "enum": ["s", "m", "l"]},
+                            "placement": {"type": "string", "enum": ["child", "operational_root"]},
+                            "delivery_targets": {"type": "array", "items": {"type": "string"}},
                             "priority": {"type": "integer"},
                             "intelligence_class": {"type": ["string", "null"]},
                             "task_type": {"type": ["string", "null"]},
@@ -6952,6 +6965,70 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["proposal_id"],
+        },
+    },
+    {
+        "name": "task_batch_validate",
+        "description": (
+            "Run the ingestion-batch automatic checks (design §5.1) against the live "
+            "graph and write nothing. Takes the change set task_batch_propose takes, "
+            "with the ingestion fields (section_anchor, primary_outcome, acceptance, "
+            "size, owned_modules, placement, delivery_targets). Hard findings (authority, "
+            "membership, parent_not_unique, cross_project, depth_exceeded, cycle, "
+            "container_endpoint, external_target_invalid, dependency_on_ancestor, "
+            "post_landing_inside_delivery_epic, delivery_condition_cycle, "
+            "section_anchor_missing, primary_outcome_missing, acceptance_missing, "
+            "profile_pinned) fail the batch; stale_revision, active_claim and "
+            "integration_owned fail it with retryable: true. Advisory findings "
+            "(large_leaf, mixed_outcomes, broad_command, duplicate_title, redundant_edge, "
+            "unexplained_serialization, concentrated_ownership) never fail it; gaps name "
+            "advisory checks that lacked declared metadata. Checks are deterministic: no "
+            "score and no model judgement."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project the batch is for."},
+                "source": {
+                    "type": "string",
+                    "description": "Proposal source; checked against a stored batch's.",
+                },
+                "tasks": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Task specs keyed by tempId, as task_batch_propose takes.",
+                },
+                "edges": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Edges {from, to, dep_type, reason}; from depends on to.",
+                },
+                "edits": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Edits of existing batch members, keyed by task_id.",
+                },
+                "remove_edges": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Edges {from, to, dep_type} the change set removes.",
+                },
+                "comments": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Comments {task_id, body} on batch members.",
+                },
+                "batch_id": {
+                    "type": "string",
+                    "description": "Held batch whose members the change set may edit.",
+                },
+                "expected_revision": {
+                    "type": "integer",
+                    "description": "Structure revision the caller read; a mismatch is "
+                    "stale_revision.",
+                },
+            },
+            "required": ["project_id"],
         },
     },
     {
@@ -9125,6 +9202,7 @@ from src.commands.contracts.builtin import EnsureSpecIngestArgs as _EnsureSpecIn
 _TOOL_CATEGORIES.update({
     "ensure_spec_ingest": "task", "approved_spec_packet": "task",
     "spec_ingest_reconcile": "task", "spec_ingest_legacy_inventory": "task",
+    "batch_reconcile": "task",
 })
 _ALL_TOOL_DEFINITIONS.extend([
     {"name": "ensure_spec_ingest",
@@ -9135,6 +9213,9 @@ _ALL_TOOL_DEFINITIONS.extend([
      "input_schema": _EnsureSpecIngestArgs.model_json_schema()},
     {"name": "spec_ingest_reconcile",
      "description": "Replay at most twenty pending approved-spec dispatches; operator/service only.",
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "batch_reconcile",
+     "description": "Repair at most twenty held-batch dispatch, receipt and release wakeups; operator/service only.",
      "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "spec_ingest_legacy_inventory",
      "description": "Inventory path-only ingestion assignments for explicit operator reconciliation.",

@@ -51,7 +51,7 @@ areas:
     description: "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work."
     match: [tests/test_archive.py, tests/test_hierarchy_archive_delete.py, tests/test_task_removal.py, tests/test_cli_task_remove.py]
   - id: task-dependencies
-    description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection."
+    description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection, and held ingestion batch rows, receipts and release."
     match:
       - tests/test_task_deps_command.py
       - tests/test_dependency_queries.py
@@ -59,6 +59,7 @@ areas:
       - tests/test_get_stuck_tasks_command.py
       - tests/test_task_batch_commands.py
       - tests/test_cli_task_change_sets.py
+      - tests/test_ingest_batch_queries.py
   - id: work-graph
     description: "Work graph: typed edges and labels, the persisted is_blocked projection, gates, the promotion cascade, the ready frontier and explain, outcomes, hierarchical ids and event replay."
     match:
@@ -85,6 +86,7 @@ areas:
     description: "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, live graph events after commands, and containers' display activity rolled up from their descendants."
     match:
       - tests/test_batch_digest.py
+      - tests/test_batch_checks.py
       - tests/test_task_graph.py
       - tests/test_create_task_graph_command.py
       - tests/test_hierarchy_graph_creator.py
@@ -389,6 +391,7 @@ areas:
       - tests/test_integration_properties.py
       - tests/test_integration_root_noop.py
       - tests/test_integration_record_delivered.py
+      - tests/test_integration_superseded_completion.py
       - tests/test_integration_operator_decisions.py
       - tests/test_integration_cli_controls_present.py
       - tests/test_integration_train.py

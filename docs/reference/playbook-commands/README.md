@@ -127,6 +127,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_retire_origin`](integration_retire_origin.md) | Integration Retire Origin | Authenticated hierarchical integration operational control. |
 | [`integration_seal_now`](integration_seal_now.md) | Integration Seal Now | Authenticated hierarchical integration operational control. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
+| [`integration_supersede_completion`](integration_supersede_completion.md) | Supersede one retained completion | Operator or owning supervisor retires an exact stopped Subject with original verified human evidence. |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
 | [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from a full or hosted-check policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
 
@@ -244,6 +245,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_inbox_post`](supervisor_inbox_post.md) | Supervisor Inbox Post | Accept verified gateway input or local test/replay provenance into the global inbox. |
 | [`supervisor_inbox_reply`](supervisor_inbox_reply.md) | Supervisor Inbox Reply | Record an explicit live global-supervisor answer and queue its Discord delivery. |
 | [`supervisor_inbox_status`](supervisor_inbox_status.md) | Supervisor Inbox Status | Read installation-wide conversation preconditions, limits, counts and intake health. |
+| [`task_batch_validate`](task_batch_validate.md) | Check a task batch | Run the deterministic ingestion-batch checks against the live graph and report hard, retryable and advisory findings without writing anything. |
 | [`task_failure_triage_notify`](task_failure_triage_notify.md) | Wake supervisor failure triage | Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident. |
 | [`task_handoff`](task_handoff.md) | Record a task handoff | Store bounded agent assertions with current daemon facts. Auto is note-only; non-auto records a restart request, without performing a restart. |
 | [`test_select`](test_select.md) | Test Select | Record a scoped smart test selection proposal. |

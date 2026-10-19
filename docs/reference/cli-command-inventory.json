@@ -5604,6 +5604,47 @@
       }
     },
     {
+      "path": "aq integration supersede-completion",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_supersede_completion",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "task_id",
+          "--project",
+          "--subject",
+          "--expected-version",
+          "--expected-claim-epoch",
+          "--completion",
+          "--head",
+          "--human-reply",
+          "--reason"
+        ],
+        "optional": [
+          "--proof",
+          "--apply",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration trust-manifest",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -17634,6 +17675,38 @@
       }
     },
     {
+      "path": "aq task batch-reconcile",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "batch_reconcile",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq task batch-update",
       "registration": "generated",
       "owner_kind": "core",
@@ -17666,6 +17739,54 @@
         ],
         "structured": [
           "--payload"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task batch-validate",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_batch_validate",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--source",
+          "--tasks",
+          "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments",
+          "--batch-id",
+          "--expected-revision",
+          "--json",
+          "--brief",
+          "--save-output",
+          "--api-url"
+        ],
+        "structured": [
+          "--tasks",
+          "--edges",
+          "--edits",
+          "--remove-edges",
+          "--comments"
         ],
         "nullable": []
       }

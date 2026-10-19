@@ -429,6 +429,7 @@ class SessionQueryMixin:
 
     async def record_claim_refusal(
         self, session_id: str, *, result: str, reason: str, now: float,
+        expected_preparation: SessionRecord | None = None,
     ) -> SessionRecord | None:
         """Count actual identical failures, never cooldown replays or an active claim.
 
@@ -441,6 +442,28 @@ class SessionQueryMixin:
             ).with_for_update())).mappings().one_or_none()
             if row is None:
                 return None
+            if expected_preparation is not None:
+                from src.claim_preparation import same_session_launch
+
+                observed = _row_to_session(row)
+                diagnostic = observed.failed_preparation
+                if (not same_session_launch(expected_preparation, observed)
+                        or observed.last_claim_epoch != expected_preparation.last_claim_epoch
+                        or observed.task_id not in (None, expected_preparation.task_id)
+                        or (observed.claim_phase is not None and (
+                            observed.claim_phase != "preparing"
+                            or observed.claim_phase_at != expected_preparation.claim_phase_at
+                        ))
+                        # A previous failure's unchanged diagnostic may survive
+                        # into a new attempt (e.g. activation returns no row).
+                        # Only a newly published diagnostic can supersede it.
+                        or (diagnostic is not None
+                            and diagnostic != expected_preparation.failed_preparation and (
+                            diagnostic.get("task_id") != expected_preparation.task_id
+                            or diagnostic.get("preparation_started_at")
+                            != expected_preparation.claim_phase_at
+                        ))):
+                    return None
             if row["claim_phase"] == "active" or row["desired_state"] != "running":
                 return _row_to_session(row)
             prior = row["claim_refusal"] or {}

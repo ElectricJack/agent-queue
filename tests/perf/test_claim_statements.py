@@ -61,6 +61,7 @@ from src.intelligence_classes import IntelligenceClass
 from tests.perf.test_hierarchy_statements import count_statements, seed_scale
 from tests.db_fixtures import lease_dsn
 from src.config import DatabaseConfig
+from src.database.tables import task_session_attempts, tasks
 
 pytestmark = pytest.mark.perf
 
@@ -368,7 +369,8 @@ class TestClaimStatementBudgets:
         print(f"\nno_ready_work: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, _over(c["n"], budget, c["statements"])
 
-    async def test_work_query_is_an_index_ordered_scan(self, any_db, tmp_path):
+    @pytest.mark.parametrize("recovery_hold", ["none", "stale", "current"])
+    async def test_work_query_is_an_index_ordered_scan(self, any_db, tmp_path, recovery_hold):
         """Both halves of the §10 work query stop at the first row.
 
         The statement budgets above count statements; this counts what one
@@ -400,6 +402,24 @@ class TestClaimStatementBudgets:
         budget by moving work into a sub-plan is still caught.
         """
         await _seed_worker_scale(any_db)
+        if recovery_hold != "none":
+            # Exercise the recovery subplan, including its deterministic ID
+            # tie-break, instead of only explaining an empty attempt table.
+            started = time.time() + 1
+            async with any_db._engine.begin() as conn:
+                await conn.execute(tasks.update().where(tasks.c.id == "seed-1").values(priority=-1))
+                await conn.execute(task_session_attempts.insert(), [{
+                    "id": f"attempt-{i:03}", "session_id": f"session-{i}",
+                    "task_id": "seed-1", "project_id": PROJECT_ID,
+                    "profile_id": "worker", "name": "worker", "lifecycle": "task",
+                    "harness": "codex", "provider": "fake", "state": "stopped",
+                    "work_dir": "/unused", "started_at": started,
+                    "session_started_at": started, "ended_at": started + 1,
+                } for i in range(128)])
+            await any_db.set_task_meta("seed-1", "supervisor_recovery_incident", {
+                "decision": "hold", "claim_epoch": 0,
+                "attempt_id": "attempt-000" if recovery_hold == "stale" else "attempt-127",
+            })
         # Measure the seeded queue, independently of when autovacuum runs or
         # which earlier fixture occupied this leased database. Statistics
         # collection is fixture setup, outside the explained claim queries.
@@ -420,6 +440,10 @@ class TestClaimStatementBudgets:
                     router_ready=router_ready,
                 )
             assert tid is not None
+            if recovery_hold == "stale":
+                assert tid == "seed-1"
+            elif recovery_hold == "current":
+                assert tid != "seed-1"
             budget = 64
             total = sum(plan.buffers for plan in explaining.plans)
             print(

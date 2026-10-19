@@ -341,6 +341,7 @@ class ObsoleteClose:
         replacement_task_id: str | None = None,
         satisfied_by: str | None = None,
         rewire: dict | None = None,
+        _prepare_on: Callable[[Any], Awaitable[Any]] | None = None,
     ) -> dict[str, Any]:
         """Close *task_id* with *disposition*, then run its cleanup.
 
@@ -379,6 +380,10 @@ class ObsoleteClose:
         else:
             transaction = self.db.immediate()
         async with transaction as conn:
+            # Internal recovery seam: acquire exclusion and settle an exactly
+            # proven Subject in this same transaction. A later refusal rolls
+            # back that settlement along with the obsolete close.
+            settlement = await _prepare_on(conn) if _prepare_on is not None else None
             row = (
                 (
                     await conn.execute(
@@ -449,6 +454,7 @@ class ObsoleteClose:
                     context=context,
                     force=True,
                     _manual_pause_control=True,
+                    _obsolete_supersession_token=settlement if disposition == "obsolete" else None,
                     assigned_agent_id=None,
                     resume_after=None,
                     extra_values={"claim_epoch": tasks.c.claim_epoch + 1},

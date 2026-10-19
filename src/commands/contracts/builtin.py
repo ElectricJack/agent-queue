@@ -430,6 +430,33 @@ class TaskBatchCommitValue(CommandValue):
     task_ids: list[str]
 
 
+class TaskBatchValidateArgs(CommandArgs):
+    """A change set, or a stored batch revision, for the L1.3 automatic checks."""
+
+    project_id: str
+    #: The proposal source the caller claims; checked against a stored batch's.
+    source: str | None = None
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+    edits: list[dict[str, Any]] = Field(default_factory=list)
+    remove_edges: list[dict[str, Any]] = Field(default_factory=list)
+    comments: list[dict[str, Any]] = Field(default_factory=list)
+    #: A held batch whose members the change set may edit.
+    batch_id: str | None = None
+    #: The structure revision the caller read; a mismatch is ``stale_revision``.
+    expected_revision: int | None = None
+
+
+class TaskBatchValidateValue(CommandValue):
+    project_id: str | None = None
+    batch_id: str | None = None
+    passed: bool = False
+    retryable: bool = False
+    hard: list[dict[str, Any]] = Field(default_factory=list)
+    advisory: list[dict[str, Any]] = Field(default_factory=list)
+    gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class TaskRoutePlanArgs(CommandArgs):
     task_id: str
     #: The routing playbook's policy block, verbatim (mandatory-routing §6.3).
@@ -876,6 +903,10 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "github_issue_rejection":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"closed", "ignored"} else "rejected"
+    if name == "task_batch_validate":
+        if not raw.get("passed"):
+            return "retryable" if raw.get("retryable") else "failed"
+        return "passed"
     if name == "task_route_plan":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
@@ -1311,6 +1342,38 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
+    ),
+    "task_batch_validate": CommandPresentation(
+        title="Check a task batch",
+        summary=(
+            "Run the deterministic ingestion-batch checks against the live graph and "
+            "report hard, retryable and advisory findings without writing anything."
+        ),
+        arg_labels={
+            "project_id": "Project",
+            "source": "Proposal source",
+            "tasks": "Tasks",
+            "edges": "Edges",
+            "edits": "Edits",
+            "remove_edges": "Removed edges",
+            "comments": "Comments",
+            "batch_id": "Held batch",
+            "expected_revision": "Expected structure revision",
+        },
+        outcome_labels={
+            "passed": "Passed",
+            "failed": "Failed a hard check",
+            "retryable": "Retry once the live graph settles",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "passed": "Passed",
+            "retryable": "Retryable",
+            "hard": "Hard findings",
+            "advisory": "Advisory findings",
+            "gaps": "Metadata gaps",
+        },
+        subject_labels={},
     ),
     "stop_task": CommandPresentation(
         title="Stop a running task",
@@ -1837,6 +1900,16 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (CreateClause(subject=EffectSubject.TASK_GRAPH),),
             IdempotencySpec(mode="keyed", key_field="proposal_id"),
             False,
+        ),
+        (
+            "task_batch_validate",
+            TaskBatchValidateArgs,
+            TaskBatchValidateValue,
+            _outcomes("passed", "failed", "retryable"),
+            SideEffectClass.READ,
+            (),
+            IdempotencySpec(mode="natural"),
+            True,
         ),
         (
             "task_route_plan",

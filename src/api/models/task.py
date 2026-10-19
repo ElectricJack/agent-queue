@@ -1022,6 +1022,12 @@ class SpecIngestReconcileResponse(BaseModel):
     errors: list[dict[str, str]]
 
 
+class BatchReconcileResponse(BaseModel):
+    success: bool = True
+    recovered: list[dict[str, str]]
+    errors: list[dict[str, str]]
+
+
 class SpecIngestLegacyInventoryResponse(BaseModel):
     success: bool = True
     assignments: list[dict[str, Any]]
@@ -1052,6 +1058,19 @@ class TaskBatchAckResponse(BaseModel):
 
     success: bool = True
     diff: dict[str, Any] | None = None
+
+
+class TaskBatchValidateResponse(BaseModel):
+    """``task_batch_validate`` — the automatic-check report; nothing is written."""
+
+    success: bool = True
+    project_id: str | None = None
+    batch_id: str | None = None
+    passed: bool = False
+    retryable: bool = False
+    hard: list[dict[str, Any]] = Field(default_factory=list)
+    advisory: list[dict[str, Any]] = Field(default_factory=list)
+    gaps: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ClaimSessionSummary(BaseModel):
@@ -1410,6 +1429,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "ensure_spec_ingest": EnsureTaskResponse,
     "approved_spec_packet": ApprovedSpecPacketResponse,
     "spec_ingest_reconcile": SpecIngestReconcileResponse,
+    "batch_reconcile": BatchReconcileResponse,
     "spec_ingest_legacy_inventory": SpecIngestLegacyInventoryResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
@@ -1418,6 +1438,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_batch_propose": TaskBatchProposeResponse,
     "task_batch_update": TaskBatchAckResponse,
     "task_batch_commit": TaskBatchCommitResponse,
+    "task_batch_validate": TaskBatchValidateResponse,
     "task_batch_discard": TaskBatchAckResponse,
     "task_claim": TaskClaimResponse,
     "pool_status": PoolStatusResponse,
