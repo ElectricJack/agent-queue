@@ -4524,11 +4524,26 @@ class TestTaskShowClaimedBy:
         assert res["claimed_by"]["claim_epoch"] == on_disk["claim_epoch"]
 
 
-@pytest.mark.parametrize("cancel", [False, "request", "preparation"])
+@pytest.mark.parametrize("cancel", [False, "request", "response_timeout", "preparation"])
 async def test_prepare_timeout_waits_for_live_reset(handler, db, config, tmp_path, cancel, monkeypatch):
+    """Recovery respects a live reset regardless of how its HTTP request ends."""
     await mktask(db, "t1", profile_id="worker")
-    sid, _ = await pool_session(db, tmp_path)
+    sid, work_dir = await pool_session(db, tmp_path)
     started, finish = asyncio.Event(), asyncio.Event()
+    response_deadlines = []
+    real_timeout = asyncio.timeouts.timeout
+
+    def controlled_response_timeout(delay):
+        if asyncio.current_task() is request and delay == 0.5:
+            # wait_for uses this Timeout internally. Drive its real cancellation
+            # at the reset barrier, so DB/doctor latency cannot choose which
+            # request outcome this test exercises. Other timers run normally.
+            deadline = real_timeout(None)
+            response_deadlines.append(deadline)
+            return deadline
+        return real_timeout(delay)
+
+    monkeypatch.setattr(asyncio.timeouts, "timeout", controlled_response_timeout)
 
     async def reset(*args, **kwargs):
         started.set()
@@ -4541,14 +4556,29 @@ async def test_prepare_timeout_waits_for_live_reset(handler, db, config, tmp_pat
         db, config, SessionProviderRegistry({}), bus=handler.orchestrator.bus,
         orchestrator=handler.orchestrator, epoch="test",
     )
+    preparation = None
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
+        assert len(response_deadlines) == 1
         row = await db.get_session(sid)
         key = (sid, "t1", row.last_claim_epoch)
         preparation = handler.orchestrator.claim_preparations[key]
         assert preparation is not request and not preparation.done()
+        if cancel == "response_timeout":
+            response_deadlines[0].reschedule(asyncio.get_running_loop().time())
+            response = await request
+            assert response["result"] == "claim_in_progress"
+            assert (response["task_id"], response["claim_epoch"], response["claim_phase"]) == (
+                "t1", row.last_claim_epoch, "preparing",
+            )
+            # This was the CI race: cancellation cannot change a response that
+            # already finished, and must not cancel its daemon-owned reset.
+            assert not request.cancel()
+            assert not request.cancelled()
+            assert handler.orchestrator.claim_preparations[key] is preparation
+            assert not preparation.done()
         # Both timeout and doctor respect the daemon-owned reset task,
-        # even after its original HTTP request has been cancelled.
+        # including after its original HTTP response allowance has elapsed.
         from src.doctor.pool_checks import run_check
 
         await db.update_session(sid, claim_phase_at=time.time() - 3 * config.swarm.prepare_timeout)
@@ -4571,17 +4601,24 @@ async def test_prepare_timeout_waits_for_live_reset(handler, db, config, tmp_pat
             assert (await db.get_session(sid)).task_id is None
         else:
             if cancel == "request":
-                request.cancel()
+                assert not request.done()
+                assert request.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await request
                 assert handler.orchestrator.claim_preparations[key] is preparation
+                assert not preparation.done()
                 await reconciler._step_prepare_timeout([row], expired)
                 assert (await db.get_session(sid)).task_id == "t1"
             finish.set()
             await preparation
             response = (await settled_claim(scoped(handler, sid), {"next": True})
-                        if cancel == "request" else await request)
+                        if cancel in {"request", "response_timeout"} else await request)
             assert response["result"] == "claimed"
+            assert response["claim_epoch"] == row.last_claim_epoch
+            claim = json.loads((work_dir / ".aq" / "claim.json").read_text())
+            assert (claim["task_id"], claim["session_id"], claim["claim_epoch"]) == (
+                "t1", sid, row.last_claim_epoch,
+            )
             assert (await db.get_session(sid)).claim_phase == "active"
             assert not handler.orchestrator.claim_preparations
             # A stale timeout read racing activation cannot release it even
@@ -4610,9 +4647,11 @@ async def test_prepare_timeout_waits_for_live_reset(handler, db, config, tmp_pat
             assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
     finally:
         finish.set()
-        if not request.done():
-            request.cancel()
-        await asyncio.gather(request, return_exceptions=True)
+        jobs = [request] + ([preparation] if preparation is not None else [])
+        for job in jobs:
+            if not job.done():
+                job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
 
 
 @pytest.fixture
