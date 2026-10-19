@@ -570,7 +570,7 @@ async def test_recovery_hold_only_fences_its_execution_identity(
         [] if allowed else ["frontier_recovery_hold"]
     )
     sid, _ = await pool_session(db, tmp_path)
-    claim = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    claim = await settled_claim(scoped(handler, sid), {"next": True})
     assert claim["result"] == ("claimed" if allowed else "no_ready_work"), claim
     if allowed:
         assert claim["task"]["id"] == "held"

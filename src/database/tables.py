@@ -1653,6 +1653,10 @@ task_session_attempts = Table(
     Column("outcome", Text, nullable=True),
     Column("session_key", Text, nullable=True),
     Index("idx_task_session_attempts_task", "task_id", "started_at"),
+    # Recovery's latest-attempt fence matches both identities and breaks
+    # timestamp ties by ID. A backward scan supplies the complete order;
+    # sorting inside this correlated lookup would sort on every claim.
+    Index("idx_task_session_attempts_recovery", "task_id", "project_id", "started_at", "id"),
     Index("idx_task_session_attempts_session", "session_id", "started_at"),
 )
 
