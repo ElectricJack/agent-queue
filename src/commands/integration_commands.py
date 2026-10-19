@@ -418,6 +418,29 @@ class IntegrationCommandsMixin:
             return _failure("refused", str(exc))
         return {"success": True, **result}
 
+    async def _cmd_integration_settle_batch(self, args: dict) -> dict:
+        """Preview or settle a batch whose target already contains every member."""
+        from src.commands.contracts.integration import IntegrationAbortBatchArgs
+        from src.integration.batches import BatchStore
+        from src.integration.train_controls import TrainControlError, TrainControls
+
+        request = IntegrationAbortBatchArgs.model_validate(args)
+        batch = await BatchStore(self.db).get(request.batch_id)
+        operator, refusal = await integration_operator(self.db, batch.project_id if batch else None)
+        if refusal:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await TrainControls(self.db, train=getattr(
+                self.orchestrator, "integration_train", None)).settle_batch(
+                request.batch_id, dry_run=request.dry_run, operator_id=operator,
+                reason=request.reason,
+            )
+        except TrainControlError as exc:
+            return _failure(exc.outcome, str(exc))
+        except (ValueError, GitError, OSError) as exc:
+            return _failure("refused", str(exc))
+        return {"success": True, **result}
+
     async def _cmd_integration_retire_origin(self, args: dict) -> dict:
         """Retire only the previewed origin of a proven delivered completion."""
         from src.commands.contracts.integration import IntegrationRetireOriginArgs

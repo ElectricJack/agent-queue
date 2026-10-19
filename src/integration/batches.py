@@ -788,6 +788,24 @@ class BatchService:
         ref = candidate_ref(batch.id)
         candidate = observed.source_heads.get("refs/remotes/origin/" + branch(ref))
         try:
+            target_tree = (
+                await self.gitops.git.atree_sha(str(repo.store), target)
+                if batch.epic_refresh and members else None
+            )
+            if target_tree is not None and all([
+                await self.gitops.is_ancestor(repo, member.source_sha, target)
+                and await self.gitops.git.atree_sha(str(repo.store), member.source_sha)
+                == target_tree
+                for member in members
+            ]):
+                # The epic already is the refreshed default head, by ancestry and
+                # an identical tree: the default branch gated that content, so
+                # nothing is left to test or publish and the reused candidate's
+                # checks must not hold it. A resolved merge differs in tree and
+                # still runs its candidate checks.
+                return BatchObservation("delivered", None, target, detail={
+                    "reason": "refresh_source_in_target", "candidate_sha": candidate,
+                })
             # Historical inclusion settles even a held/aborted intent. It does
             # not authorize another write, and stale progress never blocks it.
             # A published repair start can be the target itself or only a

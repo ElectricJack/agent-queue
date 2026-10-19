@@ -516,6 +516,27 @@ stale seals left by older aborts. Cleanup retires the private candidate under it
 ref lease and releases only the batch's detached collector reservation; a live
 repair lease defers cleanup without preventing member rework.
 
+### Settle a batch the target already contains
+
+Abort refuses a batch whose target already holds every member, and such a
+batch can still sit unsettled: its reused candidate's checks may never turn
+green (a run cancelled because a waived platform's job was cancelled). Settle
+it instead:
+
+```bash
+aq integration settle-batch <batch-id>
+aq integration settle-batch <batch-id> --apply --reason "target already matches"
+```
+
+The control requires every member source to be a Git ancestor of the observed
+target, or delivery trailers for it; a matching tree alone is refused with
+`target_not_settled`. Applying it records the batch as promoted at the observed
+target (never the untested candidate) and logs `integration.batch_settled` with
+the principal and reason; the next target visit runs epic completion. The train
+settles on its own an epic refresh whose epic already is the default head (an
+ancestor with an identical tree; a resolved merge still runs its checks), and a run whose only non-success job lies outside the required checks no longer
+holds candidate checks unknown.
+
 The train excludes current completions whose exact retained source is an ancestor
 of the project's default/development ref. Scoped legacy delivery attestations also
 exclude the completion they cover; a reopened completion requires fresh evidence.

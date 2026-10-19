@@ -27,11 +27,13 @@ OPERATOR_READS = frozenset({
 })
 OPERATOR_WRITES = frozenset({
     "edit_project", "integration_cutover", "integration_abort_batch", "integration_eject",
+    "integration_settle_batch",
     "integration_retire_origin", "integration_release_owner", "playbook_v2_import",
     "playbook_activate", "set_playbook_enabled", "playbook_delete", "policy_apply",
 })
 HUMAN_DECISION_COMMANDS = frozenset({
     "edit_project", "integration_cutover", "integration_abort_batch", "integration_eject",
+    "integration_settle_batch",
     "integration_retire_origin", "integration_release_owner", "playbook_delete",
 })
 PROJECT_SETUP_FIELDS = frozenset({

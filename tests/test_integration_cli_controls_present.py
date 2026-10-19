@@ -16,6 +16,7 @@ def test_integration_group_exposes_train_controls():
         "pause-batch",
         "resume-batch",
         "abort-batch",
+        "settle-batch",
         "refresh-epic",
         "record-root-noop",
         "supersede-completion",

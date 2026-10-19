@@ -382,6 +382,16 @@ async def test_a_failed_workflow_keeps_successful_checks_and_blocks_publication(
     assert all(check.detail["workflow_conclusion"] == "failure" for check in result.checks)
 
 
+async def test_a_run_cancelled_outside_the_required_jobs_is_final(db):
+    # A waived platform's job was cancelled; every required job succeeded.
+    client, trust = github(app=False, names=("unit", "lint"), run_conclusion="cancelled")
+
+    result = await hosted(db, client, trust, Clock()).refresh(head())
+
+    assert result.state is ChecksState.GREEN and result.green
+    assert all(check.detail["workflow_conclusion"] == "cancelled" for check in result.checks)
+
+
 async def test_mixed_hosted_workflow_caches_each_required_jobs_own_conclusion(db):
     names = (
         "Tests (migration-and-slow)",
