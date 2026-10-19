@@ -1176,6 +1176,141 @@ async def test_git_first_mutation_rejects_unknown_proof_without_receipts(active_
     assert (await db.get_task("wrong")).status is TaskStatus.COMPLETED
 
 
+async def reopen_command(db, task_id):
+    from src.commands.task_commands import TaskCommandsMixin
+
+    handler = TaskCommandsMixin()
+    handler.db, handler._current_scope = db, {}
+    return await handler._cmd_reopen_with_feedback({
+        "task_id": task_id, "feedback": "Recover the unlabelled completion; retain the branch",
+    })
+
+
+@pytest.mark.parametrize("caller", [
+    "operator", "supervisor", "reviewer", "service", "stopped_supervisor", "foreign_supervisor",
+])
+async def test_missing_provenance_reopen_requires_operator_control(
+    active_git_world, monkeypatch, caller,
+):
+    from types import SimpleNamespace
+
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+
+    db, origin, _observer = active_git_world
+    head = origin.work("missing")
+    if caller.endswith("supervisor"):
+        monkeypatch.setattr(db, "get_session", AsyncMock(return_value=SimpleNamespace(
+            id=caller, profile_id="supervisor", lifecycle="named",
+            state="stopped" if caller == "stopped_supervisor" else "running",
+            desired_state="running", project_id="other" if caller == "foreign_supervisor" else "p",
+        )))
+    principal = ExecutionPrincipal(
+        kind=(PrincipalKind.LOCAL if caller == "operator" else
+              PrincipalKind.SERVICE if caller == "service" else PrincipalKind.SESSION),
+        policy=DENY_ALL, session_id=caller, project_id="p", elevated=caller.endswith("supervisor"),
+    )
+    before = await db.get_task("missing")
+    # Generic lifecycle writes still cannot make the missing close claimable.
+    with pytest.raises(HierarchyError, match="delivery_unknown"):
+        await db.transition_task("missing", TaskStatus.READY, context="reopen_with_feedback")
+    with principal_context(principal):
+        if caller in {"operator", "supervisor"}:
+            assert (await reopen_command(db, "missing"))["status"] == "READY"
+        else:
+            with pytest.raises(HierarchyError, match="delivery_unknown"):
+                await reopen_command(db, "missing")
+    task = await db.get_task("missing")
+    assert task.status is (TaskStatus.READY if caller in {"operator", "supervisor"}
+                           else TaskStatus.COMPLETED)
+    assert task.branch_name == before.branch_name
+    assert git(origin.url, "rev-parse", "aq/missing") == head
+    assert (await db.get_task_completion("missing")).id == "close-missing"
+
+
+async def test_unlabelled_subepic_reopens_preserving_collected_children(active_git_world):
+    from src.database.tables import task_integration_checkpoints
+
+    db, origin, observer = active_git_world
+    origin.work("subepic")
+    await db.create_task(Task(
+        id="subepic", project_id="p", repo_id="r", title="Subepic", description="",
+        branch_name="aq/subepic", parent_task_id="epic", status=TaskStatus.COMPLETED,
+    ))
+    child_head = git(origin.clone, "rev-parse", "origin/aq/reopened")
+    git(origin.clone, "merge", "-q", "--no-ff", "-m", "Collect child", "origin/aq/reopened")
+    git(origin.clone, "push", "-q", "origin", "aq/subepic")
+    head = git(origin.clone, "rev-parse", "HEAD")
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "reopened").values(
+            parent_task_id="subepic",
+        ))
+        for tid in ("epic", "subepic"):
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id=tid, repository_id="r", branch=f"aq/{tid}", checkpoint_sha=head,
+                generation=4, verified_sha=head, verified_generation=4, updated_at=1.0,
+            ))
+    view = await observer.observe(["subepic", "reopened"])
+    assert view.get("subepic").reason == "missing_git_provenance"
+    assert view.get("reopened").state is DeliveryState.CONTAINED
+    assert (await reopen_command(db, "subepic"))["status"] == "READY"
+    assert (await db.get_task("subepic")).status is TaskStatus.READY
+    assert (await db.get_task("reopened")).status is TaskStatus.COMPLETED
+    assert git(origin.url, "rev-parse", "aq/subepic") == head
+    assert git(origin.url, "rev-parse", "aq/reopened") == child_head
+    for tid in ("epic", "subepic"):
+        checkpoint = await db.get_integration_checkpoint(tid)
+        assert checkpoint["generation"] == 5
+        assert checkpoint["verified_sha"] is None
+        assert checkpoint["verified_generation"] is None
+    # Reopening has not manufactured provenance or a passing new completion.
+    assert await db.get_task_completion("subepic") is None
+
+
+@pytest.mark.parametrize("obstacle", ["stale", "wrong_repository", "descendant", "receipt"])
+async def test_missing_provenance_recovery_preserves_delivery_fences(
+    active_git_world, obstacle,
+):
+    from src.database.tables import task_delivery_receipts
+
+    db, origin, _observer = active_git_world
+    origin.work("missing")
+    view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    if obstacle == "stale":
+        await db.update_task("epic", branch_name="aq/retargeted")
+    elif obstacle == "wrong_repository":
+        await db.update_task("missing", repo_id="web")
+        view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    elif obstacle == "descendant":
+        await db.create_task(Task(
+            id="unknown-child", project_id="p", repo_id="r", title="Child", description="",
+            branch_name="aq/unknown-child", parent_task_id="missing", status=TaskStatus.COMPLETED,
+        ))
+        view = await db.observe_removal_delivery(["missing"], for_mutation=True)
+    with pytest.raises(HierarchyError) as refused:
+        if obstacle == "receipt":
+            # Roll back the supplied historical receipt with the refused write:
+            # delivery receipts themselves are intentionally append-only.
+            async with db.immediate() as conn:
+                await conn.execute(insert(task_delivery_receipts).values(
+                    id="external", domain_key="external", source_task_id="missing",
+                    target_task_id="epic", repository_id="r", target_branch="aq/epic",
+                    disposition="code", created_at=1.0,
+                ))
+                await db._apply_transition(
+                    conn, "missing", TaskStatus.READY, context="reopen_with_feedback",
+                    integration_delivery=view, allow_missing_provenance_reopen=True,
+                )
+        else:
+            await db.transition_task(
+                "missing", TaskStatus.READY, context="reopen_with_feedback",
+                integration_delivery=view, allow_missing_provenance_reopen=True,
+            )
+    assert refused.value.code == ("delivery_target_fixed" if obstacle == "receipt"
+                                  else "delivery_unknown")
+    assert (await db.get_task("missing")).status is TaskStatus.COMPLETED
+
+
 async def test_git_first_reparent_guard_refuses_completed_work_without_receipts(active_git_world):
     """Completed work fixes the target even before the delivery evidence fence."""
     from src.integration.hierarchy import HierarchyIntegration

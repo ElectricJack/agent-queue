@@ -4937,6 +4937,45 @@ async def test_delivered_epic_with_stale_completion_does_not_block_root(collecte
     assert blockers == []
 
 
+@pytest.mark.parametrize("proof", ["provenance", "legacy", "unproven", "older_completion"])
+async def test_retired_epic_reports_delivered_only_with_current_root_proof(world, proof):
+    db, origin = world.db, world.origin
+    source = await completed(world, "epic", land=proof == "provenance",
+                             done=proof != "legacy", pr=False)
+    if proof == "legacy":
+        await close(db, "epic", [source])  # historical completion without Git provenance
+    await db.set_task_meta("epic", "container", True)
+    # The designated root can differ from main. Legacy deliveries need neither
+    # the private branch nor retained completion provenance to remain present.
+    git(origin.clone, "push", "origin", "main:dev")
+    await db.update_repo("r", default_branch="dev")
+    if proof in {"legacy", "older_completion"}:
+        await legacy_delivery(world, "epic", source, target_ref="dev")
+    if proof == "older_completion":
+        await close(db, "epic", [source], close_id="later-close", origin=origin)
+    git(origin.clone, "push", "origin", "--delete", "aq/epic")
+    completions = await db.get_task_completions("epic")
+    train, github, _ = await hosted_train(world)
+    target = TrainTarget("p", "r", "refs/heads/aq/epic", "epic")
+    visit = await train.request_visit(target)
+    delivered = proof in {"provenance", "legacy"}
+    assert visit.state == ("delivered" if delivered else "blocked"), visit
+    assert not visit.batch_id
+    if delivered:
+        [event] = visit.detail["epic_completions"]
+        assert event["code"] == "epic_delivered" and event["blocking"] is False
+        assert event["target_ref"] == "refs/heads/dev"
+        assert "blockers" not in visit.detail
+    else:
+        assert [b["code"] for b in visit.detail["blockers"]] == ["missing_target"]
+    assert await db.get_task_completions("epic") == completions
+    assert not github.records
+    status = await IntegrationStatusService(db, git_first="active", train=train).control_status("p")
+    [reported] = status["targets"]
+    assert reported["state"] == visit.state
+    assert bool(status["blockers"]) is not delivered
+
+
 async def test_closed_epic_retries_after_child_origins_retire(collected_epic):
     case = collected_epic
     await collect_epic(case)

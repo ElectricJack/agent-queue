@@ -1920,6 +1920,18 @@ class EpicCompletions:
         node = graph.node(graph.epic_id)
         if not node.container or (graph.project_id, graph.repository_id) != target.key[:2]:
             return ()
+        # Collection readiness gates work still owed; it cannot undo delivery.
+        # Retired epic refs are expected after landing, so use the designated
+        # root from this same fetch before examining the private branch.
+        root = snapshot.for_target(graph.default_ref)
+        delivered = await project_delivered(
+            self.db, [node.task_id], project_id=graph.project_id,
+            repository_id=graph.repository_id, target_ref=graph.default_ref, snapshot=root,
+        )
+        if node.task_id in delivered:
+            return ({"code": "epic_delivered", "task_id": node.task_id, "ref": node.task_id,
+                     "target_ref": graph.default_ref, "target_sha": root.target_oid,
+                     "blocking": False, "detail": "epic is already delivered to the project root"},)
         # Provider refreshes stay outside the hierarchy/action transaction.
         refused = await self.refresh(graph, snapshot) or ()
         readiness = await self.evaluator.evaluate(graph, snapshot)

@@ -4879,6 +4879,15 @@ class TaskCommandsMixin:
             "assigned_agent_id": None,
             "pr_url": None,
         }
+        # Missing provenance is recoverable only through an explicit operator
+        # control. Ordinary lifecycle writes and reviewer rejections retain the
+        # unknown-delivery fence.
+        from src.commands.supervisor_authority import operator_or_supervisor
+
+        _, recovery_refusal = await operator_or_supervisor(
+            self.db, task.project_id, subject="task reopen"
+        )
+        transition_values["allow_missing_provenance_reopen"] = recovery_refusal is None
         if review_evidence_snapshot is None:
             await self.db.transition_task(task_id, TaskStatus.READY, **transition_values)
         else:
