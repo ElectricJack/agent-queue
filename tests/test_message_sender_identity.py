@@ -69,6 +69,9 @@ async def api(env, monkeypatch):
             task_id=None, project_id=project_id, elevated=elevated,
         )
     monkeypatch.setattr(dependencies, "_token_store", store)
+    # Router tests own their handler; a prior create_app() may leave a live
+    # orchestrator whose handler (and asyncpg pool) belongs to another loop.
+    monkeypatch.setattr(dependencies, "_orchestrator", None)
     monkeypatch.setattr(dependencies, "_command_handler", handler)
     monkeypatch.setattr(dependencies, "_require_session_token", False)
     app = FastAPI()

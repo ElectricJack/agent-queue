@@ -34,6 +34,40 @@ def integration() -> None:
     """Inspect integration Subjects and apply current recovery proofs."""
 
 
+@integration.command("supersede-completion")
+@click.argument("task_id")
+@click.option("--project", "project_id", required=True)
+@click.option("--subject", "subject_id", required=True)
+@click.option("--expected-version", required=True, type=click.IntRange(min=0))
+@click.option("--expected-claim-epoch", required=True, type=click.IntRange(min=0))
+@click.option("--completion", "completion_id", required=True)
+@click.option("--head", "expected_head_sha", required=True, help="Exact retained source OID.")
+@click.option("--human-reply", "human_reply_id", required=True,
+              help="Original verified escalation reply, bound to this task.")
+@click.option("--reason", required=True, help="Interpretation of the human supersession directive.")
+@click.option("--proof", "expected_proof_sha256", help="SHA256 returned by preview.")
+@click.option("--apply/--dry-run", default=False, help="Settle this Subject and close obsolete.")
+@click.pass_context
+@_handle_errors
+def integration_supersede_completion(ctx, task_id, project_id, subject_id, expected_version,
+                                    expected_claim_epoch, completion_id, expected_head_sha,
+                                    human_reply_id, reason, expected_proof_sha256, apply):
+    """Retire one superseded passing root without invoking its stale close pipeline.
+
+    Local operator or live owning supervisor only. Preview preserves all rows;
+    apply rechecks the exact source, episode, owner and stopped writer proofs.
+    """
+    if apply and not expected_proof_sha256:
+        raise click.UsageError("--apply requires --proof SHA256 returned by preview")
+    _execute(ctx, "integration_supersede_completion", {
+        "task_id": task_id, "project_id": project_id, "subject_id": subject_id,
+        "expected_version": expected_version, "expected_claim_epoch": expected_claim_epoch,
+        "completion_id": completion_id, "expected_head_sha": expected_head_sha,
+        "human_reply_id": human_reply_id, "reason": reason,
+        "expected_proof_sha256": expected_proof_sha256, "dry_run": not apply,
+    })
+
+
 @integration.command("migrate-provenance-refs")
 @click.argument("project_id")
 @click.option("--apply/--dry-run", default=False, help="Copy verified refs, then delete old heads.")

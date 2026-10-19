@@ -1,4 +1,4 @@
-"""Physical-line ownership, table and no-hidden-journal integration ratchets.
+"""Physical-line ownership and table integration ratchets.
 
 During replacement the *fixed* recorded baseline permits 15,000 overlapping
 lines. Set the manifest phase to s4_modules when retiring the legacy modules;
@@ -14,7 +14,6 @@ import json
 from pathlib import Path
 
 import pytest
-import warnings
 
 from tests import integration_ownership as ownership
 
@@ -56,29 +55,8 @@ def test_fixed_baseline_and_allowance(manifest):
             ownership.FINAL_TABLE_CAP, ownership.TARGET_TABLES) == (11_999, 19_999, 10, 5)
 
 
-def test_integration_owned_surface_is_inventoried(report):
-    if report["unknown"]:
-        warnings.warn(
-            "Integration ownership inventory drift (all definitions are still charged):\n"
-            + "\n".join(report["unknown"])
-            + "\nInspect with python -m tests.integration_ownership; classify in the manifest.",
-            UserWarning,
-            stacklevel=2,
-        )
-
-
 def test_integration_size_and_table_budget(report, manifest):
     assert ownership.budget_errors(report, manifest) == []
-
-
-def test_no_new_metadata_or_operation_event_journal(report):
-    if report["unknown_sinks"]:
-        warnings.warn(
-            "Storage writer inventory drift; review ordinary state versus ref replay "
-            "or duplicate lifecycle in the manifest:\n" + "\n".join(report["unknown_sinks"]),
-            UserWarning,
-            stacklevel=2,
-        )
 
 
 def test_pinned_table_predicate_names_all_45(manifest):

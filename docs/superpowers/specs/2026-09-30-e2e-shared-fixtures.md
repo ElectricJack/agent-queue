@@ -10,7 +10,13 @@ predecessors in its own fixture. Successful predecessors are reused in a complet
 run. Failure invalidates that chain and cleans its state before another item.
 All other scenarios begin with empty task frontiers and no live sessions. Cleanup
 uses public commands, restores swarm, fake-provider modes and the failover policy,
-and deletes scenario tasks including terminal rows. Cleanup failure fails the
+and deletes scenario tasks including terminal rows. After explicitly restoring
+the required failover policy, both S16 and shared-world cleanup wait at most
+15 seconds for an actual `/ready` success. The activation write can precede the
+background health snapshot; its cached disabled verdict must not poison the next
+scenario. An expired wait reports the failing checks and prevents world reuse;
+it never accepts an inactive policy or changes the general preflight's refusal
+of confirmed database and required-policy failures. Cleanup failure fails the
 item and prevents reuse of a contaminated daemon. Final teardown runs even when
 environment preparation or a scenario fails.
 
@@ -32,6 +38,14 @@ convergence budget.
 Regression checks cover scenario collection and selection, prerequisites, failure
 cleanup, fixture reuse, daemon isolation, global restoration and coverage parity.
 Fixture/probe safety suites remain separate from the real-daemon acceptance arm.
+
+Readiness uses the daemon's background health snapshot. The kit requires an
+overall ready verdict and successful database check; a stale snapshot must not
+authorize scenarios. Initializing, stale and timed-out collection states may
+recover within a bounded 15-second preflight wait. They are reported as unavailable
+health evidence, not database corruption. A reported database error fails without
+retrying, and an expired wait still refuses to run scenarios. Existing-daemon
+startup and the final smoke preflight use this wait; status remains a single probe.
 
 CLI imports are a measured bottleneck. Pytest opts into a per-world Unix-socket
 launcher which registers the real CLI once and forks a new CLI child with a fresh

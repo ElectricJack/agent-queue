@@ -97,10 +97,11 @@ harness, never by rung id. Key by key:
   the OpenCode lanes. `escalate` makes a kind try its default class first,
   regardless of a hint, classifier class or risk class floor. Bugfixes start
   at `standard-high` and move to `deep-high` after one substantive failed
-  attempt. Worker give-up, failed verification and rejected review count;
-  explicitly transient failures, lost workers, session close errors and
-  provider outages do not. Retry/reopen goes back through this router and the
-  plan records `escalated_after_failure` with the failed attempts.
+  attempt. Worker give-up and failed verification count; explicitly
+  transient failures, lost workers, session close errors, provider outages
+  and review feedback on a completed task (rework, not failure) do not.
+  Retry/reopen goes back through this router and the plan records
+  `escalated_after_failure` with the failed attempts.
 - `risk`: what the classifier's `risk` answer does. The classifier judges
   how much damage the change could do if it is wrong, separately from how hard
   it is; the "Classifying a task" section below gives the guidance. A level

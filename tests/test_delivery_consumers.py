@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import subprocess
 import time
 from unittest.mock import AsyncMock
@@ -42,45 +41,18 @@ def git(path, *args) -> str:
     ).strip()
 
 
-def _disable_auto_maintenance(repo) -> None:
-    # Keep the shared seed immutable during copytree, including receive-pack:
-    # local transport does not propagate command-line -c to the bare origin.
-    for key, value in (
-        ("maintenance.auto", "false"),
-        ("gc.auto", "0"),
-        ("receive.autogc", "false"),
-    ):
-        git(repo, "config", key, value)
-
-
 class Origin:
-    def __init__(self, tmp_path, *, template=None):
+    def __init__(self, tmp_path):
         self.url = str(tmp_path / "origin.git")
         self.clone = tmp_path / "clone"
-        if template is not None:
-            shutil.copytree(template.url, self.url)
-            shutil.copytree(template.clone, self.clone)
-            git(self.clone, "remote", "set-url", "origin", self.url)
-            return
         init_bare_seed(self.url)
-        self._disable_auto_maintenance(self.url)
         clone_seed(self.url, self.clone)
-        self._disable_auto_maintenance(self.clone)
         git(self.clone, "config", "user.name", "Tester")
         git(self.clone, "config", "user.email", "tester@example.test")
         (self.clone / "base.txt").write_text("base\n")
         git(self.clone, "add", ".")
         git(self.clone, "commit", "-q", "-m", "base")
         git(self.clone, "push", "-q", "origin", "main")
-
-    @staticmethod
-    def _disable_auto_maintenance(repo) -> None:
-        # Detached maintenance can remove objects/maintenance.lock while copytree
-        # walks the seed. Local receive-pack needs its own repository config too.
-        for key, value in (
-            ("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false"),
-        ):
-            git(repo, "config", "--local", key, value)
 
     def work(self, tid: str, name: str = "work") -> str:
         git(self.clone, "fetch", "-q", "origin")
@@ -100,22 +72,22 @@ class Origin:
         git(self.clone, "push", "-q", "origin", "main")
 
 
-def test_origin_template_and_copies_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
+def test_fresh_origins_do_not_launch_auto_maintenance(tmp_path, monkeypatch):
     trace = tmp_path / "git-trace.json"
     config = tmp_path / "empty-git-config"
     config.touch()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
-    seed_root = tmp_path / "seed"
-    seed_root.mkdir()
-    seed = Origin(seed_root)
-    seed_head = git(seed.url, "rev-parse", "main")
-    copied = Origin(tmp_path, template=seed)
-    copied_head = copied.work("private-copy")
-    assert git(seed.url, "rev-parse", "main") == seed_head
-    assert git(seed.url, "for-each-ref", "refs/heads/aq/private-copy") == ""
-    assert git(copied.url, "rev-parse", "aq/private-copy") == copied_head
+    first_root = tmp_path / "first"
+    first_root.mkdir()
+    first = Origin(first_root)
+    first_head = git(first.url, "rev-parse", "main")
+    second = Origin(tmp_path)
+    second_head = second.work("private-work")
+    assert git(first.url, "rev-parse", "main") == first_head
+    assert git(first.url, "for-each-ref", "refs/heads/aq/private-work") == ""
+    assert git(second.url, "rev-parse", "aq/private-work") == second_head
     commands = [json.loads(line).get("argv", []) for line in trace.read_text().splitlines()]
     assert not [
         args for args in commands
@@ -141,15 +113,9 @@ async def close(db, tid: str, commits: list[str], *, close_id: str | None = None
     await db.transition_task(tid, TaskStatus.COMPLETED)
 
 
-@pytest.fixture(scope="session")
-def origin_template(tmp_path_factory):
-    """Reuse only the starting Git history; refs and working files remain private."""
-    return Origin(tmp_path_factory.mktemp("delivery-git-template"))
-
-
 @pytest.fixture
-async def world(tmp_path, reuse_database, origin_template):
-    origin = Origin(tmp_path, template=origin_template)
+async def world(tmp_path, reuse_database):
+    origin = Origin(tmp_path)
     db = await reuse_database("delivery-consumers.db")
     await db.create_project(Project(id="p", name="Development"))
     await db.create_repo(

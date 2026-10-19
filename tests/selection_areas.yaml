@@ -391,6 +391,7 @@ areas:
       - tests/test_integration_properties.py
       - tests/test_integration_root_noop.py
       - tests/test_integration_record_delivered.py
+      - tests/test_integration_superseded_completion.py
       - tests/test_integration_operator_decisions.py
       - tests/test_integration_cli_controls_present.py
       - tests/test_integration_train.py

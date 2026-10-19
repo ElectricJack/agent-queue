@@ -869,7 +869,23 @@ and Checkout columns and a partial-readback footer.
 
 #### `remove_workspace`
 
-Deletes a workspace.
+Deletes a workspace. Both agent and task locks must be released first.
+For a missing non-slot directory, removal atomically cleans matching repository
+registrations in the same project (LINK source path or CLONE checkout base path)
+and records `workspace.registration_removed` with the path and removed repository
+IDs in the event audit log. A repository shared by another workspace is retained.
+Pinned workspaces, live sessions, child slots, designated integration repositories
+and referenced repository identities refuse cleanup; restore or repair their
+ownership/references before retrying. Filesystem contents are never deleted.
+
+`workspace_doctor` reports `missing_workspace_path` independently of the worktree
+rollout flag, with restore/remove instructions; a locked row requires owner
+verification and release first. Missing paths do not also produce misleading
+managed-exclude findings. The daily branch backstop reports missing non-slot
+workspaces and missing LINK sources once per registration/path until restored
+or changed, persisting notice state only after supervisor delivery succeeds.
+These are inventory notices rather than Git sweep failures. Repository identity
+and live branch holds remain available to sweeps of other healthy checkouts.
 
 **Parameters:**
 - `workspace_id` (required)

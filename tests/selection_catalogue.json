@@ -633,6 +633,7 @@
         "tests/test_integration_stall_recovery.py",
         "tests/test_integration_state.py",
         "tests/test_integration_subjects.py",
+        "tests/test_integration_superseded_completion.py",
         "tests/test_integration_train.py",
         "tests/test_integration_train_sources.py"
       ]
@@ -1636,16 +1637,18 @@
         "claims"
       ],
       "default_arm": false,
-      "digest": "sha256:82545c2cafcb1a233a03479004d75a727cfc5cb349104ee2289c5a5176e2d62e",
+      "digest": "sha256:2c259da0c0e60e74da04f779395c0597090b3893b6237112bdc64626af46b463",
       "imports": [
         "src.claim_file",
         "src.commands.handler",
         "src.config",
+        "src.database.tables",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator"
       ],
       "markers": [
+        "parametrize",
         "perf"
       ],
       "summary": "Statement/latency budgets for the claim path and pool reconcile — spec §15."
@@ -3193,7 +3196,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:6e5dc5af15d2cb09fea81b1550ec6eacb89b587c73b5eb9200845d2b75b56456",
+      "digest": "sha256:ac6b0482dac99ec8da9a18da82d5ed163af0ed7baa346aeacf7983a6de5da94f",
       "imports": [
         "src.database.tables",
         "src.git.github_app",
@@ -3201,7 +3204,9 @@
         "src.integration.branch_discard",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The drain that removes branches an operator asked to discard."
     },
     "tests/test_branch_isolated_workspace.py": {
@@ -3247,11 +3252,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:9735d18a14c64b32ad5a47b8a28e9c175b6837ea0c9ddedab44c5dae2a1e4be8",
+      "digest": "sha256:4712135f0f3e7055ed6a73f979616acc8bdaa0b32ea92c4df58bd5dba0ae91cf",
       "imports": [
         "src.database.tables",
         "src.git.manager",
         "src.integration",
+        "src.integration.branch_discard",
         "src.integration.branch_sweep",
         "src.integration.lock",
         "src.integration.models",
@@ -3452,7 +3458,7 @@
         "ci-sentinel"
       ],
       "default_arm": true,
-      "digest": "sha256:518fd6fcdd9606babb3a554de1dc933dd7c68a36487db2dec75a87109dfd9370",
+      "digest": "sha256:3e2f70d9e5f534bcf2700bfd07f2bf28b4e3d6f15dc550ca7bc69a3c7f3f8a36",
       "imports": [
         "src.api.auth",
         "src.api.scope",
@@ -3464,7 +3470,8 @@
         "src.git.manager",
         "src.integration.completion_ci",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.projects.github"
       ],
       "markers": [
         "parametrize"
@@ -3524,11 +3531,13 @@
         "claims"
       ],
       "default_arm": true,
-      "digest": "sha256:3ffab93a066825f3db1d402344eec66df33d271e4b9a8b87d648e1873efd995a",
+      "digest": "sha256:45e846cb1c245c70257c594be4973d9709aebba30c666fe78d0c09a83d2a033e",
       "imports": [
+        "src.api.auth",
         "src.api.models.session",
         "src.api.models.task",
         "src.claim_file",
+        "src.claim_preparation",
         "src.claim_timing",
         "src.commands.claim_commands",
         "src.commands.handler",
@@ -4112,7 +4121,7 @@
         "task-comments"
       ],
       "default_arm": true,
-      "digest": "sha256:f704d6f04b824bfd9f602c8e49266368efa83e7d9d4ed854d36d5682a2f38150",
+      "digest": "sha256:252412a90d4ca5beda33eacb7cd1fa7a6351c68464b896c132504c2c993d0647",
       "imports": [
         "src.cli.app",
         "src.config",
@@ -4122,7 +4131,8 @@
         "src.prime.sections"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Worker findings/comments CLI and fresh-session context contracts."
     },
@@ -5561,7 +5571,7 @@
         "development-delivery"
       ],
       "default_arm": true,
-      "digest": "sha256:b5a7e4d289fee8791e8954dcbd18c2acaba6d070f0064c906d3c991b67859076",
+      "digest": "sha256:06c7336f0935b37dc2215fb582639fa266ac83fb2b456be2b8b77c01a15577f7",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -5576,6 +5586,7 @@
         "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.models",
+        "src.integration.promotion_contracts",
         "src.integration.provenance",
         "src.integration.repository_git",
         "src.integration.repository_incidents",
@@ -6275,8 +6286,13 @@
         "e2e-kit"
       ],
       "default_arm": true,
-      "digest": "sha256:8ca029f221fdcce9e55a6354fb9b879b2a72c4afd39204ce189c5e37a4486ad5",
-      "imports": [],
+      "digest": "sha256:0ea17f5934ba1e8bd23b0f200b3364aebd3ffe22ab1e2b09f5523fe6a65c3e46",
+      "imports": [
+        "src.api",
+        "src.api.dependencies",
+        "src.api.health",
+        "src.api.health_monitor"
+      ],
       "markers": [
         "parametrize",
         "skipif"
@@ -7196,12 +7212,12 @@
         "git-manager"
       ],
       "default_arm": true,
-      "digest": "sha256:f3acff7ae8bc485861bea621b8e2f2aad9f84ceb343a930e68c097c9b18156ec",
+      "digest": "sha256:aa0809359057b98ffb2bc33f947be5c22e1170afcda5a3c8bff994c6966ad015",
       "imports": [],
       "markers": [
         "parametrize"
       ],
-      "summary": "Shared seed construction must finish without launching background Git writers."
+      "summary": "Git fixtures build independent repositories without filesystem snapshots."
     },
     "tests/test_github_access_architecture.py": {
       "areas": [
@@ -8371,11 +8387,13 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:023248fa74e33353ecae752495f06a241ca179f745b3542369db2849f28ddab7",
+      "digest": "sha256:7cc1f95fe58255f68161210d3b7029185004680be3c30f5ed731b84c36b8fc65",
       "imports": [
         "src.cli.app"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Ensure the operator integration controls are registered in the CLI."
     },
     "tests/test_integration_completed_container_recovery.py": {
@@ -9323,12 +9341,12 @@
         "integration-trains"
       ],
       "default_arm": true,
-      "digest": "sha256:a3623e780ca9810f6f847ef05ad71aed056cc152eede53ebd9c9d7393ef620e3",
+      "digest": "sha256:fad0804d209c5cf3d8ab546621f78cab366e7431315a8d1eaa5388fdddf88023",
       "imports": [],
       "markers": [
         "parametrize"
       ],
-      "summary": "Physical-line ownership, table and no-hidden-journal integration ratchets."
+      "summary": "Physical-line ownership and table integration ratchets."
     },
     "tests/test_integration_source_ancestry.py": {
       "areas": [
@@ -9474,6 +9492,35 @@
         "parametrize"
       ],
       "summary": "Integration subjects: the durable rows and typed ports of the reconciler."
+    },
+    "tests/test_integration_superseded_completion.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "digest": "sha256:576f5d5fb102c49241b309256fb3c923773dd117c203dfba8e472c61addba7e4",
+      "imports": [
+        "src.commands.contracts.integration",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.engine",
+        "src.integration.git_truth",
+        "src.integration.provenance",
+        "src.integration.runtime_contracts",
+        "src.integration.superseded_completion",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.sessions.obsolete"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Supersession proves one incident against disposable PostgreSQL and Git."
     },
     "tests/test_integration_train.py": {
       "areas": [
@@ -18523,17 +18570,20 @@
         "workspaces"
       ],
       "default_arm": true,
-      "digest": "sha256:a3f558e5efe09d13afbed67337c7ac7fff923e4542b40bbe6916729d0d18dc69",
+      "digest": "sha256:aaacefcd8267b25580c3f069b65fb95b97a2e58d90692ff7987e515d55cf9a1b",
       "imports": [
         "src.commands.handler",
         "src.config",
         "src.database.queries.claim_queries",
+        "src.integration.lock",
+        "src.integration.models",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.task_checkpoint",
         "src.orchestrator.worktree_manager",
         "src.runtimes.base",
-        "src.sessions.proctable"
+        "src.sessions.proctable",
+        "src.workspace_registration"
       ],
       "markers": [
         "parametrize"

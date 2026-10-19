@@ -372,7 +372,9 @@ class Orchestrator(
         # Daemon-owned preparation tasks, distinct from notification futures: a live
         # workspace reset must finish or be cancelled before reclaiming it.
         self.claim_preparations: dict[tuple[str, str, int | None], asyncio.Task] = {}
-        self.claim_preparation_results: dict[str, tuple[int, str, str, dict]] = {}
+        from src.claim_preparation import CompletedClaimPreparation
+
+        self.claim_preparation_results: dict[str, CompletedClaimPreparation] = {}
         self.claim_timings: dict = {}
         # Worker-pool sizing state (swarm-work-model §11), owned by
         # ``PoolsMixin``.  ``_pool_surplus_since`` tracks how long each
@@ -3830,6 +3832,8 @@ class Orchestrator(
 
     async def _run_daily_git_branch_sweep(self, scheduled_date: str | None = None) -> None:
         """Run each project's backstop and deliver its counts to its supervisor."""
+        import hashlib
+        import json
         from datetime import UTC, datetime
 
         from functools import partial
@@ -3842,7 +3846,9 @@ class Orchestrator(
         )
         from src.integration.delivery_branches import live_branch_references
         from src.integration.provenance_migration import ProvenanceMigration
+        from src.integration.repository_recovery import ensure_retained_origin
         from src.models import RepoSourceType
+        from src.workspace_registration import path_is_missing, workspace_missing_detail
 
         try:
             projects = await self.db.list_projects()
@@ -3883,19 +3889,47 @@ class Orchestrator(
                     retired = await retirement.reconcile_project(project.id)
                 except Exception as exc:
                     failures.append(f"retirement recovery failed ({exc})")
+            inventory_complete = True
             try:
                 repositories = await self.db.list_repos(project_id=project.id)
-                workspaces = await self.db.list_workspaces(project_id=project.id)
+                workspaces = list(await self.db.list_workspaces(project_id=project.id))
             except Exception as exc:
+                inventory_complete = False
                 failures.append(f"{project.name}: workspace list failed ({exc})")
                 repositories, workspaces = [], []
+            # Missing registrations are inventory issues, not failed Git probes.
+            # Keep them (and their repository identity/holds) until an operator
+            # restores or explicitly removes them. Persist notices across days
+            # and restarts, only after the supervisor report is accepted.
+            notice_marker = project_marker.with_name(project_marker.name + ".missing-paths")
+            try:
+                previous_notices = set(json.loads(notice_marker.read_text(encoding="ascii")))
+            except (OSError, ValueError, TypeError):
+                previous_notices = set()
+            missing_notices: dict[str, str] = {}
+            missing_paths = set()
+            for ws in workspaces:
+                if (not ws.is_slot and ws.kind_id != "job-snapshot"
+                        and path_is_missing(ws.workspace_path)):
+                    missing_paths.add(str(Path(ws.workspace_path).resolve()))
+                    key = json.dumps(["workspace", ws.id, ws.workspace_path])
+                    missing_notices[key] = workspace_missing_detail(ws)
             extra_paths = [getattr(project, "workspace_path", None)]
             repository_origins = []
+            retained_origins = {}
             for repository in repositories:
                 origin = repository.url
                 if getattr(repository, "source_type", None) is RepoSourceType.LINK:
                     extra_paths.append(repository.source_path)
-                    if not origin:
+                    missing = path_is_missing(repository.source_path)
+                    if missing:
+                        key = json.dumps(["repository", repository.id, repository.source_path])
+                        if str(Path(repository.source_path).resolve()) not in missing_paths:
+                            missing_notices[key] = (
+                                f"repository {repository.id}: {repository.source_path} is missing; "
+                                "restore the directory or remove its stale repository registration"
+                            )
+                    if not origin and not missing:
                         try:
                             if not repository.source_path or not Path(repository.source_path).is_dir():
                                 raise ValueError("registered source path is unavailable")
@@ -3909,11 +3943,17 @@ class Orchestrator(
                 if origin:
                     repository_origins.append((repository, origin))
                 extra_paths.append(repository.checkout_base_path)
-                if retirement is not None:
-                    extra_paths.append(str(retirement.retained_store(repository.id)))
+                digest = hashlib.sha256(repository.id.encode()).hexdigest()
+                retained_paths = [
+                    Path(self.config.data_dir) / "integration-repositories" / f"{digest}.git",
+                ]
                 publisher = getattr(self, "development_integration", None)
                 if publisher is not None:
-                    extra_paths.append(str(publisher._store_path(repository)))
+                    retained_paths.append(publisher._store_path(repository))
+                for path in retained_paths:
+                    extra_paths.append(str(path))
+                    if origin:
+                        retained_origins[str(Path(path).resolve())] = origin
             # A checkout no registration matches falls back to the project's own
             # repository: its repo_url, or with neither, the checkout's origin.
             project_url = getattr(project, "repo_url", "") or ""
@@ -3951,6 +3991,9 @@ class Orchestrator(
                 if common_path in seen_common_dirs:
                     continue
                 try:
+                    retained_origin = retained_origins.get(str(Path(checkout).resolve()))
+                    if retained_origin:
+                        await ensure_retained_origin(self.git, checkout, retained_origin)
                     repository_url = await self.git._arun(
                         ["config", "--get", "remote.origin.url"], cwd=checkout
                     )
@@ -4058,6 +4101,10 @@ class Orchestrator(
             ]
             if failures:
                 lines.append(f"Failures ({len(failures)}): " + "; ".join(failures[:10]))
+            new_notices = [detail for key, detail in missing_notices.items()
+                           if key not in previous_notices]
+            if new_notices:
+                lines.append("Missing workspace registrations: " + "; ".join(new_notices))
             lines.extend(retirement_lines[1:])
             for row in migrations:
                 if row["action"] == "blocked":
@@ -4074,6 +4121,8 @@ class Orchestrator(
                 # explicit refusal leaves the day open for a retry.
                 if result.get("error") or result.get("success") is False:
                     raise RuntimeError(result.get("error") or "report was not accepted")
+                if inventory_complete:
+                    record_sweep_date(notice_marker, json.dumps(sorted(missing_notices)))
                 record_sweep_date(project_marker, date)
             except Exception:
                 reports_delivered = False

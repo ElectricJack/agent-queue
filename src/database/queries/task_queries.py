@@ -1237,7 +1237,24 @@ class TaskQueryMixin:
         if not task_ids:
             return []
 
+        # PR containment is observed outside transactions. A graph-only ready
+        # notice must not announce a completed PR prerequisite as delivered.
+        pr_edge = task_dependencies.alias()
+        pr_source = task_metadata.alias()
+        pending_pr_source = (
+            select(pr_source.c.task_id)
+            .select_from(
+                pr_edge.join(pr_source, pr_source.c.task_id == pr_edge.c.depends_on_task_id)
+            )
+            .where(
+                pr_edge.c.task_id == tasks.c.id,
+                pr_edge.c.dep_type == "blocks",
+                pr_source.c.key == "pr_dependency_source",
+            )
+            .exists()
+        )
         frontier = and_(
+            ~pending_pr_source,
             tasks.c.id.in_(sorted(task_ids)),
             tasks.c.status == TaskStatus.READY.value,
             tasks.c.is_blocked == 0,
@@ -1315,10 +1332,12 @@ class TaskQueryMixin:
         _defer_projection: bool = False,
         _integration_completion_token=None,
         _operator_adoption_token=None,
+        _obsolete_supersession_token=None,
         _integration_wake_token=None,
         accepted_close: dict | None = None,
         integration_delivery=None,
         _defer_recovery_supersession: bool = False,
+        pr_merge_gate: str | None = None,
         **kwargs,
     ) -> TransitionResult:
         """Validate and update status on a caller-owned connection (work-graph §4.1).
@@ -1350,6 +1369,9 @@ class TaskQueryMixin:
         set defers projection, settlement and frontier work until all mutations apply.
         ``_defer_recovery_supersession`` keeps a repair delegate's incident until
         its branch reservation succeeds; a refused handoff must retain the hold.
+        ``pr_merge_gate`` names the open PR a ``pull_request`` completion left
+        its work on: the task's unstarted ``blocks`` dependents wait on that
+        PR's ``pr-merged`` gate, attached before this transaction's recompute.
         """
         values = self._coerce_task_values(kwargs)
         from src.database.tables import projects
@@ -1568,10 +1590,19 @@ class TaskQueryMixin:
                         )
                     )
                 ).scalar_one_or_none()
+                obsolete_supersession = False
+                if context == "closed_obsolete" and _obsolete_supersession_token is not None:
+                    from src.integration.superseded_completion import SupersessionSettlement
+
+                    obsolete_supersession = (
+                        isinstance(_obsolete_supersession_token, SupersessionSettlement)
+                        and await _obsolete_supersession_token.valid_on(conn, task_id)
+                    )
                 if (
                     managed_parent is not None
                     and _operator_adoption_token is not _OPERATOR_ADOPTION_TOKEN
                     and _integration_completion_token is not _INTEGRATION_COMPLETION_TOKEN
+                    and not obsolete_supersession
                     and not await in_development_mode()
                 ):
                     from src.database.queries.hierarchy_queries import HierarchyError
@@ -1709,6 +1740,11 @@ class TaskQueryMixin:
                         "status.finished" if now_finished else "status.reopened",
                         conn=conn,
                     )
+
+            # COMPLETED is not delivered while the work sits on an open PR.
+            # Gate the dependents before the recompute below can release them.
+            if pr_merge_gate and new_status == TaskStatus.COMPLETED:
+                await self.gate_dependents_on_pr_on(conn, task_id, pr_merge_gate)
 
             if not stable and not _defer_projection:
                 result.flipped |= await self.recompute_blocked({task_id}, conn=conn)
@@ -2358,7 +2394,6 @@ class TaskQueryMixin:
                 )
             )
         return ctx_id
-
 
     async def add_task_handoff(
         self,

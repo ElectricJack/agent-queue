@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report stalled work across every ACTIVE AQ project.
+"""Report stalled work and paused projects holding finished AQ work.
 
 Read-only. Prints one line per finding, or "OK: nothing stalled". Written
 2026-09-21 after the development-publisher stall hid behind tasks closing
@@ -177,6 +177,17 @@ def aq(*args, timeout=60, missing_ok=False):
             for row in reasons
         ):
             return failed("malformed explain reasons")
+    if args[:2] == ("integration", "status"):
+        # The legacy subject control projection has no readiness blockers.
+        if isinstance(data, dict) and data.get("projection_kind") == "subjects":
+            data.setdefault("blockers", [])
+        if (not isinstance(data, dict) or data.get("outcome") != "status"
+                or data.get("project_id") != args[2]
+                or not isinstance(data.get("blockers"), list)
+                or any(not isinstance(row, dict)
+                       or any(not isinstance(row.get(key), str) for key in ("code", "detail"))
+                       for row in data["blockers"])):
+            return failed("malformed integration status")
     if args[:2] == ("session", "list") and any(
         any(not isinstance(row.get(key), str) for key in ("id", "name", "state"))
         or not {"project_id", "task_id", "agent_id", "desired_state"}.issubset(row)
@@ -300,6 +311,15 @@ DEV_PROJECT = "agent-queue"
 # project-owned target and is refused for a project-scoped token. With
 # --project there is nothing to enumerate, so sweep just that project.
 projects = [{"id": ONLY, "status": "ACTIVE"}] if ONLY else (aq("project", "list") or [])
+# Scoped patrols cannot enumerate projects. Integration status resolves the real
+# pause state, and keeps the same authorization/completeness checks as other reads.
+for project in projects:
+    if ONLY or project["status"] == "PAUSED":
+        status = aq("integration", "status", project["id"], "--control-only")
+        if status is not None:
+            for blocker in status["blockers"]:
+                if blocker["code"] == "project_paused":
+                    findings.append(f"PAUSED-PROJECT {project['id']}: {blocker['detail']}")
 VERIFIER_TITLE = re.compile(r"Verify aggregate for (\S+)$")
 open_containers: list[str] = []
 superseded_verifiers: list[str] = []

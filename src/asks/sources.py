@@ -768,7 +768,7 @@ class RecoveryAdapter(SourceAdapter):
         from src.database.queries.task_recovery_queries import recovery_ask_meaning
 
         meaning = recovery_ask_meaning(
-            row, incident, attempt, await self.db._recovery_owner(conn, row)
+            row, incident, attempt, await self.db._recovery_owner(conn, row), meta
         )
         return source_snapshot(
             source,

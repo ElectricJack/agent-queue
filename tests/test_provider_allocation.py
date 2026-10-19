@@ -1371,9 +1371,9 @@ async def test_graceful_drain_never_interrupts_busy_work_or_admits_a_claim(orch,
         assert session.desired_state == "stopped", sid
         assert session.state != "stopped", sid
         # A stopped pool admits no further claim.
-        refusal = _handler(orch)._claim_precondition_refusal(
-            session, {"project_id": session.project_id}, None, {"next": True}
-        )
+        refusal = await _handler(orch).execute("task_claim", {
+            "session_id": sid, "next": True,
+        })
         assert refusal is not None and refusal["result"] == "drain_requested", sid
     busy = await orch.db.get_task("task-alpha-busy")
     assert busy.status == TaskStatus.IN_PROGRESS and busy.assigned_agent_id == "ag-pool-2"

@@ -887,6 +887,10 @@ def _blocked_ignoring_conditional():
     )
 
 
+# Shared: the claim frontier applies the hold filter on every claim.
+_HOLD_LABEL = task_labels.alias("lbl_hold")
+
+
 def apply_label_filters(stmt, *, labels=None, any_label=None, exclude_hold=False):
     """Add ``task_labels`` filters to a ``SELECT ... FROM tasks`` statement.
 
@@ -912,7 +916,7 @@ def apply_label_filters(stmt, *, labels=None, any_label=None, exclude_hold=False
             .exists()
         )
     if exclude_hold:
-        th = task_labels.alias("lbl_hold")
+        th = _HOLD_LABEL
         stmt = stmt.where(
             not_(
                 select(literal(1))
