@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/wait_v2.py`](../../../src/commands/contracts/wait_v2.py) |
-| Contract fingerprint | `sha256:cc44c96b621114a103dcc0d2ed8b6a3f9355488bc174ea757207f425f3cd631d` |
+| Contract fingerprint | `sha256:89aa0be0db941a3eca4b460a5035ade7c32a39e4a5b3a5c5ce9b4d7a27b885a7` |
 
 ## Parameters
 
@@ -22,6 +22,7 @@
 |---|---|---|---|---|
 | `project_id` | `string \| null` | no | `null` | — |
 | `fleet` | `boolean` | no | `false` | — |
+| `costs` | `boolean` | no | `false` | — |
 
 ## Result
 
@@ -42,7 +43,7 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Read using project_id, fleet | — | always |
+| Read using project_id, fleet, costs | — | always |
 
 <!-- aq:generated:end -->
 

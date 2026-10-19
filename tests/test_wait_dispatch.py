@@ -33,7 +33,7 @@ from src.waits.conditions import Condition, Scope
 from src.waits.listener import LeaseLost, ListenerUnavailable
 from src.waits.registry import build_registry
 from src.waits.resource_sources import resource_invalidation
-from src.waits.service import WaitService
+from src.wait_runtime.service import WaitService
 from src.waits.sources import record_source_event
 from tests.test_wait_queries import (
     NOW, env as _runtime_env, records, register, resource_snapshot,
@@ -495,6 +495,9 @@ async def test_deadline_missing_or_failed_effect_and_supersession_do_not_fire(ru
             generation=2, due_at=NOW,
         ))
     service = runtime(env)
+    # This regression exercises an unavailable downstream owner. Production
+    # composition now installs the hibernation transition owner by default.
+    service.orch.wait_deadline_handlers.pop('transition')
     assert await service.lease()
     args = {"wait_id": receipt["wait_id"], "deadline_type": "transition", "generation": 2}
     assert (await service.command("wait_deadline_fire", args))["error_code"] == "wait.unavailable"

@@ -20896,6 +20896,7 @@
         "optional": [
           "--project",
           "--fleet",
+          "--costs",
           "--json",
           "--brief",
           "--save-output",

@@ -1049,6 +1049,9 @@ class CommandHandler(
                 # plugin path previously ran with no capability check at all.
                 # It composes with, and does not replace, check_request_scope:
                 # a command must pass both.
+                wait_refusal = await self._wait_mutation_fence(name, principal, mutating=mutating)
+                if wait_refusal:
+                    return wait_refusal
                 decision = authorize_command(
                     name,
                     principal,

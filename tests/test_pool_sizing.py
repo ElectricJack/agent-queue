@@ -446,3 +446,33 @@ def test_drain_session_ids_are_the_fleet_wide_idle_set():
         now=500.0,
     )
     assert [(a.kind, a.count, a.session_ids) for a in actions] == [("drain", 2, ("a1", "b1"))]
+
+
+@pytest.mark.parametrize('capacity,cap,expected', [(0, 1, 'evict'), (1, 2, 'deficit')])
+def test_eviction_replaces_only_capacity_blocked_waiters(capacity, cap, expected):
+    from src.scheduler import PlacementCandidate, place_pool_actions
+
+    actions, _ = run(supply={K: PoolSupply(running_busy=1, evictable=1)},
+                     demand={K: 1}, bounds={K: (0, cap)}, global_cap=cap)
+    starts, drains, _ = place_pool_actions(actions=actions, candidates={K: [PlacementCandidate(
+        project_id='p', ready=1, live=1, project_live_total=1, project_cap=cap,
+        workspace_capacity=capacity, quarantined=False, warm_floor=0, evictable=1,
+    )]})
+    assert [(s.reason, s.count) for s in starts] == [(expected, 1)]
+    assert not drains
+
+
+def test_eviction_does_not_turn_busy_work_or_free_idle_supply_into_a_victim():
+    from src.scheduler import PlacementCandidate, place_pool_actions
+
+    actions, _ = run(supply={K: PoolSupply(running_busy=1)}, demand={K: 1},
+                     bounds={K: (0, 1)}, global_cap=1)
+    assert not actions
+    actions, _ = run(supply={K: PoolSupply(running_busy=1, running_idle=1, evictable=1)},
+                     demand={K: 1}, bounds={K: (0, 2)}, global_cap=2)
+    starts, _, _ = place_pool_actions(actions=actions, candidates={K: [PlacementCandidate(
+        project_id='p', ready=1, live=2, project_live_total=2, project_cap=2,
+        workspace_capacity=0, quarantined=False, warm_floor=0, evictable=1,
+        idle_session_ids=('idle',),
+    )]})
+    assert not starts

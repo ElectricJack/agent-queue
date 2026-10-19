@@ -1,4 +1,4 @@
-"""Verified-wait lifecycle vocabulary (implementation §6; services remain opt-in)."""
+"""Verified-wait lifecycle vocabulary and typed condition boundaries."""
 
 from __future__ import annotations
 
@@ -11,10 +11,11 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert
 
+from src.database.tables import continuations, wait_records
+
 from src.api.models.task import TaskDetail, TaskDict
 from src.commands.task_commands import TaskCommandsMixin
 from src.database.queries.metrics_queries import _live_sessions_stmt
-from src.database.tables import continuations, wait_records
 from src.models import (
     OPEN_TASK_STATUSES,
     SUSPENDED_TASK_STATUSES,
@@ -389,3 +390,48 @@ def test_wait_package_has_no_imports_from_command_session_or_orchestrator_packag
                 name.startswith(("src.commands", "src.sessions", "src.orchestrator"))
                 for name in names
             ), path
+
+
+@pytest.mark.parametrize('changes,expected', [
+    ({'hibernation_enabled': False, 'kind': 'human'}, ('in_place', 'flag')),
+    ({'kind': 'human'}, ('hibernate', 'forced')),
+    ({'loop_detected': True}, ('hibernate', 'forced')),
+    ({'expected_duration_seconds': 1201}, ('hibernate', 'duration')),
+    ({'expected_duration_seconds': 601, 'slot_pressure': 1}, ('hibernate', 'pressure')),
+    ({'expected_duration_seconds': 600, 'slot_pressure': 1}, ('in_place', 'short')),
+    ({'expected_duration_seconds': 1200}, ('in_place', 'short')),
+    ({'now': 1700, 'expected_duration_seconds': 101}, ('hibernate', 'ceiling')),
+    ({'now': 1700, 'expected_duration_seconds': 100}, ('in_place', 'short')),
+])
+def test_sleep_policy_order_and_boundaries(changes, expected):
+    from src.waits.decision import SleepInputs, decide_sleep
+
+    values = dict(kind='job', expected_duration_seconds=30, resume_cost_minutes=10,
+                  hibernate_margin=2, slot_pressure=0, in_place_ceiling_seconds=1800,
+                  ceiling_anchor_at=0, now=0, hibernation_enabled=True)
+    decision = decide_sleep(SleepInputs(**(values | changes)))
+    assert (decision.mode, decision.reason) == expected
+    assert set(values) <= set(decision.inputs)
+
+
+def test_sleep_policy_resolves_project_defaults_and_measured_cohorts():
+    from src.config_wait_policy import WaitKindPolicy, WaitPolicyConfig, WaitProjectOverrides
+    from src.waits.decision import measured_inputs, project_policy
+
+    policy = WaitPolicyConfig(projects={'p': WaitProjectOverrides(
+        resume_cost_minutes=20, in_place_ceiling_seconds=3600,
+        kinds={'job': WaitKindPolicy(expected_duration_seconds=100)},
+    )})
+    resolved = project_policy(policy, 'p')
+    assert policy.resume_cost_minutes == 10
+    cond = Condition('job', {}, context={'source_class': 'build'})
+    medians = {'durations': {('job', 'build'): {'count': 4, 'median': 77}},
+               'cost': {'count': 4, 'median': 300}}
+    inputs = measured_inputs(cond, None, policy=resolved, medians=medians,
+                             pressure=2, anchor=10, now=20)
+    assert inputs.expected_duration_seconds == 100 and inputs.resume_cost_minutes == 20
+    medians['durations'][('job', 'build')]['count'] = 5
+    medians['cost']['count'] = 5
+    inputs = measured_inputs(cond, None, policy=resolved, medians=medians,
+                             pressure=2, anchor=10, now=20)
+    assert inputs.expected_duration_seconds == 77 and inputs.resume_cost_minutes == 5

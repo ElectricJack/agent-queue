@@ -94,6 +94,7 @@ class WaitExplainArgs(WaitV2ScopeArgs):
 class WaitGraphArgs(CommandArgs):
     project_id: str | None = None
     fleet: bool = False
+    costs: bool = False
 
     @model_validator(mode="after")
     def target(self):

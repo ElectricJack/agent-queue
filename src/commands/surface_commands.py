@@ -448,6 +448,11 @@ class SurfaceCommandsMixin:
         except ValueError as exc:
             return {"error": str(exc)}
 
+        if any(section.key == "wait_outcome" for section in doc.sections):
+            await self._record_continuation_prime_delivery(
+                scope.get("session_id") or args.get("session_id"),
+            )
+
         from src.commands.principal import current_principal
         from src.knowledge.context import (
             ACCESS_REFUSAL_CODES,

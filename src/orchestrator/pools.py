@@ -290,6 +290,14 @@ class PoolsMixin:
             if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
         }
         measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        from src.waits.occupancy import continuation_occupancy, evictable_sessions
+        evictable = await evictable_sessions(self.db, self.config)
+        resuming, reserved = await continuation_occupancy(self.db, self.config)
+        known = {session.id for session in measurement.pool_sessions}
+        for session_id in resuming - known:
+            session = await self.db.get_session(session_id)
+            if session is not None:
+                measurement.pool_sessions.append(session)
         task_statuses = await self.db.get_task_statuses([
             s.task_id for s in measurement.pool_sessions if s.task_id
         ])
@@ -301,6 +309,7 @@ class PoolsMixin:
             status = task_statuses.get(session.task_id)
             if status == TaskStatus.HIBERNATED.value or (
                 status == TaskStatus.RESUME_PENDING.value and session.state != "starting"
+                and session.id not in resuming
             ):
                 continue  # Continuation ownership carries no live pool seat.
             if session.project_id is not None:
@@ -363,7 +372,7 @@ class PoolsMixin:
                 1
                 for s in sessions
                 if s.state in ("starting", "running") and s.desired_state != "stopped"
-            ) + len(pending)
+            ) + len(pending) + sum(n for (pid, _), n in reserved.items() if pid == project.id)
 
             for profile_id, profile in pool_profiles.items():
                 key = PoolKey(profile_id)
@@ -371,7 +380,7 @@ class PoolsMixin:
                 ready, repair_ready = demand_by_profile.get(profile_id, (0, 0))
                 measurement.demand[key] = measurement.demand.get(key, 0) + ready
 
-                local = PoolProjectSupply()
+                local = PoolProjectSupply(running_busy=reserved.get((project.id, profile_id), 0))
                 local.starting = sum(launch.profile_id == profile_id for launch in pending)
                 rows = sorted(
                     sessions_by_profile.get(profile_id, []),
@@ -386,6 +395,7 @@ class PoolsMixin:
                         local.draining += 1
                     elif s.task_id or s.claim_phase:
                         local.running_busy += 1
+                        local.evictable += s.id in evictable
                     elif idle_pool_claim_loop_stalled(s, now=now, stall_seconds=stall_seconds):
                         # Nothing has claimed from it for two long-poll
                         # windows — a harness parked on a usage-limit or
@@ -401,6 +411,7 @@ class PoolsMixin:
                 sup = measurement.supply.setdefault(key, PoolSupply())
                 sup.running_idle += local.running_idle
                 sup.running_busy += local.running_busy
+                sup.evictable += local.evictable
                 sup.starting += local.starting
                 sup.draining += local.draining
                 sup.unresponsive += local.unresponsive
@@ -423,6 +434,7 @@ class PoolsMixin:
                         idle_session_ids=tuple(local.idle_session_ids),
                         starting=local.starting,
                         repair_ready=repair_ready,
+                        evictable=local.evictable,
                     )
                 )
 
@@ -550,7 +562,7 @@ class PoolsMixin:
                 )
         eligible = {
             start.key for start in starts
-            if any(
+            if start.reason != 'evict' and any(
                 candidate.project_id == start.project_id
                 and candidate.ready > len(candidate.idle_session_ids) + candidate.starting
                 for candidate in measurement.candidates[start.key]
@@ -600,6 +612,12 @@ class PoolsMixin:
     async def _reconcile_pools_inner(self, *, hierarchy_modes=None) -> None:
         self._reap_pool_launches()
 
+        # Fund fresh continuation sessions before replenishing a warm idle
+        # pool, using the same admission reader and durable reservation fence.
+        service = getattr(self, 'wait_service', None)
+        if service and service.enabled:
+            await service.lifecycle.resume_pending()
+
         measurement = await self._measure_pools(hierarchy_modes=hierarchy_modes)
         # A drained holder's seat is counted from the next tick on.
         await self._release_container_claims(measurement.pool_sessions)
@@ -609,9 +627,16 @@ class PoolsMixin:
         from src.waits.sources import record_pool_observations
 
         await record_pool_observations(self.db, measurement, now)
+        self._wait_slot_pressure = {
+            (c.project_id, key.profile_id): c.ready - len(c.idle_session_ids) - c.starting
+            for key, candidates in measurement.candidates.items() for c in candidates
+        }
         starts, drains, starvations = place_pool_actions(
             actions=actions, candidates=measurement.candidates
         )
+        from src.wait_runtime.eviction import request_evictions
+
+        starts = await request_evictions(self, starts)
         relocations, self._pool_rebalance_since = rebalance_idle_pools(
             candidates=measurement.candidates,
             starts=starts,

@@ -11825,6 +11825,11 @@
             "default": false,
             "title": "Fleet",
             "type": "boolean"
+          },
+          "costs": {
+            "default": false,
+            "title": "Costs",
+            "type": "boolean"
           }
         },
         "title": "WaitGraphArgs",

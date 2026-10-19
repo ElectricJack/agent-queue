@@ -466,8 +466,8 @@ async def _build_task_context_preview(
     if continuation is not None:
         from src.prime.budgets import CONTEXT_BYTES
 
-        history = await _continuation_comments(db, task)
-        return PrimePreview("", body, "\n\n" + history, "prime_context", CONTEXT_BYTES)
+        continuation_history = await _continuation_comments(db, task)
+        return PrimePreview("", body, "\n\n" + continuation_history, "prime_context", CONTEXT_BYTES)
 
     history: list[str] = []
     list_comments = getattr(db, "list_task_comments", None)
@@ -607,7 +607,6 @@ async def build_task_context_section(
         key="task_context", title=SECTION_TITLES["task_context"], body=body,
         preview=preview if bounded_worker and preview.text else None,
     )
-
 
 
 # ---------------------------------------------------------------------------

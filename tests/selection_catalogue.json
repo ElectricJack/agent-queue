@@ -40,6 +40,7 @@
         "tests/test_agent_wait_commands.py",
         "tests/test_agent_wait_queries.py",
         "tests/test_agent_waits.py",
+        "tests/test_wait_admission.py",
         "tests/test_wait_commands.py",
         "tests/test_wait_decisions.py",
         "tests/test_wait_dispatch.py",
@@ -50,6 +51,7 @@
         "tests/test_wait_outcomes.py",
         "tests/test_wait_queries.py",
         "tests/test_wait_resource_sources.py",
+        "tests/test_wait_source_queries.py",
         "tests/test_waits.py"
       ]
     },
@@ -13272,13 +13274,14 @@
         "worker-pools"
       ],
       "default_arm": true,
-      "digest": "sha256:0691560cf622271b0605c4886e510632d6878cb90ea1a41f636544c2b0f82cac",
+      "digest": "sha256:85b2af34bcdc520f3f013655789e4476195e4d1b5bc4740a69f5a54e6211d400",
       "imports": [
         "src.models",
         "src.scheduler"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "size_pools — desired-state sizing over the global (profile-only) pool key."
     },
@@ -18367,6 +18370,32 @@
       ],
       "summary": "Tests for the internal vibecop plugin."
     },
+    "tests/test_wait_admission.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:f59b36462c56b043c959558fe4c7511dffa9d3d73896c07eaef1aabf0d6f112a",
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.config_editor",
+        "src.config_wait_policy",
+        "src.database",
+        "src.database.queries.wait_queries",
+        "src.database.tables",
+        "src.models",
+        "src.scheduler",
+        "src.wait_runtime.scheduler",
+        "src.waits.admission",
+        "src.waits.conditions",
+        "src.waits.occupancy",
+        "src.waits.registry",
+        "src.waits.reservations"
+      ],
+      "markers": [],
+      "summary": "Real PostgreSQL admission bindings, deadlines, claim predicates and restart replay."
+    },
     "tests/test_wait_commands.py": {
       "areas": [
         "agent-waits"
@@ -18432,7 +18461,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:3a4994ec5d5b318c2eea58cf97ea6d594df8370ff7f234cce377c143b7d8462f",
+      "digest": "sha256:8bbbe40e9c960caf540a4f4ead57c6be8a6de71bbbd931d2eeaf6fe306a2ea1d",
       "imports": [
         "src.commands",
         "src.commands.principal",
@@ -18444,11 +18473,11 @@
         "src.playbooks.run_state",
         "src.playbooks.waits",
         "src.scheduler",
+        "src.wait_runtime.service",
         "src.waits.conditions",
         "src.waits.listener",
         "src.waits.registry",
         "src.waits.resource_sources",
-        "src.waits.service",
         "src.waits.sources"
       ],
       "markers": [
@@ -18480,7 +18509,7 @@
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:09cc0bea2e470709b3eafbbc7bf560a328745cf183adf6ecf71f7434076eaf08",
+      "digest": "sha256:d6d6392dcf29f94e6db3e643f5a7f1be49caea48232076dc6adbe335eeb0f318",
       "imports": [
         "src.cli.waits",
         "src.commands",
@@ -18490,13 +18519,27 @@
         "src.database.queries.continuation_queries",
         "src.database.queries.wait_queries",
         "src.database.tables",
+        "src.git.manager",
         "src.models",
         "src.prime",
         "src.prime.budgets",
         "src.prime.hook_envelopes",
         "src.profiles.capabilities",
+        "src.scheduler",
+        "src.sessions.transcripts",
+        "src.wait_runtime",
+        "src.wait_runtime.eviction",
+        "src.wait_runtime.hibernate",
+        "src.wait_runtime.lifecycle",
+        "src.wait_runtime.measurements",
+        "src.wait_runtime.resume",
+        "src.wait_runtime.scheduler",
         "src.waits.conditions",
-        "src.waits.registry"
+        "src.waits.decision",
+        "src.waits.fencing",
+        "src.waits.holding",
+        "src.waits.registry",
+        "src.waits.resume_ack"
       ],
       "markers": [
         "parametrize"
@@ -18601,15 +18644,33 @@
       ],
       "summary": "Actual resource producers, persisted registry bindings and fresh service proofs."
     },
+    "tests/test_wait_source_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "digest": "sha256:88d47673cf163d7f5a784c10dc8c60a931919862ac22ca75545990480c460dcb",
+      "imports": [
+        "src.database.queries.wait_source_queries",
+        "src.database.tables",
+        "src.models",
+        "src.waits.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Source outbox atomicity, commit ordering, watermark and safe retention."
+    },
     "tests/test_waits.py": {
       "areas": [
         "agent-waits"
       ],
       "default_arm": true,
-      "digest": "sha256:f581ac56616efbce581113c7f0e2a8db267a6a128c7870bbb4e7efc628365a25",
+      "digest": "sha256:27e39a5319454a6ac1637bc3ec1f7945c9d722bdf64e3108314624a5d35fd51a",
       "imports": [
         "src.api.models.task",
         "src.commands.task_commands",
+        "src.config_wait_policy",
         "src.database.queries.metrics_queries",
         "src.database.tables",
         "src.models",
@@ -18617,12 +18678,13 @@
         "src.sessions.obsolete",
         "src.state_machine",
         "src.waits.conditions",
+        "src.waits.decision",
         "src.waits.registry"
       ],
       "markers": [
         "parametrize"
       ],
-      "summary": "Verified-wait lifecycle vocabulary (implementation §6; services remain opt-in)."
+      "summary": "Verified-wait lifecycle vocabulary and typed condition boundaries."
     },
     "tests/test_websocket_forwarding.py": {
       "areas": [

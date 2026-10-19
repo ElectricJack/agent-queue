@@ -95,7 +95,7 @@ class WaitTimerDriver:
             subject = (await conn.execute(select(wait_records).where(
                 wait_records.c.id == args["wait_id"],
             ))).mappings().first()
-            if subject and subject["owner_kind"] == "task":
+            if subject and subject["owner_kind"] in {"task", "scheduler"}:
                 await conn.execute(select(tasks.c.id).where(
                     tasks.c.id == subject["owner_id"],
                 ).with_for_update())
@@ -148,4 +148,6 @@ class WaitTimerDriver:
                 ).values(fired_at=now))
             if cursor["lease_expires_at"] <= self.clock():
                 raise LeaseLost("timer lease expired during deadline effect")
-            return result
+        if payload := result.pop('escalation_event', None):
+            await self.service.orch.bus.emit('wait.escalated', payload)
+        return result

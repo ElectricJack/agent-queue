@@ -1183,6 +1183,7 @@ class PoolProjectStatus(BaseModel):
     ready: int = 0
     running_idle: int = 0
     running_busy: int = 0
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int = 0
     draining: int = 0
     #: The project's own ``max_concurrent_agents`` ceiling, which bounds how
@@ -1238,6 +1239,7 @@ class PoolStatusRow(BaseModel):
     desired: int
     running_idle: int
     running_busy: int
+    evictable: int = 0  # subset of busy occupants, still charged to capacity
     starting: int
     draining: int
     ready: int
